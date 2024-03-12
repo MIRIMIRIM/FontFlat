@@ -351,9 +351,7 @@ namespace OTFontFile
                                         /* do nothing */
                                         break;
                                     case 13:
-                                        throw new ArgumentOutOfRangeException("Invalid Nibble encountered at pos "
-                                                                              + cursor );
-                                        break;
+                                        throw new ArgumentOutOfRangeException("Invalid Nibble encountered at pos " + cursor);
                                     default:
                                         /* 0 - 9, hopefully! */
                                         realstr += x[i].ToString("d1");
@@ -382,9 +380,7 @@ namespace OTFontFile
                                 /* do nothing */
                                 break;
                             case 13:
-                                throw new ArgumentOutOfRangeException("Invalid Nibble encountered at pos "
-                                                                      + cursor );
-                                break;
+                                throw new ArgumentOutOfRangeException("Invalid Nibble encountered at pos " + cursor );
                             default:
                                 /* 0 - 9, hopefully! */
                                 realstr += y.ToString("d1");

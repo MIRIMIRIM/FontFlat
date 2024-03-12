@@ -1,11 +1,3 @@
-using System;
-using System.IO;
-using System.Collections;
-using System.Diagnostics;
-
-
-
-
 namespace OTFontFile
 {
     abstract public class OTTable

@@ -1,6 +1,3 @@
-using System;
-
-
 namespace OTFontFile
 {
     public class Table_maxp : OTTable

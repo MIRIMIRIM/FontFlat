@@ -1,9 +1,3 @@
-using System;
-using System.IO;
-
-
-
-
 namespace OTFontFile
 {
     /// <summary>

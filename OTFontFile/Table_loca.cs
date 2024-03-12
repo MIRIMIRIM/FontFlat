@@ -1,8 +1,3 @@
-using System;
-using System.Diagnostics;
-
-
-
 namespace OTFontFile
 {
     /// <summary>
