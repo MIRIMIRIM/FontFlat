@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Text;
 using System.Collections;
+using System.Collections.Generic;
 //using Win32APIs;
 
 
@@ -12,22 +13,13 @@ namespace OTFontFile
     /// <summary>
     /// Summary description for Table_name.
     /// </summary>
-    public class Table_name : OTTable
+    public class Table_name(OTTag tag, MBOBuffer buf) : OTTable(tag, buf)
     {
-        /************************
-         * constructors
-         */
-        
-        public Table_name(OTTag tag, MBOBuffer buf) : base(tag, buf)
-        {
-        }
-
 
         /************************
          * field offset values
          */
 
-        
         public enum FieldOffsets
         {
             FormatSelector    = 0,
@@ -41,14 +33,8 @@ namespace OTFontFile
          * name record class
          */
 
-        public class NameRecord
+        public class NameRecord(ushort offset, MBOBuffer bufTable)
         {
-            public NameRecord(ushort offset, MBOBuffer bufTable)
-            {
-                m_offsetNameRecord = offset;
-                m_bufTable = bufTable;
-            }
-
             public enum FieldOffsets
             {
                 PlatformID   = 0,
@@ -90,8 +76,8 @@ namespace OTFontFile
             }
 
 
-            ushort m_offsetNameRecord;
-            MBOBuffer m_bufTable;
+            readonly ushort m_offsetNameRecord = offset;
+            readonly MBOBuffer m_bufTable = bufTable;
         }
 
 
@@ -192,15 +178,14 @@ namespace OTFontFile
             return nCodePage;
         }
 
-        static protected string GetUnicodeStrFromCodePageBuf(byte [] buf, int codepage)
+        static protected string GetUnicodeStrFromCodePageBuf(byte[] buf, int codepage)
         {
             Encoding enc = Encoding.GetEncoding(codepage);
             Decoder dec = enc.GetDecoder();
             int nChars = dec.GetCharCount(buf, 0, buf.Length);
-            char [] destbuf = new char[nChars];
+            char[] destbuf = new char[nChars];
             dec.GetChars(buf, 0, buf.Length, destbuf, 0);
-            string s = new string(destbuf);
-            return s;
+            return new string(destbuf);
         }
 
         static protected byte[] GetCodePageBufFromUnicodeStr( string sNameString, int nCodepage )
@@ -213,13 +198,13 @@ namespace OTFontFile
             return bString;
         }
 
-        static protected string DecodeString(ushort PlatID, ushort EncID, byte [] EncodedStringBuf)
+        static protected string? DecodeString(ushort PlatID, ushort EncID, byte[] EncodedStringBuf)
         {
-            string s = null;
+            string? s = null;
 
             if (PlatID == 0) // unicode
             {
-                UnicodeEncoding ue = new UnicodeEncoding(true, false);
+                var ue = new UnicodeEncoding(true, false);
                 s = ue.GetString(EncodedStringBuf);
             }
             else if (PlatID == 1) // Mac
@@ -281,7 +266,7 @@ namespace OTFontFile
                     EncID == 1 || // unicode
                     EncID == 10 ) // unicode with surrogate support for UCS-4
                 {
-                    UnicodeEncoding ue = new UnicodeEncoding(true, false);
+                    var ue = new UnicodeEncoding(true, false);
                     s = ue.GetString(EncodedStringBuf);
                 }
                 else if (EncID >= 2 && EncID <= 6)
@@ -298,13 +283,13 @@ namespace OTFontFile
             return s;
         }
 
-        static protected byte[] EncodeString(string s, ushort PlatID, ushort EncID)
+        static protected byte[]? EncodeString(string s, ushort PlatID, ushort EncID)
         {
-            byte[] buf = null;
+            byte[]? buf = null;
 
             if(PlatID == 0) // unicode
             {
-                UnicodeEncoding ue = new UnicodeEncoding( true, false );
+                var ue = new UnicodeEncoding( true, false );
                 buf = ue.GetBytes( s );
             }
             else if (PlatID == 1 ) // Mac
@@ -322,7 +307,7 @@ namespace OTFontFile
                     EncID == 1 || // unicode
                     EncID == 10 ) // unicode with surrogate support for UCS-4
                 {
-                    UnicodeEncoding ue = new UnicodeEncoding( true, false );
+                    var ue = new UnicodeEncoding( true, false );
                     buf = ue.GetBytes(s);
                 }
                 else if (EncID >= 2 || EncID <= 6)
@@ -342,16 +327,16 @@ namespace OTFontFile
             return buf;
         }
 
-        public string GetString(ushort PlatID, ushort EncID, ushort LangID, ushort NameID)
+        public string? GetString(ushort PlatID, ushort EncID, ushort LangID, ushort NameID)
         {
             // !!! NOTE: a value of 0xffff for PlatID, EncID, or LangID is used !!!
             // !!! as a wildcard and will match any value found in the table    !!!
 
-            string s = null;
+            string? s = null;
 
             for (uint i=0; i<NumberNameRecords; i++) 
             {
-                NameRecord nr = GetNameRecord(i);
+                var nr = GetNameRecord(i);
                 if (nr != null)
                 {
                     if ((PlatID == 0xffff || nr.PlatformID == PlatID) &&
@@ -359,7 +344,7 @@ namespace OTFontFile
                         (LangID == 0xffff || nr.LanguageID == LangID) &&
                         nr.NameID == NameID)
                     {
-                        byte [] buf = GetEncodedString(nr);
+                        var buf = GetEncodedString(nr);
                         if (buf != null)
                         {
                             s = DecodeString(nr.PlatformID, nr.EncodingID, buf);
@@ -373,28 +358,21 @@ namespace OTFontFile
             return s;
         }
 
-        public string GetNameString()
+        public string? GetNameString()
         {
-            string sName = null;
+            string? sName = null;
             try
             {
                 sName = GetString(3, 0xffff, 0x0409, 4);  // MS, any encoding, English, name
-                if (sName == null)
-                {
-                    sName = GetString(3, 0xffff, 0xffff, 4); // MS, any encoding, any language, name
-                }
-                if (sName == null)
-                {
-                    sName = GetString(1, 0, 0, 4); // mac, roman, English, name
-                }
+                sName ??= GetString(3, 0xffff, 0xffff, 4); // MS, any encoding, any language, name
+                sName ??= GetString(1, 0, 0, 4); // mac, roman, English, name
+                var sNameSpan = sName!.AsSpan();
 
                 // validate surrogate content
-                for (int i = 0; i < sName.Length - 1; i++)
+                for (int i = 0; i < sNameSpan.Length - 1; i++)
                 {
-                    if (   (   (sName[i] >= 0xd800 && sName[i] <= 0xdbff)
-                            && !(sName[i+1] >= 0xdc00 && sName[i+1] <= 0xdfff))
-                        || (   !(sName[i] >= 0xd800 && sName[i] <= 0xdbff)
-                            && (sName[i+1] >= 0xdc00 && sName[i+1] <= 0xdfff)))
+                    if ((char.IsSurrogate(sNameSpan[i]) && !char.IsLowSurrogate(sNameSpan[i + 1]))
+                        || (!char.IsSurrogate(sNameSpan[i]) && char.IsLowSurrogate(sNameSpan[i + 1])))
                     {
                         sName = null;
                         break;
@@ -408,29 +386,22 @@ namespace OTFontFile
             return sName;
         }
 
-        public string GetVersionString()
+        public string? GetVersionString()
         {
-            string sVersion = null;
+            string? sVersion = null;
 
             try
             {
                 sVersion = GetString(3, 0xffff, 0x0409, 5);  // MS, any encoding, English, version
-                if (sVersion == null)
-                {
-                    sVersion = GetString(3, 0xffff, 0xffff, 5); // MS, any encoding, any language, version
-                }
-                if (sVersion == null)
-                {
-                    sVersion = GetString(1, 0, 0, 5); // mac, roman, English, version
-                }
+                sVersion ??= GetString(3, 0xffff, 0xffff, 5); // MS, any encoding, any language, version
+                sVersion ??= GetString(1, 0, 0, 5); // mac, roman, English, version
+                var sVersionSpan = sVersion.AsSpan();
 
                 // validate surrogate content
-                for (int i = 0; i < sVersion.Length - 1; i++)
+                for (int i = 0; i < sVersionSpan.Length - 1; i++)
                 {
-                    if (   (   (sVersion[i] >= 0xd800 && sVersion[i] <= 0xdbff)
-                        && !(sVersion[i+1] >= 0xdc00 && sVersion[i+1] <= 0xdfff))
-                        || (   !(sVersion[i] >= 0xd800 && sVersion[i] <= 0xdbff)
-                        && (sVersion[i+1] >= 0xdc00 && sVersion[i+1] <= 0xdfff)))
+                    if ((char.IsSurrogate(sVersionSpan[i]) && !char.IsLowSurrogate(sVersionSpan[i + 1]))
+                        || (!char.IsSurrogate(sVersionSpan[i]) && char.IsLowSurrogate(sVersionSpan[i + 1])))
                     {
                         sVersion = null;
                         break;
@@ -444,21 +415,15 @@ namespace OTFontFile
             return sVersion;
         }
 
-        public string GetStyleString()
+        public string? GetStyleString()
         {
-            string sStyle = null;
+            string? sStyle = null;
 
             try
             {
                 sStyle = GetString(3, 0xffff, 0x0409, 2);  // MS, any encoding, English, subfamily (style)
-                if (sStyle == null)
-                {
-                    sStyle = GetString(3, 0xffff, 0xffff, 2); // MS, any encoding, any language, subfamily (style)
-                }
-                if (sStyle == null)
-                {
-                    sStyle = GetString(1, 0, 0, 2); // mac, roman, English, subfamily (style)
-                }
+                sStyle ??= GetString(3, 0xffff, 0xffff, 2); // MS, any encoding, any language, subfamily (style)
+                sStyle ??= GetString(1, 0, 0, 2); // mac, roman, English, subfamily (style)
             }
             catch
             {
@@ -486,25 +451,23 @@ namespace OTFontFile
             get    {return m_bufTable.GetUshort((uint)FieldOffsets.OffsetToStrings);}
         }
 
-        public NameRecord GetNameRecord(uint i)
+        public NameRecord? GetNameRecord(uint i)
         {
-            NameRecord nr = null;
-
             if (i < NumberNameRecords)
             {
                 uint offset = (uint)FieldOffsets.NameRecords + i*12;
                 if (offset + 12 < m_bufTable.GetLength())
                 {
-                    nr = new NameRecord((ushort)offset, m_bufTable);
+                    return new NameRecord((ushort)offset, m_bufTable);
                 }
             }
 
-            return nr;
+            return null;
         }
 
-        public byte[] GetEncodedString(NameRecord nr)
+        public byte[]? GetEncodedString(NameRecord nr)
         {
-            byte[] buf = null;
+            byte[]? buf = null;
             int offset = OffsetToStrings + nr.StringOffset;
             if (offset + nr.StringLength - 1 <= m_bufTable.GetLength())
             {
@@ -534,7 +497,7 @@ namespace OTFontFile
             // the cached data
             protected ushort m_format;
             // No need to store string offsets because we can determine these when we save the cache
-            protected ArrayList m_nameRecords; // NameRecordCache[]
+            protected List<NameRecordCache> m_nameRecords; // NameRecordCache[] // ArrayList
 
             // constructor
             public name_cache(Table_name OwnerTable)
@@ -542,12 +505,12 @@ namespace OTFontFile
             
                 m_format = OwnerTable.FormatSelector;
                 
-                m_nameRecords = new ArrayList( OwnerTable.NumberNameRecords );
+                m_nameRecords = new List<NameRecordCache>( OwnerTable.NumberNameRecords );
 
                 for( ushort i = 0; i < OwnerTable.NumberNameRecords; i++ )
                 {
-                    NameRecord nr = OwnerTable.GetNameRecord( i );                    
-                    string sNameString = OwnerTable.GetString( nr.PlatformID, nr.EncodingID, nr.LanguageID, nr.NameID );                    
+                    NameRecord nr = OwnerTable.GetNameRecord( i )!;                    
+                    string sNameString = OwnerTable.GetString( nr.PlatformID, nr.EncodingID, nr.LanguageID, nr.NameID )!;                    
                     addNameRecord(nr.PlatformID, nr.EncodingID, nr.LanguageID, nr.NameID, sNameString);
                 }
             }
@@ -570,27 +533,23 @@ namespace OTFontFile
 
             public NameRecordCache getNameRecord( ushort nIndex )
             {
-                NameRecordCache nrc = null;
-
                 if( nIndex >= m_nameRecords.Count )
                 {                    
                     throw new ArgumentOutOfRangeException( "nIndex is greater than the amount of name records." );
                 }
                 else
                 {
-                    nrc = (NameRecordCache)((NameRecordCache)m_nameRecords[nIndex]).Clone();
+                    return (NameRecordCache)(m_nameRecords[nIndex]!).Clone();
                 }
-
-                return nrc;
             }
 
-            public NameRecordCache getNameRecord(ushort platformID, ushort encodingID, ushort languageID, ushort nameID )
+            public NameRecordCache? getNameRecord(ushort platformID, ushort encodingID, ushort languageID, ushort nameID )
             {
-                NameRecordCache nrc = null;
+                NameRecordCache? nrc = null;
 
                 for (int i=0; i<m_nameRecords.Count; i++)
                 {
-                    NameRecordCache nrcTemp = (NameRecordCache)m_nameRecords[i];
+                    NameRecordCache nrcTemp = m_nameRecords[i]!;
                     if (nrcTemp.platformID == platformID && 
                         nrcTemp.encodingID == encodingID && 
                         nrcTemp.languageID == languageID && 
@@ -610,7 +569,7 @@ namespace OTFontFile
 
                 for (int i=0; i<m_nameRecords.Count; i++)
                 {
-                    NameRecordCache nrcTemp = (NameRecordCache)m_nameRecords[i];
+                    NameRecordCache nrcTemp = m_nameRecords[i]!;
                     if (nrcTemp.platformID == platformID && 
                         nrcTemp.encodingID == encodingID && 
                         nrcTemp.languageID == languageID && 
@@ -638,7 +597,7 @@ namespace OTFontFile
                     if (m_nameRecords.Count != 0)
                     {
                         // check for insertion before the first string
-                        NameRecordCache nrcTemp = (NameRecordCache)m_nameRecords[0];
+                        NameRecordCache nrcTemp = m_nameRecords[0]!;
                         int nCompare = nrcTemp.CompareNameRecordToIDs(platformID, encodingID, languageID, nameID);
 
                         if (nCompare == 1)
@@ -650,8 +609,8 @@ namespace OTFontFile
                             // check for insertion between two other strings
                             for (int i=0; i<m_nameRecords.Count-1; i++)
                             {
-                                NameRecordCache nrcCurr = (NameRecordCache)m_nameRecords[i];
-                                NameRecordCache nrcNext = (NameRecordCache)m_nameRecords[i+1];
+                                NameRecordCache nrcCurr = m_nameRecords[i]!;
+                                NameRecordCache nrcNext = m_nameRecords[i+1]!;
                                 // check if specified IDs are greater than the current object and less than the next object
                                 int nCmp1 = nrcCurr.CompareNameRecordToIDs(platformID, encodingID, languageID, nameID);
                                 int nCmp2 = nrcNext.CompareNameRecordToIDs(platformID, encodingID, languageID, nameID);
@@ -774,14 +733,14 @@ namespace OTFontFile
 
             public override OTTable GenerateTable()
             {
-                ArrayList bytesNameString = new ArrayList();
+                List<byte[]> bytesNameString = [];
                 ushort nLengthOfStrings = 0;
                 ushort nStartOfStringStorage = (ushort)(6 + (m_nameRecords.Count * 12));
 
                 for( ushort i = 0; i < m_nameRecords.Count; i++ )
                 {
-                    NameRecordCache nrc = (NameRecordCache)m_nameRecords[i];
-                    byte[] byteString = EncodeString(nrc.sNameString, nrc.platformID, nrc.encodingID);
+                    NameRecordCache nrc = m_nameRecords[i];
+                    var byteString = EncodeString(nrc.sNameString!, nrc.platformID, nrc.encodingID)!;
                     bytesNameString.Add( byteString );
                     nLengthOfStrings += (ushort)byteString.Length;
                 }
@@ -790,22 +749,22 @@ namespace OTFontFile
                 MBOBuffer newbuf = new MBOBuffer( (uint)(Table_name.FieldOffsets.NameRecords + (m_nameRecords.Count * 12) + nLengthOfStrings));
 
                 // populate the buffer                
-                newbuf.SetUshort( m_format,                        (uint)Table_name.FieldOffsets.FormatSelector );
-                newbuf.SetUshort( (ushort)m_nameRecords.Count,    (uint)Table_name.FieldOffsets.NumberNameRecords );
-                newbuf.SetUshort( nStartOfStringStorage,        (uint)Table_name.FieldOffsets.OffsetToStrings );
+                newbuf.SetUshort( m_format,                        (uint)FieldOffsets.FormatSelector );
+                newbuf.SetUshort( (ushort)m_nameRecords.Count,    (uint)FieldOffsets.NumberNameRecords );
+                newbuf.SetUshort( nStartOfStringStorage,        (uint)FieldOffsets.OffsetToStrings );
 
                 ushort nOffset = 0;
                 // Write the NameRecords and Strings
                 for( ushort i = 0; i < m_nameRecords.Count; i++ )
                 {    
-                    byte[] bString = (byte[])bytesNameString[i];
+                    byte[] bString = bytesNameString[i];
                     
-                    newbuf.SetUshort( ((NameRecordCache)m_nameRecords[i]).platformID,    (uint)(Table_name.FieldOffsets.NameRecords + (i * 12)));
-                    newbuf.SetUshort( ((NameRecordCache)m_nameRecords[i]).encodingID,    (uint)(Table_name.FieldOffsets.NameRecords + (i * 12) + 2));
-                    newbuf.SetUshort( ((NameRecordCache)m_nameRecords[i]).languageID,    (uint)(Table_name.FieldOffsets.NameRecords + (i * 12) + 4));
-                    newbuf.SetUshort( ((NameRecordCache)m_nameRecords[i]).nameID,        (uint)(Table_name.FieldOffsets.NameRecords + (i * 12) + 6));
-                    newbuf.SetUshort( (ushort)bString.Length,                            (uint)(Table_name.FieldOffsets.NameRecords + (i * 12) + 8));
-                    newbuf.SetUshort( nOffset,                                            (uint)(Table_name.FieldOffsets.NameRecords + (i * 12) + 10));
+                    newbuf.SetUshort(m_nameRecords[i].platformID,    (uint)(FieldOffsets.NameRecords + (i * 12)));
+                    newbuf.SetUshort(m_nameRecords[i].encodingID,    (uint)(FieldOffsets.NameRecords + (i * 12) + 2));
+                    newbuf.SetUshort(m_nameRecords[i].languageID,    (uint)(FieldOffsets.NameRecords + (i * 12) + 4));
+                    newbuf.SetUshort(m_nameRecords[i].nameID,        (uint)(FieldOffsets.NameRecords + (i * 12) + 6));
+                    newbuf.SetUshort( (ushort)bString.Length,        (uint)(FieldOffsets.NameRecords + (i * 12) + 8));
+                    newbuf.SetUshort( nOffset,                       (uint)(FieldOffsets.NameRecords + (i * 12) + 10));
                     
                     //Write the string to the buffer
                     for( int ii = 0; ii < bString.Length; ii++ )
@@ -817,9 +776,7 @@ namespace OTFontFile
                 }
 
                 // put the buffer into a Table_name object and return it
-                Table_name nameTable = new Table_name("name", newbuf);
-            
-                return nameTable;
+                return new Table_name("name", newbuf);
             }
 
             public class NameRecordCache : ICloneable
@@ -829,9 +786,9 @@ namespace OTFontFile
                 protected ushort m_languageID;
                 protected ushort m_nameID;
                 // Instead of the offset we will store the actual string 
-                protected string m_sNameString;
+                protected string? m_sNameString;
 
-                public NameRecordCache( ushort nPlatformID, ushort nEncodingID, ushort nLanguageID, ushort nNameID, string NameString )
+                public NameRecordCache( ushort nPlatformID, ushort nEncodingID, ushort nLanguageID, ushort nNameID, string? NameString )
                 {
                     platformID = nPlatformID;
                     encodingID = nEncodingID;
@@ -864,7 +821,7 @@ namespace OTFontFile
                     set{ m_nameID = value; }
                 }
 
-                public string sNameString
+                public string? sNameString
                 {
                     get{ return m_sNameString; }
                     set{ m_sNameString = value; }
