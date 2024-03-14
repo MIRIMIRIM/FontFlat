@@ -197,9 +197,9 @@ namespace OTFontFile
             Encoding enc = Encoding.GetEncoding(codepage);
             Decoder dec = enc.GetDecoder();
             int nChars = dec.GetCharCount(buf, 0, buf.Length);
-            char [] destbuf = new Char[nChars];
+            char [] destbuf = new char[nChars];
             dec.GetChars(buf, 0, buf.Length, destbuf, 0);
-            String s = new String(destbuf);
+            string s = new string(destbuf);
             return s;
         }
 

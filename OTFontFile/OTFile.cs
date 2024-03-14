@@ -731,7 +731,7 @@ namespace OTFontFile
         // write a 16 bit uint in motorola byte order 
         protected static void WriteUint16MBO(FileStream fs, ushort n)
         {
-            byte [] buf = new Byte [2];
+            byte [] buf = new byte[2];
             buf[0] = (byte)(n >> 8);
             buf[1] = (byte)n;
 
@@ -741,7 +741,7 @@ namespace OTFontFile
         // write a 32 bit uint in motorola byte order 
         protected static void WriteUint32MBO(FileStream fs, uint n)
         {
-            byte [] buf = new Byte [4];
+            byte [] buf = new byte[4];
             buf[0] = (byte)(n >> 24);
             buf[1] = (byte)(n >> 16);
             buf[2] = (byte)(n >> 8);

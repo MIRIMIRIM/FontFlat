@@ -212,7 +212,7 @@ namespace OTFontFile
                 Coordinate[] arrCoordinates = new Coordinate[nCoordinates];
 
                 // process the flags
-                byte [] arrFlags = new Byte[nCoordinates];
+                byte [] arrFlags = new byte[nCoordinates];
                 uint offset = m_offsetSimpleGlyph + (uint)m_header.numberOfContours*2 + 2 + instructionLength;
                 uint iCoordinate = 0;
                 while (iCoordinate < nCoordinates)
@@ -310,7 +310,7 @@ namespace OTFontFile
                 Coordinate[] arrCoordinates = new Coordinate[nCoordinates];
 
                 // process the flags
-                byte [] arrFlags = new Byte[nCoordinates];
+                byte [] arrFlags = new byte[nCoordinates];
                 uint offset = m_offsetSimpleGlyph + (uint)m_header.numberOfContours*2 + 2 + instructionLength;
                 uint iCoordinate = 0;
                 while (iCoordinate < nCoordinates)

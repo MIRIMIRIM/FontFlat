@@ -1742,7 +1742,7 @@ namespace OTFontFile
                                                  uint charindex, 
                                                  bool bMBO )
             {
-                String msg = "Format 14 ByteInChar() should not be called";
+                string msg = "Format 14 ByteInChar() should not be called";
                 throw new ApplicationException( msg );
             }
 
@@ -1760,7 +1760,7 @@ namespace OTFontFile
             /// </summary>
             public override uint BytesInChar(byte[] chars, uint charindex)
             {
-                String msg = "Format 14 ByteInChar() should not be called";
+                string msg = "Format 14 ByteInChar() should not be called";
                 throw new ApplicationException( msg );
             }
 

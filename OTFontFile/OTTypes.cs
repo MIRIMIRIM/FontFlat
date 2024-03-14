@@ -83,7 +83,7 @@ namespace OTFontFile
             return bg1.m_char32 != bg2.m_char32;
         }
 
-        public override bool Equals( Object o )
+        public override bool Equals(object o )
         {
             return this == (BigUn)o;
         }
@@ -141,11 +141,11 @@ namespace OTFontFile
         
         static public bool operator == (OTF2Dot14 f1, OTF2Dot14 f2)
         {
-            if ((object)f1 == null && (object)f2 == null)
+            if (f1 is null && f2 is null)
             {
                 return true;
             }
-            else if ((object)f1 == null || (object)f2 == null)
+            else if (f1 is null || f2 is null)
             {
                 return false;
             }
@@ -208,11 +208,11 @@ namespace OTFontFile
 
         static public bool operator == (OTFixed f1, OTFixed f2)
         {
-            if ((object)f1 == null && (object)f2 == null)
+            if (f1 is null && f2 is null)
             {
                 return true;
             }
-            else if ((object)f1 == null || (object)f2 == null)
+            else if (f1 is null || f2 is null)
             {
                 return false;
             }
@@ -328,11 +328,11 @@ namespace OTFontFile
 
         static public bool operator == (OTTag t1, OTTag t2)
         {
-            if ((object)t1 == null && (object)t2 == null)
+            if (t1 is null && t2 is null)
             {
                 return true;
             }
-            else if ((object)t1 == null || (object)t2 == null)
+            else if (t1 is null || t2 is null)
             {
                 return false;
             }
