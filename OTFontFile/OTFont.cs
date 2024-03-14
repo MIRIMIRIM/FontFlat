@@ -266,7 +266,7 @@ namespace OTFontFile
             Table_name nameTable = (Table_name)GetTable("name");
             if (nameTable != null)
             {
-                sName = nameTable.GetNameString();
+                sName = nameTable.GetFullNameString();
             }
 
             return sName;

@@ -82,6 +82,50 @@ namespace OTFontFile
 
 
         /************************
+         * name constant enums
+         */
+
+        public enum PlatformID : ushort
+        {
+            Unicode = 0,
+            Macintosh = 1,  // Discouraged
+            ISO = 2,        // Deprecated
+            Windows = 3,
+            Custom = 4,     // should not be used in new fonts
+        }
+
+        // Must include: Family (or Preferred Family), Style (or Preferred Style), Full, PostScript
+        public enum NameID : ushort
+        {
+            copyright = 0,
+            familyName = 1,
+            subfamilyName = 2,
+            uniqueSubfamilyIdentifier = 3,
+            fullName = 4,
+            versionString = 5,
+            postScriptName = 6,
+            trademark = 7,
+            manufacturerName = 8,
+            designer = 9,
+            description = 10,
+            vendorUri = 11,
+            designerUri = 12,
+            licenseDescription = 13,
+            licenseInfoUri = 14,
+            typographicFamilyName = 16, // Preferred Family
+            typographicSubfamilyName = 17,  // Preferred Subfamily
+            compatibleFullName = 18,    // MacOS Only
+            sampleText = 19,
+            postScriptCIDFindfontName = 20,
+            wwsFamilyName = 21,
+            wwsSubfamilyName = 22,
+            lightBackgroundPalette = 23,
+            darkBackgroundPalette = 24,
+            variationsPostScriptNamePrefix = 25,
+        }
+
+
+        /************************
          * utility methods
          */
 
@@ -358,14 +402,14 @@ namespace OTFontFile
             return s;
         }
 
-        public string? GetNameString()
+        public string? GetFullNameString()
         {
             string? sName = null;
             try
             {
-                sName = GetString(3, 0xffff, 0x0409, 4);  // MS, any encoding, English, name
-                sName ??= GetString(3, 0xffff, 0xffff, 4); // MS, any encoding, any language, name
-                sName ??= GetString(1, 0, 0, 4); // mac, roman, English, name
+                sName = GetString(3, 0xffff, 0x0409, 4);  // MS, any encoding, English, fullname
+                sName ??= GetString(3, 0xffff, 0xffff, 4); // MS, any encoding, any language, fullname
+                sName ??= GetString(1, 0, 0, 4); // mac, roman, English, fullname
                 var sNameSpan = sName!.AsSpan();
 
                 // validate surrogate content
