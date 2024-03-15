@@ -81,6 +81,8 @@ namespace OTFontFile
 
         }
 
+        public bool open(FileInfo sFileinfo) => open(sFileinfo.FullName);
+
         public bool open(SafeFileHandle handle)
         {
             m_fs = new FileStream(handle,FileAccess.Read);
