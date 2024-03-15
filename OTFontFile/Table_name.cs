@@ -1,11 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Text;
-using System.Collections;
 using System.Collections.Generic;
-//using Win32APIs;
-
-
 
 
 namespace OTFontFile
@@ -82,7 +78,7 @@ namespace OTFontFile
 
 
         /************************
-         * name constant enums
+         * name constant
          */
 
         public enum PlatformID : ushort
@@ -122,6 +118,101 @@ namespace OTFontFile
             lightBackgroundPalette = 23,
             darkBackgroundPalette = 24,
             variationsPostScriptNamePrefix = 25,
+        }
+
+        public enum EncodingIDMacintosh : ushort
+        {
+            Roman = 0,
+            Japanese = 1,
+            Traditional_Chinese = 2,
+            Korean = 3,
+            Arabic = 4,
+            Hebrew = 5,
+            Greek = 6,
+            Russian = 7,
+            RSymbol = 8,
+            Devanagari = 9,
+            Gurmukhi = 10,
+            Gujarati = 11,
+            Oriya = 12,
+            Bengali = 13,
+            Tamil = 14,
+            Telugu = 15,
+            Kannada = 16,
+            Malayalam = 17,
+            Sinhalese = 18,
+            Burmese = 19,
+            Khmer = 20,
+            Thai = 21,
+            Laotian = 22,
+            Georgian = 23,
+            Armenian = 24,
+            Simplified_Chinese = 25,
+            Tibetan = 26,
+            Mongolian = 27,
+            Geez = 28,
+            Slavic = 29,
+            Vietnamese = 30,
+            Sindhi = 31,
+            Uninterpreted = 32
+        };
+
+        public enum EncodingIDMicrosoft
+        {
+            Symbol = 0,
+            Unicode_BMP = 1,
+            ShiftJIS = 2,
+            PRC = 3,
+            Big5 = 4,
+            Wansung = 5,
+            Johab = 6,
+            Reserved = 7,   // 7-9 is Reserved
+            Unicode_full_repertoire = 10
+        }
+
+        public enum LanguageIDMacintosh : ushort
+        {
+            en = 0,
+            ja = 11,
+            zh_Hans = 19,
+            zh_Hant = 33
+        }
+
+        public enum LanguageIDMicrosoft : ushort
+        {
+            // https://referencesource.microsoft.com/#mscorlib/system/globalization/regioninfo.cs,171
+            // https://www.iana.org/assignments/language-subtag-registry/language-subtag-registry
+            // https://fonttools.readthedocs.io/en/latest/_modules/fontTools/ttLib/tables/_n_a_m_e.html
+
+            ca_ES = 0x0403, // Catalan (Catalan)
+            zh_Hant_TW = 0x0404, // Chinese (Taiwan)
+            cs_CZ = 0x0405, // Czech (Czech Republic)
+            da_DK = 0x0406, // Danish (Denmark)
+            de_DE = 0x0407, // German (Germany)
+            el_GR = 0x0408, // Greek (Greece)
+            en_US = 0x0409, // English (United States)
+            es_ES = 0x040A, // Spanish (Traditional Sort) (Spain)
+            fi_FI = 0x040B, // Finnish (Finland)
+            fr_FR = 0x040C, // French (France)
+            hu_HU = 0x040E, // Hungarian (Hungary)
+            it_IT = 0x0410, // Italian (Italy)
+            ja_JP = 0x0411, // Japanese (Japan)
+            nl_NL = 0x0413, // Dutch (Netherlands)
+            nb_NO = 0x0414, // Norwegian (Bokm?) (Norway)
+            pl_PL = 0x0415, // Polish (Poland)
+            pt_BR = 0x0416, // Portuguese (Brazil)
+            ru_RU = 0x0419, // Russian (Russia)
+            sk_SK = 0x041B, // Slovak (Slovakia)
+            sv_SE = 0x041D, // Swedish (Sweden)
+            sl_SI = 0x0424, // Slovenian (Slovenia)
+            eu_ES = 0x042D, // Basque (Basque)
+            zh_Hans_CN = 0x0804, // Chinese (People's Republic of China)
+            es_MX = 0x080A, // Spanish (Mexico)
+            pt_PT = 0x0816, // Portuguese (Portugal)
+            zh_Hant_HK = 0x0C04, // Chinese (Hong Kong S.A.R.)
+            fr_CA = 0x0C0C, // French (Canada)
+            zh_Hant_MO = 0x1404, // Chinese (Macau S.A.R.)
+            Any = 0xffff,
         }
 
 
@@ -402,82 +493,58 @@ namespace OTFontFile
             return s;
         }
 
+        public string? GetString(PlatformID PlatID, EncodingIDMacintosh EncID, LanguageIDMacintosh LangID, NameID NameID) => GetString((ushort)PlatID, (ushort)EncID, (ushort)LangID, (ushort)NameID);
+
+        public string? GetString(PlatformID PlatID, EncodingIDMicrosoft EncID, LanguageIDMicrosoft LangID, NameID NameID) => GetString((ushort)PlatID, (ushort)EncID, (ushort)LangID, (ushort)NameID);
+
         [Obsolete("Please use GetFullNameString()")]
         public string? GetNameString() => GetFullNameString();
 
-        public string? GetFullNameString()
+        public string? GetFullNameString() => GetGeneralStringByNameID(NameID.fullName, true);
+
+        public string? GetVersionString() => GetGeneralStringByNameID(NameID.versionString, true);
+
+        public string? GetStyleString() => GetGeneralStringByNameID(NameID.subfamilyName, false);
+
+        /// <summary>
+        /// Get general display string by NameID, platform_encoding_language priority is MS_any_English, MS_any_other, Mac_Roman_English.
+        /// </summary>
+        /// <param name="nameId">NameID</param>
+        /// <param name="validate">Verify if there is a surrogate pair in the decoded string</param>
+        /// <returns></returns>
+        public string? GetGeneralStringByNameID(ushort nameId, bool validate)
         {
-            string? sName = null;
+            string? str = null;
             try
             {
-                sName = GetString(3, 0xffff, 0x0409, 4);  // MS, any encoding, English, fullname
-                sName ??= GetString(3, 0xffff, 0xffff, 4); // MS, any encoding, any language, fullname
-                sName ??= GetString(1, 0, 0, 4); // mac, roman, English, fullname
-                var sNameSpan = sName!.AsSpan();
-
-                // validate surrogate content
-                for (int i = 0; i < sNameSpan.Length - 1; i++)
+                str = GetString((ushort)PlatformID.Windows, 0xffff, (ushort)LanguageIDMicrosoft.en_US, nameId);  // MS, any encoding, English, nameID
+                str ??= GetString((ushort)PlatformID.Windows, 0xffff, 0xffff, nameId); // MS, any encoding, any language, nameID
+                str ??= GetString((ushort)PlatformID.Macintosh, (ushort)EncodingIDMacintosh.Roman, (ushort)LanguageIDMacintosh.en, nameId); // mac, roman, English, nameID
+                
+                if (validate)
                 {
-                    if ((char.IsSurrogate(sNameSpan[i]) && !char.IsLowSurrogate(sNameSpan[i + 1]))
-                        || (!char.IsSurrogate(sNameSpan[i]) && char.IsLowSurrogate(sNameSpan[i + 1])))
+                    var span = str!.AsSpan();
+
+                    // validate surrogate content
+                    for (int i = 0; i < span.Length - 1; i++)
                     {
-                        sName = null;
-                        break;
+                        if ((char.IsHighSurrogate(span[i]) && !char.IsLowSurrogate(span[i + 1]))
+                            || (!char.IsHighSurrogate(span[i]) && char.IsLowSurrogate(span[i + 1])))
+                        {
+                            str = null;
+                            break;
+                        }
                     }
                 }
             }
             catch
             {
             }
-
-            return sName;
+            return str;
         }
 
-        public string? GetVersionString()
-        {
-            string? sVersion = null;
+        public string? GetGeneralStringByNameID(NameID nameID, bool validate) => GetGeneralStringByNameID((ushort)nameID, validate);
 
-            try
-            {
-                sVersion = GetString(3, 0xffff, 0x0409, 5);  // MS, any encoding, English, version
-                sVersion ??= GetString(3, 0xffff, 0xffff, 5); // MS, any encoding, any language, version
-                sVersion ??= GetString(1, 0, 0, 5); // mac, roman, English, version
-                var sVersionSpan = sVersion.AsSpan();
-
-                // validate surrogate content
-                for (int i = 0; i < sVersionSpan.Length - 1; i++)
-                {
-                    if ((char.IsSurrogate(sVersionSpan[i]) && !char.IsLowSurrogate(sVersionSpan[i + 1]))
-                        || (!char.IsSurrogate(sVersionSpan[i]) && char.IsLowSurrogate(sVersionSpan[i + 1])))
-                    {
-                        sVersion = null;
-                        break;
-                    }
-                }
-            }
-            catch
-            {
-            }
-
-            return sVersion;
-        }
-
-        public string? GetStyleString()
-        {
-            string? sStyle = null;
-
-            try
-            {
-                sStyle = GetString(3, 0xffff, 0x0409, 2);  // MS, any encoding, English, subfamily (style)
-                sStyle ??= GetString(3, 0xffff, 0xffff, 2); // MS, any encoding, any language, subfamily (style)
-                sStyle ??= GetString(1, 0, 0, 2); // mac, roman, English, subfamily (style)
-            }
-            catch
-            {
-            }
-
-            return sStyle;
-        }
 
         /************************
          * property accessors
