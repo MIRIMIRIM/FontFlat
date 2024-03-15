@@ -157,7 +157,7 @@ namespace OTFontFile
             Uninterpreted = 32
         };
 
-        public enum EncodingIDMicrosoft
+        public enum EncodingIDWindows
         {
             Symbol = 0,
             Unicode_BMP = 1,
@@ -178,7 +178,7 @@ namespace OTFontFile
             zh_Hant = 33
         }
 
-        public enum LanguageIDMicrosoft : ushort
+        public enum LanguageIDWindows : ushort
         {
             // https://referencesource.microsoft.com/#mscorlib/system/globalization/regioninfo.cs,171
             // https://www.iana.org/assignments/language-subtag-registry/language-subtag-registry
@@ -315,6 +315,7 @@ namespace OTFontFile
 
         static protected string GetUnicodeStrFromCodePageBuf(byte[] buf, int codepage)
         {
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
             Encoding enc = Encoding.GetEncoding(codepage);
             Decoder dec = enc.GetDecoder();
             int nChars = dec.GetCharCount(buf, 0, buf.Length);
@@ -337,64 +338,20 @@ namespace OTFontFile
         {
             string? s = null;
 
-            if (PlatID == 0) // unicode
+            if (PlatID == (ushort)PlatformID.Unicode)
             {
                 var ue = new UnicodeEncoding(true, false);
                 s = ue.GetString(EncodedStringBuf);
             }
-            else if (PlatID == 1) // Mac
+            else if (PlatID == (ushort)PlatformID.Macintosh)
             {
                 int nMacCodePage = MacEncIdToCodePage(EncID);
                 if (nMacCodePage != -1)
                 {
-                    if ( Type.GetType("Mono.Runtime") != null )
-                    {
-                        // Mono.Runtime don't currently support
-                        // 10001 to 10008.
-                        switch ( nMacCodePage )
-                        {
-                            // Close-enough substitutes for names:
-
-                            case 10001:             // Japanese
-                                nMacCodePage = 932; // ShiftJIS
-                                break;
-
-                            case 10002:             // Chinese (Traditional)
-                                nMacCodePage = 950; // Big5
-                                break;
-
-                            case 10003:             // Korean
-                                nMacCodePage = 949; //
-                                break;
-
-                            case 10004:             // mac-arabic
-                                nMacCodePage = 1256;
-                                break;
-
-                            case 10005:             // mac-hebrew
-                                nMacCodePage = 1255;
-                                break;
-
-                            case 10006:             // mac-greek
-                                nMacCodePage = 1253;
-                                break;
-
-                            case 10007:             // mac-cyrillic
-                                nMacCodePage = 1251;
-                                break;
-
-                            case 10008:             // Chinese (Simplified)
-                                nMacCodePage = 936; // PRC
-                                break;
-
-                            default:
-                                break;
-                        }
-                    }
                     s = GetUnicodeStrFromCodePageBuf(EncodedStringBuf, nMacCodePage);
                 }
             }
-            else if (PlatID == 3) // MS
+            else if (PlatID == (ushort)PlatformID.Windows)
             {
                 if (EncID == 0 || // symbol - strings identified as symbol encoded strings 
                                   // aren't symbol encoded, they're unicode encoded!!!
@@ -495,7 +452,7 @@ namespace OTFontFile
 
         public string? GetString(PlatformID PlatID, EncodingIDMacintosh EncID, LanguageIDMacintosh LangID, NameID NameID) => GetString((ushort)PlatID, (ushort)EncID, (ushort)LangID, (ushort)NameID);
 
-        public string? GetString(PlatformID PlatID, EncodingIDMicrosoft EncID, LanguageIDMicrosoft LangID, NameID NameID) => GetString((ushort)PlatID, (ushort)EncID, (ushort)LangID, (ushort)NameID);
+        public string? GetString(PlatformID PlatID, EncodingIDWindows EncID, LanguageIDWindows LangID, NameID NameID) => GetString((ushort)PlatID, (ushort)EncID, (ushort)LangID, (ushort)NameID);
 
         [Obsolete("Please use GetFullNameString()")]
         public string? GetNameString() => GetFullNameString();
@@ -517,7 +474,7 @@ namespace OTFontFile
             string? str = null;
             try
             {
-                str = GetString((ushort)PlatformID.Windows, 0xffff, (ushort)LanguageIDMicrosoft.en_US, nameId);  // MS, any encoding, English, nameID
+                str = GetString((ushort)PlatformID.Windows, 0xffff, (ushort)LanguageIDWindows.en_US, nameId);  // MS, any encoding, English, nameID
                 str ??= GetString((ushort)PlatformID.Windows, 0xffff, 0xffff, nameId); // MS, any encoding, any language, nameID
                 str ??= GetString((ushort)PlatformID.Macintosh, (ushort)EncodingIDMacintosh.Roman, (ushort)LanguageIDMacintosh.en, nameId); // mac, roman, English, nameID
                 
