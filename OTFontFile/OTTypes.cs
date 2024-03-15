@@ -138,22 +138,8 @@ namespace OTFontFile
         {
             return (int)(uint)this;
         }
-        
-        static public bool operator == (OTF2Dot14 f1, OTF2Dot14 f2)
-        {
-            if (f1 is null && f2 is null)
-            {
-                return true;
-            }
-            else if (f1 is null || f2 is null)
-            {
-                return false;
-            }
-            else
-            {
-                return (f1.valAsShort == f2.valAsShort);
-            }
-        }
+
+        static public bool operator ==(OTF2Dot14 f1, OTF2Dot14 f2) => f1.valAsShort == f2.valAsShort;
 
         static public bool operator != (OTF2Dot14 f1, OTF2Dot14 f2)
         {
@@ -206,21 +192,7 @@ namespace OTFontFile
             return number.ToString();
         }
 
-        static public bool operator == (OTFixed f1, OTFixed f2)
-        {
-            if (f1 is null && f2 is null)
-            {
-                return true;
-            }
-            else if (f1 is null || f2 is null)
-            {
-                return false;
-            }
-            else
-            {
-                return (f1.GetUint() == f2.GetUint());
-            }
-        }
+        static public bool operator ==(OTFixed f1, OTFixed f2) => f1.GetUint() == f2.GetUint();
 
         static public bool operator != (OTFixed f1, OTFixed f2)
         {
