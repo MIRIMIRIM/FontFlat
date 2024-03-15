@@ -402,6 +402,9 @@ namespace OTFontFile
             return s;
         }
 
+        [Obsolete("Please use GetFullNameString()")]
+        public string? GetNameString() => GetFullNameString();
+
         public string? GetFullNameString()
         {
             string? sName = null;
