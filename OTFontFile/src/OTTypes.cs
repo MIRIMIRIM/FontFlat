@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 namespace OTFontFile
@@ -433,7 +434,7 @@ namespace OTFontFile
             Debug.Assert(buf.GetLength() == 12);
             m_buf = buf;
 
-            DirectoryEntries = new System.Collections.ArrayList();
+            DirectoryEntries = [];
         }
 
         public OffsetTable(OTFixed version, ushort nTables)
@@ -452,7 +453,7 @@ namespace OTFontFile
                 rangeShift    = (ushort)(nTables*16 - searchRange);
             }
 
-            DirectoryEntries = new System.Collections.ArrayList();
+            DirectoryEntries = [];
         }
 
         public enum FieldOffsets
@@ -475,7 +476,7 @@ namespace OTFontFile
 
             for (int i=0; i<DirectoryEntries.Count; i++)
             {
-                DirectoryEntry de = (DirectoryEntry)DirectoryEntries[i];
+                DirectoryEntry de = DirectoryEntries[i];
                 sum += de.tag + de.checkSum + de.offset + de.length;
             }
 
@@ -518,7 +519,7 @@ namespace OTFontFile
         // member data
 
         public MBOBuffer m_buf;
-        public System.Collections.ArrayList DirectoryEntries;
+        public List<DirectoryEntry> DirectoryEntries;   // System.Collections.ArrayList
     }
 
 }

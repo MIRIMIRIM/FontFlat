@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Collections;
+using System.Collections.Generic;
 
 
 
@@ -20,7 +21,7 @@ namespace OTFontFile
             // as opposed to reading a font from a file
 
             m_File = null;
-            MemBasedTables = new ArrayList();
+            MemBasedTables = [];
             m_OutlineType = OutlineType.OUTLINE_INVALID;
             m_OffsetTable = new OffsetTable(new OTFixed(1,0), 0);
         }
@@ -63,9 +64,9 @@ namespace OTFontFile
         /// The type of the font is set by determining whether there is
         /// a 'glyf' table or a 'CFF ' table.
         /// </summary>
-        public static OTFont ReadFont(OTFile file, uint FontFileNumber, uint filepos)
+        public static OTFont? ReadFont(OTFile file, uint FontFileNumber, uint filepos)
         {
-            OTFont f = null;
+            OTFont? f = null;
 
             OffsetTable ot = ReadOffsetTable(file, filepos);
 
@@ -76,7 +77,7 @@ namespace OTFontFile
                     OutlineType olt = OutlineType.OUTLINE_INVALID;
                     for (int i = 0; i<ot.DirectoryEntries.Count; i++)
                     {
-                        DirectoryEntry temp = (DirectoryEntry)ot.DirectoryEntries[i];
+                        DirectoryEntry temp = ot.DirectoryEntries[i];
                         string sTable = (string)temp.tag;
                         if (sTable == "CFF ")
                         {
@@ -111,14 +112,14 @@ namespace OTFontFile
         {
             uint sum = 0;
 
-            sum += m_OffsetTable.CalcOffsetTableChecksum();
-            sum += m_OffsetTable.CalcDirectoryEntriesChecksum();
+            sum += m_OffsetTable!.CalcOffsetTableChecksum();
+            sum += m_OffsetTable!.CalcDirectoryEntriesChecksum();
             
             if (m_OffsetTable != null)
             {
                 for (int i = 0; i<m_OffsetTable.DirectoryEntries.Count; i++)
                 {
-                    DirectoryEntry de = (DirectoryEntry)m_OffsetTable.DirectoryEntries[i];
+                    DirectoryEntry de = m_OffsetTable.DirectoryEntries[i];
 
                     OTTable table = GetTable(de);
 
@@ -137,50 +138,46 @@ namespace OTFontFile
         /// <summary>Return the ith table in the directory entries,
         /// or null if there is no such entry.
         /// </summary>
-        public OTTable GetTable(ushort i)
+        public OTTable? GetTable(ushort i)
         {
-            OTTable table = null;
-
-            DirectoryEntry de = GetDirectoryEntry(i);
+            DirectoryEntry? de = GetDirectoryEntry(i);
 
             if (de != null)
             {
-                table = GetTable(de);
+                return GetTable(de);
             }
 
-            return table;
+            return null;
         }
 
         /// <summary>Return the first table with tag == <c>tag</c>
         /// or null if there is no such table.
         /// </summary>
-        public OTTable GetTable(OTTag tag)
+        public OTTable? GetTable(OTTag tag)
         {
-            OTTable table = null;
-
             // find the directory entry in this font that matches the tag
-            DirectoryEntry de = GetDirectoryEntry(tag);
+            DirectoryEntry? de = GetDirectoryEntry(tag);
 
             if (de != null)
             {
-                table = GetTable(de);
+                return GetTable(de);
             }
 
-            return table;
+            return null;
         }
 
         /// <summary>Return the ith directory entry,
         /// or null if there is no such entry.
         /// </summary>
-        public DirectoryEntry GetDirectoryEntry(ushort i)
+        public DirectoryEntry? GetDirectoryEntry(ushort i)
         {
-            DirectoryEntry de = null;
+            DirectoryEntry? de = null;
 
             if (m_OffsetTable != null)
             {
                 if (i<m_OffsetTable.numTables)
                 {
-                    de = (DirectoryEntry)m_OffsetTable.DirectoryEntries[i];
+                    de = m_OffsetTable.DirectoryEntries[i];
                 }
             }
 
@@ -191,17 +188,17 @@ namespace OTFontFile
         /// tag == <c>tag</c>
         /// or null if there is no such entry.
         /// </summary>
-        public DirectoryEntry GetDirectoryEntry(OTTag tag)
+        public DirectoryEntry? GetDirectoryEntry(OTTag tag)
         {
             Debug.Assert(m_OffsetTable != null);
 
-            DirectoryEntry de = null;
+            DirectoryEntry? de = null;
 
             if (m_OffsetTable != null)
             {
                 for (int i = 0; i<m_OffsetTable.DirectoryEntries.Count; i++)
                 {
-                    DirectoryEntry temp = (DirectoryEntry)m_OffsetTable.DirectoryEntries[i];
+                    DirectoryEntry temp = m_OffsetTable.DirectoryEntries[i];
                     if (temp.tag == tag)
                     {
                         de = temp;
@@ -213,7 +210,7 @@ namespace OTFontFile
                 if ( de == null )
                     for (int i = 0; i<m_OffsetTable.DirectoryEntries.Count; i++)
                     {
-                        DirectoryEntry temp = (DirectoryEntry)m_OffsetTable.DirectoryEntries[i];
+                        DirectoryEntry temp = m_OffsetTable.DirectoryEntries[i];
                         if ( ( (temp.tag == "bloc" || temp.tag == "CBLC") && tag == "EBLC")
                              || ( (temp.tag == "bdat" || temp.tag == "CBDT" ) && tag == "EBDT") )
                         {
@@ -227,7 +224,7 @@ namespace OTFontFile
         }
 
         /// <summary>Accessor for <c>m_file</c></summary>
-        public OTFile GetFile()
+        public OTFile? GetFile()
         {
             return m_File;
         }
@@ -252,39 +249,35 @@ namespace OTFontFile
         }
 
         /// <summary>Accessor for <c>m_OffstTable</c></summary>
-        public OffsetTable GetOffsetTable()
+        public OffsetTable? GetOffsetTable()
         {
             return m_OffsetTable;
         }
 
         /// <summary>Get font name from "name" table, or <c>null</c> if
         /// no "name" table yet.</summary>
-        public string GetFontName()
+        public string? GetFontName()
         {
-            string sName = null;
-
-            Table_name nameTable = (Table_name)GetTable("name");
+            Table_name nameTable = (Table_name)GetTable("name")!;
             if (nameTable != null)
             {
-                sName = nameTable.GetFullNameString();
+                return nameTable.GetFullNameString();
             }
 
-            return sName;
+            return null;
         }
 
         /// <summary>Get font version from "name" table, or <c>null</c> if
         /// no "name" table yet.</summary>
-        public string GetFontVersion()
+        public string? GetFontVersion()
         {
-            string sVersion = null;
-
-            Table_name nameTable = (Table_name)GetTable("name");
+            Table_name nameTable = (Table_name)GetTable("name")!;
             if (nameTable != null)
             {
-                sVersion = nameTable.GetVersionString();
+                return nameTable.GetVersionString();
             }
 
-            return sVersion;
+            return null;
         }
 
         /// <summary>Get modified date from "name" table, or <c>1/1/1904</c> if
@@ -296,7 +289,7 @@ namespace OTFontFile
 
             try
             {
-                Table_head headTable = (Table_head)GetTable("head");
+                Table_head headTable = (Table_head)GetTable("head")!;
                 if (headTable != null)
                 {
                     dt = headTable.GetModifiedDateTime();
@@ -333,8 +326,8 @@ namespace OTFontFile
 
             // add the directory entry
 
-            m_OffsetTable.DirectoryEntries.Add(de);    
-            m_OffsetTable.numTables++;
+            m_OffsetTable!.DirectoryEntries.Add(de);    
+            m_OffsetTable!.numTables++;
             
 
             // add the table to the list of tables in memory
@@ -373,9 +366,9 @@ namespace OTFontFile
 
             // remove the directory entry
 
-            for (int i=0; i<m_OffsetTable.DirectoryEntries.Count; i++)
+            for (int i=0; i<m_OffsetTable!.DirectoryEntries.Count; i++)
             {
-                DirectoryEntry de = (DirectoryEntry)m_OffsetTable.DirectoryEntries[i];
+                DirectoryEntry de = m_OffsetTable.DirectoryEntries[i];
                 if (tag == de.tag)
                 {
                     m_OffsetTable.DirectoryEntries.RemoveAt(i);
@@ -389,7 +382,7 @@ namespace OTFontFile
 
             for (int i=0; i<MemBasedTables.Count; i++)
             {
-                OTTable t = (OTTable)MemBasedTables[i];
+                OTTable t = MemBasedTables[i];
                 if (tag == t.m_tag)
                 {
                     MemBasedTables.RemoveAt(i);
@@ -443,7 +436,7 @@ namespace OTFontFile
             // this routine caches the maxp.numGlyphs value for better performance
             if (m_maxpNumGlyphs == 0)
             {
-                Table_maxp maxpTable = (Table_maxp)GetTable("maxp");
+                Table_maxp maxpTable = (Table_maxp)GetTable("maxp")!;
 
                 if (maxpTable != null)
                 {
@@ -473,7 +466,7 @@ namespace OTFontFile
                     m_arrUnicodeToGlyph_3_1[i] = 0;
                 }
 
-                Table_cmap cmapTable = (Table_cmap)GetTable("cmap");
+                Table_cmap cmapTable = (Table_cmap)GetTable("cmap")!;
                 if (cmapTable != null)
                 {
                     Table_cmap.EncodingTableEntry eteUni = cmapTable.GetEncodingTableEntry(3,1);
@@ -514,7 +507,7 @@ namespace OTFontFile
 
         public bool HaveNonBMPChars()
         {
-            Table_cmap cmapTable = (Table_cmap)GetTable("cmap");
+            Table_cmap cmapTable = (Table_cmap)GetTable("cmap")!;
             if (cmapTable != null)
             {
                 Table_cmap.Format12 subtable = (Table_cmap.Format12)cmapTable.GetSubtable(3,10);
@@ -533,7 +526,7 @@ namespace OTFontFile
 
             if (m_arrUnicodeToGlyph_3_10 == null)
             {
-                Table_cmap cmapTable = (Table_cmap)GetTable("cmap");
+                Table_cmap cmapTable = (Table_cmap)GetTable("cmap")!;
                 if (cmapTable != null)
                 {
                     Table_cmap.Format12 subtable = (Table_cmap.Format12)cmapTable.GetSubtable(3,10);
@@ -622,7 +615,7 @@ namespace OTFontFile
         {
             if (!bCheckedForSymbolCmap)
             {
-                Table_cmap cmapTable = (Table_cmap)GetTable("cmap");
+                Table_cmap cmapTable = (Table_cmap)GetTable("cmap")!;
                 if (cmapTable != null)
                 {
                     Table_cmap.EncodingTableEntry eteUni = cmapTable.GetEncodingTableEntry(3,0);
@@ -690,7 +683,7 @@ namespace OTFontFile
 
                 for (uint i=0x0250; i<0xffff; i++)
                 {
-                    if (m_arrUnicodeToGlyph_3_1[i] != 0)
+                    if (m_arrUnicodeToGlyph_3_1![i] != 0)
                     {
                         bLatinOnly = false;
                         break;
@@ -797,15 +790,15 @@ namespace OTFontFile
         }
         
         
-        protected OTFile m_File;
+        protected OTFile? m_File;
         protected uint m_FontFileNumber; // 0 if ttf, else number of font in ttc, starting at 0
-        protected OffsetTable m_OffsetTable;
+        protected OffsetTable? m_OffsetTable;
         protected OutlineType m_OutlineType;
         protected ushort m_maxpNumGlyphs;
-        protected uint [] m_arrUnicodeToGlyph_3_0;
-        protected uint [] m_arrUnicodeToGlyph_3_1;
-        protected uint [] m_arrUnicodeToGlyph_3_10;
+        protected uint []? m_arrUnicodeToGlyph_3_0;
+        protected uint []? m_arrUnicodeToGlyph_3_1;
+        protected uint []? m_arrUnicodeToGlyph_3_10;
         protected bool m_bContainsMsSymbolEncodedCmap;
-        protected ArrayList MemBasedTables; // this list is used when building a font in memory
+        protected List<OTTable> MemBasedTables; // this list is used when building a font in memory  // ArrayList
     }
 }

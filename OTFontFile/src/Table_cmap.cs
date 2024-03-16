@@ -1811,14 +1811,14 @@ namespace OTFontFile
                 public uint[] m_CharToGlyphMap;
             }
 
-            public class SubtableArray : ArrayList
+            public class SubtableArray : List<CachedSubtable> // ArrayList
             {
                 public CachedSubtable GetSubtable(ushort platID, ushort encID)
                 {
                     CachedSubtable st = null;
                     for (int i=0; i<Count; i++)
                     {
-                        CachedSubtable temp = (CachedSubtable)this[i];
+                        CachedSubtable temp = this[i];
                         if (temp.m_platID == platID &&
                             temp.m_encID  == encID)
                         {
@@ -1834,7 +1834,7 @@ namespace OTFontFile
                     int iRet = -1;
                     for (int i=0; i<Count; i++)
                     {
-                        CachedSubtable st = (CachedSubtable)this[i];
+                        CachedSubtable st = this[i];
                         if (st.m_platID == platID &&
                             st.m_encID  == encID)
                         {
@@ -1997,11 +1997,11 @@ namespace OTFontFile
             public override OTTable GenerateTable()
             {
                 // generate the subtables
-                ArrayList arrSubtableBuffers = new ArrayList();
+                List<byte[]> arrSubtableBuffers = [];
                 for (int i=0; i<m_arrSubtables.Count; i++)
                 {
                     byte [] buf = null;
-                    CachedSubtable st = (CachedSubtable)m_arrSubtables[i];
+                    CachedSubtable st = m_arrSubtables[i];
 
                     if (st.m_platID == 3 && st.m_encID == 10)
                     {
@@ -2026,7 +2026,7 @@ namespace OTFontFile
                 nBytes += 8 * (uint)m_arrSubtables.Count; 
                 for (int i=0; i<m_arrSubtables.Count; i++)
                 {
-                    byte[] buf = (byte[])arrSubtableBuffers[i];
+                    byte[] buf = arrSubtableBuffers[i];
                     nBytes += (uint)buf.Length;
                 }
 
@@ -2048,7 +2048,7 @@ namespace OTFontFile
                 uint SubtableOffset = (uint)(4 + 8*m_arrSubtables.Count);
                 for (int i=0; i < m_arrSubtables.Count; i++)
                 {
-                    CachedSubtable st = (CachedSubtable)m_arrSubtables[i];
+                    CachedSubtable st = m_arrSubtables[i];
                     uint eteOffset = 
                         (uint)Table_cmap.FieldOffsets.EncodingTableEntries + 
                         (uint)i*8;
@@ -2113,7 +2113,7 @@ namespace OTFontFile
             {
                 bool bFound = false;
                 uint CurChar = 0;
-                ArrayList arrSegments = new ArrayList();
+                List<segment4> arrSegments = [];
                 segment4 seg = new segment4();
 
                 while (CurChar < map.Length)
@@ -2288,8 +2288,7 @@ namespace OTFontFile
                 bool bNeedFinal = true;
                 if (arrSegments.Count != 0)
                 {
-                    segment4 lastseg = (segment4)
-                        arrSegments[arrSegments.Count-1];
+                    segment4 lastseg = arrSegments[arrSegments.Count-1];
                     if (lastseg.endCode == 0xffff)
                     {
                         bNeedFinal = false;
@@ -2309,7 +2308,7 @@ namespace OTFontFile
                 ushort nSize = (ushort)(16 + 8 * arrSegments.Count);
                 for (int i=0; i<arrSegments.Count; i++)
                 {
-                    segment4 s = (segment4)arrSegments[(int)i];
+                    segment4 s = arrSegments[(int)i];
                     if (s.glyphIdArray != null)
                     {
                         nSize += (ushort)(s.glyphIdArray.Length*2);
@@ -2349,7 +2348,7 @@ namespace OTFontFile
                 int nGlyphIdCount = 0;
                 for (uint i=0; i<arrSegments.Count; i++)
                 {
-                    segment4 s = (segment4)arrSegments[(int)i];
+                    segment4 s = arrSegments[(int)i];
 
                     if (s.glyphIdArray != null)
                     {
@@ -2367,7 +2366,7 @@ namespace OTFontFile
                 uint glyphIdPos = idRangeOffset + 2*(uint)arrSegments.Count;
                 for (uint i=0; i<arrSegments.Count; i++)
                 {
-                    segment4 s = (segment4)arrSegments[(int)i];
+                    segment4 s = arrSegments[(int)i];
                     if (s.glyphIdArray != null)
                     {
                         for (uint j=0; j<s.glyphIdArray.Length; j++)
@@ -2392,7 +2391,7 @@ namespace OTFontFile
             {
                 bool bFound = false;
                 uint CurChar = 0;
-                ArrayList arrSegments = new ArrayList();
+                List<segment12> arrSegments = [];
                 segment12 seg = new segment12();
 
                 while (CurChar < map.Length)
