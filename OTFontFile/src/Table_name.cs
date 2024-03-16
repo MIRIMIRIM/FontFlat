@@ -313,15 +313,32 @@ namespace OTFontFile
             return nCodePage;
         }
 
-        static protected string GetUnicodeStrFromCodePageBuf(byte[] buf, int codepage)
+        static public int MacLangIdToCodePage(ushort MacLanguageID)
         {
-            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-            Encoding enc = Encoding.GetEncoding(codepage);
+            return MacLanguageID switch
+            {
+                (ushort)LanguageIDMacintosh.ja => 10001,
+                (ushort)LanguageIDMacintosh.zh_Hans => 10008,
+                (ushort)LanguageIDMacintosh.zh_Hant => 10002,
+                _ => 10000,
+            };
+        }
+
+        [Obsolete("Use Encoding.GetString() maybe better.")]
+        public static string GetUnicodeStrFromBuf(byte[] buf, Encoding enc)
+        {
             Decoder dec = enc.GetDecoder();
             int nChars = dec.GetCharCount(buf, 0, buf.Length);
             char[] destbuf = new char[nChars];
             dec.GetChars(buf, 0, buf.Length, destbuf, 0);
             return new string(destbuf);
+        }
+
+        static public string GetUnicodeStrFromCodePageBuf(byte[] buf, int codepage)
+        {
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            Encoding enc = Encoding.GetEncoding(codepage);
+            return enc.GetString(buf);
         }
 
         static protected byte[] GetCodePageBufFromUnicodeStr( string sNameString, int nCodepage )
@@ -334,7 +351,7 @@ namespace OTFontFile
             return bString;
         }
 
-        static protected string? DecodeString(ushort PlatID, ushort EncID, byte[] EncodedStringBuf)
+        static protected string? DecodeString(ushort PlatID, ushort EncID, ushort LangID, byte[] EncodedStringBuf)
         {
             string? s = null;
 
@@ -345,7 +362,17 @@ namespace OTFontFile
             }
             else if (PlatID == (ushort)PlatformID.Macintosh)
             {
-                int nMacCodePage = MacEncIdToCodePage(EncID);
+                // Some old fonts maybe use encoding = 0 encode cjk characters. Maybe can use UTF-Unknown.
+                int nMacCodePage;
+                if (EncID == 0)
+                {
+                    // old japanese fonts
+                    nMacCodePage = MacLangIdToCodePage(LangID);
+                }
+                else
+                {
+                    nMacCodePage = MacEncIdToCodePage(EncID);
+                }
                 if (nMacCodePage != -1)
                 {
                     s = GetUnicodeStrFromCodePageBuf(EncodedStringBuf, nMacCodePage);
@@ -370,6 +397,12 @@ namespace OTFontFile
                 {
                     //Debug.Assert(false, "unsupported text encoding");
                 }
+            }
+
+            // Some old japanese fonts maybe have weird character in namestring
+            if (s is not null && s.Contains('\0'))
+            {
+                s = s.Replace("\0", "");
             }
 
             return s;
@@ -419,35 +452,41 @@ namespace OTFontFile
             return buf;
         }
 
-        public string? GetString(ushort PlatID, ushort EncID, ushort LangID, ushort NameID)
+        public byte[]? GetBuffer(ushort PlatID, ushort EncID, ushort LangID, ushort NameID, out ushort curPlatID, out ushort curEncID, out ushort curLangID)
         {
             // !!! NOTE: a value of 0xffff for PlatID, EncID, or LangID is used !!!
             // !!! as a wildcard and will match any value found in the table    !!!
 
-            string? s = null;
+            curPlatID = ushort.MaxValue;
+            curEncID  = ushort.MaxValue;
+            curLangID = ushort.MaxValue;
 
-            for (uint i=0; i<NumberNameRecords; i++) 
+            for (uint i = 0; i < NumberNameRecords; i++)
             {
                 var nr = GetNameRecord(i);
                 if (nr != null)
                 {
                     if ((PlatID == 0xffff || nr.PlatformID == PlatID) &&
-                        (EncID  == 0xffff || nr.EncodingID == EncID ) &&
+                        (EncID  == 0xffff || nr.EncodingID == EncID)  &&
                         (LangID == 0xffff || nr.LanguageID == LangID) &&
                         nr.NameID == NameID)
                     {
                         var buf = GetEncodedString(nr);
-                        if (buf != null)
-                        {
-                            s = DecodeString(nr.PlatformID, nr.EncodingID, buf);
-                        }
-
-                        break;
+                        curPlatID = nr.PlatformID;
+                        curEncID = nr.EncodingID;
+                        curLangID = nr.LanguageID;
+                        return buf;
                     }
                 }
             }
+            
+            return null;
+        }
 
-            return s;
+        public string? GetString(ushort PlatID, ushort EncID, ushort LangID, ushort NameID)
+        {
+            var buf = GetBuffer(PlatID, EncID, LangID, NameID, out ushort curPlatID, out ushort curEncID, out ushort curLangID);
+            return buf != null ? DecodeString(curPlatID, curEncID, curLangID, buf) : null;
         }
 
         public string? GetString(PlatformID PlatID, EncodingIDMacintosh EncID, LanguageIDMacintosh LangID, NameID NameID) => GetString((ushort)PlatID, (ushort)EncID, (ushort)LangID, (ushort)NameID);
