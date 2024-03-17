@@ -8,6 +8,12 @@
     <!-- <PublishAot>False</PublishAot> -->
     <DocumentationFile>bin\OTFontFile.XML</DocumentationFile>
     <FileAlignment>4096</FileAlignment>
+    <Version>1.0.0-beta</Version>
+    <PackageDescription>Parse and write opentype fonts.</PackageDescription>
+    <PackageTags>opentype;font</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
   </PropertyGroup>
   
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
@@ -17,5 +23,10 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
     <NoWarn>1701;1702;1591</NoWarn>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\"/>
+    <None Include="LICENSE" Pack="true" PackagePath=""/>
+</ItemGroup>
 
 </Project>
