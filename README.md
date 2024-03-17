@@ -1,10 +1,10 @@
 # FontFlat
 
-1. [READNE](./OTFontFile/README.md): A parse and write opentype fonts library.
+WIP.
 
 ## OTFontFile
 
-[READNE](./OTFontFile/README.md)
+[README](./OTFontFile/README.md)
 
 A parse and write opentype fonts library.
 
