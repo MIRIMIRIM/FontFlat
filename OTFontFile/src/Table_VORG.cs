@@ -1,3 +1,5 @@
+using System;
+
 namespace OTFontFile
 {
     /// <summary>
@@ -64,9 +66,9 @@ namespace OTFontFile
             get {return m_bufTable.GetUshort((uint)FieldOffsets.numVertOriginYMetrics);}
         }
 
-        public vertOriginYMetrics GetVertOriginYMetrics(uint i)
+        public vertOriginYMetrics? GetVertOriginYMetrics(uint i)
         {
-            vertOriginYMetrics voym = null;
+            vertOriginYMetrics? voym = null;
 
             if (i < numVertOriginYMetrics)
             {
@@ -99,7 +101,8 @@ namespace OTFontFile
             public override OTTable GenerateTable()
             {
                 // not yet implemented!
-                return null;
+                //return null;
+                throw new NotImplementedException();
             }
         }
         

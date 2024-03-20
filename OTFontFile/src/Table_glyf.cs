@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 
 
 namespace OTFontFile
@@ -67,9 +68,9 @@ namespace OTFontFile
          * nested classes
          */
 
-        public class header
+        public class Header
         {
-            public header (uint offset, MBOBuffer bufTable)
+            public Header (uint offset, MBOBuffer bufTable)
             {
                 m_offsetHeader = offset;
                 m_bufTable = bufTable;
@@ -110,9 +111,9 @@ namespace OTFontFile
             }
 
 
-            public SimpleGlyph GetSimpleGlyph()
+            public SimpleGlyph? GetSimpleGlyph()
             {
-                SimpleGlyph sg = null;
+                SimpleGlyph? sg = null;
 
                 if (numberOfContours >= 0)
                 {
@@ -122,9 +123,9 @@ namespace OTFontFile
                 return sg;
             }
 
-            public CompositeGlyph GetCompositeGlyph()
+            public CompositeGlyph? GetCompositeGlyph()
             {
-                CompositeGlyph cg = null;
+                CompositeGlyph? cg = null;
 
                 if (numberOfContours < 0)
                 {
@@ -140,7 +141,7 @@ namespace OTFontFile
 
                 if (numberOfContours >= 0)
                 {
-                    SimpleGlyph sg = null;
+                    SimpleGlyph? sg = null;
                     sg = new SimpleGlyph(this, m_offsetHeader + 10, m_bufTable);
                     if (sg != null)
                     {
@@ -149,7 +150,7 @@ namespace OTFontFile
                 }
                 else
                 {
-                    CompositeGlyph cg = null;
+                    CompositeGlyph? cg = null;
                     cg = new CompositeGlyph(this, m_offsetHeader + 10, m_bufTable);
                     if (cg != null)
                     {
@@ -167,7 +168,7 @@ namespace OTFontFile
 
         public class SimpleGlyph
         {
-            public SimpleGlyph(header h, uint offset, MBOBuffer bufTable)
+            public SimpleGlyph(Header h, uint offset, MBOBuffer bufTable)
             {
                 m_header = h;
                 m_offsetSimpleGlyph = offset;
@@ -401,14 +402,14 @@ namespace OTFontFile
                 return offset - m_offsetSimpleGlyph;
             }
 
-            header m_header;
+            Header m_header;
             uint m_offsetSimpleGlyph;
             MBOBuffer m_bufTable;
         }
 
         public class CompositeGlyph
         {
-            public CompositeGlyph(header h, uint offset, MBOBuffer bufTable)
+            public CompositeGlyph(Header h, uint offset, MBOBuffer bufTable)
             {
                 m_header = h;
                 m_offsetCompositeGlyph = offset;
@@ -650,7 +651,7 @@ namespace OTFontFile
                 }
                 else
                 {
-                    CompositeGlyph nextCG = GetNextCompositeGlyph();
+                    CompositeGlyph? nextCG = GetNextCompositeGlyph();
                     while (nextCG!=null)
                     {
                         if ((nextCG.flags & (uint)Flags.WE_HAVE_INSTRUCTIONS) != 0)
@@ -673,7 +674,7 @@ namespace OTFontFile
                 {
                     // instructions follow the last component
                     CompositeGlyph lastCG = this;
-                    CompositeGlyph nextCG = GetNextCompositeGlyph();
+                    CompositeGlyph? nextCG = GetNextCompositeGlyph();
                     while (nextCG!=null)
                     {
                         lastCG = nextCG;
@@ -697,7 +698,7 @@ namespace OTFontFile
                 {
                     // instructions follow the last component
                     CompositeGlyph lastCG = this;
-                    CompositeGlyph nextCG = GetNextCompositeGlyph();
+                    CompositeGlyph? nextCG = GetNextCompositeGlyph();
                     while (nextCG!=null)
                     {
                         lastCG = nextCG;
@@ -758,9 +759,9 @@ namespace OTFontFile
                 return nLen;
             }
 
-            public CompositeGlyph GetNextCompositeGlyph()
+            public CompositeGlyph? GetNextCompositeGlyph()
             {
-                CompositeGlyph nextCompGlyph = null;
+                CompositeGlyph? nextCompGlyph = null;
 
                 if ((flags & (uint)Flags.MORE_COMPONENTS) == (uint)Flags.MORE_COMPONENTS)
                 {
@@ -781,7 +782,7 @@ namespace OTFontFile
                     length += (uint)2 + GetNumInstructions();
                 }
 
-                CompositeGlyph nextCG = this;
+                CompositeGlyph? nextCG = this;
                 while (nextCG!=null)
                 {
                     length += nextCG.GetCompositeGlyphLength();
@@ -791,7 +792,7 @@ namespace OTFontFile
                 return length;
             }
 
-            header m_header;
+            Header m_header;
             uint m_offsetCompositeGlyph;
             MBOBuffer m_bufTable;
         }
@@ -807,25 +808,24 @@ namespace OTFontFile
             get { return this.m_bufTable; }
         }
 
-        public header GetGlyphHeader(uint iGlyph, OTFont fontOwner)
+        public Header? GetGlyphHeader(uint iGlyph, OTFont fontOwner)
         {
             if (iGlyph >= fontOwner.GetMaxpNumGlyphs())
             {
                 throw new ArgumentOutOfRangeException("iGlyph");
             }
 
-            header h = null;
+            Header? h = null;
 
-            Table_loca locaTable = (Table_loca)fontOwner.GetTable("loca");
+            var locaTable = (Table_loca?)fontOwner.GetTable("loca");
             if (locaTable != null)
             {
-                int offsGlyph, length;
                 if (locaTable.GetEntryGlyf((int)iGlyph, 
-                    out offsGlyph, out length, fontOwner))
+                    out int offsGlyph, out int length, fontOwner))
                 {
                     if (length!=0)
                     {
-                        h = new header((uint)offsGlyph, m_bufTable);
+                        h = new Header((uint)offsGlyph, m_bufTable);
                     }
                 }
             }
@@ -854,31 +854,31 @@ namespace OTFontFile
 
             public glyf_cache(Table_glyf OwnerTable, OTFont OwnerFont)
             {
-                m_arrGlyphs = new ArrayList();
+                m_arrGlyphs = new ();
 
 
                 // get each glyph from the glyf table
 
                 for (uint iGlyph=0; iGlyph<OwnerFont.GetMaxpNumGlyphs(); iGlyph++)
                 {
-                    header h = OwnerTable.GetGlyphHeader(iGlyph, OwnerFont);
+                    Header? h = OwnerTable.GetGlyphHeader(iGlyph, OwnerFont);
                     if (h == null)
                     {
                         m_arrGlyphs.Add(null);
                     }
                     else
                     {
-                        glyph_base gb = GetGlyphLogicalData(h);
+                        glyph_base gb = GetGlyphLogicalData(h)!;
                         m_arrGlyphs.Add(gb);
                     }
                 }
 
             }
 
-            static public glyph_simple GetSimpleGlyphLogicalData(header h)
+            static public glyph_simple? GetSimpleGlyphLogicalData(Header h)
             {
-                glyph_simple gs = null;
-                SimpleGlyph sg = h.GetSimpleGlyph();
+                glyph_simple? gs = null;
+                SimpleGlyph? sg = h.GetSimpleGlyph();
                 if (sg != null)
                 {
                     // glyph is a simple glyph
@@ -924,11 +924,11 @@ namespace OTFontFile
                 return gs;
             }
 
-            static public glyph_composite GetCompositeGlyphLogicalData(header h)
+            static public glyph_composite? GetCompositeGlyphLogicalData(Header h)
             {
-                glyph_composite gc = null;
+                glyph_composite? gc = null;
 
-                CompositeGlyph cg = h.GetCompositeGlyph();
+                CompositeGlyph? cg = h.GetCompositeGlyph();
                 if (cg != null)
                 {
                     // glyph is a composite glyph
@@ -979,11 +979,11 @@ namespace OTFontFile
                 return gc;
             }
 
-            static public glyph_base GetGlyphLogicalData(Table_glyf.header h)
+            static public glyph_base? GetGlyphLogicalData(Table_glyf.Header h)
             {
-                glyph_base gb = null;
+                glyph_base? gb = null;
 
-                SimpleGlyph sg = h.GetSimpleGlyph();
+                SimpleGlyph? sg = h.GetSimpleGlyph();
                 if (sg != null)
                 {
                     // glyph is a simple glyph
@@ -992,7 +992,7 @@ namespace OTFontFile
                 }
                 else
                 {
-                    CompositeGlyph cg = h.GetCompositeGlyph();
+                    CompositeGlyph? cg = h.GetCompositeGlyph();
                     if (cg != null)
                     {
                         // glyph is a composite glyph
@@ -1028,7 +1028,7 @@ namespace OTFontFile
                 public glyph_simple(short nContours, short xMin, short yMin, short xMax, short yMax)
                     : base(nContours, xMin, yMin, xMax, yMax)
                 {
-                    m_arrContours = new ArrayList(nContours);
+                    m_arrContours = new (nContours);
                     m_arrInstructions = new byte[0];
                 }
 
@@ -1041,16 +1041,16 @@ namespace OTFontFile
                 {
                     public contour(int nPoints)
                     {
-                        m_arrPoints = new ArrayList(nPoints);
+                        m_arrPoints = new (nPoints);
                     }
 
                     public Coordinate16 GetCoordinates(int i)
                     {
-                        return (Coordinate16)m_arrPoints[i];
+                        return m_arrPoints[i];
                     }
 
                     // note: these points use absolute coordinates, not relative coordinates!
-                    public ArrayList m_arrPoints;
+                    public List<Coordinate16> m_arrPoints;
                 }
 
                 public struct Coordinate16
@@ -1059,7 +1059,7 @@ namespace OTFontFile
                     public bool bOnCurve;
                 }
 
-                public ArrayList m_arrContours;
+                public List<contour> m_arrContours;
                 public byte [] m_arrInstructions;
             }
 
@@ -1068,7 +1068,7 @@ namespace OTFontFile
                 public glyph_composite(short xMin, short yMin, short xMax, short yMax)
                     : base(-1, xMin, yMin, xMax, yMax)
                 {
-                    m_arrComponents = new ArrayList();
+                    m_arrComponents = new ();
                     m_arrInstructions = new byte[0];
                 }
 
@@ -1091,7 +1091,7 @@ namespace OTFontFile
 
                 }
 
-                public ArrayList m_arrComponents;
+                public List<component> m_arrComponents;
                 public byte [] m_arrInstructions;
             }
 
@@ -1103,10 +1103,11 @@ namespace OTFontFile
 
                 // probably need to generate a loca table at the same time, and provide a method to retrieve it
 
-                return null;
+                //return null;
+                throw new NotImplementedException();
             }
 
-            public ArrayList m_arrGlyphs;
+            public List<glyph_base?> m_arrGlyphs;
         }
         
 

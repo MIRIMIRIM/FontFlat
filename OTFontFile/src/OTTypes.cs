@@ -365,7 +365,7 @@ namespace OTFontFile
         /**************
          * member data
          */
-        byte[] m_tag;
+        readonly byte[] m_tag;
     }
 
     public class DirectoryEntry
@@ -448,8 +448,8 @@ namespace OTFontFile
             {
                 // these values are truly undefined when numTables is zero
                 // since there is no power of 2 that is less that or equal to zero
-                searchRange   = (ushort)(util.MaxPower2LE(nTables) * 16);
-                entrySelector = util.Log2(util.MaxPower2LE(nTables));
+                searchRange   = (ushort)(Util.MaxPower2LE(nTables) * 16);
+                entrySelector = Util.Log2(Util.MaxPower2LE(nTables));
                 rangeShift    = (ushort)(nTables*16 - searchRange);
             }
 

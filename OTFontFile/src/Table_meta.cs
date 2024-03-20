@@ -72,9 +72,9 @@ namespace OTFontFile
             MBOBuffer m_bufTable;
         }
 
-        public DataMap GetDataMap(uint i)
+        public DataMap? GetDataMap(uint i)
         {
-            DataMap entry = null;
+            DataMap? entry = null;
 
             if ( i < numDataMaps )
             {
@@ -86,7 +86,7 @@ namespace OTFontFile
 
         public byte[] GetData(uint i)
         {
-            DataMap entry = this.GetDataMap(i);
+            DataMap entry = this.GetDataMap(i)!;
             uint length = entry.dataLength;
             byte [] buf = new byte[length];
             /* Apple TrueType spec is wrong - does not add this.dataOffset */

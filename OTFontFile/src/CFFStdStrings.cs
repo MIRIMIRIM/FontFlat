@@ -3,8 +3,7 @@ namespace Compat
     public class CFF
     {
         public static readonly string[] StdStrings =
-            new string[]
-            {
+            [
                 ".notdef",
                 "space",
                 "exclam",
@@ -396,6 +395,6 @@ namespace Compat
                 "Regular",
                 "Roman",
                 "Semibold",
-            };
+            ];
     }
 }

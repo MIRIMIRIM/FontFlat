@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 
 
 
@@ -57,7 +58,7 @@ namespace OTFontFile
 
             for (uint i=0; i<numRanges; i++)
             {
-                GaspRange gr = GetGaspRange(i);
+                GaspRange gr = GetGaspRange(i)!;
 
                 if (ppem <= gr.rangeMaxPPEM)
                 {
@@ -84,15 +85,17 @@ namespace OTFontFile
             get {return m_bufTable.GetUshort((uint)FieldOffsets.numRanges);}
         }
 
-        public GaspRange GetGaspRange(uint i)
+        public GaspRange? GetGaspRange(uint i)
         {
-            GaspRange gr = null;
+            GaspRange? gr = null;
 
             if (i < numRanges && (uint)FieldOffsets.gaspRange + (i+1)*4 <= m_bufTable.GetLength())
             {
-                gr = new GaspRange();
-                gr.rangeMaxPPEM      = m_bufTable.GetUshort((uint)FieldOffsets.gaspRange + i*4);
-                gr.rangeGaspBehavior = m_bufTable.GetUshort((uint)FieldOffsets.gaspRange + i*4 + 2);
+                gr = new GaspRange
+                {
+                    rangeMaxPPEM = m_bufTable.GetUshort((uint)FieldOffsets.gaspRange + i * 4),
+                    rangeGaspBehavior = m_bufTable.GetUshort((uint)FieldOffsets.gaspRange + i * 4 + 2)
+                };
             }
 
             return gr;
@@ -118,7 +121,7 @@ namespace OTFontFile
         {
             protected ushort m_version;
             protected ushort m_numRanges;
-            protected  ArrayList m_GaspRange; // GaspRange[]            
+            protected List<GaspRange> m_GaspRange; // GaspRange[]            
 
             // constructor
             public gasp_cache(Table_gasp OwnerTable)
@@ -128,10 +131,10 @@ namespace OTFontFile
                 m_numRanges = OwnerTable.numRanges;
 
                 // Store all of the gaspRanges
-                m_GaspRange = new ArrayList( m_numRanges );
+                m_GaspRange = new ( m_numRanges );
                 for( ushort i = 0; i < m_numRanges; i++ )
                 {
-                    m_GaspRange.Add( OwnerTable.GetGaspRange( i ));                    
+                    m_GaspRange.Add( OwnerTable.GetGaspRange( i )!);                    
                 }
 
             }
@@ -161,15 +164,17 @@ namespace OTFontFile
                 }
             }
 
-            public GaspRange GetGaspRange( ushort nIndex )
+            public GaspRange? GetGaspRange( ushort nIndex )
             {
-                GaspRange gr = null;
+                GaspRange? gr = null;
 
                 if( nIndex < m_numRanges )
                 {
-                    gr = new GaspRange();
-                    gr.rangeMaxPPEM = ((GaspRange)m_GaspRange[nIndex]).rangeMaxPPEM;
-                    gr.rangeGaspBehavior= ((GaspRange)m_GaspRange[nIndex]).rangeGaspBehavior;
+                    gr = new GaspRange
+                    {
+                        rangeMaxPPEM = ((GaspRange)m_GaspRange[nIndex]).rangeMaxPPEM,
+                        rangeGaspBehavior = ((GaspRange)m_GaspRange[nIndex]).rangeGaspBehavior
+                    };
                 }
 
                 return gr;                

@@ -2320,8 +2320,8 @@ namespace OTFontFile
 
                 ushort segCountX2 = (ushort)(arrSegments.Count*2);
                 ushort searchRange = (ushort)
-                    (2 * util.MaxPower2LE((ushort)(arrSegments.Count)));
-                ushort entrySelector = util.Log2((ushort)(searchRange/2));
+                    (2 * Util.MaxPower2LE((ushort)(arrSegments.Count)));
+                ushort entrySelector = Util.Log2((ushort)(searchRange/2));
                 ushort rangeShift = (ushort)(segCountX2 - searchRange);
 
                 buf.SetUshort(4,             

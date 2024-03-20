@@ -93,9 +93,9 @@ namespace OTFontFile
             MBOBuffer m_bufTable;
         }
 
-        public SVGDocumentIndexEntry GetDocIndexEntry(uint i)
+        public SVGDocumentIndexEntry? GetDocIndexEntry(uint i)
         {
-            SVGDocumentIndexEntry entry = null;
+            SVGDocumentIndexEntry? entry = null;
 
             if ( i < numEntries )
             {
@@ -107,22 +107,22 @@ namespace OTFontFile
             return entry;
         }
 
-        public byte[] GetDoc(uint i)
+        public byte[]? GetDoc(uint i)
         {
             return GetDoc(i, true);
         }
 
-        public byte[] GetDoc(uint i, bool autodecompress)
+        public byte[]? GetDoc(uint i, bool autodecompress)
         {
-            SVGDocumentIndexEntry entry = this.GetDocIndexEntry(i);
-            uint length = entry.svgDocLength;
+            var entry = this.GetDocIndexEntry(i);
+            uint length = entry!.svgDocLength;
             byte [] buf = new byte[length];
             uint offset = this.offsetToSVGDocIndex + entry.svgDocOffset;
             System.Buffer.BlockCopy(m_bufTable.GetBuffer(), (int)offset, buf, 0, (int)length);
 
             if ( autodecompress && buf[0] == 0x1F && buf[1] == 0x8B )
             {
-                byte[] decompressed = null;
+                byte[]? decompressed = null;
                 using (MemoryStream output = new MemoryStream())
                 {
                     using (MemoryStream input = new MemoryStream(buf))
@@ -168,9 +168,9 @@ namespace OTFontFile
         }
         public DocHeaderType GetDocType(uint i)
         {
-            SVGDocumentIndexEntry entry = this.GetDocIndexEntry(i);
+            var entry = this.GetDocIndexEntry(i);
             byte [] buf = new byte[4];
-            uint offset = this.offsetToSVGDocIndex /* should be 10 */ + entry.svgDocOffset;
+            uint offset = this.offsetToSVGDocIndex /* should be 10 */ + entry!.svgDocOffset;
             System.Buffer.BlockCopy(m_bufTable.GetBuffer(), (int)offset, buf, 0, 4);
             return DetectType(buf);
         }

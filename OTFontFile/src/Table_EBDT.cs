@@ -144,9 +144,9 @@ namespace OTFontFile
             get {return m_bufTable.GetFixed((uint)FieldOffsets.version);}
         }
 
-        public smallGlyphMetrics GetSmallMetrics( Table_EBLC.indexSubTable cIndexSubTable, uint nGlyphIndex, uint nStartGlyphIndex )
+        public smallGlyphMetrics? GetSmallMetrics( Table_EBLC.indexSubTable cIndexSubTable, uint nGlyphIndex, uint nStartGlyphIndex )
         {
-            smallGlyphMetrics sgm = null;
+            smallGlyphMetrics? sgm = null;
             int nIndexFormat = cIndexSubTable.header.indexFormat;
             int nImageFormat = cIndexSubTable.header.imageFormat;
 
@@ -179,9 +179,9 @@ namespace OTFontFile
             return sgm;
         }
 
-        public bigGlyphMetrics GetBigMetrics( Table_EBLC.indexSubTable cIndexSubTable, uint nGlyphIndex, uint nStartGlyphIndex )
+        public bigGlyphMetrics? GetBigMetrics( Table_EBLC.indexSubTable cIndexSubTable, uint nGlyphIndex, uint nStartGlyphIndex )
         {
-            bigGlyphMetrics bgm = null;
+            bigGlyphMetrics? bgm = null;
             int nIndexFormat = cIndexSubTable.header.indexFormat;
             int nImageFormat = cIndexSubTable.header.imageFormat;
 
@@ -260,7 +260,7 @@ namespace OTFontFile
 
         public ebdtComponent GetComponent( Table_EBLC.indexSubTable cIndexSubTable, uint nGlyphIndex, uint nStartGlyphIndex, uint nComponent )
         {
-            ebdtComponent ebdtc = null;
+            ebdtComponent? ebdtc = null;
             int nIndexFormat = cIndexSubTable.header.indexFormat;
             int nImageFormat = cIndexSubTable.header.imageFormat;
 
@@ -294,14 +294,14 @@ namespace OTFontFile
                 }
             }
 
-            return ebdtc;
+            return ebdtc!;
         }
 
         public byte[] GetImageData( Table_EBLC.indexSubTable cIndexSubTable, uint nGlyphIndex, uint nStartGlyphIndex )
         {
             int nIndexFormat = cIndexSubTable.header.indexFormat;
             int nImageFormat = cIndexSubTable.header.imageFormat;
-            byte[] bufImageData = null;
+            byte[]? bufImageData = null;
 
             // 8 and 9 are composites so their image data should be retrieved through the composite glyphs
             Debug.Assert( nImageFormat != 8 && nImageFormat != 9 );
@@ -336,7 +336,7 @@ namespace OTFontFile
                 }    
             }
 
-            return bufImageData;    
+            return bufImageData!;    
             
         }
 
@@ -448,7 +448,7 @@ namespace OTFontFile
 
         public byte [,] GetBitmapImage(Table_EBLC.bitmapSizeTable bst, ushort glyphID)
         {
-            byte [,] bits = null;
+            byte [,]? bits = null;
 
             Table_EBLC.indexSubTableArray ista = bst.FindIndexSubTableArray(glyphID);
             if (ista != null)
@@ -469,7 +469,7 @@ namespace OTFontFile
                             //break;
                         case 1:
                         case 2:
-                            smallGlyphMetrics sgm = this.GetSmallMetrics(ist, glyphID, ista.firstGlyphIndex);
+                            smallGlyphMetrics sgm = this.GetSmallMetrics(ist, glyphID, ista.firstGlyphIndex)!;
                             width = sgm.width;
                             height = sgm.height;
                             break;
@@ -495,7 +495,7 @@ namespace OTFontFile
                             break;
                         case 6:
                         case 7:
-                            bigGlyphMetrics bgm = this.GetBigMetrics(ist, glyphID, ista.firstGlyphIndex);
+                            bigGlyphMetrics bgm = this.GetBigMetrics(ist, glyphID, ista.firstGlyphIndex)!;
                             width = bgm.width;
                             height = bgm.height;
                             break;
@@ -521,12 +521,12 @@ namespace OTFontFile
                 }
             }
 
-            return bits;
+            return bits!;
         }
 
         protected byte[,] DecodeImageData(Table_EBLC.indexSubTable ist, byte width, byte height, byte bitDepth, byte[] databuf)
         {
-            byte [,] bits = null;
+            byte[,]? bits = null;
 
             switch (ist.header.imageFormat)
             {
@@ -558,7 +558,7 @@ namespace OTFontFile
                     break;
             }
 
-            return bits;
+            return bits!;
         }
 
         protected byte[,] DecodeImageDataFmt16(byte width, byte height, byte bitDepth, byte[] databuf)
@@ -654,7 +654,7 @@ namespace OTFontFile
         public class EBDT_cache : DataCache
         {
             protected OTFixed m_version;
-            protected MBOBuffer m_newbuf;
+            protected MBOBuffer? m_newbuf;
 
             // constructor
             public EBDT_cache(Table_EBDT OwnerTable)

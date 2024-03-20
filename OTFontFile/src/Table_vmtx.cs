@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 
@@ -129,7 +130,7 @@ namespace OTFontFile
             if (m_nLongVerMetrics == 0)
             {
                 // get the vhea table (to get access to the numOfLongVerMetrics property)
-                Table_vhea vheaTable = (Table_vhea)fontOwner.GetTable("vhea");
+                Table_vhea vheaTable = (Table_vhea)fontOwner.GetTable("vhea")!;
 
                 if (vheaTable != null)
                 {
@@ -157,7 +158,7 @@ namespace OTFontFile
         
         public class vmtx_cache : DataCache
         {
-            protected ArrayList m_vMetric; // vMetric[]
+            protected List<vMetric> m_vMetric; // vMetric[] // ArrayList
             protected Table_vhea m_vheaTable;
             protected ushort m_nGlyphsInTheFont;
             protected ushort m_nLongVerMetrics;
@@ -172,7 +173,7 @@ namespace OTFontFile
 
                 // For ease of use we will store all entrys as double entrys and fix up the single
                 // entry arrays when we write out the table
-                m_vMetric = new ArrayList( m_nGlyphsInTheFont );
+                m_vMetric = new ( m_nGlyphsInTheFont );
                 for( ushort i = 0; i < m_nGlyphsInTheFont; i++ )
                 {                
                     m_vMetric.Add( OwnerTable.GetVMetric( i ));                    

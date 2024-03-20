@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 
 
 
@@ -231,8 +232,8 @@ namespace OTFontFile
             protected ushort m_numRecs;
             protected ushort m_numRatios;
             // No need to store group offsets because we can determine these when we save the cache
-            protected ArrayList m_ratRange; // RatioCache[]
-            protected ArrayList m_groups; // VDMXGroupCache[]
+            protected List<RatioCache> m_ratRange; // RatioCache[]
+            protected List<VDMXGroupCache> m_groups; // VDMXGroupCache[]
 
             // constructor
             public VDMX_cache(Table_VDMX OwnerTable)
@@ -242,14 +243,14 @@ namespace OTFontFile
                 m_numRecs = OwnerTable.numRecs;
                 m_numRatios = OwnerTable.numRatios;
 
-                m_ratRange = new ArrayList( m_numRatios );
-                m_groups = new ArrayList( m_numRecs );
+                m_ratRange = new ( m_numRatios );
+                m_groups = new ( m_numRecs );
 
                 // Used to detrmine which vdmx goes with which ratio
                 ushort[] VDMXOffsets = new ushort[m_numRecs]; 
 
                 
-                VDMXOffsets[0] = (ushort)(Table_VDMX.FieldOffsets.ratRange + (m_numRatios * 4) + (m_numRatios * 2));
+                VDMXOffsets[0] = (ushort)(FieldOffsets.ratRange + (m_numRatios * 4) + (m_numRatios * 2));
 
                 // Fill in the VDMX groups
                 for( ushort i = 0; i < m_numRecs; i++ )
@@ -334,18 +335,14 @@ namespace OTFontFile
             
             public RatioCache getRatioRecord( ushort nIndex )
             {
-                RatioCache rc = null;
-
                 if( nIndex >= m_numRatios )
                 {
                     throw new ArgumentOutOfRangeException( "nIndex is greater than the number of Ratio Records." );
                 }
                 else
                 {
-                    rc = (RatioCache)((RatioCache)m_ratRange[nIndex]).Clone();
+                    return (RatioCache)((RatioCache)m_ratRange[nIndex]).Clone();
                 }
-                
-                return rc;
             }
 
             public bool setRatioRecord( ushort nIndex, byte bCharSet, byte xRatio, byte yStartRatio, byte yEndRatio, ushort VDMXGroupThisRatio )
@@ -424,9 +421,6 @@ namespace OTFontFile
             
             public VDMXGroupCache getVDMXGroup( ushort nIndex )
             {
-                VDMXGroupCache vgc = null;
-
-                
                 if( nIndex >= m_numRecs )
                 {
                 
@@ -434,10 +428,8 @@ namespace OTFontFile
                 }
                 else
                 {
-                    vgc = (VDMXGroupCache)((VDMXGroupCache)m_groups[nIndex]).Clone();
+                    return (VDMXGroupCache)m_groups[nIndex].Clone();
                 }
-
-                return vgc;
             }
             
             public bool setVDMXGroup( ushort nIndex, VDMXGroupCache vgc )
@@ -451,7 +443,7 @@ namespace OTFontFile
                 }
                 else
                 {
-                    m_groups[nIndex] = vgc.Clone();
+                    m_groups[nIndex] = (VDMXGroupCache)vgc.Clone();
                     m_bDirty = true;
                 }
 
@@ -469,16 +461,16 @@ namespace OTFontFile
                 }
                 else
                 {
-                    m_groups.Insert( nIndex, vgc.Clone());
+                    m_groups.Insert( nIndex, (VDMXGroupCache)vgc.Clone());
                     m_numRecs++;
                     m_bDirty = true;
 
                     // Go fix up all of the ratio records
                     for( int i = 0; i < m_numRatios; i++ )
                     {
-                        if( ((RatioCache)m_ratRange[i]).VDMXGroupThisRatio >= nIndex )
+                        if( (m_ratRange[i]).VDMXGroupThisRatio >= nIndex )
                         {
-                            ((RatioCache)m_ratRange[i]).VDMXGroupThisRatio++;
+                            (m_ratRange[i]).VDMXGroupThisRatio++;
                         }
                     }
                 }
@@ -499,7 +491,7 @@ namespace OTFontFile
                 {
                     for( int i = 0; i < m_numRatios; i++ )
                     {
-                        if( ((RatioCache)m_ratRange[i]).VDMXGroupThisRatio == nIndex )
+                        if( (m_ratRange[i]).VDMXGroupThisRatio == nIndex )
                         {
                             bResult = false;
                             throw new ArgumentException( "VDMX Group can not be removed because a Ratio Record is using it" );
@@ -513,9 +505,9 @@ namespace OTFontFile
                     // Go fix up all of the ratio records
                     for( int i = 0; i < m_numRatios; i++ )
                     {
-                        if( ((RatioCache)m_ratRange[i]).VDMXGroupThisRatio > nIndex )
+                        if( (m_ratRange[i]).VDMXGroupThisRatio > nIndex )
                         {
-                            ((RatioCache)m_ratRange[i]).VDMXGroupThisRatio--;
+                            (m_ratRange[i]).VDMXGroupThisRatio--;
                         }
                     }
                 }
@@ -545,10 +537,10 @@ namespace OTFontFile
                 // populate buffer with Ratio Records
                 for( ushort i = 0; i < m_numRatios; i++ )
                 {
-                    newbuf.SetByte( ((RatioCache)m_ratRange[i]).bCharSet,        (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4)));
-                    newbuf.SetByte( ((RatioCache)m_ratRange[i]).xRatio,            (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4) + 1));
-                    newbuf.SetByte( ((RatioCache)m_ratRange[i]).yStartRatio,    (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4) + 2));
-                    newbuf.SetByte( ((RatioCache)m_ratRange[i]).yEndRatio,        (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4) + 3));
+                    newbuf.SetByte( (m_ratRange[i]).bCharSet,        (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4)));
+                    newbuf.SetByte( (m_ratRange[i]).xRatio,            (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4) + 1));
+                    newbuf.SetByte( (m_ratRange[i]).yStartRatio,    (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4) + 2));
+                    newbuf.SetByte( (m_ratRange[i]).yEndRatio,        (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4) + 3));
                 }
 
                 // Set up the strting offset for the VDMX Groups
@@ -583,13 +575,13 @@ namespace OTFontFile
                 // populate buffer with Ratio Records
                 for( ushort i = 0; i < m_numRatios; i++ )
                 {
-                    newbuf.SetByte( ((RatioCache)m_ratRange[i]).bCharSet,        (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4)));
-                    newbuf.SetByte( ((RatioCache)m_ratRange[i]).xRatio,            (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4) + 1));
-                    newbuf.SetByte( ((RatioCache)m_ratRange[i]).yStartRatio,    (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4) + 2));
-                    newbuf.SetByte( ((RatioCache)m_ratRange[i]).yEndRatio,        (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4) + 3));
+                    newbuf.SetByte( (m_ratRange[i]).bCharSet,        (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4)));
+                    newbuf.SetByte( (m_ratRange[i]).xRatio,            (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4) + 1));
+                    newbuf.SetByte( (m_ratRange[i]).yStartRatio,    (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4) + 2));
+                    newbuf.SetByte( (m_ratRange[i]).yEndRatio,        (uint)(Table_VDMX.FieldOffsets.ratRange + (i * 4) + 3));
 
                     // Write out the offsets for the VDMX Groups to the buffer
-                    newbuf.SetUshort( VDMXOffsets[((RatioCache)m_ratRange[i]).VDMXGroupThisRatio], (uint)(Table_VDMX.FieldOffsets.ratRange + (m_numRatios * 4) + (i * 2)));
+                    newbuf.SetUshort( VDMXOffsets[(m_ratRange[i]).VDMXGroupThisRatio], (uint)(Table_VDMX.FieldOffsets.ratRange + (m_numRatios * 4) + (i * 2)));
                 }
 
                 // put the buffer into a Table_VDMX object and return it
@@ -692,12 +684,12 @@ namespace OTFontFile
                 private ushort m_recs;
                 private byte m_startsz;
                 private byte m_endsz;
-                private ArrayList m_entry; // VTableRecordCache[]
+                private List<vTableRecordCache> m_entry; // VTableRecordCache[]
 
 
                 public VDMXGroupCache()
                 {
-                    m_entry = new ArrayList();
+                    m_entry = [];
                 }
 
                 public ushort recs
@@ -743,7 +735,7 @@ namespace OTFontFile
                         throw new ArgumentOutOfRangeException( "nIndex is greater than the number of records." );
                     }
 
-                    return (vTableRecordCache)m_entry[nIndex];
+                    return (vTableRecordCache)m_entry[nIndex]!;
                 }
 
                 public bool setVTableRecordCache( ushort nIndex,  vTableRecordCache vtrc )
@@ -817,11 +809,11 @@ namespace OTFontFile
                     vgc.recs =  recs;
                     vgc.startsz = startsz;
                     vgc.endsz = endsz;
-                    vgc.m_entry = new ArrayList( recs );
+                    vgc.m_entry = new ( recs );
 
                     for( int i = 0; i < recs; i++ )
                     {
-                        vgc.m_entry.Add( ((vTableRecordCache)m_entry[i]).Clone());            
+                        vgc.m_entry.Add((vTableRecordCache)m_entry[i].Clone());            
                     }
 
                     return vgc;

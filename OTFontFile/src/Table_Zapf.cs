@@ -403,7 +403,8 @@ namespace OTFontFile
             public override OTTable GenerateTable()
             {
                 // not yet implemented!
-                return null;
+                //return null;
+                throw new NotImplementedException();
             }
         }
         

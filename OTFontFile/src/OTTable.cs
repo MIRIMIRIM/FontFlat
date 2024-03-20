@@ -134,7 +134,7 @@ namespace OTFontFile
         /// </summary>
         public virtual DataCache GetCache()
         {
-            return m_cache;
+            return m_cache!;
         }
 
 
@@ -144,6 +144,6 @@ namespace OTFontFile
 
         public MBOBuffer m_bufTable;
         public OTTag m_tag;
-        protected DataCache m_cache;
+        protected DataCache? m_cache;
     }
 }

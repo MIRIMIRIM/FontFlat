@@ -1,3 +1,5 @@
+using System;
+
 namespace OTFontFile
 {
     /// <summary>
@@ -60,9 +62,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetAxisTable + (uint)FieldOffsets.BaseScriptListOffset);}
             }
 
-            public BaseTagListTable GetBaseTagListTable()
+            public BaseTagListTable? GetBaseTagListTable()
             {
-                BaseTagListTable btlt = null;
+                BaseTagListTable? btlt = null;
                 
                 if (BaseTagListOffset != 0)
                 {
@@ -73,9 +75,9 @@ namespace OTFontFile
                 return btlt;
             }
 
-            public BaseScriptListTable GetBaseScriptListTable()
+            public BaseScriptListTable? GetBaseScriptListTable()
             {
-                BaseScriptListTable bslt = null;
+                BaseScriptListTable? bslt = null;
                 
                 if (BaseScriptListOffset != 0)
                 {
@@ -114,9 +116,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetBaseTagListTable + (uint)FieldOffsets.BaseTagCount);}
             }
 
-            public OTTag GetBaselineTag(uint i)
+            public OTTag? GetBaselineTag(uint i)
             {
-                OTTag tag = null;
+                OTTag? tag = null;
                 if (i < BaseTagCount)
                 {
                     tag = m_bufTable.GetTag(m_offsetBaseTagListTable + (uint)FieldOffsets.BaselineTagArray + i*4);
@@ -153,9 +155,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetBaseScriptListTable + (uint)FieldOffsets.BaseScriptCount);}
             }
 
-            public BaseScriptRecord GetBaseScriptRecord(uint i)
+            public BaseScriptRecord? GetBaseScriptRecord(uint i)
             {
-                BaseScriptRecord bsr = null;
+                BaseScriptRecord? bsr = null;
 
                 if (i < BaseScriptCount)
                 {
@@ -167,9 +169,9 @@ namespace OTFontFile
                 return bsr;
             }
 
-            public BaseScriptTable GetBaseScriptTable(BaseScriptRecord bsr)
+            public BaseScriptTable? GetBaseScriptTable(BaseScriptRecord bsr)
             {
-                BaseScriptTable bst = null;
+                BaseScriptTable? bst = null;
                 if (bsr != null)
                 {
                     ushort offset = (ushort)(m_offsetBaseScriptListTable + bsr.BaseScriptOffset);
@@ -246,9 +248,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetBaseScriptTable + (uint)FieldOffsets.BaseLangSysCount);}
             }
 
-            public BaseLangSysRecord GetBaseLangSysRecord(uint i)
+            public BaseLangSysRecord? GetBaseLangSysRecord(uint i)
             {
-                BaseLangSysRecord blsr = null;
+                BaseLangSysRecord? blsr = null;
 
                 if (i < BaseLangSysCount)
                 {
@@ -260,9 +262,9 @@ namespace OTFontFile
                 return blsr;
             }
 
-            public BaseValuesTable GetBaseValuesTable()
+            public BaseValuesTable? GetBaseValuesTable()
             {
-                BaseValuesTable bvt = null;
+                BaseValuesTable? bvt = null;
 
                 if (BaseValuesOffset != 0)
                 {
@@ -272,9 +274,9 @@ namespace OTFontFile
                 return bvt;
             }
 
-            public MinMaxTable GetDefaultMinMaxTable()
+            public MinMaxTable? GetDefaultMinMaxTable()
             {
-                MinMaxTable mmt = null;
+                MinMaxTable? mmt = null;
                 
                 if (DefaultMinMaxOffset != 0)
                 {
@@ -284,9 +286,9 @@ namespace OTFontFile
                 return mmt;
             }
 
-            public MinMaxTable GetMinMaxTable(BaseLangSysRecord blsr)
+            public MinMaxTable? GetMinMaxTable(BaseLangSysRecord blsr)
             {
-                MinMaxTable mmt = null;
+                MinMaxTable? mmt = null;
 
                 if (blsr != null)
                 {
@@ -371,9 +373,9 @@ namespace OTFontFile
                 return m_bufTable.GetUshort(offset);
             }
 
-            public BaseCoordTable GetBaseCoordTable(uint i)
+            public BaseCoordTable? GetBaseCoordTable(uint i)
             {
-                BaseCoordTable bct = null;
+                BaseCoordTable? bct = null;
 
                 if (i < BaseCoordCount)
                 {
@@ -424,9 +426,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetMinMaxTable + (uint)FieldOffsets.FeatMinMaxCount);}
             }
 
-            public FeatMinMaxRecord GetFeatMinMaxRecord(uint i)
+            public FeatMinMaxRecord? GetFeatMinMaxRecord(uint i)
             {
-                FeatMinMaxRecord fmmr = null;
+                FeatMinMaxRecord? fmmr = null;
 
                 if (i < FeatMinMaxCount)
                 {
@@ -441,9 +443,9 @@ namespace OTFontFile
                 return fmmr;
             }
 
-            public BaseCoordTable GetMinCoordTable()
+            public BaseCoordTable? GetMinCoordTable()
             {
-                BaseCoordTable bct = null;
+                BaseCoordTable? bct = null;
 
                 if (MinCoordOffset != 0)
                 {
@@ -454,9 +456,9 @@ namespace OTFontFile
                 return bct;
             }
 
-            public BaseCoordTable GetMaxCoordTable()
+            public BaseCoordTable? GetMaxCoordTable()
             {
-                BaseCoordTable bct = null;
+                BaseCoordTable? bct = null;
 
                 if (MaxCoordOffset != 0)
                 {
@@ -467,9 +469,9 @@ namespace OTFontFile
                 return bct;
             }
 
-            public BaseCoordTable GetFeatMinCoordTable(FeatMinMaxRecord fmmr)
+            public BaseCoordTable? GetFeatMinCoordTable(FeatMinMaxRecord fmmr)
             {
-                BaseCoordTable bct = null;
+                BaseCoordTable? bct = null;
 
                 if (fmmr != null)
                 {
@@ -483,9 +485,9 @@ namespace OTFontFile
                 return bct;
             }
 
-            public BaseCoordTable GetFeatMaxCoordTable(FeatMinMaxRecord fmmr)
+            public BaseCoordTable? GetFeatMaxCoordTable(FeatMinMaxRecord fmmr)
             {
-                BaseCoordTable bct = null;
+                BaseCoordTable? bct = null;
 
                 if (fmmr != null)
                 {
@@ -674,26 +676,26 @@ namespace OTFontFile
 
         public AxisTable GetHorizAxisTable()
         {
-            AxisTable at = null;
+            AxisTable? at = null;
 
             if (HorizAxisOffset != 0)
             {
                 at = new AxisTable(HorizAxisOffset, m_bufTable);
             }
 
-            return at;
+            return at!;
         }
 
         public AxisTable GetVertAxisTable()
         {
-            AxisTable at = null;
+            AxisTable? at = null;
 
             if (VertAxisOffset != 0)
             {
                 at = new AxisTable(VertAxisOffset, m_bufTable);
             }
 
-            return at;
+            return at!;
         }
 
 
@@ -716,7 +718,8 @@ namespace OTFontFile
             public override OTTable GenerateTable()
             {
                 // not yet implemented!
-                return null;
+                //return null;
+                throw new NotImplementedException();
             }
         }
         

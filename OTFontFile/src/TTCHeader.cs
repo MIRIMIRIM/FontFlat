@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace OTFontFile
 {
     /// <summary>
@@ -10,15 +13,16 @@ namespace OTFontFile
          */
         public TTCHeader()
         {
-            DirectoryOffsets = new System.Collections.ArrayList();
+            //DirectoryOffsets = new System.Collections.ArrayList();
+            DirectoryOffsets = [];
         }
 
         /************************
          * public static methods
          */
-        public static TTCHeader ReadTTCHeader(OTFile file)
+        public static TTCHeader? ReadTTCHeader(OTFile file)
         {
-            TTCHeader ttc = null;
+            TTCHeader? ttc = null;
 
             const int SIZEOF_FIRSTTHREEFIELDS = 12;
             const int SIZEOF_UINT = 4;
@@ -26,9 +30,9 @@ namespace OTFontFile
             // read the first three fields of the TTC Header
             // starting at the beginning of the file
 
-            MBOBuffer buf = file.ReadPaddedBuffer(0, SIZEOF_FIRSTTHREEFIELDS);
+            var buf = file.ReadPaddedBuffer(0, SIZEOF_FIRSTTHREEFIELDS);
             
-            OTTag tag = null;
+            OTTag? tag = null;
             uint version = 0;
             uint DirectoryCount = 0;
 
@@ -42,14 +46,16 @@ namespace OTFontFile
 
             // if the tag and the version and the dir count seem correct then
             // allocate a TTCHeader object and try to read the rest of the header
-            if ((string)tag == "ttcf" &&
+            if ("ttcf"u8.SequenceEqual(tag!.GetBytes()) &&
                 (version == 0x00010000 || version == 0x00020000) &&
                 12 + DirectoryCount * SIZEOF_UINT < file.GetFileLength())
             {
-                ttc = new TTCHeader();
-                ttc.TTCTag = tag;
-                ttc.version = version;
-                ttc.DirectoryCount = DirectoryCount;
+                ttc = new TTCHeader
+                {
+                    TTCTag = tag,
+                    version = version,
+                    DirectoryCount = DirectoryCount
+                };
 
                 // Directory offsets
                 buf = file.ReadPaddedBuffer(SIZEOF_FIRSTTHREEFIELDS, DirectoryCount*SIZEOF_UINT);
@@ -93,14 +99,15 @@ namespace OTFontFile
         /******************
          * member data
          */
-        public OTTag TTCTag;
+        public OTTag? TTCTag;
         public uint version;
         public uint DirectoryCount;
-        public System.Collections.ArrayList DirectoryOffsets;
+        //public System.Collections.ArrayList DirectoryOffsets;
+        public List<uint> DirectoryOffsets;
         // OpenType spec defines three DSIG fields for TTC 1.0 headers,
         // but then states that 1.0 is only used for TTC files WITHOUT digital signatures.
         // So, the code only populates the Dsig fields for version 2.0
-        public OTTag DsigTag;
+        public OTTag? DsigTag;
         public uint  DsigLength; // code only uses this field if version is 2.0!
         public uint  DsigOffset; // code only uses this field if version is 2.0!
     }

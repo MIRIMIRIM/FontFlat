@@ -1,6 +1,5 @@
 using System;
 using System.Diagnostics;
-using System.Collections;
 using System.Collections.Generic;
 
 
@@ -68,7 +67,7 @@ namespace OTFontFile
         {
             OTFont? f = null;
 
-            OffsetTable ot = ReadOffsetTable(file, filepos);
+            var ot = ReadOffsetTable(file, filepos);
 
             if (ot != null)
             {
@@ -121,7 +120,7 @@ namespace OTFontFile
                 {
                     DirectoryEntry de = m_OffsetTable.DirectoryEntries[i];
 
-                    OTTable table = GetTable(de);
+                    var table = GetTable(de);
 
                     uint calcChecksum = 0;
                     if (table != null)
@@ -285,7 +284,7 @@ namespace OTFontFile
         public DateTime GetFontModifiedDate()
         {
             // default to Jan 1, 1904 if unavailable
-            DateTime dt = new DateTime(1904, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var dt = new DateTime(1904, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
             try
             {
@@ -318,11 +317,13 @@ namespace OTFontFile
             }
 
             // build a new directory entry
-            DirectoryEntry de = new DirectoryEntry();
-            de.tag = new OTTag(t.m_tag.GetBytes());
-            de.checkSum = t.CalcChecksum();
-            de.offset = 0;  // this value won't get fixed up until the font is written
-            de.length = t.GetLength();
+            var de = new DirectoryEntry
+            {
+                tag = new OTTag(t.m_tag.GetBytes()),
+                checkSum = t.CalcChecksum(),
+                offset = 0,  // this value won't get fixed up until the font is written
+                length = t.GetLength()
+            };
 
             // add the directory entry
 
@@ -700,18 +701,18 @@ namespace OTFontFile
          */
         
         
-        protected static OffsetTable ReadOffsetTable(OTFile file, uint filepos)
+        protected static OffsetTable? ReadOffsetTable(OTFile file, uint filepos)
         {
             // read the Offset Table from the file
 
             const int SIZEOF_OFFSETTABLE = 12;
 
-            OffsetTable ot = null;
+            OffsetTable? ot = null;
 
 
             // read the offset table
 
-            MBOBuffer buf = file.ReadPaddedBuffer(filepos, SIZEOF_OFFSETTABLE);
+            MBOBuffer buf = file.ReadPaddedBuffer(filepos, SIZEOF_OFFSETTABLE)!;
 
             if (buf != null)
             {
@@ -732,11 +733,11 @@ namespace OTFontFile
                 for (int i=0; i<ot.numTables; i++)
                 {
                     uint dirFilePos = (uint)(filepos+SIZEOF_OFFSETTABLE+i*SIZEOF_DIRECTORYENTRY);
-                    MBOBuffer DirEntBuf = file.ReadPaddedBuffer(dirFilePos, SIZEOF_DIRECTORYENTRY);
+                    MBOBuffer DirEntBuf = file.ReadPaddedBuffer(dirFilePos, SIZEOF_DIRECTORYENTRY)!;
 
                     if (DirEntBuf != null)
                     {
-                        DirectoryEntry de = new DirectoryEntry(DirEntBuf);
+                        var de = new DirectoryEntry(DirEntBuf);
                         ot.DirectoryEntries.Add(de);                        
                     }
                     else
@@ -751,21 +752,21 @@ namespace OTFontFile
         }
 
 
-        protected OTTable GetTable(DirectoryEntry de)
+        protected OTTable? GetTable(DirectoryEntry de)
         {
-            OTTable table = null;
+            OTTable? table = null;
 
             if (m_File != null)
             {
                 // get the table from OTFile's table manager
-                table = m_File.GetTableManager().GetTable(this, de);
+                table = m_File.GetTableManager().GetTable(de);
             }
             else
             {
                 // get the table from the list in memory
                 for (int i=0; i<MemBasedTables.Count; i++)
                 {
-                    OTTable t = (OTTable)MemBasedTables[i];
+                    OTTable t = MemBasedTables[i];
                     if (de.tag == t.m_tag)
                     {
                         table = t;
@@ -799,6 +800,6 @@ namespace OTFontFile
         protected uint []? m_arrUnicodeToGlyph_3_1;
         protected uint []? m_arrUnicodeToGlyph_3_10;
         protected bool m_bContainsMsSymbolEncodedCmap;
-        protected List<OTTable> MemBasedTables; // this list is used when building a font in memory  // ArrayList
+        protected List<OTTable> MemBasedTables = []; // this list is used when building a font in memory  // ArrayList
     }
 }

@@ -1,3 +1,5 @@
+using System;
+
 namespace OTFontFile
 {
     /// <summary>
@@ -49,7 +51,7 @@ namespace OTFontFile
             public ushort usReserved1;
             public ushort usReserved2;
             public uint cbSignature;
-            public byte[] bSignature;
+            public byte[]? bSignature;
         }
         
         /************************
@@ -72,9 +74,9 @@ namespace OTFontFile
             get {return m_bufTable.GetUshort((uint)FieldOffsets.usFlag);}
         }
 
-        public SigFormatOffset GetSigFormatOffset(uint i)
+        public SigFormatOffset? GetSigFormatOffset(uint i)
         {
-            SigFormatOffset sfo = null;
+            SigFormatOffset? sfo = null;
 
             if (i < usNumSigs)
             {
@@ -88,13 +90,13 @@ namespace OTFontFile
             return sfo;
         }
         
-        public SignatureBlock GetSignatureBlock(uint i)
+        public SignatureBlock? GetSignatureBlock(uint i)
         {
-            SignatureBlock sb = null;
+            SignatureBlock? sb = null;
 
             if (i < usNumSigs)
             {
-                SigFormatOffset sfo = GetSigFormatOffset(i);
+                SigFormatOffset sfo = GetSigFormatOffset(i)!;
 
                 sb = new SignatureBlock();
                 sb.usReserved1 = m_bufTable.GetUshort(sfo.ulOffset);
@@ -127,7 +129,8 @@ namespace OTFontFile
             public override OTTable GenerateTable()
             {
                 // not yet implemented!
-                return null;
+                //return null;
+                throw new NotImplementedException();
             }
         }
         

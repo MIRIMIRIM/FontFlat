@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 
@@ -722,7 +723,7 @@ namespace OTFontFile
             protected OTFixed m_version;
             protected uint m_numSizes;
             protected ArrayList m_bitmapSizeTables; // bitmapSizeTable[]
-            protected Table_EBDT m_tableEBDT = null; 
+            protected Table_EBDT? m_tableEBDT = null; 
 
             // constructor
             public EBLC_cache( Table_EBLC OwnerTable )
@@ -1817,7 +1818,7 @@ namespace OTFontFile
             {
                 protected uint m_imageSize;
                 protected Table_EBDT.bigGlyphMetrics m_bigMetrics;
-                protected ArrayList m_glyphCode;
+                protected ArrayList m_glyphCode;    // ArrayList
 
                 public indexSubTableCache5( ushort nIndexFormat, ushort nImageFormat, ArrayList cImageCache, uint nImageSize, Table_EBDT.bigGlyphMetrics cBigMetrics, ArrayList cGlyphCode ) : base( nIndexFormat, nImageFormat, cImageCache )
                 {
@@ -1851,7 +1852,7 @@ namespace OTFontFile
 
                 public imageCache getImageCache( ushort nGylphCode )
                 {
-                    imageCache ic = null;
+                    imageCache? ic = null;
                     for( ushort i = 0; i < numGlyphs; i++ )
                     {
                         if( nGylphCode == getGlyphCode( i ))
@@ -1859,7 +1860,7 @@ namespace OTFontFile
                             ic = (imageCache)m_imageCache[i];
                         }
                     }    
-                    return ic;
+                    return ic!;
                 }
 
                 override public uint indexSubTableSize()

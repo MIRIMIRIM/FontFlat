@@ -1,3 +1,5 @@
+using System;
+
 namespace OTFontFile
 {
     /// <summary>
@@ -379,9 +381,9 @@ namespace OTFontFile
             }
         }
 
-        public OTL.ClassDefTable GetGlyphClassDefTable()
+        public OTL.ClassDefTable? GetGlyphClassDefTable()
         {
-            OTL.ClassDefTable cdt = null;
+            OTL.ClassDefTable? cdt = null;
 
             if (GlyphClassDefOffset != 0)
             {
@@ -391,9 +393,9 @@ namespace OTFontFile
             return cdt;
         }
 
-        public AttachListTable GetAttachListTable()
+        public AttachListTable? GetAttachListTable()
         {
-            AttachListTable alt = null;
+            AttachListTable? alt = null;
 
             if (AttachListOffset != 0)
             {
@@ -403,9 +405,9 @@ namespace OTFontFile
             return alt;
         }
 
-        public LigCaretListTable GetLigCaretListTable()
+        public LigCaretListTable? GetLigCaretListTable()
         {
-            LigCaretListTable lclt = null;
+            LigCaretListTable? lclt = null;
 
             if (LigCaretListOffset != 0)
             {
@@ -415,9 +417,9 @@ namespace OTFontFile
             return lclt;
         }
 
-        public OTL.ClassDefTable GetMarkAttachClassDefTable()
+        public OTL.ClassDefTable? GetMarkAttachClassDefTable()
         {
-            OTL.ClassDefTable cdt = null;
+            OTL.ClassDefTable? cdt = null;
 
             if (MarkAttachClassDefOffset != 0)
             {
@@ -427,9 +429,9 @@ namespace OTFontFile
             return cdt;
         }
 
-        public MarkGlyphSetsDefTable GetMarkGlyphSetsDefTable()
+        public MarkGlyphSetsDefTable? GetMarkGlyphSetsDefTable()
         {
-            MarkGlyphSetsDefTable mgsdt = null;
+            MarkGlyphSetsDefTable? mgsdt = null;
 
             if (MarkGlyphSetsDefOffset != 0)
             {
@@ -458,7 +460,8 @@ namespace OTFontFile
             public override OTTable GenerateTable()
             {
                 // not yet implemented!
-                return null;
+                //return null;
+                throw new NotImplementedException();
             }
         }
         

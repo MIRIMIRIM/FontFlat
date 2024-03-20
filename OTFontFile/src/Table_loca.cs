@@ -1,3 +1,5 @@
+using System;
+
 namespace OTFontFile
 {
     /// <summary>
@@ -20,7 +22,7 @@ namespace OTFontFile
         {
             if (this.m_lengthGlyf==Table_loca.ValueInvalid)
             {
-                DirectoryEntry deGlyf=fontOwner.GetDirectoryEntry("glyf");
+                DirectoryEntry deGlyf=fontOwner.GetDirectoryEntry("glyf")!;
                 if (deGlyf != null)
                 {
                     this.m_lengthGlyf=(int)deGlyf.length;
@@ -34,7 +36,7 @@ namespace OTFontFile
             // sets format without validating it
             if (this.m_format==Table_loca.ValueInvalid)
             {
-                Table_head headTable = (Table_head)fontOwner.GetTable("head");
+                Table_head headTable = (Table_head)fontOwner.GetTable("head")!;
                 if (headTable!=null)
                 {
                     this.m_format=headTable.indexToLocFormat;
@@ -47,7 +49,7 @@ namespace OTFontFile
         {
             if (this.m_numGlyph==Table_loca.ValueInvalid)
             {
-                Table_maxp tableMaxp = (Table_maxp)fontOwner.GetTable("maxp");
+                Table_maxp tableMaxp = (Table_maxp)fontOwner.GetTable("maxp")!;
                 if (tableMaxp != null)
                 {
                     this.m_numGlyph = tableMaxp.NumGlyphs;
@@ -198,7 +200,8 @@ namespace OTFontFile
             public override OTTable GenerateTable()
             {
                 // not yet implemented!
-                return null;
+                //return null;
+                throw new NotImplementedException();
             }
         }
         

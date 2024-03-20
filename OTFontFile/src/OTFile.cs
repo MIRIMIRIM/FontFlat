@@ -25,6 +25,7 @@ namespace OTFontFile
             m_FontFileType = FontFileType.INVALID;
             m_nFonts = 0;
             m_ttch = null;
+            m_fs = null;
         }
 
         /*****************
@@ -108,7 +109,7 @@ namespace OTFontFile
         /// <summary>Accessor for filestream length.</summary>
         public long GetFileLength()
         {
-            return m_fs.Length;
+            return m_fs!.Length;
         }
 
         /// <summary>Accessor for <c>m_TableManager</c></summary>
@@ -136,9 +137,9 @@ namespace OTFontFile
         /// <summary>Read and parse font, either a single font or a single
         /// font from a collection, using the <c>OTFont</c> class.
         /// </summary>
-        public OTFont GetFont(uint i)
+        public OTFont? GetFont(uint i)
         {
-            OTFont f = null;
+            OTFont? f = null;
 
             Debug.Assert(i < m_nFonts);
             Debug.Assert(m_FontFileType != FontFileType.INVALID);
@@ -176,9 +177,9 @@ namespace OTFontFile
             OTTag tag = sfnt;
 
             if (tag == 0x00010000 || // from MS OpenType spec
-                (string)tag == "OTTO" ||   // from MS OpenType spec
-                (string)tag == "true" ||   // from Apple TrueType Reference
-                (string)tag == "typ1")     // from Apple TrueType Reference
+                "OTTO"u8.SequenceEqual((byte[])tag) ||   // from MS OpenType spec
+                "true"u8.SequenceEqual((byte[])tag) ||   // from Apple TrueType Reference
+                "typ1"u8.SequenceEqual((byte[])tag))     // from Apple TrueType Reference
             {
                 bRet = true;
             }
@@ -198,28 +199,28 @@ namespace OTFontFile
             uint TableLength = t.GetBuffer().GetLength();
             long PadFilePos = TableFilePos + TableLength;
 
-            long NextTablePos = m_fs.Length;
+            long NextTablePos = m_fs!.Length;
 
             // possible DSIG in TTC after all the tables
-            if (IsCollection() && m_ttch.DsigTag != null && (string) m_ttch.DsigTag == "DSIG" && m_ttch.DsigOffset > 0 && m_ttch.DsigOffset < NextTablePos && (string) t.m_tag != "DSIG" )
+            if (IsCollection() && m_ttch!.DsigTag is not null && (string) m_ttch.DsigTag == "DSIG" && m_ttch.DsigOffset > 0 && m_ttch.DsigOffset < NextTablePos && (string) t.m_tag != "DSIG" )
                 NextTablePos = m_ttch.DsigOffset;
 
             for (uint iFont=0; iFont<m_nFonts; iFont++)
             {
                 if (IsCollection())
                 {
-                    uint offset = (uint)m_ttch.DirectoryOffsets[(int)iFont];
+                    uint offset = m_ttch!.DirectoryOffsets[(int)iFont];
                     if (offset >= PadFilePos && offset < NextTablePos)
                     {
                         NextTablePos = offset;
                     }
                 }
 
-                OTFont f = GetFont(iFont);
+                OTFont f = GetFont(iFont)!;
                 for (ushort iTable=0; iTable<f.GetNumTables(); iTable++)
                 {
-                    DirectoryEntry de = f.GetDirectoryEntry(iTable);
-                    if (de.offset >= PadFilePos && de.offset < NextTablePos)
+                    var de = f.GetDirectoryEntry(iTable);
+                    if (de!.offset >= PadFilePos && de.offset < NextTablePos)
                     {
                         NextTablePos = de.offset;
                     }
@@ -231,13 +232,13 @@ namespace OTFontFile
         
         
         /// <summary>Read part of filestream into MBOBuffer</summary>
-        public MBOBuffer ReadPaddedBuffer(uint filepos, uint length)
+        public MBOBuffer? ReadPaddedBuffer(uint filepos, uint length)
         {
             // allocate a buffer to hold the table
-            MBOBuffer buf = new MBOBuffer(filepos, length);
+            MBOBuffer? buf = new MBOBuffer(filepos, length);
 
             // read the table
-            m_fs.Seek(filepos, SeekOrigin.Begin);
+            m_fs!.Seek(filepos, SeekOrigin.Begin);
             int nBytes = m_fs.Read(buf.GetBuffer(), 0, (int)length);
             if (nBytes != length)
             {
@@ -261,7 +262,7 @@ namespace OTFontFile
         public byte[] ReadBytes(long filepos, uint length)
         {
             byte[] buf = new byte[length];
-            m_fs.Seek(filepos, SeekOrigin.Begin);
+            m_fs!.Seek(filepos, SeekOrigin.Begin);
             m_fs.Read(buf, 0, (int)length);
             return buf;
         }
@@ -269,11 +270,11 @@ namespace OTFontFile
         /// <summary>Accessor for filestream field.</summary>
         public FileStream GetFileStream()
         {
-            return m_fs;
+            return m_fs!;
         }
 
         /// <summary>Accessor for TTC header field.</summary>
-        public TTCHeader GetTTCHeader()
+        public TTCHeader? GetTTCHeader()
         {
             return m_ttch;
         }
@@ -308,7 +309,7 @@ namespace OTFontFile
 
                 // close the font file
                 fs.Close();
-                fs = null;
+                //fs = null;
             }
             
 
@@ -330,7 +331,7 @@ namespace OTFontFile
             
             // order tables in fastfont order
 
-            string [] arrOrderedNames = null;
+            string []? arrOrderedNames = null;
             string [] ttNames =
                 {
                     "head", "hhea", "maxp", "OS/2", "hmtx", "LTSH", "VDMX", "hdmx", "cmap", "fpgm",
@@ -353,7 +354,7 @@ namespace OTFontFile
             OTTable[] OrderedTables = new OTTable[numTables];
             for (ushort i=0; i<numTables; i++)
             {
-                OrderedTables[i] = font.GetTable(i);
+                OrderedTables[i] = font.GetTable(i)!;
             }
 
             if (arrOrderedNames != null)
@@ -530,7 +531,7 @@ namespace OTFontFile
             for (int i=0; i<fonts.Length; i++)
             {
                 // get the cache
-                Table_head headTable = (Table_head)fonts[i].GetTable("head");
+                Table_head headTable = (Table_head)fonts[i].GetTable("head")!;
                 Table_head.head_cache headCache = (Table_head.head_cache)headTable.GetCache();
 
                 // set the 'modified' field to the current date
@@ -557,7 +558,7 @@ namespace OTFontFile
                 uint PrevFilePos = 0;
                 for (ushort i=0; i<numTables; i++)
                 {
-                    OTTable table = fonts[iFont].GetTable(i);
+                    OTTable table = fonts[iFont].GetTable(i)!;
                     OTTag tag = table.m_tag;
 
                     if ((string)tag == "head")
@@ -574,7 +575,7 @@ namespace OTFontFile
                         {
                             for (int iTable=0; iTable<fonts[iPrevFont].GetNumTables(); iTable++)
                             {
-                                OTTable PrevTable = fonts[iPrevFont].GetTable(table.m_tag);
+                                OTTable? PrevTable = fonts[iPrevFont].GetTable(table.m_tag);
                                 if (PrevTable != null)
                                 {
                                     if (MBOBuffer.BinaryEqual(table.m_bufTable, PrevTable.m_bufTable))
@@ -649,8 +650,8 @@ namespace OTFontFile
                 for (ushort i=0; i<numTables; i++)
                 {
                     DirectoryEntry de = (DirectoryEntry)otArr[iFont].DirectoryEntries[i];
-                    OTTable table = fonts[iFont].GetTable(de.tag);
-                    if ((string)de.tag == "head")
+                    OTTable table = fonts[iFont].GetTable(de.tag)!;
+                    if ("head"u8.SequenceEqual(de.tag.GetBytes()))
                     {
                         table = arrHeadTables[iFont];
                     }
@@ -715,8 +716,8 @@ namespace OTFontFile
                     DirectoryEntry de = (DirectoryEntry)otArr[iFont].DirectoryEntries[i];
                     if (fs.Position == de.offset)
                     {
-                        OTTable table = fonts[iFont].GetTable(de.tag);
-                        if ((string)table.m_tag == "head")
+                        OTTable table = fonts[iFont].GetTable(de.tag)!;
+                        if ("head"u8.SequenceEqual(table.m_tag.GetBytes()))
                         {
                             table = arrHeadTables[iFont];
                         }
@@ -781,7 +782,7 @@ namespace OTFontFile
             FontFileType fft = FontFileType.INVALID;
 
             // read the first four bytes in the file
-            MBOBuffer buf = ReadPaddedBuffer(0, 4);
+            MBOBuffer? buf = ReadPaddedBuffer(0, 4);
 
             if (buf != null)
             {
@@ -817,8 +818,8 @@ namespace OTFontFile
         protected TableManager m_TableManager;        
         protected FontFileType m_FontFileType;
 
-        protected FileStream m_fs;
+        protected FileStream? m_fs;
         protected uint m_nFonts;
-        protected TTCHeader m_ttch;
+        protected TTCHeader? m_ttch;
     }
 }

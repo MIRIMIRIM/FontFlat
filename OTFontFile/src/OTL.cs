@@ -38,13 +38,13 @@ namespace OTFontFile.OTL
 
         public class ScriptRecord
         {
-            public OTTag ScriptTag;
+            public OTTag? ScriptTag;
             public ushort ScriptTableOffset;
         }
 
-        public ScriptRecord GetScriptRecord(uint i)
+        public ScriptRecord? GetScriptRecord(uint i)
         {
-            ScriptRecord sr = null;
+            ScriptRecord? sr = null;
 
             if (i < ScriptCount)
             {
@@ -111,13 +111,13 @@ namespace OTFontFile.OTL
 
         public class LangSysRecord
         {
-            public OTTag LangSysTag;
+            public OTTag? LangSysTag;
             public ushort LangSysOffset;
         }
 
-        public LangSysRecord GetLangSysRecord(uint i)
+        public LangSysRecord? GetLangSysRecord(uint i)
         {
-            LangSysRecord lsr = null;
+            LangSysRecord? lsr = null;
 
             if (i < LangSysCount)
             {
@@ -130,9 +130,9 @@ namespace OTFontFile.OTL
             return lsr;
         }
 
-        public virtual LangSysTable GetDefaultLangSysTable()
+        public virtual LangSysTable? GetDefaultLangSysTable()
         {
-            LangSysTable lst = null;
+            LangSysTable? lst = null;
             if (DefaultLangSysOffset != 0)
             {
                 lst = new LangSysTable((ushort)(m_offsetScriptTable + DefaultLangSysOffset), m_bufTable);;
@@ -246,13 +246,13 @@ namespace OTFontFile.OTL
 
         public class FeatureRecord
         {
-            public OTTag FeatureTag;
+            public OTTag? FeatureTag;
             public ushort FeatureTableOffset;
         }
 
-        public FeatureRecord GetFeatureRecord(uint i)
+        public FeatureRecord? GetFeatureRecord(uint i)
         {
-            FeatureRecord fr = null;
+            FeatureRecord? fr = null;
 
             if (i < FeatureCount)
             {
@@ -374,9 +374,9 @@ namespace OTFontFile.OTL
             return m_bufTable.GetUshort(m_offsetLookupListTable + (uint)FieldOffsets.LookupArray + i*2);
         }
 
-        public virtual LookupTable GetLookupTable(uint i)
+        public virtual LookupTable? GetLookupTable(uint i)
         {
-            LookupTable lt = null;
+            LookupTable? lt = null;
 
             if (i < LookupCount)
             {
@@ -455,14 +455,14 @@ namespace OTFontFile.OTL
             return m_bufTable.GetUshort(m_offsetLookupTable + (uint)FieldOffsets.SubTableOffsetArray + i*2);
         }
 
-        public virtual SubTable GetSubTable(uint i)
+        public virtual SubTable? GetSubTable(uint i)
         {
             if (i >= SubTableCount)
             {
                 throw new ArgumentOutOfRangeException();
             }
 
-            SubTable st = null;
+            SubTable? st = null;
             uint stOffset = m_offsetLookupTable + (uint)GetSubTableOffset(i);
 
             if ((string)m_tag == "GPOS")
@@ -606,14 +606,14 @@ namespace OTFontFile.OTL
             }
         }
 
-        public RangeRecord F2GetRangeRecord(uint i)
+        public RangeRecord? F2GetRangeRecord(uint i)
         {
             if (CoverageFormat != 2)
             {
                 throw new System.InvalidOperationException();
             }
 
-            RangeRecord rr = null;
+            RangeRecord? rr = null;
 
             if (i < F2RangeCount)
             {
@@ -661,7 +661,7 @@ namespace OTFontFile.OTL
                 ushort FirstIndexOfRange = 0;
                 for (uint i=0; i<F2RangeCount; i++)
                 {
-                    RangeRecord rr = F2GetRangeRecord(i);
+                    RangeRecord rr = F2GetRangeRecord(i)!;
                     if (nGlyph >= rr.Start && nGlyph <= rr.End)
                     {
                         cr.bCovered = true;
@@ -797,9 +797,9 @@ namespace OTFontFile.OTL
                 get {return m_bufTable.GetUshort(m_offsetClassDefFormat2 + (uint)FieldOffsets.ClassRangeCount);}
             }
 
-            public ClassRangeRecord GetClassRangeRecord(uint i)
+            public ClassRangeRecord? GetClassRangeRecord(uint i)
             {
-                ClassRangeRecord crr = null;
+                ClassRangeRecord? crr = null;
 
                 if (i < ClassRangeCount)
                 {
@@ -861,7 +861,7 @@ namespace OTFontFile.OTL
                 ClassDefFormat2 cdf2 = GetClassDefFormat2();
                 for (uint i=0; i<cdf2.ClassRangeCount; i++)
                 {
-                    ClassDefFormat2.ClassRangeRecord crr = cdf2.GetClassRangeRecord(i);
+                    ClassDefFormat2.ClassRangeRecord crr = cdf2.GetClassRangeRecord(i)!;
                     if (nGlyph >= crr.Start && nGlyph <= crr.End)
                     {
                         val = crr.Class;

@@ -1,20 +1,22 @@
+using System.Collections.Generic;
+
 namespace OTFontFile
 {
     /// <summary>
     /// Summary description for TableManager.
     /// </summary>
-    public class TableManager
+    public class TableManager(OTFile file)
     {
         /************************
          * constructors
          */
         
         
-        public TableManager(OTFile file)
-        {
-            m_file = file;
-            CachedTables = new System.Collections.ArrayList();
-        }
+        //public TableManager(OTFile file)
+        //{
+        //    m_file = file;
+        //    CachedTables = new System.Collections.ArrayList();
+        //}
 
 
         /************************
@@ -22,10 +24,10 @@ namespace OTFontFile
          */
         
         
-        public OTTable GetTable(OTFont fontOwner, DirectoryEntry de)
+        public OTTable? GetTable(DirectoryEntry de)
         {
             // first try getting it from the table cache
-            OTTable table = GetTableFromCache(de);
+            OTTable? table = GetTableFromCache(de);
 
             if (table == null)
             {
@@ -35,7 +37,7 @@ namespace OTFontFile
                     && de.offset + de.length <= m_file.GetFileLength())
                 {
                     // read the table from the file
-                    MBOBuffer buf = m_file.ReadPaddedBuffer(de.offset, de.length);
+                    var buf = m_file.ReadPaddedBuffer(de.offset, de.length);
 
                     if (buf != null)
                     {
@@ -51,9 +53,9 @@ namespace OTFontFile
             return table;
         }
 
-        public string GetUnaliasedTableName(OTTag tag)
+        public static string GetUnaliasedTableName(OTTag? tag)
         {
-            if (tag == null) return "";
+            if (tag is null) return "";
 
             string sName = tag;
             if (sName == "bloc" || sName == "CBLC" )
@@ -71,7 +73,7 @@ namespace OTFontFile
         static public string [] GetKnownOTTableTypes()
         {
             string [] sTables =
-                {
+                [
                     "avar",
                     "BASE",
                     "CBDT",
@@ -122,7 +124,7 @@ namespace OTFontFile
                     "vmtx",
                     "VORG",
                     "VVAR"
-                };
+                ];
 
             return sTables;
         }
@@ -146,64 +148,63 @@ namespace OTFontFile
 
         public virtual OTTable CreateTableObject(OTTag tag, MBOBuffer buf)
         {
-            OTTable table = null;
+            //OTTable? table = null;
 
             string sName = GetUnaliasedTableName(tag);
 
-            switch (sName)
+            OTTable table = sName switch
             {
                 //case "avar": table = new Table_GenericOT(tag, buf); break;
-                case "BASE": table = new Table_BASE(tag, buf); break;
-                case "CFF ": table = new Table_CFF(tag, buf); break;
+                "BASE" => new Table_BASE(tag, buf),
+                "CFF " => new Table_CFF(tag, buf),
                 //case "CFF2": table = new Table_GenericOT(tag, buf); break;
-                case "cmap": table = new Table_cmap(tag, buf); break;
+                "cmap" => new Table_cmap(tag, buf),
                 //case "COLR": table = new Table_GenericOT(tag, buf); break;
                 //case "CPAL": table = new Table_GenericOT(tag, buf); break;
                 //case "cvar": table = new Table_GenericOT(tag, buf); break;
-                case "cvt ": table = new Table_cvt(tag, buf); break;
-                case "DSIG": table = new Table_DSIG(tag, buf); break;
-                case "EBDT": table = new Table_EBDT(tag, buf); break;
-                case "EBLC": table = new Table_EBLC(tag, buf); break;
-                case "EBSC": table = new Table_EBSC(tag, buf); break;
-                case "fpgm": table = new Table_fpgm(tag, buf); break;
+                "cvt " => new Table_cvt(tag, buf),
+                "DSIG" => new Table_DSIG(tag, buf),
+                "EBDT" => new Table_EBDT(tag, buf),
+                "EBLC" => new Table_EBLC(tag, buf),
+                "EBSC" => new Table_EBSC(tag, buf),
+                "fpgm" => new Table_fpgm(tag, buf),
                 //case "fvar": table = new Table_GenericOT(tag, buf); break;
-                case "gasp": table = new Table_gasp(tag, buf); break;
-                case "GDEF": table = new Table_GDEF(tag, buf); break;
-                case "glyf": table = new Table_glyf(tag, buf); break;
-                case "GPOS": table = new Table_GPOS(tag, buf); break;
-                case "GSUB": table = new Table_GSUB(tag, buf); break;
+                "gasp" => new Table_gasp(tag, buf),
+                "GDEF" => new Table_GDEF(tag, buf),
+                "glyf" => new Table_glyf(tag, buf),
+                "GPOS" => new Table_GPOS(tag, buf),
+                "GSUB" => new Table_GSUB(tag, buf),
                 //case "gvar": table = new Table_GenericOT(tag, buf); break;
-                case "hdmx": table = new Table_hdmx(tag, buf); break;
-                case "head": table = new Table_head(tag, buf); break;
-                case "hhea": table = new Table_hhea(tag, buf); break;
-                case "hmtx": table = new Table_hmtx(tag, buf); break;
+                "hdmx" => new Table_hdmx(tag, buf),
+                "head" => new Table_head(tag, buf),
+                "hhea" => new Table_hhea(tag, buf),
+                "hmtx" => new Table_hmtx(tag, buf),
                 //case "HVAR": table = new Table_GenericOT(tag, buf); break;
-                case "JSTF": table = new Table_JSTF(tag, buf); break;
-                case "kern": table = new Table_kern(tag, buf); break;
-                case "loca": table = new Table_loca(tag, buf); break;
-                case "LTSH": table = new Table_LTSH(tag, buf); break;
+                "JSTF" => new Table_JSTF(tag, buf),
+                "kern" => new Table_kern(tag, buf),
+                "loca" => new Table_loca(tag, buf),
+                "LTSH" => new Table_LTSH(tag, buf),
                 //case "MATH": table = new Table_GenericOT(tag, buf); break;
-                case "maxp": table = new Table_maxp(tag, buf); break;
+                "maxp" => new Table_maxp(tag, buf),
                 //case "MERG": table = new Table_GenericOT(tag, buf); break;
-                case "meta": table = new Table_meta(tag, buf); break;
+                "meta" => new Table_meta(tag, buf),
                 //case "MVAR": table = new Table_GenericOT(tag, buf); break;
-                case "name": table = new Table_name(tag, buf); break;
-                case "OS/2": table = new Table_OS2(tag, buf); break;
-                case "PCLT": table = new Table_PCLT(tag, buf); break;
-                case "post": table = new Table_post(tag, buf); break;
-                case "prep": table = new Table_prep(tag, buf); break;
+                "name" => new Table_name(tag, buf),
+                "OS/2" => new Table_OS2(tag, buf),
+                "PCLT" => new Table_PCLT(tag, buf),
+                "post" => new Table_post(tag, buf),
+                "prep" => new Table_prep(tag, buf),
                 //case "sbix": table = new Table_GenericOT(tag, buf); break;
                 //case "STAT": table = new Table_GenericOT(tag, buf); break;
-                case "SVG ": table = new Table_SVG(tag, buf); break;
-                case "VDMX": table = new Table_VDMX(tag, buf); break;
-                case "vhea": table = new Table_vhea(tag, buf); break;
-                case "vmtx": table = new Table_vmtx(tag, buf); break;
-                case "VORG": table = new Table_VORG(tag, buf); break;
+                "SVG " => new Table_SVG(tag, buf),
+                "VDMX" => new Table_VDMX(tag, buf),
+                "vhea" => new Table_vhea(tag, buf),
+                "vmtx" => new Table_vmtx(tag, buf),
+                "VORG" => new Table_VORG(tag, buf),
                 //case "VVAR": table = new Table_GenericOT(tag, buf); break;
                 //case "Zapf": table = new Table_Zapf(tag, buf); break;
-                default: table = new Table__Unknown(tag, buf); break;
-            }
-
+                _ => new Table__Unknown(tag, buf),
+            };
             return table;
         }
 
@@ -211,13 +212,13 @@ namespace OTFontFile
          * protected methods
          */
 
-        protected OTTable GetTableFromCache(DirectoryEntry de)
+        protected OTTable? GetTableFromCache(DirectoryEntry de)
         {
-            OTTable ot = null;
+            OTTable? ot = null;
 
             for (int i=0; i<CachedTables.Count; i++)
             {
-                OTTable temp = (OTTable)CachedTables[i];
+                OTTable temp = CachedTables[i];
                 if (temp.MatchFileOffsetLength(de.offset, de.length))
                 {
                     ot = temp;
@@ -232,8 +233,9 @@ namespace OTFontFile
          * member data
          */
         
-        OTFile m_file;
+        OTFile m_file = file;
 
-        System.Collections.ArrayList CachedTables;
+        //System.Collections.ArrayList CachedTables;
+        List<OTTable> CachedTables = [];
     }
 }

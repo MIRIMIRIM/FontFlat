@@ -5,7 +5,7 @@ using System.Collections;
 
 namespace OTFontFile
 {
-    public class util
+    public class Util
     {
         public static ushort MaxPower2LE(ushort n)
         {
@@ -53,22 +53,22 @@ namespace OTFontFile
 
     // The purpose of this class is to allow an ArrayList with a deep copy clone method
     // Any object that is part of this ArryList needs to support ICloneable
-    public class DeepCloneArrayList : ArrayList
-    {
-        public override object Clone()
-        {        
-            DeepCloneArrayList clonedList = new DeepCloneArrayList();
+    //public class DeepCloneArrayList : ArrayList
+    //{
+    //    public override object Clone()
+    //    {        
+    //        DeepCloneArrayList clonedList = new DeepCloneArrayList();
 
-            for( int i = 0; i < this.Count; i++ )
-            {
-                clonedList.Add( ((ICloneable)this[i]).Clone() );
+    //        for( int i = 0; i < this.Count; i++ )
+    //        {
+    //            clonedList.Add( ((ICloneable)this[i]).Clone() );
 
-            }
+    //        }
 
-            return clonedList;
-        }
+    //        return clonedList;
+    //    }
 
-    }
+    //}
 
 
 }
