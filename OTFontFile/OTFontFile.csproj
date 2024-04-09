@@ -8,7 +8,7 @@
     <!-- <PublishAot>False</PublishAot> -->
     <DocumentationFile>bin\OTFontFile.XML</DocumentationFile>
     <FileAlignment>4096</FileAlignment>
-    <Version>1.0.0-beta</Version>
+    <Version>1.0.1-beta</Version>
     <PackageDescription>Parse and write opentype fonts.</PackageDescription>
     <PackageTags>opentype;font</PackageTags>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
