@@ -351,7 +351,7 @@ namespace OTFontFile
             return bString;
         }
 
-        static protected string? DecodeString(ushort PlatID, ushort EncID, ushort LangID, byte[] EncodedStringBuf)
+        static public string? DecodeString(ushort PlatID, ushort EncID, ushort LangID, byte[] EncodedStringBuf)
         {
             string? s = null;
 
