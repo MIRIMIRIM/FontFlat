@@ -2,7 +2,11 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.8.34330.188
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "FontFlat", "OTFontFile\OTFontFile.csproj", "{E8F3EC92-602E-4215-8947-5CA789A22871}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "OTFontFile", "OTFontFile\OTFontFile.csproj", "{E8F3EC92-602E-4215-8947-5CA789A22871}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "OpenType", "OpenType\OpenType.csproj", "{06E83382-91D5-40BB-B484-87C985BD5599}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenType.SourceGen", "OpenType.SourceGen\OpenType.SourceGen.csproj", "{E6C2E383-0D71-48B6-9857-1CCB7657644C}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -14,8 +18,19 @@ Global
 		{E8F3EC92-602E-4215-8947-5CA789A22871}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E8F3EC92-602E-4215-8947-5CA789A22871}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E8F3EC92-602E-4215-8947-5CA789A22871}.Release|Any CPU.Build.0 = Release|Any CPU
+		{06E83382-91D5-40BB-B484-87C985BD5599}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{06E83382-91D5-40BB-B484-87C985BD5599}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{06E83382-91D5-40BB-B484-87C985BD5599}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{06E83382-91D5-40BB-B484-87C985BD5599}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E6C2E383-0D71-48B6-9857-1CCB7657644C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E6C2E383-0D71-48B6-9857-1CCB7657644C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E6C2E383-0D71-48B6-9857-1CCB7657644C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E6C2E383-0D71-48B6-9857-1CCB7657644C}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {BA965F64-0169-445C-85DC-88D451B4A231}
 	EndGlobalSection
 EndGlobal
