@@ -1,9 +1,6 @@
 ﻿using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis;
-using System;
 using System.Collections.Generic;
-using System.Text;
-using System.Linq;
 using Microsoft.CodeAnalysis.CSharp;
 
 namespace OpenType.SourceGen

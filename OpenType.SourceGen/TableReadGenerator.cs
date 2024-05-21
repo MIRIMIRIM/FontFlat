@@ -5,11 +5,7 @@ using Microsoft.CodeAnalysis.Text;
 using System;
 using System.Collections.Generic;
 using System.Text;
-using System.Linq;
 using System.Globalization;
-using System.Drawing;
-using System.IO;
-using System.Reflection.PortableExecutable;
 
 namespace OpenType.SourceGen
 {
@@ -44,20 +40,28 @@ namespace OpenType.SourceGen
 
         private string GenerateReadMethod(string structName, SyntaxList<MemberDeclarationSyntax> members)
         {
+            var sb = new StringBuilder();
+            var indentation = 0;
+            var write = new Action<string, bool, bool>((string text, bool appendNewLine, bool startIndentation) =>
+            {
+                if (startIndentation && indentation > 0) { sb.Append((char)0x20, 4 * indentation); }
+                sb.Append(text);
+                if (appendNewLine) { sb.AppendLine(); }
+            });
+
             var textInfo = new CultureInfo("en-US", false).TextInfo;
             var structNameTitleCase = structName.StartsWith("Table_")
                 ? textInfo.ToTitleCase(structName).Remove(5, 1)
                 : $"Read{structName}";
-            var sb = new StringBuilder();
-            sb.AppendLine("using FontFlat.OpenType.DataTypes;");
-            sb.AppendLine("using FontFlat.OpenType.Helper;");
+
+            write("using FontFlat.OpenType.DataTypes;", true, true);
+            write("using FontFlat.OpenType.Helper;", true, true);
             sb.AppendLine();
-            sb.AppendLine("namespace FontFlat.OpenType.FontTables;");
+            write("namespace FontFlat.OpenType.FontTables;", true, true);
             sb.AppendLine();
-            sb.AppendLine("public partial class Read");
-            sb.AppendLine("{");
-            sb.Append((char)0x20, 4);
-            sb.Append($"public static {structName} {structNameTitleCase}");
+            write("public partial class Read", true, true);
+            write("{", true, true); indentation++;
+            write($"public static {structName} {structNameTitleCase}", false, true);
 
             var pass2 = false;
             switch (structName)
@@ -75,18 +79,18 @@ namespace OpenType.SourceGen
                 switch (structName)
                 {
                     case "Table_OS_2":
-                        sb.AppendLine($"(BigEndianBinaryReader reader, uint length) {{");
+                        write($"(BigEndianBinaryReader reader, uint length) {{", true, false);
                         break;
                     default:
-                        sb.AppendLine($"(BigEndianBinaryReader reader) {{");
+                        write($"(BigEndianBinaryReader reader) {{", true, false);
                         break;
                 }
-                sb.Append((char)0x20, 8);
-                sb.AppendLine($"var tbl = new {structName}();");
+                indentation++;
+                write($"var tbl = new {structName}();", true, true);
             }
             else
             {
-                sb.AppendLine($"(BigEndianBinaryReader reader) => new {structName}() {{");
+                write($"(BigEndianBinaryReader reader) => new {structName}() {{", true, false);
             }
 
             var newBlockStart = false;
@@ -131,31 +135,29 @@ namespace OpenType.SourceGen
                             newBlockStart = true;
                             if (!pass2)
                             {
-                                sb.Append((char)0x20, 8); sb.AppendLine("};");
+                                write("};", true, true);
                             }
                             else { sb.AppendLine(); pass2 = false; }
-                            
-                            sb.Append((char)0x20, 8);
 
                             switch (structName)
                             {
                                 case "CollectionHeader":
-                                    sb.AppendLine($"if (tbl.majorVersion == 2) {{");
+                                    write($"if (tbl.majorVersion == 2) {{", true, true);
                                     break;
                                 case "Table_name":
-                                    sb.AppendLine($"if (tbl.version == 1) {{");
+                                    write($"if (tbl.version == 1) {{", true, true);
                                     break;
                                 case "Table_OS_2":
                                     switch (conditionPass)
                                     {
                                         case 1:
-                                            sb.AppendLine($"if (length >= 78) {{"); break;
+                                            write($"if (length >= 78) {{", true, true); break;
                                         case 2:
-                                            sb.AppendLine($"if (length >= 86 && tbl.version >= 1) {{"); break;
+                                            write($"if (length >= 86 && tbl.version >= 1) {{", true, true); break;
                                         case 3:
-                                            sb.AppendLine($"if (length >= 96 && tbl.version >= 2) {{"); break;
+                                            write($"if (length >= 96 && tbl.version >= 2) {{", true, true); break;
                                         case 4:
-                                            sb.AppendLine($"if (length >= 100 && tbl.version >= 5) {{"); break;
+                                            write($"if (length >= 100 && tbl.version >= 5) {{", true, true); break;
                                     }
                                     break;
                                 default:
@@ -166,18 +168,17 @@ namespace OpenType.SourceGen
                         var readerMethod = GetReaderMethodName(typeName, nullableType);
                         if (pass2)
                         {
-                            sb.Append((char)0x20, 8);
-                            sb.Append($"tbl.{identifier} = reader.{readerMethod}(");
+                            write($"tbl.{identifier} = reader.{readerMethod}(", false, true);
 
                             if (readerMethod.EndsWith("Array"))
                             {
                                 switch (structName)
                                 {
                                     case "CollectionHeader":
-                                        sb.Append("(int)tbl.numFonts");
+                                        write("(int)tbl.numFonts", false, false);
                                         break;
                                     case "Table_name":
-                                        sb.Append("(int)tbl.count");
+                                        write("(int)tbl.count", false, false);
                                         break;
                                     default:
                                         break;
@@ -187,10 +188,10 @@ namespace OpenType.SourceGen
                             {
                                 if (structName == "Table_OS_2" && identifier == "panose")
                                 {
-                                    sb.Append("10");
+                                    write("10", false, false);
                                 }
                             }
-                            sb.AppendLine(");");
+                            write(");", true, false);
                         }
                         else
                         {
@@ -198,24 +199,24 @@ namespace OpenType.SourceGen
 
                             if (nullableType)
                             {
-                                sb.Append($"tbl.");
+                                write($"tbl.", false, false);
                             }
-                            sb.Append($"{identifier} = reader.{readerMethod}(");
+                            write($"{identifier} = reader.{readerMethod}(", false, false);
 
                             if (readerMethod.EndsWith("Array"))
                             {
                                 switch (structName)
                                 {
                                     case "Table_name":
-                                        sb.Append("(int)tbl.langTagCount");
+                                        write("(int)tbl.langTagCount", false, false);
                                         break;
                                     default:
                                         break;
                                 }
                             }
-                            sb.Append(")");
+                            write(")", false, false);
 
-                            sb.AppendLine(nullableType ? ";" : ",");
+                            write(nullableType ? ";" : ",", true, false);
                         }
                     }
                 }
@@ -223,21 +224,22 @@ namespace OpenType.SourceGen
 
             if (newBlockStart)
             {
-                sb.Append((char)0x20, 8); sb.AppendLine("};");
-                sb.Append((char)0x20, 8); sb.AppendLine("return tbl;");
+                write("};", true, true);
+                write("return tbl;", true, true);
             }
 
-            sb.Append((char)0x20, 4);
+            indentation--;
             if (pass2 || newBlockStart)
             {
                 newBlockStart = false;
-                sb.AppendLine("}");
+                write("}", true, true);
             }
             else
             {
-                sb.AppendLine("};");
+                indentation++;
+                write("};", true, true);
             }
-            sb.Append("}");
+            indentation--; write("}", false, true);
             return sb.ToString();
         }
         private string GetReaderMethodName(string typeName, bool nullable)
@@ -266,11 +268,25 @@ namespace OpenType.SourceGen
 
         private string GenerateGetMethod(List<RecordDeclarationSyntax> structDeclarations)
         {
+            var sb = new StringBuilder();
+            var indentation = 0;
+            var write = new Action<string, bool>((string text, bool newLine) =>
+                {
+                    if (indentation > 0) { sb.Append((char)0x20, 4 * indentation); }
+                    sb.Append(text);
+                    if (newLine) { sb.AppendLine(); }
+                });
+
             var textInfo = new CultureInfo("en-US", false).TextInfo;
-            var sb = new StringBuilder(
-                $"using FontFlat.OpenType.DataTypes;\nusing FontFlat.OpenType.Helper;\nusing FontFlat.OpenType.FontTables;\n\n" +
-                $"namespace FontFlat.OpenType;\n\n" +
-                $"public partial class OTFont\n{{\n");
+
+            write("using FontFlat.OpenType.DataTypes;", true);
+            write("using FontFlat.OpenType.Helper;", true);
+            write("using FontFlat.OpenType.FontTables;", true);
+            sb.AppendLine();
+            write("namespace FontFlat.OpenType;", true);
+            sb.AppendLine();
+            write("public partial class OTFont", true);
+            write("{", true); indentation++;
 
             List<string> tables = [];
 
@@ -281,14 +297,10 @@ namespace OpenType.SourceGen
                 var structNameTitleCase = textInfo.ToTitleCase(structName.Substring(6));
                 tables.Add(structNameTitleCase);
 
-                sb.Append((char)0x20, 4);
-                sb.AppendLine($"public {structName}? GetTable{structNameTitleCase}() {{");
-                sb.Append((char)0x20, 8);
-                sb.AppendLine($"if ({structNameTitleCase} is null) {{ ParseTable{structNameTitleCase}(); }}");
-                sb.Append((char)0x20, 8);
-                sb.AppendLine($"return {structNameTitleCase};");
-                sb.Append((char)0x20, 4);
-                sb.AppendLine($"}}");
+                write($"public {structName}? GetTable{structNameTitleCase}() {{", true); indentation++;
+                write($"if ({structNameTitleCase} is null) {{ ParseTable{structNameTitleCase}(); }}", true);
+                write($"return {structNameTitleCase};", true);
+                indentation--; write("}", true);
             }
 
             sb.AppendLine();
@@ -305,25 +317,25 @@ namespace OpenType.SourceGen
                         break;
                 }
 
-                sb.Append((char)0x20, 4); sb.AppendLine($"private void ParseTable{tbl}() {{");
-                sb.Append((char)0x20, 8); sb.AppendLine($"var record = Records.Where(x => x.tableTag.AsSpan().SequenceEqual(\"{tag}\"u8));");
-                sb.Append((char)0x20, 8); sb.AppendLine($"if (record.Count() != 1) {{ throw new Exception(\"Not have table '{tag}'\"); }}");
-                sb.Append((char)0x20, 8); sb.AppendLine($"reader.BaseStream.Seek((long)record.First().offset, SeekOrigin.Begin);");
+                write($"private void ParseTable{tbl}() {{", true); indentation++;
+                write($"var record = Records.Where(x => x.tableTag.AsSpan().SequenceEqual(\"{tag}\"u8));", true);
+                write($"if (record.Count() != 1) {{ throw new Exception(\"Not have table '{tag}'\"); }}", true);
+                write($"reader.BaseStream.Seek((long)record.First().offset, SeekOrigin.Begin);", true);
 
                 switch (tbl)
                 {
                     case "OS_2":
-                        sb.Append((char)0x20, 8); sb.AppendLine($"{tbl} = FontTables.Read.Table{tbl}(reader, record.First().length);");
+                        write($"{tbl} = FontTables.Read.Table{tbl}(reader, record.First().length);", true);
                         break;
                     default:
-                        sb.Append((char)0x20, 8); sb.AppendLine($"{tbl} = FontTables.Read.Table{tbl}(reader);");
+                        write($"{tbl} = FontTables.Read.Table{tbl}(reader);", true);
                         break;
                 }
 
-                sb.Append((char)0x20, 4); sb.AppendLine("}");
+                indentation--; write("}", true);
             }
 
-            sb.AppendLine("}");
+            indentation--; write("}", true);
 
             return sb.ToString();
         }
