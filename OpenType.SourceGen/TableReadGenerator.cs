@@ -42,58 +42,85 @@ namespace OpenType.SourceGen
         {
             var sb = new StringBuilder();
             var indentation = 0;
-            var write = new Action<string, bool, bool>((string text, bool appendNewLine, bool startIndentation) =>
+
+            var constructors = false;
+            var classOrMethodBlock = true;
+            var inBlock = false;    // exclude class / struct / method…
+            var assignment = false;
+
+            var write = new Action<string, bool, bool>((string text, bool appendNewLine, bool startAppendIndentation) =>
             {
-                if (startIndentation && indentation > 0) { sb.Append((char)0x20, 4 * indentation); }
+                if (startAppendIndentation && indentation > 0) { sb.Append((char)0x20, 4 * indentation); }
                 sb.Append(text);
                 if (appendNewLine) { sb.AppendLine(); }
             });
+            var writeSyntax = new Action<SyntaxKind>((SyntaxKind kind) =>
+            {
+                switch (kind)
+                {
+                    case SyntaxKind.OpenBraceToken:
+                        write("{", true, true);
+                        indentation++;
+                        break;
+                    case SyntaxKind.CloseBraceToken:
+                        indentation--;
+                        if (classOrMethodBlock)
+                        {
+                            write("}", true, true);
+                        }
+                        else
+                        {
+                            write("};", true, true);
+                        }
+                        classOrMethodBlock = true;
+                        break;
+                    case SyntaxKind.OpenParenToken:
+                        write("(", false, false);
+                        break;
+                    case SyntaxKind.CloseParenToken:
+                        if (!assignment)
+                        {
+                            write(")", false, false);
+                            assignment = false;
+                        }
+                        else if (constructors)
+                        {
+                            write("),", true, false);
+                        }
+                        else
+                        {
+                            write(");", true, false);
+                        }
+                        break;
+                }
+            });
+            var blockStart = new Action(() => { inBlock = true; });
+            var blockEnd = new Action(() => { inBlock = false; });
 
+            // TitleCase and remove first _
             var textInfo = new CultureInfo("en-US", false).TextInfo;
             var structNameTitleCase = structName.StartsWith("Table_")
                 ? textInfo.ToTitleCase(structName).Remove(5, 1)
                 : $"Read{structName}";
 
-            write("using FontFlat.OpenType.DataTypes;", true, true);
+            // File Start
+            //write("using FontFlat.OpenType.DataTypes;", true, true);
             write("using FontFlat.OpenType.Helper;", true, true);
             sb.AppendLine();
             write("namespace FontFlat.OpenType.FontTables;", true, true);
             sb.AppendLine();
             write("public partial class Read", true, true);
-            write("{", true, true); indentation++;
+            writeSyntax(SyntaxKind.OpenBraceToken); classOrMethodBlock = true;
             write($"public static {structName} {structNameTitleCase}", false, true);
 
-            var pass2 = false;
-            switch (structName)
-            {
-                case "CollectionHeader":
-                case "Table_name":
-                case "Table_OS_2":
-                    pass2 = true; break;
-                default:
-                    pass2 = false; break;
-            }
+            // Set method arguments
+            write(GetTableReadArguments(structName), true, false);
+            writeSyntax(SyntaxKind.OpenBraceToken); classOrMethodBlock = true;
+            write($"var tbl = new {structName}()", true, true);
+            writeSyntax(SyntaxKind.OpenBraceToken); classOrMethodBlock = false;
+            constructors = true; assignment = true; blockStart();
 
-            if (pass2)
-            {
-                switch (structName)
-                {
-                    case "Table_OS_2":
-                        write($"(BigEndianBinaryReader reader, uint length) {{", true, false);
-                        break;
-                    default:
-                        write($"(BigEndianBinaryReader reader) {{", true, false);
-                        break;
-                }
-                indentation++;
-                write($"var tbl = new {structName}();", true, true);
-            }
-            else
-            {
-                write($"(BigEndianBinaryReader reader) => new {structName}() {{", true, false);
-            }
-
-            var newBlockStart = false;
+            // loop and parse fields
             foreach (var member in members)
             {
                 if (member is FieldDeclarationSyntax field)
@@ -104,142 +131,38 @@ namespace OpenType.SourceGen
                         var identifier = variable.Identifier.Text;
                         var nullableType = typeName.EndsWith("?");
 
-                        var conditionPass = 0;
-                        switch (structName)
+                        if (nullableType)
                         {
-                            case "Table_OS_2":
-                                switch (identifier)
-                                {
-                                    case "sTypoAscender":
-                                        conditionPass = 1;
-                                        break;
-                                    case "ulCodePageRange1":
-                                        conditionPass = 2; newBlockStart = false;
-                                        break;
-                                    case "sxHeight":
-                                        conditionPass = 3; newBlockStart = false;
-                                        break;
-                                    case "usLowerOpticalPointSize":
-                                        conditionPass = 4; newBlockStart = false;
-                                        break;
-                                    default:
-                                        break;
-                                }
-                                break;
-                            default:
-                                break;
-                        }
-
-                        if (nullableType && !newBlockStart)
-                        {
-                            newBlockStart = true;
-                            if (!pass2)
+                            var cond = GetTableReadConditions(structName, identifier);
+                            if (cond != null)
                             {
-                                write("};", true, true);
-                            }
-                            else { sb.AppendLine(); pass2 = false; }
-
-                            switch (structName)
-                            {
-                                case "CollectionHeader":
-                                    write($"if (tbl.majorVersion == 2) {{", true, true);
-                                    break;
-                                case "Table_name":
-                                    write($"if (tbl.version == 1) {{", true, true);
-                                    break;
-                                case "Table_OS_2":
-                                    switch (conditionPass)
-                                    {
-                                        case 1:
-                                            write($"if (length >= 78) {{", true, true); break;
-                                        case 2:
-                                            write($"if (length >= 86 && tbl.version >= 1) {{", true, true); break;
-                                        case 3:
-                                            write($"if (length >= 96 && tbl.version >= 2) {{", true, true); break;
-                                        case 4:
-                                            write($"if (length >= 100 && tbl.version >= 5) {{", true, true); break;
-                                    }
-                                    break;
-                                default:
-                                    break;
+                                if (inBlock) { writeSyntax(SyntaxKind.CloseBraceToken); blockEnd(); constructors = false; }
+                                write(cond, true, true);
+                                writeSyntax(SyntaxKind.OpenBraceToken); classOrMethodBlock = false; blockStart();
                             }
                         }
-                        
+
                         var readerMethod = GetReaderMethodName(typeName, nullableType);
-                        if (pass2)
-                        {
-                            write($"tbl.{identifier} = reader.{readerMethod}(", false, true);
+                        var readerMethodArgus = GetReaderMethodArguments(structName, identifier, out var needOtherFields);
 
-                            if (readerMethod.EndsWith("Array"))
-                            {
-                                switch (structName)
-                                {
-                                    case "CollectionHeader":
-                                        write("(int)tbl.numFonts", false, false);
-                                        break;
-                                    case "Table_name":
-                                        write("(int)tbl.count", false, false);
-                                        break;
-                                    default:
-                                        break;
-                                }
-                            }
-                            else if (readerMethod == "ReadBytes")
-                            {
-                                if (structName == "Table_OS_2" && identifier == "panose")
-                                {
-                                    write("10", false, false);
-                                }
-                            }
-                            write(");", true, false);
+                        if (needOtherFields && constructors) {
+                            writeSyntax(SyntaxKind.CloseBraceToken);
+                            constructors = !constructors && constructors; blockEnd();
                         }
-                        else
-                        {
-                            sb.Append((char)0x20, nullableType ? 12 : 8);
 
-                            if (nullableType)
-                            {
-                                write($"tbl.", false, false);
-                            }
-                            write($"{identifier} = reader.{readerMethod}(", false, false);
-
-                            if (readerMethod.EndsWith("Array"))
-                            {
-                                switch (structName)
-                                {
-                                    case "Table_name":
-                                        write("(int)tbl.langTagCount", false, false);
-                                        break;
-                                    default:
-                                        break;
-                                }
-                            }
-                            write(")", false, false);
-
-                            write(nullableType ? ";" : ",", true, false);
-                        }
+                        write(constructors ? $"{identifier} = reader.{readerMethod}" : $"tbl.{identifier} = reader.{readerMethod}", false, true);
+                        writeSyntax(SyntaxKind.OpenParenToken);
+                        assignment = true;
+                        write(readerMethodArgus, false, false);
+                        writeSyntax(SyntaxKind.CloseParenToken);
                     }
                 }
             }
 
-            if (newBlockStart)
-            {
-                write("};", true, true);
-                write("return tbl;", true, true);
-            }
+            writeSyntax(SyntaxKind.CloseBraceToken); blockEnd();
+            write("return tbl;", true, true);
 
-            indentation--;
-            if (pass2 || newBlockStart)
-            {
-                newBlockStart = false;
-                write("}", true, true);
-            }
-            else
-            {
-                indentation++;
-                write("};", true, true);
-            }
-            indentation--; write("}", false, true);
+            while (indentation > 0) { writeSyntax(SyntaxKind.CloseBraceToken); }
             return sb.ToString();
         }
         private string GetReaderMethodName(string typeName, bool nullable)
@@ -263,6 +186,64 @@ namespace OpenType.SourceGen
                 "Tag" => "ReadTag",
                 "byte[]" => "ReadBytes",
                 _ => throw new NotSupportedException($"Type '{typeName}' is not supported.")
+            };
+        }
+        private string GetReaderMethodArguments(string structName, string fieldName, out bool needOtherFields)
+        {
+            var arguments = structName switch
+            {
+                "CollectionHeader" => fieldName switch
+                {
+                    "tableDirectoryOffsets" => "(int)tbl.numFonts",
+                    _ => string.Empty
+                },
+                "Table_name" => fieldName switch
+                {
+                    "nameRecords" => "(int)tbl.count",
+                    "langTagRecords" => "(int)tbl.langTagCount",
+                    _ => string.Empty
+                },
+                "Table_OS_2" => fieldName switch
+                {
+                    "panose" => "10",
+                    _ => string.Empty,
+                },
+                _ => string.Empty,
+            };
+            needOtherFields = arguments != string.Empty && (arguments.IndexOf("tbl.") > -1);
+            return arguments;
+        }
+        private string? GetTableReadConditions(string structName, string fieldName)
+        {
+            return structName switch
+            {
+                "CollectionHeader" => fieldName switch
+                {
+                    "dsigTag" => "if (tbl.majorVersion == 2)",
+                    _ => null,
+                },
+                "Table_name" => fieldName switch
+                {
+                    "langTagCount" => "if (tbl.version == 1)",
+                    _ => null,
+                },
+                "Table_OS_2" => fieldName switch
+                {
+                    "sTypoAscender" => "if (length >= 78)",
+                    "ulCodePageRange1" => "if (length >= 86 && tbl.version >= 1)",
+                    "sxHeight" => "if (length >= 96 && tbl.version >= 2)",
+                    "usLowerOpticalPointSize" => "if (length >= 100 && tbl.version >= 5)",
+                    _ => null,
+                },
+                _ => null,
+            };
+        }
+        private string GetTableReadArguments(string structName)
+        {
+            return structName switch
+            {
+                "Table_OS_2" => "(BigEndianBinaryReader reader, uint length)",
+                _ => "(BigEndianBinaryReader reader)"
             };
         }
 
@@ -306,17 +287,11 @@ namespace OpenType.SourceGen
             sb.AppendLine();
             foreach (var tbl in tables)
             {
-                string tag;
-                switch (tbl)
+                var tag = tbl switch
                 {
-                    case "OS_2":
-                        tag = "OS/2";
-                        break;
-                    default:
-                        tag = tbl.ToLower();
-                        break;
-                }
-
+                    "OS_2" => "OS/2",
+                    _ => tbl.ToLower(),
+                };
                 write($"private void ParseTable{tbl}() {{", true); indentation++;
                 write($"var record = Records.Where(x => x.tableTag.AsSpan().SequenceEqual(\"{tag}\"u8));", true);
                 write($"if (record.Count() != 1) {{ throw new Exception(\"Not have table '{tag}'\"); }}", true);
