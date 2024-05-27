@@ -187,6 +187,9 @@ namespace OpenType.SourceGen
                 "byte[]" => "ReadBytes",
                 "Fixed" => "ReadF16Dot16",
                 "Version16Dot16" => "ReadF16Dot16",
+                "FWORD" => "ReadInt16",
+                "UFWORD" => "ReadUInt16",
+                "short[]" => "ReadInt16Array",
                 _ => throw new NotSupportedException($"Type '{typeName}' is not supported.")
             };
         }
@@ -208,6 +211,11 @@ namespace OpenType.SourceGen
                 "Table_OS_2" => fieldName switch
                 {
                     "panose" => "10",
+                    _ => string.Empty,
+                },
+                "Table_hhea" => fieldName switch
+                {
+                    "reserveds" => "4",
                     _ => string.Empty,
                 },
                 _ => string.Empty,

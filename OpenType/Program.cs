@@ -26,7 +26,7 @@ internal class Program
         var fontFile = new FontFile(file);
         fontFile.Parse(ReaderFlag.Full);
         var face = fontFile.GetFont(0);
-        var t = face.GetTableMaxp();
+        var t = face.GetTableHhea();
     }
 }
 

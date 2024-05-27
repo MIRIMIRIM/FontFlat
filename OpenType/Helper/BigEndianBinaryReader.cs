@@ -62,4 +62,13 @@ public class BigEndianBinaryReader(Stream input) : BinaryReader(input)
     }
     public Tag ReadTag() => new Tag(ReadBytes(4));
     public F16DOT16 ReadF16Dot16() => new F16DOT16(ReadUInt32());
+    public short[] ReadInt16Array(int count)
+    {
+        var arr = new short[count];
+        for (var i = 0; i < count; i++)
+        {
+            arr[i] = ReadInt16();
+        }
+        return arr;
+    }
 }
