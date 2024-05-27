@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace FontFlat.OpenType.DataTypes;
 
-public struct Offset16(ushort value)
+public readonly struct Offset16(ushort value)
 {
     private readonly ushort value = value;
     public static implicit operator Offset16(ushort value) => new Offset16(value);
@@ -15,11 +15,11 @@ public struct Offset16(ushort value)
     public static implicit operator int(Offset16 offset) => offset.value;
     public override readonly string ToString() => value.ToString();
 }
-public struct Offset24
+public readonly struct Offset24
 {
 }
 
-public struct Offset32(uint value)
+public readonly struct Offset32(uint value)
 {
     private readonly uint value = value;
     public static implicit operator Offset32(uint value) => new Offset32(value);
