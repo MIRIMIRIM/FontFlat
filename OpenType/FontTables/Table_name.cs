@@ -24,7 +24,9 @@ public record struct NameRecord
     public Offset16 stringOffset;
 }
 
+// langTag: IETF specification BCP 47
 public record struct LangTagRecord
 {
-
+    public uint length;
+    public Offset16 langTagOffset;
 }
