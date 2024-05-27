@@ -66,4 +66,5 @@ public class BigEndianBinaryReader(Stream input) : BinaryReader(input)
         return arr;
     }
     public Tag ReadTag() => new Tag(ReadBytes(4));
+    public Version16Dot16 ReadVersion16Dot16() => new Version16Dot16(ReadUInt32());
 }

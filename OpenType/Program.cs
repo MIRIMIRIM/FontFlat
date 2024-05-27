@@ -10,9 +10,9 @@ internal class Program
     static void Main(string[] args)
     {
         //var file = @"F:\GitHub\sub_backup\Totokami\Fonts\FZLanTingHei-R-GBK.TTF";
-        //var file = @"C:\Windows\Fonts\msyh.ttc";
+        var file = @"C:\Windows\Fonts\msyh.ttc";
         //var file = new FileInfo(@"C:\Windows\Fonts\華康飾藝體W7 & 華康飾藝體W7(P).ttc");
-        var file = new FileInfo(@"G:\Typeface\超级字体整合包 XZ\Japanese\視覚デザイン研究所\old\TrueMegaMaru-U.ttf");
+        //var file = new FileInfo(@"G:\Typeface\超级字体整合包 XZ\Japanese\視覚デザイン研究所\old\TrueMegaMaru-U.ttf");
 
         //var file = new FileInfo(@"C:\Windows\Fonts\SourceHanSansCN-Regular.otf");
         //var file = new FileInfo(@"C:\Windows\Fonts\华康POP1体W5 & 华康POP1体W5(P).ttc");
@@ -26,7 +26,7 @@ internal class Program
         var fontFile = new FontFile(file);
         fontFile.Parse(ReaderFlag.Full);
         var face = fontFile.GetFont(0);
-        var t = face.GetTableOS_2();
+        var t = face.GetTableMaxp();
     }
 }
 

@@ -106,6 +106,7 @@ namespace OpenType.SourceGen
             // File Start
             //write("using FontFlat.OpenType.DataTypes;", true, true);
             write("using FontFlat.OpenType.Helper;", true, true);
+            write("using FontFlat.OpenType.DataTypes;", true, true);
             sb.AppendLine();
             write("namespace FontFlat.OpenType.FontTables;", true, true);
             sb.AppendLine();
@@ -185,6 +186,7 @@ namespace OpenType.SourceGen
                 "LangTagRecord[]" => "ReadLangTagRecordArray",
                 "Tag" => "ReadTag",
                 "byte[]" => "ReadBytes",
+                "Version16Dot16" => "ReadVersion16Dot16",
                 _ => throw new NotSupportedException($"Type '{typeName}' is not supported.")
             };
         }
@@ -233,6 +235,11 @@ namespace OpenType.SourceGen
                     "ulCodePageRange1" => "if (length >= 86 && tbl.version >= 1)",
                     "sxHeight" => "if (length >= 96 && tbl.version >= 2)",
                     "usLowerOpticalPointSize" => "if (length >= 100 && tbl.version >= 5)",
+                    _ => null,
+                },
+                "Table_maxp" => fieldName switch
+                {
+                    "maxPoints" => "if (tbl.version == new Version16Dot16(1, 0))",
                     _ => null,
                 },
                 _ => null,
