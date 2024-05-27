@@ -71,4 +71,17 @@ public class BigEndianBinaryReader(Stream input) : BinaryReader(input)
         }
         return arr;
     }
+    public LongHorMetric[] ReadLongHorMetricArray(ushort count)
+    {
+        var arr = new LongHorMetric[count];
+        for (var i = 0; i < count; i++)
+        {
+            arr[i] = new LongHorMetric()
+            {
+                advanceWidth = ReadUInt16(),
+                lsb = ReadInt16(),
+            };
+        }
+        return arr;
+    }
 }

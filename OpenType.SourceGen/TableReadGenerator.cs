@@ -190,6 +190,7 @@ namespace OpenType.SourceGen
                 "FWORD" => "ReadInt16",
                 "UFWORD" => "ReadUInt16",
                 "short[]" => "ReadInt16Array",
+                "LongHorMetric[]" => "ReadLongHorMetricArray",
                 _ => throw new NotSupportedException($"Type '{typeName}' is not supported.")
             };
         }
@@ -216,6 +217,12 @@ namespace OpenType.SourceGen
                 "Table_hhea" => fieldName switch
                 {
                     "reserveds" => "4",
+                    _ => string.Empty,
+                },
+                "Table_hmtx" => fieldName switch
+                {
+                    "hMetrics" => "numberOfHMetrics",
+                    "leftSideBearings" => "(int)(numGlyphs - numberOfHMetrics)",
                     _ => string.Empty,
                 },
                 _ => string.Empty,
@@ -258,6 +265,7 @@ namespace OpenType.SourceGen
             return structName switch
             {
                 "Table_OS_2" => "(BigEndianBinaryReader reader, uint length)",
+                "Table_hmtx" => "(BigEndianBinaryReader reader, ushort numberOfHMetrics, ushort numGlyphs)",
                 _ => "(BigEndianBinaryReader reader)"
             };
         }
@@ -308,6 +316,15 @@ namespace OpenType.SourceGen
                     _ => tbl.ToLower(),
                 };
                 write($"private void ParseTable{tbl}() {{", true); indentation++;
+
+                switch (tbl)
+                {
+                    case "Hmtx":
+                        write($"if (Hhea is null) {{ ParseTableHhea(); }}", true);
+                        write($"if (Maxp is null) {{ ParseTableMaxp(); }}", true);
+                        break;
+                }
+
                 write($"var record = Records.Where(x => x.tableTag.AsSpan().SequenceEqual(\"{tag}\"u8));", true);
                 write($"if (record.Count() != 1) {{ throw new Exception(\"Not have table '{tag}'\"); }}", true);
                 write($"reader.BaseStream.Seek((long)record.First().offset, SeekOrigin.Begin);", true);
@@ -316,6 +333,9 @@ namespace OpenType.SourceGen
                 {
                     case "OS_2":
                         write($"{tbl} = FontTables.Read.Table{tbl}(reader, record.First().length);", true);
+                        break;
+                    case "Hmtx":
+                        write($"{tbl} = FontTables.Read.Table{tbl}(reader, ((Table_hhea)Hhea).numberOfHMetrics, ((Table_maxp)Maxp).numGlyphs);", true);
                         break;
                     default:
                         write($"{tbl} = FontTables.Read.Table{tbl}(reader);", true);

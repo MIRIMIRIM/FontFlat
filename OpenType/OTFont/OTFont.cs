@@ -18,6 +18,7 @@ public partial class OTFont(BigEndianBinaryReader _reader, int _offset, ReaderFl
     public Table_OS_2? OS_2;
     public Table_maxp? Maxp;
     public Table_hhea? Hhea;
+    public Table_hmtx? Hmtx;
 
     public void ReadPackets()
     {
