@@ -30,11 +30,6 @@ public class BigEndianBinaryReader(Stream input) : BinaryReader(input)
     // uint24
     public override uint ReadUInt32() => BinaryPrimitives.ReadUInt32BigEndian(Read(sizeof(uint)));
     public override int ReadInt32() => BinaryPrimitives.ReadInt32BigEndian(Read(sizeof(int)));
-    public Fixed ReadFixed() => new()
-    {
-        High = ReadUInt16(),
-        Low = ReadUInt16(),
-    };
     public LONGDATETIME ReadLongDateTime() => new LONGDATETIME(BinaryPrimitives.ReadInt64BigEndian(Read(sizeof(long))));
     public Offset16 ReadOffset16() => new Offset16(ReadUInt16());
     public Offset32 ReadOffset32() => new Offset32(ReadUInt32());
@@ -66,5 +61,5 @@ public class BigEndianBinaryReader(Stream input) : BinaryReader(input)
         return arr;
     }
     public Tag ReadTag() => new Tag(ReadBytes(4));
-    public Version16Dot16 ReadVersion16Dot16() => new Version16Dot16(ReadUInt32());
+    public F16DOT16 ReadF16Dot16() => new F16DOT16(ReadUInt32());
 }

@@ -174,7 +174,6 @@ namespace OpenType.SourceGen
                 "short" => "ReadInt16",
                 "uint" => "ReadUInt32",
                 "int" => "ReadInt32",
-                "Fixed" => "ReadFixed",
                 "LONGDATETIME" => "ReadLongDateTime",
                 "Offset16" => "ReadOffset16",
                 "Offset24" => "ReadOffset24",
@@ -186,7 +185,8 @@ namespace OpenType.SourceGen
                 "LangTagRecord[]" => "ReadLangTagRecordArray",
                 "Tag" => "ReadTag",
                 "byte[]" => "ReadBytes",
-                "Version16Dot16" => "ReadVersion16Dot16",
+                "Fixed" => "ReadF16Dot16",
+                "Version16Dot16" => "ReadF16Dot16",
                 _ => throw new NotSupportedException($"Type '{typeName}' is not supported.")
             };
         }
