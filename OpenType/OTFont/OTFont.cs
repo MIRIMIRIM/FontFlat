@@ -1,6 +1,7 @@
 ﻿using FontFlat.OpenType.DataTypes;
 using FontFlat.OpenType.FontTables;
 using FontFlat.OpenType.Helper;
+using System;
 
 namespace FontFlat.OpenType;
 
@@ -19,6 +20,7 @@ public partial class OTFont(BigEndianBinaryReader _reader, int _offset, ReaderFl
     public Table_maxp? Maxp;
     public Table_hhea? Hhea;
     public Table_hmtx? Hmtx;
+    public Table_post? Post;
 
     public void ReadPackets()
     {
@@ -31,4 +33,20 @@ public partial class OTFont(BigEndianBinaryReader _reader, int _offset, ReaderFl
             Records[i] = Read.ReadTableRecord(reader);
         }
     }
+
+    public TableRecord GetTableRecord(ReadOnlySpan<byte> tag)
+    {
+        TableRecord? record = null;
+        foreach (var rec in Records)
+        {
+            if (rec.tableTag.AsSpan().SequenceEqual(tag))
+            {
+                record = rec;
+                break;
+            }
+        }
+        if (record == null) { throw new Exception($"Not have table '{tag.ToString()}'"); }
+        return (TableRecord)record;
+    }
+
 }

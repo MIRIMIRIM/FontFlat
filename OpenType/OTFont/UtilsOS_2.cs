@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace OpenType.OTFont;
+namespace FontFlat.OpenType;
 
 public partial class OTFont
 {
