@@ -23,8 +23,7 @@ public class BigEndianBinaryReader(Stream input) : BinaryReader(input)
         base.Dispose(disposing);
     }
 
-    // uint8
-    // int8
+
     public override ushort ReadUInt16() => BinaryPrimitives.ReadUInt16BigEndian(Read(sizeof(ushort)));
     public override short ReadInt16() => BinaryPrimitives.ReadInt16BigEndian(Read(sizeof(short)));
     // uint24
@@ -68,6 +67,15 @@ public class BigEndianBinaryReader(Stream input) : BinaryReader(input)
         for (var i = 0; i < count; i++)
         {
             arr[i] = ReadInt16();
+        }
+        return arr;
+    }
+    public ushort[] ReadUInt16Array(int count)
+    {
+        var arr = new ushort[count];
+        for (var i = 0; i < count; i++)
+        {
+            arr[i] = ReadUInt16();
         }
         return arr;
     }

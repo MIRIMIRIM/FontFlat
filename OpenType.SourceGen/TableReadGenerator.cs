@@ -190,6 +190,7 @@ namespace OpenType.SourceGen
                 "FWORD" => "ReadInt16",
                 "UFWORD" => "ReadUInt16",
                 "short[]" => "ReadInt16Array",
+                "ushort[]" => "ReadUInt16Array",
                 "LongHorMetric[]" => "ReadLongHorMetricArray",
                 _ => throw new NotSupportedException($"Type '{typeName}' is not supported.")
             };
@@ -225,6 +226,12 @@ namespace OpenType.SourceGen
                     "leftSideBearings" => "(int)(numGlyphs - numberOfHMetrics)",
                     _ => string.Empty,
                 },
+                "Table_post" => fieldName switch
+                {
+                    "glyphNameIndex" => "(int)tbl.numGlyphs",
+                    "offset" => "(int)tbl.numGlyphs",
+                    _ => string.Empty,
+                },
                 _ => string.Empty,
             };
             needOtherFields = arguments != string.Empty && (arguments.IndexOf("tbl.") > -1);
@@ -254,7 +261,14 @@ namespace OpenType.SourceGen
                 },
                 "Table_maxp" => fieldName switch
                 {
-                    "maxPoints" => "if (tbl.version == new Version16Dot16(1, 0))",
+                    "maxPoints" => "if (tbl.version == Const.ver10)",
+                    _ => null,
+                },
+                "Table_post" => fieldName switch
+                {
+                    "numGlyphs" => "if (tbl.version == Const.ver20 || tbl.version == Const.ver25)",
+                    "glyphNameIndex" => "if (tbl.version == Const.ver20)",
+                    "offset" => "if (tbl.version == Const.ver25)",
                     _ => null,
                 },
                 _ => null,
@@ -307,44 +321,66 @@ namespace OpenType.SourceGen
                 indentation--; write("}", true);
             }
 
-            sb.AppendLine();
-            foreach (var tbl in tables)
+            var parseTablesOverload = new Action<string?>((string? ovrType) =>
             {
-                var tag = tbl switch
+                foreach (var tbl in tables)
                 {
-                    "OS_2" => "OS/2",
-                    _ => tbl.ToLower(),
-                };
-                write($"private void ParseTable{tbl}() {{", true); indentation++;
+                    var tag = tbl switch
+                    {
+                        "OS_2" => "OS/2",
+                        _ => tbl.ToLower(),
+                    };
 
-                switch (tbl)
-                {
-                    case "Hmtx":
-                        write($"if (Hhea is null) {{ ParseTableHhea(); }}", true);
-                        write($"if (Maxp is null) {{ ParseTableMaxp(); }}", true);
-                        break;
+                    switch (ovrType)
+                    {
+                        case "returnRecord":
+                            write($"private void ParseTable{tbl}(out TableRecord record) {{", true); indentation++;
+                            break;
+                        default:
+                            write($"private void ParseTable{tbl}() {{", true); indentation++;
+                            break;
+                    }
+
+                    switch (tbl)
+                    {
+                        case "Hmtx":
+                            write($"if (Hhea is null) {{ ParseTableHhea(); }}", true);
+                            write($"if (Maxp is null) {{ ParseTableMaxp(); }}", true);
+                            break;
+                    }
+
+                    switch (ovrType)
+                    {
+                        case "returnRecord":
+                            write($"record = GetTableRecord(\"{tag}\"u8);", true);
+                            break;
+                        default:
+                            write($"var record = GetTableRecord(\"{tag}\"u8);", true);
+                            break;
+                    }
+                    write($"reader.BaseStream.Seek((long)record.offset, SeekOrigin.Begin);", true);
+
+                    switch (tbl)
+                    {
+                        case "OS_2":
+                            write($"{tbl} = FontTables.Read.Table{tbl}(reader, record.length);", true);
+                            break;
+                        case "Hmtx":
+                            write($"{tbl} = FontTables.Read.Table{tbl}(reader, ((Table_hhea)Hhea).numberOfHMetrics, ((Table_maxp)Maxp).numGlyphs);", true);
+                            break;
+                        default:
+                            write($"{tbl} = FontTables.Read.Table{tbl}(reader);", true);
+                            break;
+                    }
+
+                    indentation--; write("}", true);
                 }
+            });
 
-                write($"var record = Records.Where(x => x.tableTag.AsSpan().SequenceEqual(\"{tag}\"u8));", true);
-                write($"if (record.Count() != 1) {{ throw new Exception(\"Not have table '{tag}'\"); }}", true);
-                write($"reader.BaseStream.Seek((long)record.First().offset, SeekOrigin.Begin);", true);
-
-                switch (tbl)
-                {
-                    case "OS_2":
-                        write($"{tbl} = FontTables.Read.Table{tbl}(reader, record.First().length);", true);
-                        break;
-                    case "Hmtx":
-                        write($"{tbl} = FontTables.Read.Table{tbl}(reader, ((Table_hhea)Hhea).numberOfHMetrics, ((Table_maxp)Maxp).numGlyphs);", true);
-                        break;
-                    default:
-                        write($"{tbl} = FontTables.Read.Table{tbl}(reader);", true);
-                        break;
-                }
-
-                indentation--; write("}", true);
-            }
-
+            sb.AppendLine();
+            parseTablesOverload(null);
+            sb.AppendLine();
+            parseTablesOverload("returnRecord");
             indentation--; write("}", true);
 
             return sb.ToString();

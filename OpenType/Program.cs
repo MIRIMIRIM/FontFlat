@@ -11,6 +11,7 @@ internal class Program
     {
         //var file = @"F:\GitHub\sub_backup\Totokami\Fonts\FZLanTingHei-R-GBK.TTF";
         var file = @"C:\Windows\Fonts\msyh.ttc";
+        //var file = "C:\\Windows\\Fonts\\FZSTK.TTF";
         //var file = new FileInfo(@"C:\Windows\Fonts\華康飾藝體W7 & 華康飾藝體W7(P).ttc");
         //var file = new FileInfo(@"G:\Typeface\超级字体整合包 XZ\Japanese\視覚デザイン研究所\old\TrueMegaMaru-U.ttf");
 
@@ -27,7 +28,7 @@ internal class Program
         fontFile.Parse(ReaderFlag.Full);
         var face = fontFile.GetFont(0);
 
-        var t = face.GetTableHmtx();
+        var t = face.GetTablePost();
     }
 }
 
