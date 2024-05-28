@@ -28,7 +28,7 @@ internal class Program
         fontFile.Parse(ReaderFlag.Full);
         var face = fontFile.GetFont(0);
 
-        var t = face.GetTablePost();
+        var t = face.GetTableVhea();
     }
 }
 

@@ -92,4 +92,17 @@ public class BigEndianBinaryReader(Stream input) : BinaryReader(input)
         }
         return arr;
     }
+    public LongVerMetric[] ReadLongVerMetricArray(ushort count)
+    {
+        var arr = new LongVerMetric[count];
+        for (var i = 0; i < count; i++)
+        {
+            arr[i] = new LongVerMetric()
+            {
+                advanceHeight = ReadUInt16(),
+                topSideBearing = ReadInt16(),
+            };
+        }
+        return arr;
+    }
 }

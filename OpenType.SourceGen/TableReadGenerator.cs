@@ -192,6 +192,7 @@ namespace OpenType.SourceGen
                 "short[]" => "ReadInt16Array",
                 "ushort[]" => "ReadUInt16Array",
                 "LongHorMetric[]" => "ReadLongHorMetricArray",
+                "LongVerMetric[]" => "ReadLongVerMetricArray",
                 _ => throw new NotSupportedException($"Type '{typeName}' is not supported.")
             };
         }
@@ -230,6 +231,17 @@ namespace OpenType.SourceGen
                 {
                     "glyphNameIndex" => "(int)tbl.numGlyphs",
                     "offset" => "(int)tbl.numGlyphs",
+                    _ => string.Empty,
+                },
+                "Table_vhea" => fieldName switch
+                {
+                    "reserveds" => "4",
+                    _ => string.Empty,
+                },
+                "Table_vmtx" => fieldName switch
+                {
+                    "vMetrics" => "numOfLongVerMetrics",
+                    "topSideBearings" => "(int)(numGlyphs - numOfLongVerMetrics)",
                     _ => string.Empty,
                 },
                 _ => string.Empty,
@@ -271,6 +283,11 @@ namespace OpenType.SourceGen
                     "offset" => "if (tbl.version == Const.ver25)",
                     _ => null,
                 },
+                "Table_vmtx" => fieldName switch
+                {
+                    "topSideBearings" => "if (numGlyphs > numOfLongVerMetrics)",
+                    _ => null,
+                },
                 _ => null,
             };
         }
@@ -280,6 +297,7 @@ namespace OpenType.SourceGen
             {
                 "Table_OS_2" => "(BigEndianBinaryReader reader, uint length)",
                 "Table_hmtx" => "(BigEndianBinaryReader reader, ushort numberOfHMetrics, ushort numGlyphs)",
+                "Table_vmtx" => "(BigEndianBinaryReader reader, ushort numOfLongVerMetrics, ushort numGlyphs)",
                 _ => "(BigEndianBinaryReader reader)"
             };
         }
@@ -347,6 +365,10 @@ namespace OpenType.SourceGen
                             write($"if (Hhea is null) {{ ParseTableHhea(); }}", true);
                             write($"if (Maxp is null) {{ ParseTableMaxp(); }}", true);
                             break;
+                        case "Vmtx":
+                            write($"if (Vhea is null) {{ ParseTableVhea(); }}", true);
+                            write($"if (Maxp is null) {{ ParseTableMaxp(); }}", true);
+                            break;
                     }
 
                     switch (ovrType)
@@ -367,6 +389,9 @@ namespace OpenType.SourceGen
                             break;
                         case "Hmtx":
                             write($"{tbl} = FontTables.Read.Table{tbl}(reader, ((Table_hhea)Hhea).numberOfHMetrics, ((Table_maxp)Maxp).numGlyphs);", true);
+                            break;
+                        case "Vmtx":
+                            write($"{tbl} = FontTables.Read.Table{tbl}(reader, ((Table_vhea)Vhea).numOfLongVerMetrics, ((Table_maxp)Maxp).numGlyphs);", true);
                             break;
                         default:
                             write($"{tbl} = FontTables.Read.Table{tbl}(reader);", true);
