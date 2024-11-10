@@ -50,5 +50,5 @@ jobs:
         with:
           name: harbuzz_linux-x64
           path: |
-            build/linux-x64-static/src/*
-            build/linux-x64/src/*
+            harfbuzz-${{ env.hb-ver }}/build/linux-x64-static/src/*
+            harfbuzz-${{ env.hb-ver }}/build/linux-x64/src/*
