@@ -29,19 +29,19 @@ jobs:
         if: matrix.env.os == 'ubuntu-latest'
         run: |
           sudo apt-get update && sudo apt-get install -y meson ninja-build nasm
-          git clone --recurse-submodules https://github.com/harfbuzz/harfbuzz.git -b ${hb_ver} --depth=1 harfbuzz-${hb_ver}
+          git clone --recurse-submodules https://github.com/harfbuzz/harfbuzz.git -b ${{ env.hb_ver }} --depth=1 harfbuzz-${{ env.hb_ver }}
     
       - name: build harbuzz-static
         if: matrix.env.os == 'ubuntu-latest'
         run: |
-          cd harfbuzz-${hb_ver}
+          cd harfbuzz-${{ env.hb_ver }}
           meson --default-library=static -Dtests=disabled -Dintrospection=disabled -Ddocs=disabled -Dexperimental_api=true -Dbuildtype=release build/linux-x64-static
           meson compile -C build/linux-x64-static
       
       - name: build harbuzz-shared
         if: matrix.env.os == 'ubuntu-latest'
         run: |
-          cd harfbuzz-${hb_ver}
+          cd harfbuzz-${{ env.hb_ver }}
           meson -Dtests=disabled -Dintrospection=disabled -Ddocs=disabled -Dexperimental_api=true -Dbuildtype=release build/linux-x64
           meson compile -C build/linux-x64
 
