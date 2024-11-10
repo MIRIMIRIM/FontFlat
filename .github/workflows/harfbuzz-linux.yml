@@ -1,12 +1,10 @@
 name: build
 
 on:
-    push:
-        branches: [ "master" ]
-        paths:
-        - 'HarfBuzz/version'
-        - '.github/workflows/harfbuzz.yml'
     workflow_dispatch:
+
+env:
+    hb-ver: 10.1.0
 
 jobs:
   build:
@@ -31,7 +29,6 @@ jobs:
         if: matrix.env.os == 'ubuntu-latest'
         run: |
           sudo apt-get update && sudo apt-get install -y meson ninja-build nasm
-          hb_ver=$(cat ./HarfBuzz/version)
           git clone --recurse-submodules https://github.com/harfbuzz/harfbuzz.git -b ${hb_ver} --depth=1 harfbuzz-${hb_ver}
     
       - name: build harbuzz-static
