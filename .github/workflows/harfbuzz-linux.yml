@@ -31,7 +31,7 @@ jobs:
         if: matrix.env.os == 'ubuntu-latest'
         run: |
           sudo apt-get update && sudo apt-get install -y meson ninja-build nasm
-          hb_ver=$(echo ./HarfBuzz/version)
+          hb_ver=$(cat ./HarfBuzz/version)
           git clone --recurse-submodules https://github.com/harfbuzz/harfbuzz.git -b ${hb_ver} --depth=1 harfbuzz-${hb_ver}
           cd harfbuzz-${hb_ver}
     
