@@ -2,3 +2,9 @@
 .idea
 */bin/*
 */obj/*
+
+# Test and benchmark resources (font files)
+*/TestResources/SampleFonts/*
+*/BenchmarkResources/SampleFonts/*
+!*/TestResources/SampleFonts/.gitkeep
+!*/BenchmarkResources/SampleFonts/.gitkeep

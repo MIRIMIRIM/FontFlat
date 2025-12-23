@@ -5,15 +5,11 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <IsAotCompatible>True</IsAotCompatible>
-    <!-- <PublishAot>False</PublishAot> -->
-    <DocumentationFile>bin\OTFontFile.XML</DocumentationFile>
+    <DocumentationFile>bin\OTFontFile.Baseline.XML</DocumentationFile>
     <FileAlignment>4096</FileAlignment>
-    <Version>1.0.1-beta</Version>
-    <PackageDescription>Parse and write opentype fonts.</PackageDescription>
-    <PackageTags>opentype;font</PackageTags>
+    <Version>1.0.0-baseline</Version>
+    <Description>Baseline version of OTFontFile for performance comparison (unoptimized)</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <RepositoryUrl>https://github.com/MIRIMIRIM/FontFlat</RepositoryUrl> 
   </PropertyGroup>
   

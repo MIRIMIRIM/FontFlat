@@ -1,3 +1,6 @@
 <Solution>
   <Project Path="OTFontFile/OTFontFile.csproj" />
+  <Project Path="OTFontFile.Performance.Tests/OTFontFile.Performance.Tests.csproj" />
+  <Project Path="OTFontFile.Baseline/OTFontFile.Baseline.csproj" />
+  <Project Path="OTFontFile.Benchmarks/OTFontFile.Benchmarks.csproj" />
 </Solution>
