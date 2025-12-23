@@ -42,6 +42,11 @@ namespace OTFontFile.Benchmarks
                         BenchmarkRunner.Run<MBOBufferBinaryPrimitivesComparison>();
                         break;
 
+                    case "shortlong":
+                        Console.WriteLine("Running MBOBuffer Short/Long comparison benchmarks...\n");
+                        BenchmarkRunner.Run<MBOBufferShortLongComparison>();
+                        break;
+
                     case "all":
                         Console.WriteLine("Running all benchmarks...\n");
                         BenchmarkRunner.Run<FileLoadingBenchmarks>();
@@ -56,7 +61,8 @@ namespace OTFontFile.Benchmarks
                         Console.WriteLine("  file       - File loading benchmarks");
                         Console.WriteLine("  checksum   - Checksum calculation benchmarks");
                         Console.WriteLine("  buffer     - MBOBuffer operation benchmarks");
-                        Console.WriteLine("  primitives - BinaryPrimitives comparison benchmarks");
+                        Console.WriteLine("  primitives - BinaryPrimitives comparison benchmarks (Int/Uint)");
+                        Console.WriteLine("  shortlong  - BinaryPrimitives comparison benchmarks (Short/Long)");
                         Console.WriteLine("  all        - Run all benchmarks");
                         break;
                 }
