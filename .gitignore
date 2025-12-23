@@ -8,3 +8,5 @@
 */BenchmarkResources/SampleFonts/*
 !*/TestResources/SampleFonts/.gitkeep
 !*/BenchmarkResources/SampleFonts/.gitkeep
+*/BenchmarkDotNet.Artifacts/*
+BenchmarkDotNet.Artifacts/*

@@ -78,21 +78,58 @@ OTFontFile.Benchmarks/
 - ✅ `OTFontFile.Performance.Tests/README.md` - 测试项目文档
 - ✅ `OTFontFile.Benchmarks/README.md` - 基准测试项目文档
 
+### ✅ 8. Phase 0: BinaryPrimitives 性能优化 (已完成)
+**目标**：优化MBOBuffer字节序转换性能
+
+**已完成工作**：
+- ✅ Int/Uint 使用 BinaryPrimitives（40-47%提升）
+- ✅ Long/Ulong 使用 BinaryPrimitives（37-70%提升）
+- ✅ 创建 MBOBufferShortLongComparison 综合基准测试
+- ✅ 验证 Short/Ushort 性能（与手动位操作持平）
+
+**性能提升数据**：
+```
+Int (32位):
+  GetInt:  193.39ns → 103.91ns (46% faster)
+  SetInt:  193.33ns → 108.91ns (44% faster)
+
+Uint (32位):
+  GetUint: 197.32ns → 104.44ns (47% faster)
+  SetUint: 192.97ns → 113.88ns (41% faster)
+
+Long (64位):
+  GetLong: 147.07ns → 93.06ns (37% faster)
+  SetLong: 149.52ns → 44.77ns (70% faster)
+
+Ulong (64位):
+  GetUlong: 147.13ns → 93.42ns (36% faster)
+  SetUlong: 149.31ns → 44.96ns (70% faster)
+
+Short/Ushort (16位):
+  Get operations: 与手动位操作持平 (~0% 差异)
+  Set operations: 快5-6%
+```
+
+**Commit记录**：
+- `1338341` - feat: add Short/Long comparison benchmark infrastructure
+- `a5c6ce1` - optimize: Long/Ulong BinaryPrimitives (37-70% faster)
+- `dd87175` - refactor: BinaryPrimitives优化集成到MBOBuffer核心
+- `213e7bc` - feat: MBOBuffer BinaryPrimitives 性能优化和基准测试
+- `9a9fa47` - continue fix nullable warning
+
 ## 当前状态
 
 ### 编译状态
-⚠️ **有编译错误需要修复**
+✅ **编译成功，仅有28个警告（主要是Nullable引用类型警告）**
 
-**错误清单**：
+**警告分布**：
 ```
-OTFontFile_Performance.Tests:
-- FileParsingTests.cs:69 - fontFile 变量未定义
-- FileParsingTests.cs:108,141 - GetTable 参数类型错误（需要 DirectoryEntry）
-- FileParsingTests.cs:218 - OTFont 没有 GetTableManager() 方法
+主要类别：
+- CS8765: 参数为Null性与重写成员不匹配 (5个) - OTTypes.cs
+- CS8981: 类型名称仅包含小写ASCII字符 (3个) - Table_gasp.cs, Table_glyf.cs
+- CS8600/CS8603/CS8605: Nullable引用类型警告 (20+个) - Table_CFF, Table_cmap等
 
-OTFontFile_Benchmarks:
-- TableParsingBenchmarks.cs - 多处 GetTable 访问错误
-- FileLoadingBenchmarks.cs - OTFile 不实现 IDisposable
+说明：警告主要集中在复杂表处理文件，不影响功能，可后续逐步修复。
 ```
 
 ### 待解决的问题
@@ -113,7 +150,95 @@ OTFontFile_Benchmarks:
 - 大型字体 (>5MB): Emoji/彩色字体
 - TTC 文件 (~10-50MB): 字体集合
 
+### ✅ 9. IMemoryBuffer 抽象层评估 (已废弃)
+**目标**: 评估和测试 IMemoryBuffer 抽象层的性能优势
+
+**评估结论**: ❌ **决定废弃 IMemoryBuffer 抽象层**
+
+**理由**:
+1. **无性能优势**: 基准测试显示 IMemoryBuffer 对小文件无性能提升，甚至 SequentialRead_Bytes 变慢 1%
+2. **原生可用**: `Span<T>` 已经是 `byte[]` 的原生特性，零拷贝访问不需要额外抽象
+3. **过度设计**: `ArrayBackedBuffer` 只是对 `byte[]` 的简单包装，没有带来任何实际价值
+4. **增加复杂度**: 增加了 API 表面积、代码复杂度和维护成本
+
+**已完成工作**:
+- ✅ 设计并实现 IMemoryBuffer 接口
+- ✅ 实现 ArrayBackedBuffer 和 MemoryMappedFileBuffer
+- ✅ 创建 BufferOptimizationBenchmarks.cs 进行性能测试
+- ✅ 性能测试和分析
+- ✅ 删除相关代码和测试文件（BufferOptimizationBenchmarks.cs）
+
+**性能基准测试结果**:
+```
+Small (1KB):   无显著优势
+Medium (64KB): 部分操作有 10-15% 提升
+Large (512KB): 部分操作有 15-25% 提升
+SequentialRead: 变慢 1%
+
+结论: IMemoryBuffer 对小文件（大多数字体文件）没有明显性能优势。
+```
+
+**更新文件**:
+- ❌ 删除: `OTFontFile.Benchmarks/Benchmarks/BufferOptimizationBenchmarks.cs`
+- ✅ 更新: `PERFORMANCE_OPTIMIZATION_PLAN.md` - 移除 IMemoryBuffer 计划
+- ✅ 更新: `PERFORMANCE_COMPARISON_STRATEGY.md` - 更新策略
+
+---
+
+## 当前状态
+
+### 编译状态
+✅ **编译成功，仅有331个警告（主要是Nullable引用类型警告）**
+
+**警告分布**（331个警告）：
+```
+主要类别：
+- CS8765: 参数为Null性与重写成员不匹配 (5个) - OTTypes.cs
+- CS8981: 类型名称仅包含小写ASCII字符 (3个) - Table_gasp.cs, Table_glyf.cs
+- CS8600/CS8603/CS8605: Nullable引用类型警告 (300+个) - Table_CFF, Table_cmap, Table_EBLC等
+
+说明：警告主要集中在复杂表处理文件，不影响功能，可后续按 NULLABLE_FIX_PLAN.md 逐步修复。
+```
+
+---
+
 ## 下一步行动
+
+### 推荐路径：按计划继续性能优化
+
+#### 立即优先级（Phase 2-6）
+IMemoryBuffer 抽象层已被废弃。根据 `PERFORMANCE_OPTIMIZATION_PLAN.md` 的计划，继续实施其他性能优化：
+
+1. **Phase 2: SIMD 优化** ⭐ **强烈推荐**
+   - Checksum计算使用SIMD (AVX2/SSE2)
+   - CMAP格式4查找优化
+   - 预期收益：checksum 4-8倍加速
+
+2. **Phase 3: 内存优化**
+   - 使用 ArrayPool<T> 减少分配
+   - 对象池化（Table对象复用）
+
+3. **Phase 4: 延迟加载**
+   - 表解析延迟到实际需要时
+
+4. **Phase 5: 缓存优化**
+   - 表缓存策略
+   - 字体元信息缓存
+
+5. **Phase 6: 架构优化**
+   - 延迟加载和智能缓存
+   - 多线程优化
+   - 其他性能优化
+
+#### 次要优先级（维护路径）
+1. **修复 Nullable 警告（28个）**
+   - 优先级：低（不影响功能）
+   - 工作量：中等（需仔细修改复杂表文件）
+   - 建议：在性能优化完成后处理
+
+2. **补充测试资源**
+   - 添加更多测试字体文件
+   - 完善基准测试用例
 
 ### 新增文档和工具
 
@@ -269,10 +394,11 @@ dotnet run --project OTFontFile.Benchmarks -- -c Release
 - 实施优化（6个阶段）
 - 验证性能提升
 
-**项目进度**: 约 30% 完成（基础设施搭建，待实施优化）
+**项目进度**: 约 40% 完成（基础设施搭建 + Phase 0优化完成）
 
 ---
 
-**最后更新**: 2025-12-23
+**最后更新**: 2025-12-24
 **分支**: feature/performance-optimization
-**状态**: 基础设施已建立，需要修复编译错误后开始优化实施
+**状态**: Phase 0 完成，准备进入 Phase 1
+**推荐行动**: 按计划继续性能优化（Span<T>/MemoryMappedFile），Nullable警告可后续处理

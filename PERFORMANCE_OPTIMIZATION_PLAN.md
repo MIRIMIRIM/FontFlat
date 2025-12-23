@@ -367,47 +367,21 @@ git commit -m "docs(Phase1): 添加 Phase 1 性能验证结果
 
 ## 优化策略
 
-### Phase 1: Span<T> 和 Memory<T> 重构 (高性能零拷贝)
+### Phase 1: BinaryPrimitives 性能优化 ✅ 已完成
 
-#### 1.1 MBOBuffer 改造
-**目标**: 替换`byte[]`为`Span<byte>`/`Memory<byte>`,减少内存分配
+**状态**: 已完成 - 32位整数操作性能提升 40-50%
 
-**具体实现**:
+**内容**: 使用 `System.IO.Pipelines.BinaryPrimitives` 提供的高效字节序转换方法替换手动的位操作
+
+✅ **成功**: 32位整数操作 (Int/Uint) 性能提升 40-50%
+⚠️ **注意**: 16位整数操作 (Short/Ushort) 性能略有下降，已保留原始实现
+
+**已实现的优化**:
 ```csharp
-public ref struct MBOBufferReader(Span<byte> buffer)
+[MethodImpl(MethodImplOptions.AggressiveInlining)]
+public uint GetUint(uint offset)
 {
-    private readonly Span<byte> _buffer = buffer;
-    
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public ushort GetUshort(uint offset)
-    {
-        return BinaryPrimitives.ReadUInt16BigEndian(_buffer.Slice((int)offset, 2));
-    }
-    
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public uint GetUint(uint offset)
-    {
-        return BinaryPrimitives.ReadUInt32BigEndian(_buffer.Slice((int)offset, 4));
-    }
-    
-    // 其他读取方法...
-}
-```
-
-**收益**:
-- 零分配读取操作
-- 避免临时数组创建
-- 利用`BinaryPrimitives`进行高效字节序转换
-
-#### 1.2 ReadOnlySequence<T> 支持分段数据
-**目标**: 支持处理不连续的内存区域
-
-**使用场景**: 处理TTC(字体集合)中的多个字体
-
-#### 1.3 Span<T> 在表解析中的应用
-**目标**: 在所有`Table_xxx.cs`中使用Span操作
-
-**示例** - Table_cmap优化:
+    // 使用 BinaryPrimitives 替换手动位操作 (buf[offset]<<24 | buf[offset+1]<<16 | ...)\n    return BinaryPrimitives.ReadUInt32BigEndian(new ReadOnlySpan<byte>(m_buf, (int)offset, 4));\n}\n\n[MethodImpl(MethodImplOptions.AggressiveInlining)]\npublic void SetUint(uint value, uint offset)\n{\n    // 使用 BinaryPrimitives 替换手动位操作\n    BinaryPrimitives.WriteUInt32BigEndian(new Span<byte>(m_buf, (int)offset, 4), value);\n}\n```\n\n**性能结果**:\n- `GetInt/GetUint`: 性能提升 46-47%\n- `SetInt/SetUint`: 性能提升 41-44%\n- `ReadBlockOfInts/ReadBlockOfUints`: 性能提升约 53%\n\n---\n\n~~### Phase 1 (废弃): IMemoryBuffer 抽象层~~\n\n**决定**: 本计划已废弃。基准测试显示 IMemoryBuffer 抽象层对小文件无性能优势，反而增加复杂度。\n\n**理由**: \n- `Span<T>` 已经是 `byte[]` 的原生特性，零拷贝访问不需要额外抽象\n- `ArrayBackedBuffer` 只是对 `byte[]` 的包装，没有带来性能提升\n- 增加 API 表面积和代码复杂度\n\n**建议**: 直接使用原生的 Span<T> 和 byte[] 即可\n\n---\n\n备注：以下部分已经移除\n\n~~#### 1.1 MBOBuffer 改造~~
 ```csharp
 public class Table_cmap : OTTable
 {
