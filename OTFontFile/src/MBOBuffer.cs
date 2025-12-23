@@ -97,27 +97,67 @@ namespace OTFontFile
 
         public static bool BinaryEqual(MBOBuffer buf1, MBOBuffer buf2)
         {
-            bool bEqual = true;
-
             if (buf1.GetLength() != buf2.GetLength())
             {
-                bEqual = false;
+                return false;
             }
-            else
+
+            byte[] b1 = buf1.GetBuffer();
+            byte[] b2 = buf2.GetBuffer();
+            int totalLength = b1.Length;
+
+            // SIMD 优化：使用 Vector<byte> 批量比较
+            // 阈值：至少 128 字节以启用 SIMD
+            if (Vector.IsHardwareAccelerated && totalLength >= 128)
             {
-                byte [] b1 = buf1.GetBuffer();
-                byte [] b2 = buf2.GetBuffer();
-                for (int i=0; i<b1.Length; i++)
+                unsafe
                 {
-                    if (b1[i] != b2[i])
+                    fixed (byte* p1 = b1)
+                    fixed (byte* p2 = b2)
                     {
-                        bEqual = false;
-                        break;
+                        int vecCount = Vector<byte>.Count;
+                        int i = 0;
+                        
+                        // 主循环：批量比较
+                        int maxSIMD = totalLength - (totalLength & (vecCount - 1));
+                        
+                        for (; i < maxSIMD; i += vecCount)
+                        {
+                            Vector<byte> v1 = Unsafe.AsRef<Vector<byte>>(p1 + i);
+                            Vector<byte> v2 = Unsafe.AsRef<Vector<byte>>(p2 + i);
+                            
+                            // 向量相等吗？
+                            if (!Vector.EqualsAll(v1, v2))
+                            {
+                                return false;
+                            }
+                        }
+
+                        // 处理剩余字节
+                        for (; i < totalLength; i++)
+                        {
+                            if (p1[i] != p2[i])
+                            {
+                                return false;
+                            }
+                        }
+                        
+                        return true;
                     }
                 }
             }
-
-            return bEqual;
+            else
+            {
+                // 使用原始实现
+                for (int i = 0; i < totalLength; i++)
+                {
+                    if (b1[i] != b2[i])
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
         }
 
 
