@@ -1890,10 +1890,13 @@ namespace OTFontFile
             {
                 ushort glyphID = 0xffff;
 
-                CachedSubtable st = m_arrSubtables.GetSubtable(platID, encID);
+                CachedSubtable? st = m_arrSubtables.GetSubtable(platID, encID);
                 if (st != null)
                 {
-                    glyphID = (ushort)st.m_CharToGlyphMap[(uint)charcode];
+                    if (st.m_CharToGlyphMap != null)
+                    {
+                        glyphID = (ushort)st.m_CharToGlyphMap[(uint)charcode];
+                    }
                 }
                 else
                 {
@@ -1908,6 +1911,7 @@ namespace OTFontFile
                 ushort glyphID = 0xffff;
 
                 if (m_DefaultSubtable != null && 
+                    m_DefaultSubtable.m_CharToGlyphMap != null &&
                     charcode < m_DefaultSubtable.m_CharToGlyphMap.Length)
                 {
                     glyphID = (ushort)
