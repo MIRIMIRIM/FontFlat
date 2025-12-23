@@ -837,9 +837,12 @@ namespace OTFontFile
         
                 for( ushort i = 0; i < m_numSizes; i++ )
                 {
-                    bitmapSizeTableCache bstc = (bitmapSizeTableCache)m_bitmapSizeTables[i];
+                    bitmapSizeTableCache? bstc = (bitmapSizeTableCache?)m_bitmapSizeTables[i];
                     nBufSize += bitmapSizeTable.bufSize;
-                    nBufSize += bstc.indexSubTablesSize;
+                    if (bstc != null)
+                    {
+                        nBufSize += bstc.indexSubTablesSize;
+                    }
                 }
 
                 // create a Motorola Byte Order buffer for the new table
