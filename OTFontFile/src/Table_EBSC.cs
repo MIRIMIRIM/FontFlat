@@ -271,9 +271,11 @@ namespace OTFontFile
 
                 for( uint i = 0; i < m_numSizes; i++ )
                 {
-                    bitmapScaleTable bst = (bitmapScaleTable)m_bitmapScaleTables[(int)i];
+                    var bst = (bitmapScaleTable?)m_bitmapScaleTables[(int)i];
 
-                    newbuf.SetSbyte( bst.hori.ascender, (uint)Table_EBSC.FieldOffsets.FirstBitmapScaleTable + (uint)(i * Table_EBSC.bitmapScaleTable.length)); 
+                    if (bst != null)
+                    {
+                        newbuf.SetSbyte( bst.hori.ascender, (uint)Table_EBSC.FieldOffsets.FirstBitmapScaleTable + (uint)(i * Table_EBSC.bitmapScaleTable.length)); 
                     newbuf.SetSbyte( bst.hori.descender, (uint)Table_EBSC.FieldOffsets.FirstBitmapScaleTable + (uint)(i * Table_EBSC.bitmapScaleTable.length) + 1 );
                     newbuf.SetByte( bst.hori.widthMax, (uint)Table_EBSC.FieldOffsets.FirstBitmapScaleTable + (uint)(i * Table_EBSC.bitmapScaleTable.length) + 2 );
                     newbuf.SetSbyte( bst.hori.caretSlopeNumerator, (uint)Table_EBSC.FieldOffsets.FirstBitmapScaleTable + (uint)(i * Table_EBSC.bitmapScaleTable.length) + 3 );
@@ -303,7 +305,8 @@ namespace OTFontFile
                     newbuf.SetByte( bst.ppemX, (uint)Table_EBSC.FieldOffsets.FirstBitmapScaleTable + (uint)(i * Table_EBSC.bitmapScaleTable.length) + 24 );
                     newbuf.SetByte( bst.ppemY, (uint)Table_EBSC.FieldOffsets.FirstBitmapScaleTable + (uint)(i * Table_EBSC.bitmapScaleTable.length) + 25 );
                     newbuf.SetByte( bst.substitutePpemX, (uint)Table_EBSC.FieldOffsets.FirstBitmapScaleTable + (uint)(i * Table_EBSC.bitmapScaleTable.length) + 26 );
-                    newbuf.SetByte( bst.substitutePpemY, (uint)Table_EBSC.FieldOffsets.FirstBitmapScaleTable + (uint)(i * Table_EBSC.bitmapScaleTable.length) + 27 );                    
+                    newbuf.SetByte( bst.substitutePpemY, (uint)Table_EBSC.FieldOffsets.FirstBitmapScaleTable + (uint)(i * Table_EBSC.bitmapScaleTable.length) + 27 );
+                    }
                 }
 
                 // put the buffer into a Table_EBSC object and return it
@@ -325,20 +328,34 @@ namespace OTFontFile
                 static public bitmapScaleTableCache FromBitmapScaleTable(bitmapScaleTable bst)
                 {
                     bitmapScaleTableCache bstc = new bitmapScaleTableCache();
-                    bstc.hori = Table_EBLC.EBLC_cache.sbitLineMetricsCache.FromSbitLineMetrics(bst.hori);
-                    bstc.vert = Table_EBLC.EBLC_cache.sbitLineMetricsCache.FromSbitLineMetrics(bst.vert);
-                    bstc.ppemX = bst.ppemX;
-                    bstc.ppemY = bst.ppemY;
-                    bstc.substitutePpemX = bst.substitutePpemX;
-                    bstc.substitutePpemY = bst.substitutePpemY;
+                    bstc.hori = Table_EBLC.EBLC_cache.sbitLineMetricsCache.FromSbitLineMetrics(bst?.hori);
+                    bstc.vert = Table_EBLC.EBLC_cache.sbitLineMetricsCache.FromSbitLineMetrics(bst?.vert);
+                    bstc.ppemX = bst?.ppemX ?? 0;
+                    bstc.ppemY = bst?.ppemY ?? 0;
+                    bstc.substitutePpemX = bst?.substitutePpemX ?? 0;
+                    bstc.substitutePpemY = bst?.substitutePpemY ?? 0;
                     return bstc;
                 }
 
                 public object Clone()
                 {
                     bitmapScaleTableCache bstc = new bitmapScaleTableCache();
-                    bstc.hori = (Table_EBLC.EBLC_cache.sbitLineMetricsCache)hori.Clone();
-                    bstc.vert = (Table_EBLC.EBLC_cache.sbitLineMetricsCache)vert.Clone();
+                    if (hori != null)
+                    {
+                        object? horiClone = hori.Clone();
+                        if (horiClone != null)
+                        {
+                            bstc.hori = (Table_EBLC.EBLC_cache.sbitLineMetricsCache)horiClone!;
+                        }
+                    }
+                    if (vert != null)
+                    {
+                        object? vertClone = vert.Clone();
+                        if (vertClone != null)
+                        {
+                            bstc.vert = (Table_EBLC.EBLC_cache.sbitLineMetricsCache)vertClone!;
+                        }
+                    }
                     bstc.ppemX = ppemX;
                     bstc.ppemY = ppemY;
                     bstc.substitutePpemX = substitutePpemX;

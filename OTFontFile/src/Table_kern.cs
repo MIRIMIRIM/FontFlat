@@ -427,7 +427,8 @@ namespace OTFontFile
                 // Find the sizeof all of the tables
                 for( ushort i = 0; i < m_nTables; i++ )
                 {
-                    iSizeOfTables += (uint)((SubTableFormat0)m_SubTable[i]).CalculatedLength();    
+                    var st = (SubTableFormat0?)m_SubTable[i];
+                    iSizeOfTables += st?.CalculatedLength() ?? 0;
                 }                                                  
                                                   
                 // create a Motorola Byte Order buffer for the new table
@@ -439,31 +440,33 @@ namespace OTFontFile
                 uint iOffset = (uint)FieldOffsets.FirstSubTableHeader;                //Fill in the tables
                 for( int i = 0; i < m_nTables; i++ )
                 {
-                    newbuf.SetUshort( ((SubTableFormat0)m_SubTable[i]).version,            (uint)iOffset );
+                    var st = (SubTableFormat0?)m_SubTable[i];
+                    newbuf.SetUshort( st?.version ?? 0,            (uint)iOffset );
                     iOffset += 2;
-                    newbuf.SetUshort( ((SubTableFormat0)m_SubTable[i]).length,            (uint)iOffset );
+                    newbuf.SetUshort( st?.length ?? 0,            (uint)iOffset );
                     iOffset += 2;
-                    newbuf.SetUshort( ((SubTableFormat0)m_SubTable[i]).coverage,        (uint)iOffset );
+                    newbuf.SetUshort( st?.coverage ?? 0,        (uint)iOffset );
                     iOffset += 2;
-                    newbuf.SetUshort( ((SubTableFormat0)m_SubTable[i]).nPairs,            (uint)iOffset );
+                    newbuf.SetUshort( st?.nPairs ?? 0,            (uint)iOffset );
                     iOffset += 2;
-                    newbuf.SetUshort( ((SubTableFormat0)m_SubTable[i]).searchRange,        (uint)iOffset );
+                    newbuf.SetUshort( st?.searchRange ?? 0,        (uint)iOffset );
                     iOffset += 2;
-                    newbuf.SetUshort( ((SubTableFormat0)m_SubTable[i]).entrySelector,    (uint)iOffset );
+                    newbuf.SetUshort( st?.entrySelector ?? 0,    (uint)iOffset );
                     iOffset += 2;
-                    newbuf.SetUshort( ((SubTableFormat0)m_SubTable[i]).rangeShift,        (uint)iOffset );
+                    newbuf.SetUshort( st?.rangeShift ?? 0,        (uint)iOffset );
                     iOffset += 2;
 
                     // Cycle through all of the kerning pairs
-                    for( int ii = 0; ii < ((SubTableFormat0)m_SubTable[i]).nPairs; ii++ )
-                    {                        
-                        ((SubTableFormat0)m_SubTable[i]).GetKerningPairAndValue( ii, ref nLeft, ref nRight, ref nValue );
+                    ushort nPairs = st?.nPairs ?? 0;
+                    for( int ii = 0; ii < nPairs; ii++ )
+                    {
+                        st?.GetKerningPairAndValue( ii, ref nLeft, ref nRight, ref nValue );
                         newbuf.SetUshort( nLeft,                (uint)iOffset );
                         iOffset += 2;
                         newbuf.SetUshort( nRight,                (uint)iOffset );
                         iOffset += 2;
                         newbuf.SetShort( nValue,                (uint)iOffset );
-                        iOffset += 2;        
+                        iOffset += 2;
                     }
                 }
 

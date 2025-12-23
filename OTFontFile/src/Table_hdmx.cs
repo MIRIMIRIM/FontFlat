@@ -313,7 +313,8 @@ namespace OTFontFile
                     throw new ArgumentOutOfRangeException( "Index is greater than number of Records." );
                 }
 
-                return ((DeviceRecordCache)m_DeviceRecords[nIndex]).PixelSize;
+                var dr = (DeviceRecordCache?)m_DeviceRecords[nIndex];
+                return dr?.PixelSize ?? 0;
             }
 
             public bool setDeviceRecordPixelSize( ushort nIndex, byte bPixelSize )
@@ -326,7 +327,11 @@ namespace OTFontFile
                     throw new ArgumentOutOfRangeException( "Index is greater than number of Records." );
                 }
 
-                ((DeviceRecordCache)m_DeviceRecords[nIndex]).PixelSize = bPixelSize;
+                var dr = (DeviceRecordCache?)m_DeviceRecords[nIndex];
+                if (dr != null)
+                {
+                    dr.PixelSize = bPixelSize;
+                }
 
                 return bResult;
             }
@@ -338,7 +343,8 @@ namespace OTFontFile
                     throw new ArgumentOutOfRangeException( "Index is greater than number of Records." );
                 }
 
-                return ((DeviceRecordCache)m_DeviceRecords[nIndex]).MaxWidth;
+                var dr = (DeviceRecordCache?)m_DeviceRecords[nIndex];
+                return dr?.MaxWidth ?? 0;
             }
 
             // NOTE: I am not sure this should be allowed to be set if max width is a function
@@ -353,7 +359,11 @@ namespace OTFontFile
                     throw new ArgumentOutOfRangeException( "Index is greater than number of Records." );
                 }
 
-                ((DeviceRecordCache)m_DeviceRecords[nIndex]).MaxWidth = bMaxWidth;
+                var dr = (DeviceRecordCache?)m_DeviceRecords[nIndex];
+                if (dr != null)
+                {
+                    dr.MaxWidth = bMaxWidth;
+                }
 
                 return bResult;
             }
@@ -378,7 +388,8 @@ namespace OTFontFile
 
                 for( ushort i = 0; i < m_NumberDeviceRecords; i++ )
                 {
-                    ((DeviceRecordCache)m_DeviceRecords[nIndex]).addWidth( nIndex, bWidthsPerRecord[i] );    
+                    var dr = (DeviceRecordCache?)m_DeviceRecords[nIndex];
+                    dr?.addWidth( nIndex, bWidthsPerRecord[i] );
                 }
 
                 m_NumGlyphs++;
@@ -401,7 +412,8 @@ namespace OTFontFile
 
                 for( ushort i = 0; i < m_NumberDeviceRecords; i++ )
                 {
-                    ((DeviceRecordCache)m_DeviceRecords[nIndex]).removeWidth( nIndex );
+                    var dr = (DeviceRecordCache?)m_DeviceRecords[nIndex];
+                    dr?.removeWidth( nIndex );
                 }
 
                 m_NumGlyphs--;
@@ -433,19 +445,20 @@ namespace OTFontFile
 
                 for( short i = 0; i < m_NumberDeviceRecords; i++ )
                 {
-                    newbuf.SetByte(((DeviceRecordCache)m_DeviceRecords[i]).PixelSize, (uint)Table_hdmx.FieldOffsets.DeviceRecord + (uint)(i * SizeofDeviceRecord ) + (uint)DeviceRecord.FieldOffsets.PixelSize );
-                    newbuf.SetByte(((DeviceRecordCache)m_DeviceRecords[i]).MaxWidth, (uint)Table_hdmx.FieldOffsets.DeviceRecord + (uint)(i * SizeofDeviceRecord ) + (uint)DeviceRecord.FieldOffsets.MaxWidth );
+                    var dr = (DeviceRecordCache?)m_DeviceRecords[i];
+                    newbuf.SetByte(dr?.PixelSize ?? 0, (uint)Table_hdmx.FieldOffsets.DeviceRecord + (uint)(i * SizeofDeviceRecord ) + (uint)DeviceRecord.FieldOffsets.PixelSize );
+                    newbuf.SetByte(dr?.MaxWidth ?? 0, (uint)Table_hdmx.FieldOffsets.DeviceRecord + (uint)(i * SizeofDeviceRecord ) + (uint)DeviceRecord.FieldOffsets.MaxWidth );
 
                     for( ushort ii = 0; ii < m_NumGlyphs; ii++ )
                     {
-                        newbuf.SetByte(((DeviceRecordCache)m_DeviceRecords[i]).getWidth( ii ), (uint)Table_hdmx.FieldOffsets.DeviceRecord + (uint)(i * SizeofDeviceRecord ) + (uint)(DeviceRecord.FieldOffsets.Widths + ii ));
+                        newbuf.SetByte(dr?.getWidth( ii ) ?? 0, (uint)Table_hdmx.FieldOffsets.DeviceRecord + (uint)(i * SizeofDeviceRecord ) + (uint)(DeviceRecord.FieldOffsets.Widths + ii ));
                     }
 
                     // Pad the end with zeros                
                     for( uint ii = 0; ii < getNumPadBytes(); ii++ )
                     {
                         newbuf.SetByte( 0, (uint)Table_hdmx.FieldOffsets.DeviceRecord + (uint)(i * SizeofDeviceRecord ) + (uint)DeviceRecord.FieldOffsets.Widths + m_NumGlyphs + ii );
-                    }                    
+                    }
                 }
 
                 // put the buffer into a Table_hdmx object and return it

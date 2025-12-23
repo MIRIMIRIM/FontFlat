@@ -1963,16 +1963,19 @@ namespace OTFontFile
                 CachedSubtable st = m_arrSubtables.GetSubtable(platID, encID);
                 if (st != null)
                 {
-                    if ((uint)charcode >= (uint)st.m_CharToGlyphMap.Length)
+                    if (st.m_CharToGlyphMap != null && (uint)charcode >= (uint)st.m_CharToGlyphMap.Length)
                     {
                         uint[] newmap = new uint[(uint)charcode+1];
-                        System.Buffer.BlockCopy( st.m_CharToGlyphMap, 0, 
-                                                 newmap, 0, 
+                        System.Buffer.BlockCopy( st.m_CharToGlyphMap, 0,
+                                                 newmap, 0,
                                                  st.m_CharToGlyphMap.Length*4);
                         st.m_CharToGlyphMap = newmap;
                     }
 
-                    st.m_CharToGlyphMap[(uint)charcode] = glyphID;
+                    if (st.m_CharToGlyphMap != null)
+                    {
+                        st.m_CharToGlyphMap[(uint)charcode] = glyphID;
+                    }
                 }
                 else
                 {
@@ -1987,7 +1990,10 @@ namespace OTFontFile
                 CachedSubtable st = m_arrSubtables.GetSubtable(platID, encID);
                 if (st != null)
                 {
-                    st.m_CharToGlyphMap[(uint)charcode] = 0;
+                    if (st.m_CharToGlyphMap != null)
+                    {
+                        st.m_CharToGlyphMap[(uint)charcode] = 0;
+                    }
                 }
                 else
                 {

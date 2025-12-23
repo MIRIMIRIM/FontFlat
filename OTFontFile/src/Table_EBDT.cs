@@ -481,14 +481,20 @@ namespace OTFontFile
                         switch (ist.header.indexFormat)
                         {
                             case 2:
-                                Table_EBLC.indexSubTable2 ist2 = (Table_EBLC.indexSubTable2)ist;
-                                width = ist2.bigMetrics.width;
-                                height = ist2.bigMetrics.height;
+                                Table_EBLC.indexSubTable2? ist2 = ist as Table_EBLC.indexSubTable2;
+                                if (ist2 != null && ist2.bigMetrics != null)
+                                {
+                                    width = ist2.bigMetrics.width;
+                                    height = ist2.bigMetrics.height;
+                                }
                                 break;
                             case 5:
-                                Table_EBLC.indexSubTable5 ist5 = (Table_EBLC.indexSubTable5)ist;
-                                width = ist5.bigMetrics.width;
-                                height = ist5.bigMetrics.height;
+                                Table_EBLC.indexSubTable5? ist5 = ist as Table_EBLC.indexSubTable5;
+                                if (ist5 != null && ist5.bigMetrics != null)
+                                {
+                                    width = ist5.bigMetrics.width;
+                                    height = ist5.bigMetrics.height;
+                                }
                                 break;
 
                         }
