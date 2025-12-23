@@ -37,20 +37,27 @@ namespace OTFontFile.Benchmarks
                         BenchmarkRunner.Run<MBOBufferBenchmarks>();
                         break;
 
+                    case "primitives":
+                        Console.WriteLine("Running MBOBuffer BinaryPrimitives comparison benchmarks...\n");
+                        BenchmarkRunner.Run<MBOBufferBinaryPrimitivesComparison>();
+                        break;
+
                     case "all":
                         Console.WriteLine("Running all benchmarks...\n");
                         BenchmarkRunner.Run<FileLoadingBenchmarks>();
                         BenchmarkRunner.Run<ChecksumBenchmarks>();
                         BenchmarkRunner.Run<MBOBufferBenchmarks>();
+                        BenchmarkRunner.Run<MBOBufferBinaryPrimitivesComparison>();
                         break;
 
                     default:
                         Console.WriteLine($"Unknown benchmark type: {command}");
                         Console.WriteLine("Available options:");
-                        Console.WriteLine("  file     - File loading benchmarks");
-                        Console.WriteLine("  checksum - Checksum calculation benchmarks");
-                        Console.WriteLine("  buffer   - MBOBuffer operation benchmarks");
-                        Console.WriteLine("  all      - Run all benchmarks");
+                        Console.WriteLine("  file       - File loading benchmarks");
+                        Console.WriteLine("  checksum   - Checksum calculation benchmarks");
+                        Console.WriteLine("  buffer     - MBOBuffer operation benchmarks");
+                        Console.WriteLine("  primitives - BinaryPrimitives comparison benchmarks");
+                        Console.WriteLine("  all        - Run all benchmarks");
                         break;
                 }
             }
