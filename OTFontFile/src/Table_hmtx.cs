@@ -271,13 +271,21 @@ namespace OTFontFile
                 }
                 else if( nIndex >= m_nNumberOfHMetrics )
                 {
-                    lm.advanceWidth = ((longHorMetric)m_longHorMetric[m_nNumberOfHMetrics - 1]).advanceWidth;
-                    lm.lsb = ((longHorMetric)m_longHorMetric[m_nNumberOfHMetrics - 1]).lsb;
+                    var hm = (longHorMetric?)m_longHorMetric[m_nNumberOfHMetrics - 1];
+                    if (hm != null)
+                    {
+                        lm.advanceWidth = hm.advanceWidth;
+                        lm.lsb = hm.lsb;
+                    }
                 }
                 else
-                {                    
-                    lm.advanceWidth = ((longHorMetric)m_longHorMetric[nIndex]).advanceWidth;
-                    lm.lsb = ((longHorMetric)m_longHorMetric[nIndex]).lsb;
+                {
+                    var hm = (longHorMetric?)m_longHorMetric[nIndex];
+                    if (hm != null)
+                    {
+                        lm.advanceWidth = hm.advanceWidth;
+                        lm.lsb = hm.lsb;
+                    }
                 }
 
                 return lm;
@@ -300,8 +308,12 @@ namespace OTFontFile
                 }                
                 else
                 {
-                    ((longHorMetric)m_longHorMetric[nIndex]).lsb = nLeftSideBearing;
-                    m_bDirty = true;                        
+                    var lhm = (longHorMetric?)m_longHorMetric[nIndex];
+                    if (lhm != null)
+                    {
+                        lhm.lsb = nLeftSideBearing;
+                    }
+                    m_bDirty = true;
                 }
 
                 return bResult;                
@@ -325,8 +337,12 @@ namespace OTFontFile
                 }                
                 else
                 {
-                    ((longHorMetric)m_longHorMetric[nIndex]).advanceWidth = nAdvanceWidth;
-                    ((longHorMetric)m_longHorMetric[nIndex]).lsb = nLeftSideBearing;
+                    var lhm = (longHorMetric?)m_longHorMetric[nIndex];
+                    if (lhm != null)
+                    {
+                        lhm.advanceWidth = nAdvanceWidth;
+                        lhm.lsb = nLeftSideBearing;
+                    }
                     m_bDirty = true;
                 }
 
@@ -388,8 +404,14 @@ namespace OTFontFile
                     if( nIndex < m_nNumberOfHMetrics || (nIndex == m_nNumberOfHMetrics && nAdvanceWidth != 0))
                     {
                         m_nNumberOfHMetrics++;
-                        Table_hhea.hhea_cache hheaCache = (Table_hhea.hhea_cache)m_hheaTable.GetCache();
-                        hheaCache.numberOfHMetrics++;
+                        if (m_hheaTable != null)
+                        {
+                            Table_hhea.hhea_cache? hheaCache = m_hheaTable.GetCache() as Table_hhea.hhea_cache;
+                            if (hheaCache != null)
+                            {
+                                hheaCache.numberOfHMetrics++;
+                            }
+                        }
                     }                    
 
                     // NOTE: Table maxp and ltsh numGlyphs isn't being dynamically updated
@@ -423,8 +445,14 @@ namespace OTFontFile
                     if( nIndex < m_nNumberOfHMetrics )
                     {
                         m_nNumberOfHMetrics--;
-                        Table_hhea.hhea_cache hheaCache = (Table_hhea.hhea_cache)m_hheaTable.GetCache();
-                        hheaCache.numberOfHMetrics--;
+                        if (m_hheaTable != null)
+                        {
+                            Table_hhea.hhea_cache? hheaCache = m_hheaTable.GetCache() as Table_hhea.hhea_cache;
+                            if (hheaCache != null)
+                            {
+                                hheaCache.numberOfHMetrics--;
+                            }
+                        }
                     }
 
                     // NOTE: Table maxp and ltsh numGlyphs isn't being dynamically updated
@@ -447,12 +475,20 @@ namespace OTFontFile
                 {
                     if( i < m_nNumberOfHMetrics )
                     {
-                        newbuf.SetUshort( ((longHorMetric)m_longHorMetric[i]).advanceWidth,    (uint)(i * 4 ));
-                        newbuf.SetShort ( ((longHorMetric)m_longHorMetric[i]).lsb,    (uint)((i * 4) + 2));
+                        var lhm = (longHorMetric?)m_longHorMetric[i];
+                        if (lhm != null)
+                        {
+                            newbuf.SetUshort( lhm.advanceWidth,    (uint)(i * 4 ));
+                            newbuf.SetShort ( lhm.lsb,    (uint)((i * 4) + 2));
+                        }
                     }
                     else
                     {
-                        newbuf.SetShort ( ((longHorMetric)m_longHorMetric[i]).lsb,    (uint)(((m_nNumberOfHMetrics - 1)* 4) + (i * 2)));    
+                        var lhm = (longHorMetric?)m_longHorMetric[i];
+                        if (lhm != null)
+                        {
+                            newbuf.SetShort ( lhm.lsb,    (uint)(((m_nNumberOfHMetrics - 1)* 4) + (i * 2)));
+                        }
                     }
                 }
 

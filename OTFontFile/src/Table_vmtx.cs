@@ -307,8 +307,14 @@ namespace OTFontFile
                     if( nIndex < m_nLongVerMetrics || (nIndex == m_nLongVerMetrics && nAdvanceHeight != 0))
                     {
                         m_nLongVerMetrics++;
-                        Table_vhea.vhea_cache vheaCache = (Table_vhea.vhea_cache)m_vheaTable.GetCache();
-                        vheaCache.numOfLongVerMetrics++;
+                        if (m_vheaTable != null)
+                        {
+                            Table_vhea.vhea_cache? vheaCache = m_vheaTable.GetCache() as Table_vhea.vhea_cache;
+                            if (vheaCache != null)
+                            {
+                                vheaCache.numOfLongVerMetrics++;
+                            }
+                        }
                     }
 
                     // NOTE: Table maxp and ltsh numGlyphs isn't being dynamically updated
@@ -344,8 +350,14 @@ namespace OTFontFile
                     if( nIndex < m_nLongVerMetrics )
                     {
                         m_nLongVerMetrics--;
-                        Table_vhea.vhea_cache vheaCache = (Table_vhea.vhea_cache)m_vheaTable.GetCache();
-                        vheaCache.numOfLongVerMetrics--;
+                        if (m_vheaTable != null)
+                        {
+                            Table_vhea.vhea_cache? vheaCache = m_vheaTable.GetCache() as Table_vhea.vhea_cache;
+                            if (vheaCache != null)
+                            {
+                                vheaCache.numOfLongVerMetrics--;
+                            }
+                        }
                     }
 
                     // NOTE: Table maxp and ltsh numGlyphs isn't being dynamically updated

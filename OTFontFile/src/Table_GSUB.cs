@@ -2068,19 +2068,24 @@ namespace OTFontFile
 
             OTL.LookupListTable llt = GetLookupListTable();
             if (llt != null)
-            {                
+            {
                 OTL.LookupTable lt = llt.GetLookupTable(iLookup);
-                for (uint iSubTable = 0; iSubTable < lt.SubTableCount; iSubTable++)
+                if (lt != null)
                 {
-                    OTL.SubTable st = lt.GetSubTable(iSubTable);
-                    ushort tempLength = (ushort)st.GetMaxContextLength();
-                    if (length < tempLength)
+                    for (uint iSubTable = 0; iSubTable < lt.SubTableCount; iSubTable++)
                     {
-                        length = tempLength;
+                        OTL.SubTable st = lt.GetSubTable(iSubTable);
+                        if (st != null)
+                        {
+                            ushort tempLength = (ushort)st.GetMaxContextLength();
+                            if (length < tempLength)
+                            {
+                                length = tempLength;
+                            }
+
+                        }
                     }
-                    
                 }
-                
             }
 
             return length;
