@@ -1,7 +1,7 @@
 using System;
+using System.Buffers.Binary;
 using System.Diagnostics;
-
-
+using System.Runtime.CompilerServices;
 
 
 namespace OTFontFile
@@ -163,16 +163,38 @@ namespace OTFontFile
         public void SetByte(byte value, uint offset)
         {
             m_buf[offset] = value;
-            
+
             m_bValidChecksumAvailable = false;
         }
-        
 
+        /// <summary>
+        /// Get a zero-copy ReadOnlySpan for high-performance buffer access
+        /// Eliminates data copying overhead and enables efficient SIMD operations
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ReadOnlySpan<byte> GetSpan()
+        {
+            return new ReadOnlySpan<byte>(m_buf);
+        }
+
+        /// <summary>
+        /// Get a zero-copy mutable Span for write operations
+        /// Eliminates data copying overhead and enables efficient SIMD operations
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public Span<byte> GetMutableSpan()
+        {
+            return new Span<byte>(m_buf);
+        }
+
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public short GetShort(uint offset)
         {
             return (short)(m_buf[offset]<<8 | m_buf[offset+1]);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetShort(short value, uint offset)
         {
             m_buf[offset  ] = (byte)(value >> 8);
@@ -182,11 +204,13 @@ namespace OTFontFile
         }
 
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ushort GetUshort(uint offset)
         {
             return (ushort)(m_buf[offset]<<8 | m_buf[offset+1]);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetUshort(ushort value, uint offset)
         {
             m_buf[offset  ] = (byte)(value >> 8);
@@ -196,18 +220,16 @@ namespace OTFontFile
         }
 
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int GetInt(uint offset)
         {
-            return m_buf[offset]<<24 | m_buf[offset+1]<<16 | m_buf[offset+2]<<8 | m_buf[offset+3];
+            return BinaryPrimitives.ReadInt32BigEndian(m_buf.AsSpan((int)offset, 4));
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetInt(int value, uint offset)
         {
-            m_buf[offset  ] = (byte)(value >> 24);
-            m_buf[offset+1] = (byte)(value >> 16);
-            m_buf[offset+2] = (byte)(value >> 8);
-            m_buf[offset+3] = (byte)value;
-
+            BinaryPrimitives.WriteInt32BigEndian(m_buf.AsSpan((int)offset, 4), value);
             m_bValidChecksumAvailable = false;
         }
 
@@ -218,19 +240,48 @@ namespace OTFontFile
                 (m_buf[offset]<<16 | m_buf[offset+1] << 8 | m_buf[offset+2]);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public uint GetUint(uint offset)
         {
-            return (uint)(m_buf[offset]<<24 | m_buf[offset+1]<<16 | m_buf[offset+2]<<8 | m_buf[offset+3]);
+            return BinaryPrimitives.ReadUInt32BigEndian(m_buf.AsSpan((int)offset, 4));
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetUint(uint value, uint offset)
         {
-            m_buf[offset  ] = (byte)(value >> 24);
-            m_buf[offset+1] = (byte)(value >> 16);
-            m_buf[offset+2] = (byte)(value >> 8);
-            m_buf[offset+3] = (byte)value;
-
+            BinaryPrimitives.WriteUInt32BigEndian(m_buf.AsSpan((int)offset, 4), value);
             m_bValidChecksumAvailable = false;
+        }
+
+        /// <summary>
+        /// Read multiple 32-bit integers efficiently using Span&lt;T&gt;
+        /// Optimized for batch operations (e.g., reading coordinate arrays)
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ReadInts(uint offset, int[] values)
+        {
+            var span = new Span<int>(values);
+            var dataSpan = GetSpan().Slice((int)offset, values.Length * 4);
+            
+            for (int i = 0; i < values.Length; i++)
+            {
+                span[i] = BinaryPrimitives.ReadInt32BigEndian(dataSpan.Slice(i * 4, 4));
+            }
+        }
+
+        /// <summary>
+        /// Read multiple unsigned 32-bit integers efficiently using Span&lt;T&gt;
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ReadUints(uint offset, uint[] values)
+        {
+            var span = new Span<uint>(values);
+            var dataSpan = GetSpan().Slice((int)offset, values.Length * 4);
+            
+            for (int i = 0; i < values.Length; i++)
+            {
+                span[i] = BinaryPrimitives.ReadUInt32BigEndian(dataSpan.Slice(i * 4, 4));
+            }
         }
 
         public long GetLong(uint offset)
