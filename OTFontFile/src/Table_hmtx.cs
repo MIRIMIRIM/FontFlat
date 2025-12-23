@@ -12,7 +12,7 @@ namespace OTFontFile
     public class Table_hmtx : OTTable
     {
 
-        protected Table_hhea m_hheaTable;
+        protected Table_hhea? m_hheaTable;
         protected ushort m_nGlyphsInTheFont;
         protected ushort m_nNumberOfHMetrics;
 
@@ -237,7 +237,7 @@ namespace OTFontFile
         public class hmtx_cache : DataCache
         {
             protected  ArrayList m_longHorMetric; // longHorMetric[]
-            protected Table_hhea m_hheaTable;
+            protected Table_hhea? m_hheaTable;
             protected ushort m_nGlyphsInTheFont;
             protected ushort m_nNumberOfHMetrics;
             

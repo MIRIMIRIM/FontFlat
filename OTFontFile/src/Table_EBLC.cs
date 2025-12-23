@@ -11,7 +11,7 @@ namespace OTFontFile
     /// </summary>
     public class Table_EBLC : OTTable
     {
-        protected Table_EBDT m_tableEDBT;
+        protected Table_EBDT? m_tableEDBT;
         /************************
          * constructors
          */
@@ -482,7 +482,7 @@ namespace OTFontFile
 
 
             public uint imageSize;
-            public Table_EBDT.bigGlyphMetrics bigMetrics;
+            public Table_EBDT.bigGlyphMetrics? bigMetrics;
         }
 
         public class indexSubTable3: indexSubTable
@@ -562,7 +562,7 @@ namespace OTFontFile
             }
 
             public uint imageSize;
-            public Table_EBDT.bigGlyphMetrics bigMetrics;
+            public Table_EBDT.bigGlyphMetrics? bigMetrics;
             public uint numGlyphs;
 
             public ushort GetGlyphCode(uint i)
@@ -1188,11 +1188,11 @@ namespace OTFontFile
 
             public class bitmapSizeTableCache : ICloneable
             {
-                protected ArrayList m_indexSubTableArray;
+                protected ArrayList? m_indexSubTableArray;
                 protected uint m_numberOfIndexSubTables;
                 protected uint m_colorRef;
-                protected sbitLineMetricsCache m_hori;
-                protected sbitLineMetricsCache m_vert;
+                protected sbitLineMetricsCache? m_hori;
+                protected sbitLineMetricsCache? m_vert;
                 protected ushort m_startGlyphIndex;
                 protected ushort m_endGlyphIndex;
                 protected byte m_ppemX;
@@ -1592,7 +1592,7 @@ namespace OTFontFile
             {
                 protected ushort m_firstGlyphIndex;
                 protected ushort m_lastGlyphIndex;
-                protected indexSubTableCache m_indexSubTable;
+                protected indexSubTableCache? m_indexSubTable;
 
                 public indexSubTableArrayCache(  ushort nFirstGlyphIndex, ushort nLastGlyphIndex, indexSubTableCache istc )
                 {
@@ -1699,7 +1699,7 @@ namespace OTFontFile
             public class indexSubTableCache2 : indexSubTableCache
             {
                 protected uint m_imageSize;
-                protected Table_EBDT.bigGlyphMetrics m_bigMetrics;
+                protected Table_EBDT.bigGlyphMetrics? m_bigMetrics;
 
                 public indexSubTableCache2( ushort nIndexFormat, ushort nImageFormat, ArrayList cImageCache, uint nImageSize, Table_EBDT.bigGlyphMetrics cBigMetrics ) : base( nIndexFormat, nImageFormat, cImageCache )
                 {
@@ -1817,7 +1817,7 @@ namespace OTFontFile
             public class indexSubTableCache5 : indexSubTableCache
             {
                 protected uint m_imageSize;
-                protected Table_EBDT.bigGlyphMetrics m_bigMetrics;
+                protected Table_EBDT.bigGlyphMetrics? m_bigMetrics;
                 protected ArrayList m_glyphCode;    // ArrayList
 
                 public indexSubTableCache5( ushort nIndexFormat, ushort nImageFormat, ArrayList cImageCache, uint nImageSize, Table_EBDT.bigGlyphMetrics cBigMetrics, ArrayList cGlyphCode ) : base( nIndexFormat, nImageFormat, cImageCache )
@@ -1885,8 +1885,8 @@ namespace OTFontFile
 
             public class imageCache1 : imageCache
             {
-                protected Table_EBDT.smallGlyphMetrics m_smallMetrics;
-                protected byte[] m_imageData;
+                protected Table_EBDT.smallGlyphMetrics? m_smallMetrics;
+                protected byte[]? m_imageData;
 
                 public imageCache1( Table_EBDT.smallGlyphMetrics cSmallMetrics, byte[] bImageData )
                 {                        
@@ -1922,8 +1922,8 @@ namespace OTFontFile
 
             public class imageCache2 : imageCache
             {
-                protected Table_EBDT.smallGlyphMetrics m_smallMetrics;
-                protected byte[] m_imageData;
+                protected Table_EBDT.smallGlyphMetrics? m_smallMetrics;
+                protected byte[]? m_imageData;
 
                 public imageCache2( Table_EBDT.smallGlyphMetrics cSmallMetrics, byte[] bImageData )
                 {                        
@@ -1960,7 +1960,7 @@ namespace OTFontFile
         
             public class imageCache5 : imageCache
             {
-                protected byte[] m_imageData;
+                protected byte[]? m_imageData;
 
                 public imageCache5( byte[] bImageData )
                 {                    
@@ -1988,8 +1988,8 @@ namespace OTFontFile
 
             public class imageCache6 : imageCache
             {
-                protected Table_EBDT.bigGlyphMetrics m_bigMetrics;
-                protected byte[] m_imageData;
+                protected Table_EBDT.bigGlyphMetrics? m_bigMetrics;
+                protected byte[]? m_imageData;
 
                 public imageCache6( Table_EBDT.bigGlyphMetrics cBigMetrics, byte[] bImageData )
                 {                    
@@ -2025,10 +2025,10 @@ namespace OTFontFile
 
             public class imageCache7 : imageCache
             {
-                protected Table_EBDT.bigGlyphMetrics m_bigMetrics;
-                protected byte[] m_imageData;
+                protected Table_EBDT.bigGlyphMetrics? m_bigMetrics;
+                protected byte[]? m_imageData;
 
-                public imageCache7( Table_EBDT.bigGlyphMetrics cBigMetrics, byte[] bImageData )
+                public imageCache7( Table_EBDT.bigGlyphMetrics? cBigMetrics, byte[]? bImageData )
                 {    
                     bigMetrics = cBigMetrics;
                     imageData = bImageData;
@@ -2062,10 +2062,10 @@ namespace OTFontFile
 
             public class imageCache8 : imageCache
             {
-                protected Table_EBDT.smallGlyphMetrics m_smallMetrics;
+                protected Table_EBDT.smallGlyphMetrics? m_smallMetrics;
                 //protected byte m_pad;
                 protected ushort m_numComponents;
-                protected ArrayList m_componentArray; //Table_EBDT.ebdtComponent[]
+                protected ArrayList? m_componentArray; //Table_EBDT.ebdtComponent[]
 
                 public imageCache8( Table_EBDT.smallGlyphMetrics cSmallMetrics, ushort nNumComponents, ArrayList cComponentArray )
                 {                    
@@ -2120,9 +2120,9 @@ namespace OTFontFile
 
             public class imageCache9 : imageCache
             {
-                protected Table_EBDT.bigGlyphMetrics m_bigMetrics;        
+                protected Table_EBDT.bigGlyphMetrics? m_bigMetrics;        
                 protected ushort m_numComponents;
-                protected ArrayList m_componentArray; //Table_EBDT.ebdtComponent[]
+                protected ArrayList? m_componentArray; //Table_EBDT.ebdtComponent[]
 
                 public imageCache9( Table_EBDT.bigGlyphMetrics cBigMetrics, ushort nNumComponents, ArrayList cComponentArray )
                 {                    
@@ -2226,3 +2226,4 @@ namespace OTFontFile
         }
     }
 }
+

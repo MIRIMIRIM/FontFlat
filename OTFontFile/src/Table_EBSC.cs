@@ -315,8 +315,8 @@ namespace OTFontFile
 
             public class bitmapScaleTableCache : ICloneable
             {
-                public Table_EBLC.EBLC_cache.sbitLineMetricsCache hori;
-                public Table_EBLC.EBLC_cache.sbitLineMetricsCache vert;
+                public Table_EBLC.EBLC_cache.sbitLineMetricsCache? hori;
+                public Table_EBLC.EBLC_cache.sbitLineMetricsCache? vert;
                 public byte ppemX;
                 public byte ppemY;
                 public byte substitutePpemX;

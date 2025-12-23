@@ -1521,7 +1521,7 @@ namespace OTFontFile
             public class DefaultUVSTable
             {
                 public uint                     numUnicodeValueRanges; // ULONG
-                public List<UnicodeValueRange>  ranges;
+                public List<UnicodeValueRange>?  ranges;
 
                 // Offset is relative to start of subtable
                 public void Populate( MBOBuffer b, 
@@ -1574,7 +1574,7 @@ namespace OTFontFile
             public class NonDefaultUVSTable
             {
                 public uint     numUVSMappings;  // ULONG
-                public List<UVSMapping> mappings;
+                public List<UVSMapping>? mappings;
 
                 public void Populate( MBOBuffer b, 
                                       uint subtableOffset,
@@ -1808,7 +1808,7 @@ namespace OTFontFile
                 public ushort m_platID;
                 public ushort m_encID;
 
-                public uint[] m_CharToGlyphMap;
+                public uint[]? m_CharToGlyphMap;
             }
 
             public class SubtableArray : List<CachedSubtable> // ArrayList
@@ -1847,7 +1847,7 @@ namespace OTFontFile
             }
 
             SubtableArray m_arrSubtables;
-            CachedSubtable m_DefaultSubtable;
+            CachedSubtable? m_DefaultSubtable;
 
 
             // constructor
@@ -2106,7 +2106,7 @@ namespace OTFontFile
                 public ushort startCode, endCode;
                 public short  idDelta;
                 public ushort idRangeOffset;
-                public ushort [] glyphIdArray;
+                public ushort []? glyphIdArray;
             }
 
             protected byte[] GenerateFormat4Subtable(uint [] map)

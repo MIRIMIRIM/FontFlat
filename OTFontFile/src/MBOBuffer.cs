@@ -372,7 +372,7 @@ namespace OTFontFile
         long m_filepos; // file position from which this buffer was read, -1 if not from file
         uint m_length; // number of data bytes
         uint m_nPadBytes; // number of padding bytes on the end
-        byte[] m_buf;
+        byte[]? m_buf;
 
         uint m_cachedChecksum;
         bool m_bValidChecksumAvailable;

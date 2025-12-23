@@ -279,7 +279,7 @@ namespace OTFontFile
             public int offsetCharset;
             public int offsetEncoding;
 
-            public string ROS;
+            public string? ROS;
             public int offsetFDSelect;
 
             public int Subrs;
@@ -706,9 +706,9 @@ namespace OTFontFile
             }
         }
 
-        private INDEXData m_Name;
-        private INDEXData m_TopDICT;
-        private INDEXData m_String;
-        private INDEXData m_GlobalSubr;
+        private INDEXData? m_Name;
+        private INDEXData? m_TopDICT;
+        private INDEXData? m_String;
+        private INDEXData? m_GlobalSubr;
     }
 }

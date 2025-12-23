@@ -13,7 +13,7 @@ namespace OTFontFile
     /// </summary>
     public class Table_vmtx : OTTable
     {
-        protected Table_vhea m_vheaTable;
+        protected Table_vhea? m_vheaTable;
         protected ushort m_nGlyphsInTheFont;
         protected ushort m_nLongVerMetrics;
 
@@ -159,7 +159,7 @@ namespace OTFontFile
         public class vmtx_cache : DataCache
         {
             protected List<vMetric> m_vMetric; // vMetric[] // ArrayList
-            protected Table_vhea m_vheaTable;
+            protected Table_vhea? m_vheaTable;
             protected ushort m_nGlyphsInTheFont;
             protected ushort m_nLongVerMetrics;
             
