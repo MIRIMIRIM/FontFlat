@@ -1,7 +1,9 @@
 using System;
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 
 namespace OTFontFile
@@ -390,16 +392,69 @@ namespace OTFontFile
         {
             Debug.Assert(m_length != 0);
 
-            uint sum = 0;
-
             uint nLongs = (m_length + 3) / 4;
 
-            for (uint i = 0; i < nLongs; i++)
+            // SIMD 优化：使用 GetUint 批量读取再 SIMD 累加
+            // 策略：一次读取 4 个 uint（16 字节），使用 Vector<uint> 累加
+            // 阈值：至少 64 字节（16 个 uint）以启用 SIMD
+            if (Vector.IsHardwareAccelerated && nLongs >= 16)
             {
-                sum += GetUint(i*4);
-            }
+                unsafe
+                {
+                    fixed (byte* pBuf = m_buf)
+                    {
+                        int vecCount = Vector<uint>.Count;
+                        Vector<uint> sumVec = Vector<uint>.Zero;
+                        int i = 0;
+                        
+                        // 每次处理 vecCount 个 uint，使用 GetUint 保证端序正确
+                        int maxSIMD = (int)nLongs - ((int)nLongs & (vecCount - 1));
+                        
+                        uint[] tempUints = new uint[vecCount];
+                        
+                        for (; i < maxSIMD; i += vecCount)
+                        {
+                            // 使用 GetUint 读取 vecCount 个 uint（保证大端序转换正确）
+                            for (int k = 0; k < vecCount; k++)
+                            {
+                                tempUints[k] = GetUint((uint)((i + k) * 4));
+                            }
+                            
+                            // 构建 Vector<uint> 并累加
+                            Vector<uint> v = new Vector<uint>(tempUints, 0);
+                            sumVec += v;
+                        }
 
-            return sum;
+                        // 累加向量化部分的和
+                        uint sum = 0;
+                        unchecked
+                        {
+                            for (int k = 0; k < vecCount; k++)
+                            {
+                                sum += sumVec[k];
+                            }
+                        }
+
+                        // 处理剩余的个别 uint
+                        for (; i < (int)nLongs; i++)
+                        {
+                            sum += GetUint((uint)(i * 4));
+                        }
+
+                        return sum;
+                    }
+                }
+            }
+            else
+            {
+                // 使用原始实现
+                uint sum = 0;
+                for (uint i = 0; i < nLongs; i++)
+                {
+                    sum += GetUint(i*4);
+                }
+                return sum;
+            }
         }
         
 

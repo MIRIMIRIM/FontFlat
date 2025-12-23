@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <IsAotCompatible>True</IsAotCompatible>
     <!-- <PublishAot>False</PublishAot> -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DocumentationFile>bin\OTFontFile.XML</DocumentationFile>
     <FileAlignment>4096</FileAlignment>
     <Version>1.0.1-beta</Version>
