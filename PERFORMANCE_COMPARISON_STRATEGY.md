@@ -8,14 +8,153 @@
 3. ✅ 在**相同环境**下进行对比
 4. ✅ 确保测试结果**可靠且可比较**
 
-## 解决方案对比
+## 实现方案：并行项目结构
 
-| 方案 | 优点 | 缺点 | 推荐度 |
-|------|------|------|--------|
-| **Git 分支** | 简单、无代码重复 | 无法同时运行、频繁切换 | ⭐⭐⭐ |
-| **并行项目** | 可同时运行、清晰对比 | 代码重复、占用空间 | ⭐⭐⭐⭐⭐ |
-| **条件编译** | 无重复、一键切换 | 代码复杂、混淆逻辑 | ⭐⭐ |
-| **运行时切换** | 同一代码、灵活 | 复杂度最高、可能影响性能 | ⭐⭐ |
+### 项目架构
+
+```
+FontFlat/
+├── OTFontFile/                    # ✅ 新优化版本（主要工作区）
+│   ├── src/
+│   │   ├── MBOBuffer.cs (SIMD加速, BinaryPrimitives)
+│   │   ├── Table_cmap.cs (SIMD加速的GetMap)
+│   │   ├── Table_VORG.cs (SIMD加速)
+│   │   └── ...
+│   └── OTFontFile.csproj
+│
+├── OTFontFile.Baseline/            # ✅ 原始基线版本（只读）
+│   ├── src/
+│   │   ├── MBOBuffer.cs (原始byte[], 手动比较)
+│   │   ├── Table_cmap.cs (原始GetMap)
+│   │   ├── Table_VORG.cs (原始GetAllVertOriginYMetrics)
+│   │   └── ...
+│   └── OTFontFile.Baseline.csproj
+│
+├── OTFontFile.Performance.Tests/   # ✅ 对比测试项目
+│   ├── UnitTests/
+│   │   ├── BufferTests.cs
+│   │   ├── FileParsingTests.cs
+│   │   └── SimdTests.cs     # ⭐ SIMD优化验证测试
+│   └── OTFontFile.Performance.Tests.csproj (同时引用两个版本)
+│
+└── OTFontFile.Benchmarks/          # ✅ 对比基准测试
+    ├── Benchmarks/
+    │   ├── FileLoadingBenchmarks.cs
+    │   ├── ChecksumBenchmarks.cs
+    │   ├── MBOBufferBenchmarks.cs
+    │   └── SimdOptimizationsBenchmarks.cs    # ⭐ SIMD优化对比基准
+    └── OTFontFile.Benchmarks.csproj (同时引用两个版本)
+```
+
+### 关键实现细节
+
+1. **命名空间区分**：
+   ```csharp
+   // OTFontFile (新版本)
+   namespace FontFlat
+   {
+       public class MBOBuffer { /* SIMD/BinaryPrimitives */ }
+   }
+
+   // OTFontFile.Baseline (原始版本)
+   namespace FontFlat.Baseline
+   {
+       public class MBOBuffer { /* byte[]/手动操作 */ }
+   }
+   ```
+
+2. **测试代码同时引用**：
+   ```csharp
+   using FontFlat;           // 新版本
+   using FontFlat.Baseline;   // 原始版本
+
+   [TestMethod]
+   public void CompareBinaryEqual()
+   {
+       byte[] data1 = { ... };
+       byte[] data2 = { ... };
+
+       // 测试原始版本
+       var baselineBuffer = new Baseline.MBOBuffer(data1);
+       bool baselineResult = baselineBuffer.BinaryEqual(baselineBuffer, data1.Length);
+
+       // 测试优化版本
+       var optimizedBuffer = new MBOBuffer(data2);
+       bool optimizedResult = optimizedBuffer.BinaryEqual(optimizedBuffer, data2.Length);
+
+       Assert.AreEqual(baselineResult, optimizedResult);
+   }
+   ```
+
+3. **基准测试成对运行**：
+   ```csharp
+   [MemoryDiagnoser]
+   public class SimdOptimizationsBenchmarks
+   {
+       private MBOBuffer _optimizedBuffer;
+       private Baseline.MBOBuffer _baselineBuffer;
+
+       [GlobalSetup]
+       public void Setup()
+       {
+           _optimizedBuffer = new MBOBuffer(_testData);
+           _baselineBuffer = new Baseline.MBOBuffer(_testData);
+       }
+
+       [Benchmark(Baseline = true)]
+       public void BinaryEqual_Baseline()
+       {
+           _baselineBuffer.BinaryEqual(_baselineBuffer, _testData.Length);
+       }
+
+       [Benchmark]
+       public void BinaryEqual_Optimized()
+       {
+           _optimizedBuffer.BinaryEqual(_optimizedBuffer, _testData.Length);
+       }
+   }
+   ```
+
+## 实战应用：SIMD 优化验证
+
+### BinaryEqual 优化结果
+
+| Buffer Size | Baseline (ns) | Optimized (ns) | Speedup |
+|-------------|---------------:|---------------:|--------:|
+| Small (32B) | 10.95 | 8.43 | **1.30x** |
+| Medium (4KB) | 195.83 | 10.40 | **18.83x** |
+| Large (1MB) | 1896.27 | 101.78 | **18.64x** |
+
+### 测试数据来源
+
+基准测试使用专用测试字体确保各 CMAP 格式覆盖：
+- `cmap0_font1.otf` - CMAP Format 0
+- `cmap4_font1.otf` - CMAP Format 4  
+- `cmap6_font1.otf` - CMAP Format 6
+- `cmap12_font1.otf` - CMAP Format 12
+- `AvenirNextW1G-Regular.OTF` - VORG 表测试
+- `msyh.ttc`, `华康POP1体W5.ttc` - TTC 测试（CJK字体）
+
+## 运行基准测试
+
+```bash
+# 运行所有基准测试
+dotnet run --project OTFontFile.Benchmarks -- simd -c Release
+
+# 查看详细报告
+# HTML: BenchmarkDotNet.Artifacts/results/*-report.html
+# Markdown: BenchmarkDotNet.Artifacts/results/*-report.md
+```
+
+## 最佳实践
+
+1. **保持 Baseline 只读**: 所有修改在主分支，Baseline 用于验证
+2. **定期同步**: 重大重构后更新 Baseline 项目
+3. **测试覆盖**: 每个优化点都需要对应的单元测试和基准测试
+4. **真实字体**: 使用真实字体文件（`OTFontFile.Performance.Tests/TestResources/SampleFonts`）
+5. **环境一致性**: 使用 Release 配置和相同的运行环境
+
+## 解决方案对比（历史参考）
 
 ---
 
