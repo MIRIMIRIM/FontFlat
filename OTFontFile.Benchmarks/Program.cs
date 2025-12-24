@@ -37,6 +37,11 @@ namespace OTFontFile.Benchmarks
                         BenchmarkRunner.Run<MBOBufferBenchmarks>();
                         break;
 
+                    case "pool":
+                        Console.WriteLine("Running Object Pooling benchmarks...\n");
+                        BenchmarkRunner.Run<ObjectPoolingBenchmarks>();
+                        break;
+
                     case "primitives":
                         Console.WriteLine("Running MBOBuffer BinaryPrimitives comparison benchmarks...\n");
                         BenchmarkRunner.Run<MBOBufferBinaryPrimitivesComparison>();
@@ -76,6 +81,7 @@ namespace OTFontFile.Benchmarks
                         Console.WriteLine("  primitives - BinaryPrimitives comparison benchmarks (Int/Uint)");
                         Console.WriteLine("  shortlong  - BinaryPrimitives comparison benchmarks (Short/Long)");
                         Console.WriteLine("  simd       - SIMD Optimizations benchmarks");
+                        Console.WriteLine("  pool       - Object Pooling benchmarks");
                         Console.WriteLine("  all        - Run all benchmarks");
                         break;
                 }
