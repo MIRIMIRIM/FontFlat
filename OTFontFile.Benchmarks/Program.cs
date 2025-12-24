@@ -52,6 +52,12 @@ namespace OTFontFile.Benchmarks
                         BenchmarkRunner.Run<SimdOptimizationsBenchmarks>();
                         break;
 
+                    case "testChecksum":
+                    case "testchecksum":
+                        Console.WriteLine("Running Manual Checksum Performance Test...\n");
+                        TestChecksumPerformance.Run();
+                        break;
+
                     case "all":
                         Console.WriteLine("Running all benchmarks...\n");
                         BenchmarkRunner.Run<FileLoadingBenchmarks>();

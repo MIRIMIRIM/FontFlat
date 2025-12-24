@@ -542,22 +542,20 @@ namespace OTFontFile.Benchmarks.Benchmarks
 
         /// <summary>
         /// MBOBuffer CalcChecksum() - 计算校验和
-        /// 优化：使用 Vector<uint> 批量累加，处理数据量 ≥64 字节时启用 SIMD
-        /// 使用大型字体 (SourceHanSansCN-Regular.otf ~16MB) 可以显著观察到性能提升
         /// </summary>
-        [Benchmark]
-        [BenchmarkCategory("CalculateChecksum", "Baseline")]
-        public uint CalculateChecksum_Baseline()
-        {
-            return _baselineChecksumBuffer?.CalcChecksum() ?? 0;
-        }
+        // [Benchmark]
+        // [BenchmarkCategory("CalculateChecksum", "Baseline")]
+        // public uint CalculateChecksum_Baseline()
+        // {
+        //     return _baselineChecksumBuffer?.CalcChecksum() ?? 0;
+        // }
 
-        [Benchmark]
-        [BenchmarkCategory("CalculateChecksum", "SIMD")]
-        public uint CalculateChecksum_Optimized()
-        {
-            return _optimizedChecksumBuffer?.CalcChecksum() ?? 0;
-        }
+        // [Benchmark]
+        // [BenchmarkCategory("CalculateChecksum", "SIMD")]
+        // public uint CalculateChecksum_Optimized()
+        // {
+        //     return _optimizedChecksumBuffer?.CalcChecksum() ?? 0;
+        // }
 
         #endregion
 
