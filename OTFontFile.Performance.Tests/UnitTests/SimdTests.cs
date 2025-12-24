@@ -1,3 +1,4 @@
+using System;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using OTFontFile;
 using Baseline;
@@ -641,6 +642,130 @@ namespace OTFontFile.Performance.Tests.UnitTests
             if (mismatchCount > 0)
             {
                 Assert.Fail($"CMAP0 GetMap() produced {mismatchCount} mismatches");
+            }
+        }
+
+        /// <summary>
+        /// CMAP Format12 GetMap() 优化测试
+        /// 验证：使用真实字体测试 Format12 字符到字形映射的正确性
+        /// Format12 是基于组的连续映射，支持 Unicode Full Repertoire
+        /// </summary>
+        [TestMethod]
+        public void CMAP12_GetMap_RealFont_MatchesBaseline()
+        {
+            var fontPath = ComparisonTests.GetTestFontForFormat("12");
+            if (fontPath == null)
+            {
+                Assert.Inconclusive("No Format12 test font available in TestResources/SampleFonts");
+                return;
+            }
+
+            // 加载基线版本
+            var baselineFile = new Baseline.OTFile();
+            baselineFile.open(fontPath);
+            var baselineFont = baselineFile.GetFont(0);
+            var baselineCmap = baselineFont.GetTable("cmap") as Baseline.Table_cmap;
+            baselineFile.close();
+
+            // 加载优化版本
+            var optimizedFile = new OTFontFile.OTFile();
+            optimizedFile.open(fontPath);
+            var optimizedFont = optimizedFile.GetFont(0);
+            var optimizedCmap = optimizedFont.GetTable("cmap") as OTFontFile.Table_cmap;
+            optimizedFile.close();
+
+            if (baselineCmap == null || optimizedCmap == null)
+            {
+                Assert.Inconclusive("Font does not contain cmap table");
+                return;
+            }
+
+            // 测试 Format12 (Platform=0/3, Encoding=4/10 是常见的 Format12)
+            Baseline.Table_cmap.Subtable? baselineSubtable = null;
+            Table_cmap.Subtable? optimizedSubtable = null;
+
+            // 尝试 Format12 (Platform=3 Windows, Encoding=10 Unicode Full Repertoire)
+            baselineSubtable = baselineCmap.GetSubtable(3, 10);
+            if (baselineSubtable != null && baselineSubtable.format == 12)
+            {
+                optimizedSubtable = optimizedCmap.GetSubtable(3, 10);
+            }
+
+            // 如果没有找到 Format12，尝试Platform=0 (Unicode)
+            if (baselineSubtable == null || baselineSubtable.format != 12)
+            {
+                baselineSubtable = baselineCmap.GetSubtable(0, 4);
+                if (baselineSubtable != null && baselineSubtable.format == 12)
+                {
+                    optimizedSubtable = optimizedCmap.GetSubtable(0, 4);
+                }
+            }
+
+            // 如果仍然没找到，尝试遍历所有子表
+            if (baselineSubtable == null || baselineSubtable.format != 12)
+            {
+                for (uint plat = 0; plat < 10; plat++)
+                {
+                    for (uint enc = 0; enc < 20; enc++)
+                    {
+                        var st = baselineCmap.GetSubtable((ushort)plat, (ushort)enc);
+                        if (st != null && st.format == 12)
+                        {
+                            baselineSubtable = st;
+                            optimizedSubtable = optimizedCmap.GetSubtable((ushort)plat, (ushort)enc);
+                            break;
+                        }
+                    }
+                    if (baselineSubtable != null && baselineSubtable.format == 12)
+                        break;
+                }
+            }
+
+            if (baselineSubtable == null || baselineSubtable.format != 12)
+            {
+                Assert.Inconclusive("Font does not contain Format 12 subtable");
+                return;
+            }
+
+            var baselineMap = baselineSubtable.GetMap();
+            var optimizedMap = optimizedSubtable!.GetMap();
+
+            // 验证映射结果
+            Assert.AreEqual(baselineMap.Length, optimizedMap.Length, "Map length mismatch");
+
+            // Format12 可能会映射超过 65536 个字符（支持 Unicode 补充平面）
+            // 但为了性能考虑，只测试前 65536 个字符
+            int testLength = (int)Math.Min(baselineMap.Length, 65536);
+            
+            int mismatchCount = 0;
+            for (int i = 0; i < testLength; i++)
+            {
+                if (baselineMap[i] != optimizedMap[i])
+                {
+                    mismatchCount++;
+                    if (mismatchCount <= 10)
+                    {
+                        Console.WriteLine($"CMAP12 mismatch at char {i}: Baseline={baselineMap[i]}, Optimized={optimizedMap[i]}");
+                    }
+                }
+            }
+
+            // 也验证任何超过 65536 的字符
+            for (int i = 65536; i < baselineMap.Length; i += 1024)
+            {
+                if (baselineMap[i] != optimizedMap[i])
+                {
+                    mismatchCount++;
+                    if (mismatchCount <= 10)
+                    {
+                        Console.WriteLine($"CMAP12 mismatch at char {i}: Baseline={baselineMap[i]}, Optimized={optimizedMap[i]}");
+                    }
+                }
+            }
+
+            if (mismatchCount > 0)
+            {
+                Assert.Fail($"CMAP12 GetMap() produced {mismatchCount} mismatches");
             }
         }
 

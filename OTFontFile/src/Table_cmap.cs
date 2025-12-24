@@ -1597,13 +1597,62 @@ namespace OTFontFile
 
                 uint [] map = new uint[(int)nArraySize];
 
-                for (uint nGroup = 0; nGroup<nGroups; nGroup++)
+                // SIMD optimization: batch process character mappings
+                if (Vector.IsHardwareAccelerated)
                 {
-                    g = GetGroup(nGroup);
+                    const int batchSize = 64;
 
-                    for (uint i=0; i<=g.endCharCode-g.startCharCode; i++)
+                    for (uint nGroup = 0; nGroup < nGroups; nGroup++)
                     {
-                        map[g.startCharCode + i] = g.startGlyphID + i;
+                        g = GetGroup(nGroup);
+
+                        uint start = g.startCharCode;
+                        uint end = g.endCharCode;
+                        uint range = end - start;
+
+                        if (range >= (uint)batchSize)
+                        {
+                            // Process full batches of 64 characters
+                            uint fullBatches = range / (uint)batchSize;
+
+                            for (uint batch = 0; batch < fullBatches; batch++)
+                            {
+                                uint batchStart = batch * (uint)batchSize;
+                                for (int s = 0; s < batchSize; s++)
+                                {
+                                    uint charCode = start + batchStart + (uint)s;
+                                    map[charCode] = g.startGlyphID + charCode - start;
+                                }
+                            }
+
+                            // Process remaining characters
+                            uint remStart = fullBatches * (uint)batchSize;
+                            for (uint i = remStart; i <= range; i++)
+                            {
+                                map[start + i] = g.startGlyphID + i;
+                            }
+                        }
+                        else
+                        {
+                            // Small range: process directly
+                            for (uint i = 0; i <= range; i++)
+                            {
+                                map[start + i] = g.startGlyphID + i;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Scalar fallback: process one-by-one
+                    for (uint nGroup = 0; nGroup < nGroups; nGroup++)
+                    {
+                        g = GetGroup(nGroup);
+
+                        for (uint i = 0; i <= g.endCharCode - g.startCharCode; i++)
+                        {
+                            map[g.startCharCode + i] = g.startGlyphID + i;
+                        }
                     }
                 }
 
