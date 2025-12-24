@@ -76,7 +76,9 @@ namespace Baseline
         {
             // NOTE: creating a filestream can throw exceptions
             // Should they be handled here, or let the caller worry about it?
-            m_fs = new FileStream(sFilename, FileMode.Open, FileAccess.Read, FileShare.Read);
+            // Use SequentialScan for better performance when reading fonts sequentially
+            m_fs = new FileStream(sFilename, FileMode.Open, FileAccess.Read, FileShare.Read,
+                                 bufferSize: 4096, options: FileOptions.SequentialScan);
 
             return TestFileType();
 

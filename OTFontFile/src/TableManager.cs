@@ -25,9 +25,15 @@ namespace OTFontFile
          */
         
         
-        private static readonly HashSet<string> s_largeTableTags = new(StringComparer.Ordinal)
+        // 使用 uint 而非 string 进行标签比较，避免字符串分配，提升性能
+        private static readonly HashSet<uint> s_largeTableTags = new()
         {
-            "glyf", "CFF ", "CFF2", "CBDT", "EBDT", "SVG "
+            0x676C7966, // glyf
+            0x43464620, // CFF 
+            0x43464632, // CFF2
+            0x43424454, // CBDT
+            0x45424454, // EBDT
+            0x53564720  // SVG 
         };
 
         private static bool ShouldUsePooledBuffer(DirectoryEntry de)
@@ -35,7 +41,7 @@ namespace OTFontFile
             // 使用池化缓冲区的条件：
             // 1. 表标签在已知大表列表中，或者
             // 2. 表大小超过 64KB
-            string tag = de.tag;
+            uint tag = de.tag;  // OTTag 隐式转换为 uint
             if (s_largeTableTags.Contains(tag))
                 return true;
             if (de.length > 64 * 1024)
@@ -47,7 +53,7 @@ namespace OTFontFile
         {
             // 使用延迟加载的条件：大表
             // glyf, CFF, CFF2, SVG, CBDT, EBDT 可以延迟加载
-            string tag = de.tag;
+            uint tag = de.tag;  // OTTag 隐式转换为 uint
             if (s_largeTableTags.Contains(tag))
                 return true;
             return false;
