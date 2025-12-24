@@ -30,21 +30,17 @@ namespace OTFontFile.Benchmarks.Benchmarks
         // 字体文件路径来自 Performance.Tests/TestResources/SampleFonts
         private const string TestResourcesPath = "../OTFontFile.Performance.Tests/TestResources/SampleFonts";
 
-        // CMAP 测试字体（各个 Format 的专用字体）
-        private static readonly string? s_cmap0FontPath = Path.Combine(TestResourcesPath, "cmap0_font1.otf");
-        private static readonly string? s_cmap4FontPath = Path.Combine(TestResourcesPath, "cmap4_font1.otf");
-        private static readonly string? s_cmap6FontPath = Path.Combine(TestResourcesPath, "cmap6_font1.otf");
-        private static readonly string? s_cmap12FontPath = Path.Combine(TestResourcesPath, "cmap12_font1.otf");
+        // CMAP 测试字体 - 使用大型字体以获得可测量的性能差异
+        private static readonly string? s_cmapTestFontPath = Path.Combine(TestResourcesPath, "SourceHanSansCN-Regular.otf");
 
         // VORG 测试字体（包含 VORG 表的字体）
-        private static readonly string? s_vorgFontPath = Path.Combine(TestResourcesPath, "AvenirNextW1G-Regular.OTF");
+        private static readonly string? s_vorgFontPath = Path.Combine(TestResourcesPath, "SourceHanSansCN-Regular.otf");
 
-        // TTC 测试字体系列
-        private static readonly string[] s_ttcFontPaths = new[]
-        {
-            Path.Combine(TestResourcesPath, "msyh.ttc"),
-            Path.Combine(TestResourcesPath, "华康POP1体W5 & 华康POP1体W5(P).ttc")
-        };
+        // CalculateChecksum 测试字体 - 使用大型字体
+        private static readonly string? s_checksumFontPath = Path.Combine(TestResourcesPath, "SourceHanSansCN-Regular.otf");
+
+        // TTC 测试字体 - 使用大型 TTC 文件
+        private static readonly string? s_ttcFontPath = Path.Combine(TestResourcesPath, "SourceHanSans.ttc");
 
         // MBOBuffer 测试数据
         private MBOBuffer? _optimizedBufferSmall;
@@ -55,27 +51,28 @@ namespace OTFontFile.Benchmarks.Benchmarks
         private Baseline.MBOBuffer? _baselineBufferLarge;
 
         // 字体文件对象
-        private OTFile? _optimizedFontFile;
-        private Baseline.OTFile? _baselineFontFile;
+        private OTFile? _optimizedCmapFile;
+        private Baseline.OTFile? _baselineCmapFile;
+        private OTFile? _optimizedVORGFile;
+        private Baseline.OTFile? _baselineVORGFile;
+        private OTFile? _optimizedChecksumFile;
+        private Baseline.OTFile? _baselineChecksumFile;
+        private OTFile? _optimizedTTCFile;
+        private Baseline.OTFile? _baselineTTCFile;
 
-        // CMAP 表对象（各个 Format 专用）
-        private Table_cmap? _optimizedCmapFormat4;
-        private Table_cmap? _optimizedCmapFormat6;
-        private Table_cmap? _optimizedCmapFormat0;
-        private Table_cmap? _optimizedCmapFormat12;
-        private Baseline.Table_cmap? _baselineCmapFormat4;
-        private Baseline.Table_cmap? _baselineCmapFormat6;
-        private Baseline.Table_cmap? _baselineCmapFormat0;
-        private Baseline.Table_cmap? _baselineCmapFormat12;
+        // CMAP 表对象（使用同一个大字体）
+        private Table_cmap? _optimizedCmap;
+        private Baseline.Table_cmap? _baselineCmap;
 
         // VORG 表对象
         private Table_VORG? _optimizedVORG;
         private Baseline.Table_VORG? _baselineVORG;
 
-        // TTCHeader 对象（使用第一个可用的 TTC 文件）
-        private string? _activeTTCPath;
-        private OTFile? _optimizedTTCFile;
-        private Baseline.OTFile? _baselineTTCFile;
+        // CalculateChecksum 测试对象 - MBOBuffer对象
+        private MBOBuffer? _optimizedChecksumBuffer;
+        private Baseline.MBOBuffer? _baselineChecksumBuffer;
+
+        // TTCHeader 对象
         private TTCHeader? _optimizedTTCHeader;
         private Baseline.TTCHeader? _baselineTTCHeader;
 
@@ -85,22 +82,25 @@ namespace OTFontFile.Benchmarks.Benchmarks
             // 1. MBOBuffer 测试数据
             _optimizedBufferSmall = new MBOBuffer(64);
             _optimizedBufferMedium = new MBOBuffer(1024);
-            _optimizedBufferLarge = new MBOBuffer(10240);
+            _optimizedBufferLarge = new MBOBuffer(1048576); // 1MB
             _baselineBufferSmall = new Baseline.MBOBuffer(64);
             _baselineBufferMedium = new Baseline.MBOBuffer(1024);
-            _baselineBufferLarge = new Baseline.MBOBuffer(10240);
+            _baselineBufferLarge = new Baseline.MBOBuffer(1048576);
 
             FillBuffers(_optimizedBufferSmall, _baselineBufferSmall, 64);
             FillBuffers(_optimizedBufferMedium, _baselineBufferMedium, 1024);
-            FillBuffers(_optimizedBufferLarge, _baselineBufferLarge, 10240);
+            FillBuffers(_optimizedBufferLarge, _baselineBufferLarge, 1048576);
 
-            // 2. 加载 CMAP 格式专用字体
-            LoadCmapFormatFonts();
+            // 2. 加载 CMAP 字体
+            LoadCmapFonts();
 
             // 3. 加载 VORG 字体
             LoadVORGFont();
 
-            // 4. 加载第一个可用的 TTC 字体
+            // 4. 加载 Checksum 字体
+            LoadChecksumFont();
+
+            // 5. 加载 TTC 字体
             LoadTTCFont();
         }
 
@@ -108,68 +108,30 @@ namespace OTFontFile.Benchmarks.Benchmarks
         public void Cleanup()
         {
             // 关闭所有打开的字体文件
-            _optimizedFontFile?.close();
-            _baselineFontFile?.close();
+            _optimizedCmapFile?.close();
+            _baselineCmapFile?.close();
+            _optimizedVORGFile?.close();
+            _baselineVORGFile?.close();
+            _optimizedChecksumFile?.close();
+            _baselineChecksumFile?.close();
             _optimizedTTCFile?.close();
             _baselineTTCFile?.close();
         }
 
-        private void LoadCmapFormatFonts()
+        private void LoadCmapFonts()
         {
-            // 加载 Format4 字体
-            if (s_cmap4FontPath != null && File.Exists(s_cmap4FontPath))
+            // 加载大型 CMAP 测试字体
+            if (s_cmapTestFontPath != null && File.Exists(s_cmapTestFontPath))
             {
-                _optimizedFontFile = new OTFile();
-                _optimizedFontFile.open(s_cmap4FontPath);
-                var optimizedFont = _optimizedFontFile.GetFont(0);
-                _optimizedCmapFormat4 = optimizedFont.GetTable("cmap") as Table_cmap;
+                _optimizedCmapFile = new OTFile();
+                _optimizedCmapFile.open(s_cmapTestFontPath);
+                var optimizedFont = _optimizedCmapFile.GetFont(0);
+                _optimizedCmap = optimizedFont.GetTable("cmap") as Table_cmap;
 
-                _baselineFontFile = new Baseline.OTFile();
-                _baselineFontFile.open(s_cmap4FontPath);
-                var baselineFont = _baselineFontFile.GetFont(0);
-                _baselineCmapFormat4 = baselineFont.GetTable("cmap") as Baseline.Table_cmap;
-            }
-
-            // 加载 Format6 字体（打开新文件）
-            if (s_cmap6FontPath != null && File.Exists(s_cmap6FontPath))
-            {
-                var optFile = new OTFile();
-                optFile.open(s_cmap6FontPath);
-                var optFont = optFile.GetFont(0);
-                _optimizedCmapFormat6 = optFont.GetTable("cmap") as Table_cmap;
-
-                var baseFile = new Baseline.OTFile();
-                baseFile.open(s_cmap6FontPath);
-                var baseFont = baseFile.GetFont(0);
-                _baselineCmapFormat6 = baseFont.GetTable("cmap") as Baseline.Table_cmap;
-            }
-
-            // 加载 Format0 字体（打开新文件）
-            if (s_cmap0FontPath != null && File.Exists(s_cmap0FontPath))
-            {
-                var optFile = new OTFile();
-                optFile.open(s_cmap0FontPath);
-                var optFont = optFile.GetFont(0);
-                _optimizedCmapFormat0 = optFont.GetTable("cmap") as Table_cmap;
-
-                var baseFile = new Baseline.OTFile();
-                baseFile.open(s_cmap0FontPath);
-                var baseFont = baseFile.GetFont(0);
-                _baselineCmapFormat0 = baseFont.GetTable("cmap") as Baseline.Table_cmap;
-            }
-
-            // 加载 Format12 字体（打开新文件）
-            if (s_cmap12FontPath != null && File.Exists(s_cmap12FontPath))
-            {
-                var optFile = new OTFile();
-                optFile.open(s_cmap12FontPath);
-                var optFont = optFile.GetFont(0);
-                _optimizedCmapFormat12 = optFont.GetTable("cmap") as Table_cmap;
-
-                var baseFile = new Baseline.OTFile();
-                baseFile.open(s_cmap12FontPath);
-                var baseFont = baseFile.GetFont(0);
-                _baselineCmapFormat12 = baseFont.GetTable("cmap") as Baseline.Table_cmap;
+                _baselineCmapFile = new Baseline.OTFile();
+                _baselineCmapFile.open(s_cmapTestFontPath);
+                var baselineFont = _baselineCmapFile.GetFont(0);
+                _baselineCmap = baselineFont.GetTable("cmap") as Baseline.Table_cmap;
             }
         }
 
@@ -177,41 +139,53 @@ namespace OTFontFile.Benchmarks.Benchmarks
         {
             if (s_vorgFontPath != null && File.Exists(s_vorgFontPath))
             {
-                var optFile = new OTFile();
-                optFile.open(s_vorgFontPath);
-                var optFont = optFile.GetFont(0);
+                _optimizedVORGFile = new OTFile();
+                _optimizedVORGFile.open(s_vorgFontPath);
+                var optFont = _optimizedVORGFile.GetFont(0);
                 _optimizedVORG = optFont.GetTable("VORG") as Table_VORG;
 
-                var baseFile = new Baseline.OTFile();
-                baseFile.open(s_vorgFontPath);
-                var baseFont = baseFile.GetFont(0);
+                _baselineVORGFile = new Baseline.OTFile();
+                _baselineVORGFile.open(s_vorgFontPath);
+                var baseFont = _baselineVORGFile.GetFont(0);
                 _baselineVORG = baseFont.GetTable("VORG") as Baseline.Table_VORG;
+            }
+        }
+
+        private void LoadChecksumFont()
+        {
+            if (s_checksumFontPath != null && File.Exists(s_checksumFontPath))
+            {
+                // 加载 Optimized 版本
+                _optimizedChecksumFile = new OTFile();
+                _optimizedChecksumFile.open(s_checksumFontPath);
+                var fileInfo = new FileInfo(s_checksumFontPath);
+                uint fileSize = (uint)fileInfo.Length;
+                _optimizedChecksumBuffer = _optimizedChecksumFile.ReadPaddedBuffer(0, fileSize);
+
+                // 加载 Baseline 版本
+                _baselineChecksumFile = new Baseline.OTFile();
+                _baselineChecksumFile.open(s_checksumFontPath);
+                _baselineChecksumBuffer = _baselineChecksumFile.ReadPaddedBuffer(0, fileSize);
             }
         }
 
         private void LoadTTCFont()
         {
-            // 查找第一个可用的 TTC 文件
-            foreach (var ttcPath in s_ttcFontPaths)
+            if (s_ttcFontPath != null && File.Exists(s_ttcFontPath))
             {
-                if (ttcPath != null && File.Exists(ttcPath))
-                {
-                    _activeTTCPath = ttcPath;
+                // 加载 Optimized 版本
+                _optimizedTTCFile = new OTFile();
+                _optimizedTTCFile.open(s_ttcFontPath);
+                _optimizedTTCHeader = _optimizedTTCFile.GetTTCHeader();
 
-                    // 加载 Optimized 版本
-                    _optimizedTTCFile = new OTFile();
-                    _optimizedTTCFile.open(_activeTTCPath);
-                    _optimizedTTCHeader = _optimizedTTCFile.GetTTCHeader();
-
-                    // 加载 Baseline 版本
-                    _baselineTTCFile = new Baseline.OTFile();
-                    _baselineTTCFile.open(_activeTTCPath);
-                    _baselineTTCHeader = _baselineTTCFile.GetTTCHeader();
-
-                    break;
-                }
+                // 加载 Baseline 版本
+                _baselineTTCFile = new Baseline.OTFile();
+                _baselineTTCFile.open(s_ttcFontPath);
+                _baselineTTCHeader = _baselineTTCFile.GetTTCHeader();
             }
         }
+
+
 
         #region 1. MBOBuffer.BinaryEqual - SIMD 批量字节比较 (commit 8f05cb1)
         
@@ -252,7 +226,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
         }
 
         /// <summary>
-        /// 大缓冲区 (10KB) - SIMD 效益最大
+        /// 大缓冲区 (1MB) - SIMD 效益最大
         /// 预期提升最明显
         /// </summary>
         [Benchmark]
@@ -276,13 +250,14 @@ namespace OTFontFile.Benchmarks.Benchmarks
         /// <summary>
         /// CMAP4 Format4.GetMap() - Unicode BMP 子表
         /// 优化：使用 SIMD 批量读取 batchSize=64 个字符映射
+        /// 使用大型字体 (SourceHanSansCN-Regular.otf ~16MB) 可以显著观察到性能提升
         /// </summary>
         [Benchmark]
         [BenchmarkCategory("CMAP", "Baseline")]
         public uint[]? CMAP4_GetMap_Baseline()
         {
-            if (_baselineCmapFormat4 == null) return null;
-            var subtable = _baselineCmapFormat4.GetSubtable(3, 1); // Platform=3 (Windows), Encoding=1 (Unicode BMP)
+            if (_baselineCmap == null) return null;
+            var subtable = _baselineCmap.GetSubtable(3, 1); // Platform=3 (Windows), Encoding=1 (Unicode BMP)
             if (subtable == null || subtable.format != 4)
             {
                 // 尝试遍历所有子表寻找 Format4
@@ -290,7 +265,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
                 {
                     for (uint enc = 0; enc < 10; enc++)
                     {
-                        var st = _baselineCmapFormat4.GetSubtable((ushort)plat, (ushort)enc);
+                        var st = _baselineCmap.GetSubtable((ushort)plat, (ushort)enc);
                         if (st?.format == 4)
                         {
                             subtable = st;
@@ -307,8 +282,8 @@ namespace OTFontFile.Benchmarks.Benchmarks
         [BenchmarkCategory("CMAP", "SIMD")]
         public uint[]? CMAP4_GetMap_Optimized()
         {
-            if (_optimizedCmapFormat4 == null) return null;
-            var subtable = _optimizedCmapFormat4.GetSubtable(3, 1); // Platform=3 (Windows), Encoding=1 (Unicode BMP)
+            if (_optimizedCmap == null) return null;
+            var subtable = _optimizedCmap.GetSubtable(3, 1); // Platform=3 (Windows), Encoding=1 (Unicode BMP)
             if (subtable == null || subtable.format != 4)
             {
                 // 尝试遍历所有子表寻找 Format4
@@ -316,7 +291,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
                 {
                     for (uint enc = 0; enc < 10; enc++)
                     {
-                        var st = _optimizedCmapFormat4.GetSubtable((ushort)plat, (ushort)enc);
+                        var st = _optimizedCmap.GetSubtable((ushort)plat, (ushort)enc);
                         if (st?.format == 4)
                         {
                             subtable = st;
@@ -332,14 +307,15 @@ namespace OTFontFile.Benchmarks.Benchmarks
         /// <summary>
         /// CMAP6 Format6.GetMap() - 稠密映射子表
         /// 优化：使用 SIMD 批量读取 batchSize=64 个字符映射
+        /// 使用大型字体 (SourceHanSansCN-Regular.otf ~16MB) 可以显著观察到性能提升
         /// </summary>
         [Benchmark]
         [BenchmarkCategory("CMAP", "Baseline")]
         public uint[]? CMAP6_GetMap_Baseline()
         {
-            if (_baselineCmapFormat6 == null) return null;
+            if (_baselineCmap == null) return null;
             // Format6 通常是 Platform=1 (Macintosh), Encoding=0 (Roman)
-            var subtable = _baselineCmapFormat6.GetSubtable(1, 0);
+            var subtable = _baselineCmap.GetSubtable(1, 0);
             if (subtable?.format != 6)
             {
                 // 尝试遍历所有子表寻找 Format6
@@ -347,7 +323,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
                 {
                     for (uint enc = 0; enc < 10; enc++)
                     {
-                        var st = _baselineCmapFormat6.GetSubtable((ushort)plat, (ushort)enc);
+                        var st = _baselineCmap.GetSubtable((ushort)plat, (ushort)enc);
                         if (st?.format == 6)
                         {
                             subtable = st;
@@ -364,9 +340,9 @@ namespace OTFontFile.Benchmarks.Benchmarks
         [BenchmarkCategory("CMAP", "SIMD")]
         public uint[]? CMAP6_GetMap_Optimized()
         {
-            if (_optimizedCmapFormat6 == null) return null;
+            if (_optimizedCmap == null) return null;
             // Format6 通常是 Platform=1 (Macintosh), Encoding=0 (Roman)
-            var subtable = _optimizedCmapFormat6.GetSubtable(1, 0);
+            var subtable = _optimizedCmap.GetSubtable(1, 0);
             if (subtable?.format != 6)
             {
                 // 尝试遍历所有子表寻找 Format6
@@ -374,7 +350,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
                 {
                     for (uint enc = 0; enc < 10; enc++)
                     {
-                        var st = _optimizedCmapFormat6.GetSubtable((ushort)plat, (ushort)enc);
+                        var st = _optimizedCmap.GetSubtable((ushort)plat, (ushort)enc);
                         if (st?.format == 6)
                         {
                             subtable = st;
@@ -390,14 +366,15 @@ namespace OTFontFile.Benchmarks.Benchmarks
         /// <summary>
         /// CMAP0 Format0.GetMap() - 单字节字符映射（256字符）
         /// 优化：使用 SIMD Vector<byte> 批量读取
+        /// 使用大型字体 (SourceHanSansCN-Regular.otf ~16MB) 可以显著观察到性能提升
         /// </summary>
         [Benchmark]
         [BenchmarkCategory("CMAP", "Baseline")]
         public uint[]? CMAP0_GetMap_Baseline()
         {
-            if (_baselineCmapFormat0 == null) return null;
+            if (_baselineCmap == null) return null;
             // Format0 通常是 Platform=1 (Macintosh), Encoding=0 (Roman)
-            var subtable = _baselineCmapFormat0.GetSubtable(1, 0);
+            var subtable = _baselineCmap.GetSubtable(1, 0);
             if (subtable?.format != 0)
             {
                 // 尝试遍历所有子表寻找 Format0
@@ -405,7 +382,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
                 {
                     for (uint enc = 0; enc < 10; enc++)
                     {
-                        var st = _baselineCmapFormat0.GetSubtable((ushort)plat, (ushort)enc);
+                        var st = _baselineCmap.GetSubtable((ushort)plat, (ushort)enc);
                         if (st?.format == 0)
                         {
                             subtable = st;
@@ -422,9 +399,9 @@ namespace OTFontFile.Benchmarks.Benchmarks
         [BenchmarkCategory("CMAP", "SIMD")]
         public uint[]? CMAP0_GetMap_Optimized()
         {
-            if (_optimizedCmapFormat0 == null) return null;
+            if (_optimizedCmap == null) return null;
             // Format0 通常是 Platform=1 (Macintosh), Encoding=0 (Roman)
-            var subtable = _optimizedCmapFormat0.GetSubtable(1, 0);
+            var subtable = _optimizedCmap.GetSubtable(1, 0);
             if (subtable?.format != 0)
             {
                 // 尝试遍历所有子表寻找 Format0
@@ -432,7 +409,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
                 {
                     for (uint enc = 0; enc < 10; enc++)
                     {
-                        var st = _optimizedCmapFormat0.GetSubtable((ushort)plat, (ushort)enc);
+                        var st = _optimizedCmap.GetSubtable((ushort)plat, (ushort)enc);
                         if (st?.format == 0)
                         {
                             subtable = st;
@@ -448,18 +425,19 @@ namespace OTFontFile.Benchmarks.Benchmarks
         /// <summary>
         /// CMAP12 Format12.GetMap() - Unicode Full Repertoire 子表
         /// 优化：使用 SIMD 批量读取 batchSize=64 个字符映射
+        /// 使用大型字体 (SourceHanSansCN-Regular.otf ~16MB) 可以显著观察到性能提升
         /// </summary>
         [Benchmark]
         [BenchmarkCategory("CMAP", "Baseline")]
         public uint[]? CMAP12_GetMap_Baseline()
         {
-            if (_baselineCmapFormat12 == null) return null;
+            if (_baselineCmap == null) return null;
             // Format12 通常是 Platform=3 (Windows), Encoding=10 (Unicode Full Repertoire)
-            var subtable = _baselineCmapFormat12.GetSubtable(3, 10);
+            var subtable = _baselineCmap.GetSubtable(3, 10);
             if (subtable?.format != 12)
             {
                 // 尝试 Platform=0 (Unicode)
-                subtable = _baselineCmapFormat12.GetSubtable(0, 4);
+                subtable = _baselineCmap.GetSubtable(0, 4);
                 if (subtable?.format != 12)
                 {
                     // 遍历所有子表寻找 Format12
@@ -467,7 +445,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
                     {
                         for (uint enc = 0; enc < 20; enc++)
                         {
-                            var st = _baselineCmapFormat12.GetSubtable((ushort)plat, (ushort)enc);
+                            var st = _baselineCmap.GetSubtable((ushort)plat, (ushort)enc);
                             if (st?.format == 12)
                             {
                                 subtable = st;
@@ -485,13 +463,13 @@ namespace OTFontFile.Benchmarks.Benchmarks
         [BenchmarkCategory("CMAP", "SIMD")]
         public uint[]? CMAP12_GetMap_Optimized()
         {
-            if (_optimizedCmapFormat12 == null) return null;
+            if (_optimizedCmap == null) return null;
             // Format12 通常是 Platform=3 (Windows), Encoding=10 (Unicode Full Repertoire)
-            var subtable = _optimizedCmapFormat12.GetSubtable(3, 10);
+            var subtable = _optimizedCmap.GetSubtable(3, 10);
             if (subtable?.format != 12)
             {
                 // 尝试 Platform=0 (Unicode)
-                subtable = _optimizedCmapFormat12.GetSubtable(0, 4);
+                subtable = _optimizedCmap.GetSubtable(0, 4);
                 if (subtable?.format != 12)
                 {
                     // 遍历所有子表寻找 Format12
@@ -499,7 +477,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
                     {
                         for (uint enc = 0; enc < 20; enc++)
                         {
-                            var st = _optimizedCmapFormat12.GetSubtable((ushort)plat, (ushort)enc);
+                            var st = _optimizedCmap.GetSubtable((ushort)plat, (ushort)enc);
                             if (st?.format == 12)
                             {
                                 subtable = st;
@@ -556,6 +534,29 @@ namespace OTFontFile.Benchmarks.Benchmarks
         public Table_VORG.vertOriginYMetrics[]? TableVORG_GetAllVertOriginYMetrics_Optimized()
         {
             return _optimizedVORG?.GetAllVertOriginYMetrics();
+        }
+
+        #endregion
+
+        #region 8. MBOBuffer CalculateChecksum - SIMD 向量化累加 (commit 6bcda89d)
+
+        /// <summary>
+        /// MBOBuffer CalcChecksum() - 计算校验和
+        /// 优化：使用 Vector<uint> 批量累加，处理数据量 ≥64 字节时启用 SIMD
+        /// 使用大型字体 (SourceHanSansCN-Regular.otf ~16MB) 可以显著观察到性能提升
+        /// </summary>
+        [Benchmark]
+        [BenchmarkCategory("CalculateChecksum", "Baseline")]
+        public uint CalculateChecksum_Baseline()
+        {
+            return _baselineChecksumBuffer?.CalcChecksum() ?? 0;
+        }
+
+        [Benchmark]
+        [BenchmarkCategory("CalculateChecksum", "SIMD")]
+        public uint CalculateChecksum_Optimized()
+        {
+            return _optimizedChecksumBuffer?.CalcChecksum() ?? 0;
         }
 
         #endregion
