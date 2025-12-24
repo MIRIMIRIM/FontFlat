@@ -136,7 +136,7 @@ namespace OTFontFile.Performance.Tests.UnitTests
             return stopwatch.ElapsedMilliseconds;
         }
 
-        private string GetExistingTestFont()
+        public static string GetExistingTestFont()
         {
             // 尝试查找可用的测试字体
             var path = TestFontsBasePath;

@@ -372,5 +372,78 @@ namespace OTFontFile.Performance.Tests.UnitTests
         }
 
         #endregion
+
+        #region CMAP4 GetMap 测试
+
+        /// <summary>
+        /// 测试：CMAP4 Format4 GetMap() 方法
+        /// 验证：使用真实字体测试字符到字形映射的正确性
+        /// </summary>
+        [TestMethod]
+        public void CMAP4_GetMap_RealFont_MatchesBaseline()
+        {
+            var fontPath = ComparisonTests.GetExistingTestFont();
+            if (fontPath == null)
+            {
+                Assert.Inconclusive("No test font available");
+                return;
+            }
+
+            // 加载基线版本
+            var baselineFile = new Baseline.OTFile();
+            baselineFile.open(fontPath);
+            var baselineFont = baselineFile.GetFont(0);
+            var baselineCmap = baselineFont.GetTable("cmap") as Baseline.Table_cmap;
+            baselineFile.close();
+
+            // 加载优化版本
+            var optimizedFile = new OTFontFile.OTFile();
+            optimizedFile.open(fontPath);
+            var optimizedFont = optimizedFile.GetFont(0);
+            var optimizedCmap = optimizedFont.GetTable("cmap") as OTFontFile.Table_cmap;
+            optimizedFile.close();
+
+            if (baselineCmap == null || optimizedCmap == null)
+            {
+                Assert.Inconclusive("Font does not contain cmap table");
+                return;
+            }
+
+            // 测试 Format4 (Unicode BMP)
+            var baselineSubtable = baselineCmap.GetSubtable(3, 1); // Platform=3 (Windows), Encoding=1 (Unicode BMP)
+            if (baselineSubtable == null || baselineSubtable.format != 4)
+            {
+                Assert.Inconclusive("Font does not contain Format 4 subtable");
+                return;
+            }
+
+            var optimizedSubtable = optimizedCmap.GetSubtable(3, 1);
+            var baselineMap = baselineSubtable.GetMap();
+            var optimizedMap = optimizedSubtable.GetMap();
+
+            // 验证映射结果
+            Assert.AreEqual(baselineMap.Length, optimizedMap.Length, "Map length mismatch");
+
+            // 验证全部 65536 个字符映射
+            int mismatchCount = 0;
+            for (int i = 0; i < baselineMap.Length; i++)
+            {
+                if (baselineMap[i] != optimizedMap[i])
+                {
+                    mismatchCount++;
+                    if (mismatchCount <= 10) // 只记录前10个错误
+                    {
+                        Console.WriteLine($"CMAP4 mismatch at char {i}: Baseline={baselineMap[i]}, Optimized={optimizedMap[i]}");
+                    }
+                }
+            }
+
+            if (mismatchCount > 0)
+            {
+                Assert.Fail($"CMAP4 GetMap() produced {mismatchCount} mismatches");
+            }
+        }
+
+        #endregion
     }
 }
