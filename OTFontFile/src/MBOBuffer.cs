@@ -10,7 +10,7 @@ using System.Runtime.Intrinsics;
 namespace OTFontFile
 {
     // MBO means Motorola Byte Order (most significant byte stored in lowest memory address)
-    public class MBOBuffer
+    public class MBOBuffer : IDisposable
     {
         /******************
          * constructors
@@ -26,9 +26,10 @@ namespace OTFontFile
 
             m_cachedChecksum = 0;
             m_bValidChecksumAvailable = false;
+            m_isPooled = false;
         }
 
-        
+
         public MBOBuffer(uint length)
         {
             m_filepos = -1; // -1 means not read from a file
@@ -38,6 +39,7 @@ namespace OTFontFile
 
             m_cachedChecksum = 0;
             m_bValidChecksumAvailable = false;
+            m_isPooled = false;
         }
 
 
@@ -50,6 +52,37 @@ namespace OTFontFile
 
             m_cachedChecksum = 0;
             m_bValidChecksumAvailable = false;
+            m_isPooled = false;
+        }
+
+        /// <summary>
+        /// 池化缓冲区构造函数（由 BufferPool 内部使用）
+        /// </summary>
+        internal MBOBuffer(byte[] buffer, int length, bool isPooled)
+        {
+            m_filepos = -1;
+            m_length = (uint)length;
+            m_nPadBytes = (uint)CalcPadBytes(length, 4);
+            m_buf = buffer;
+
+            m_cachedChecksum = 0;
+            m_bValidChecksumAvailable = false;
+            m_isPooled = isPooled;
+        }
+
+        /// <summary>
+        /// 池化缓冲区构造函数（带文件位置，由 BufferPool 内部使用）
+        /// </summary>
+        internal MBOBuffer(byte[] buffer, int length, long filepos, bool isPooled)
+        {
+            m_filepos = filepos;
+            m_length = (uint)length;
+            m_nPadBytes = (uint)CalcPadBytes(length, 4);
+            m_buf = buffer;
+
+            m_cachedChecksum = 0;
+            m_bValidChecksumAvailable = false;
+            m_isPooled = isPooled;
         }
 
 
@@ -541,6 +574,25 @@ namespace OTFontFile
             return sum;
         }
         
+        /************************
+         * IDisposable implementation
+         */
+
+
+        /// <summary>
+        /// 释放缓冲区资源。如果是池化缓冲区，则返回到池中；否则 GC 会回收
+        /// </summary>
+        public void Dispose()
+        {
+            if (m_isPooled && m_buf != null && m_buf.Length != 0)
+            {
+                BufferPool.Return(m_buf);
+                m_buf = Array.Empty<byte>();
+                m_isPooled = false;
+            }
+            GC.SuppressFinalize(this);
+        }
+
 
         /************************
          * member data
@@ -554,5 +606,6 @@ namespace OTFontFile
 
         uint m_cachedChecksum;
         bool m_bValidChecksumAvailable;
+        bool m_isPooled; // 是否是池化缓冲区
     }
 }

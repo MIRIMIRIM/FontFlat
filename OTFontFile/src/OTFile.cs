@@ -258,6 +258,38 @@ namespace OTFontFile
             return buf;
         }
 
+        /// <summary>Read part of filestream into MBOBuffer (使用对象池)</summary>
+        /// <remarks>
+        /// 使用 BufferPool 来减少 GC 压力。大表（如 glyf、CFF2）应该使用此方法。
+        /// 返回的 MBOBuffer 使用完后应该调用 Dispose() 将缓冲区返回到池中。
+        /// </remarks>
+        public MBOBuffer? ReadPooledBuffer(uint filepos, uint length)
+        {
+            // allocate a buffer from the pool to hold the table
+            MBOBuffer? buf = BufferPool.Rent((int)length, filepos);
+
+            // read the table
+            m_fs!.Seek(filepos, SeekOrigin.Begin);
+            int nBytes = m_fs.Read(buf.GetBuffer(), 0, (int)length);
+            if (nBytes != length)
+            {
+                // check for premature EOF
+                if (m_fs.Position == m_fs.Length)
+                {
+                    // EOF
+                }
+                else
+                {
+                    // Read Error
+                }
+
+                BufferPool.Return(buf.GetBuffer());
+                buf = null;
+            }
+
+            return buf;
+        }
+
         /// <summary>Random access to file stream</summary>
         public byte[] ReadBytes(long filepos, uint length)
         {

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace OTFontFile
@@ -24,6 +25,24 @@ namespace OTFontFile
          */
         
         
+        private static readonly HashSet<string> s_largeTableTags = new(StringComparer.Ordinal)
+        {
+            "glyf", "CFF ", "CFF2", "CBDT", "EBDT", "SVG "
+        };
+
+        private static bool ShouldUsePooledBuffer(DirectoryEntry de)
+        {
+            // 使用池化缓冲区的条件：
+            // 1. 表标签在已知大表列表中，或者
+            // 2. 表大小超过 64KB
+            string tag = de.tag;
+            if (s_largeTableTags.Contains(tag))
+                return true;
+            if (de.length > 64 * 1024)
+                return true;
+            return false;
+        }
+
         public OTTable? GetTable(DirectoryEntry de)
         {
             // first try getting it from the table cache
@@ -36,8 +55,10 @@ namespace OTFontFile
                     && de.offset < m_file.GetFileLength()
                     && de.offset + de.length <= m_file.GetFileLength())
                 {
-                    // read the table from the file
-                    var buf = m_file.ReadPaddedBuffer(de.offset, de.length);
+                    // read the table from the file, using pooled buffer for large tables
+                    var buf = ShouldUsePooledBuffer(de)
+                        ? m_file.ReadPooledBuffer(de.offset, de.length)
+                        : m_file.ReadPaddedBuffer(de.offset, de.length);
 
                     if (buf != null)
                     {
