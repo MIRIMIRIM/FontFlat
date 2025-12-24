@@ -47,12 +47,18 @@ namespace OTFontFile.Benchmarks
                         BenchmarkRunner.Run<MBOBufferShortLongComparison>();
                         break;
 
+                    case "simd":
+                        Console.WriteLine("Running SIMD Optimization benchmarks...\n");
+                        BenchmarkRunner.Run<SimdOptimizationsBenchmarks>();
+                        break;
+
                     case "all":
                         Console.WriteLine("Running all benchmarks...\n");
                         BenchmarkRunner.Run<FileLoadingBenchmarks>();
                         BenchmarkRunner.Run<ChecksumBenchmarks>();
                         BenchmarkRunner.Run<MBOBufferBenchmarks>();
                         BenchmarkRunner.Run<MBOBufferBinaryPrimitivesComparison>();
+                        BenchmarkRunner.Run<SimdOptimizationsBenchmarks>();
                         break;
 
                     default:
@@ -63,6 +69,7 @@ namespace OTFontFile.Benchmarks
                         Console.WriteLine("  buffer     - MBOBuffer operation benchmarks");
                         Console.WriteLine("  primitives - BinaryPrimitives comparison benchmarks (Int/Uint)");
                         Console.WriteLine("  shortlong  - BinaryPrimitives comparison benchmarks (Short/Long)");
+                        Console.WriteLine("  simd       - SIMD Optimizations benchmarks");
                         Console.WriteLine("  all        - Run all benchmarks");
                         break;
                 }
