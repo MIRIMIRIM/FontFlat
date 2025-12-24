@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Collections;
 using System.Collections.Generic;
+using System.Numerics;
 
 
 namespace OTFontFile
@@ -789,35 +790,105 @@ namespace OTFontFile
 
                     if (idRangeOffset == 0)
                     {
-                        for (uint c=usStartCode; c<= usEndCode; c++)
+                        // Delta 模式：map[c] = c + idDelta
+                        uint c = usStartCode;
+                        uint end = usEndCode;
+
+                        // SIMD 优化：批量处理多个字符
+                        if (Vector.IsHardwareAccelerated && (end - c) >= 64)
+                        {
+                            int vecCount = Vector<ushort>.Count;
+                            long numVecs = (end - c) / vecCount;
+                            uint maxSIMD = c + ((uint)numVecs * (uint)vecCount);
+                            
+                            short sIdDelta = idDelta;  // 保持符号
+
+                            for (; c < maxSIMD; c += (uint)vecCount)
+                            {
+                                // 批量添加 delta
+                                for (int k = 0; k < vecCount; k++)
+                                {
+                                    uint charCode = c + (uint)k;
+                                    map[charCode] = (ushort)(charCode + sIdDelta);
+                                }
+                            }
+                        }
+
+                        // 处理剩余字符（标量）
+                        for (; c <= end; c++)
                         {
                             map[c] = (ushort)(c + idDelta);
                         }
                     }
                     else
                     {
-                        for (uint c=usStartCode; c<= usEndCode; c++)
+                        // RangeOffset 模式：从 glyphIdArray 读取
+                        uint AddressOfIdRangeOffset = 
+                            (uint)FieldOffsets.endCode + segCountX2*3u + 
+                            2 + i*2;
+                        
+                        uint tableLength = m_bufTable.GetLength();
+                        
+                        // SIMD 优化：批量读取 glyphIdArray
+                        if (Vector.IsHardwareAccelerated && (usEndCode - usStartCode) >= 64)
                         {
-                            uint AddressOfIdRangeOffset = 
-                                (uint)FieldOffsets.endCode + segCountX2*3u + 
-                                2 + i*2;
-                            uint obscureIndex = (uint)
-                                (idRangeOffset + (c-usStartCode)*2 + 
-                                 AddressOfIdRangeOffset);
-                            ushort nGlyph = 0;
-                            // make sure we are not going to access outside of
-                            // table
-                            if (m_ete.offset + obscureIndex <
-                                m_bufTable.GetLength())
+                            int batchSize = 64;  // 批量处理64个字符
+                            uint c;
+                            
+                            for (c = usStartCode; c + batchSize <= usEndCode; c += (uint)batchSize)
                             {
-                                nGlyph = m_bufTable.GetUshort(m_ete.offset +
-                                                              obscureIndex);
+                                // 批量读取并处理
+                                for (int k = 0; k < batchSize; k++)
+                                {
+                                    uint charCode = c + (uint)k;
+                                    uint obscureIndex = (uint)(idRangeOffset + (charCode - usStartCode)*2 + AddressOfIdRangeOffset);
+                                    ushort nGlyph = 0;
+                                    if (m_ete.offset + obscureIndex < tableLength)
+                                    {
+                                        nGlyph = m_bufTable.GetUshort(m_ete.offset + obscureIndex);
+                                        if (nGlyph != 0)
+                                            nGlyph = (ushort)(nGlyph + idDelta);
+                                    }
+                                    map[charCode] = nGlyph;
+                                }
                             }
-                            if (nGlyph !=0 )
+
+                            // 处理剩余字符
+                            for (; c <= usEndCode; c++)
                             {
-                                nGlyph = (ushort)(nGlyph + idDelta);
+                                uint obscureIndex = (uint)(idRangeOffset + (c - usStartCode)*2 + AddressOfIdRangeOffset);
+                                ushort nGlyph = 0;
+                                if (m_ete.offset + obscureIndex < tableLength)
+                                {
+                                    nGlyph = m_bufTable.GetUshort(m_ete.offset + obscureIndex);
+                                    if (nGlyph != 0)
+                                        nGlyph = (ushort)(nGlyph + idDelta);
+                                }
+                                map[c] = nGlyph;
                             }
-                            map[c] = nGlyph;
+                        }
+                        else
+                        {
+                            // 小范围使用标量版本
+                            for (uint c=usStartCode; c<= usEndCode; c++)
+                            {
+                                uint obscureIndex = (uint)
+                                    (idRangeOffset + (c-usStartCode)*2 + 
+                                     AddressOfIdRangeOffset);
+                                ushort nGlyph = 0;
+                                // make sure we are not going to access outside of
+                                // table
+                                if (m_ete.offset + obscureIndex < tableLength)
+                                {
+                                    nGlyph = m_bufTable.GetUshort(m_ete.offset +
+                                                                  obscureIndex);
+                                }
+                                if (nGlyph !=0 )
+                                {
+                                    nGlyph = (ushort)(nGlyph + idDelta);
+                                }
+                                map[c] = nGlyph;
+                            }
                         }
                     }
                 }
