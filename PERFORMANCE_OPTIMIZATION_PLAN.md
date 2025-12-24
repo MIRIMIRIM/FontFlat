@@ -472,83 +472,121 @@ private FileStream OpenFileStream(string path)
 
 ---
 
-### Phase 3: SIMD 优化 (SSE/AVX)
+### Phase 3: SIMD 优化 ✅ **部分完成**
 
-#### 3.1 校验和计算优化
-**当前**: 逐字节累加计算checkSum
+#### 3.0 MBOBuffer.BinaryEqual SIMD优化 ✅ 已完成
+**Commit**: 8f05cb1 - 使用 Vector<byte> 优化 BinaryEqual
 
-**优化后**: 使用SIMD并行计算
-```csharp
-using System.Runtime.Intrinsics;
-using System.Runtime.Intrinsics.X86;
+**优化内容**:
+- 使用 `Vector512<byte>.Equals` 进行批量字节比较（在支持AVX-512的CPU上）
+- SIMD 阈值设置为 128 字节
+- 硬件加速检测 + 向量批处理 + 标量回退
 
-public static uint CalcChecksumSIMD(ReadOnlySpan<byte> data)
-{
-    uint sum = 0;
-    int i = 0;
-    
-    // 使用AVX2一次处理32字节
-    if (Avx2.IsSupported)
-    {
-        Vector256<uint> accumulator = Vector256<uint>.Zero;
-        int vectorLength = (data.Length / 4) * 4;
-        
-        while (i + 32 <= vectorLength)
-        {
-            // 批量读取8个uint32
-            var vec = Avx2.LoadVector256(data.Slice(i, 32));
-            accumulator = Avx2.Add(accumulator, vec);
-            i += 32;
-        }
-        
-        // 归约求和
-        var sums = Sse2.Add(
-            Sse2.CastAsUint128(Avx2.ExtractVector128(accumulator, 0)),
-            Sse2.CastAsUint128(Avx2.ExtractVector128(accumulator, 1))
-        );
-        
-        sum += sums.GetElement(0) + sums.GetElement(1) + 
-               sums.GetElement(2) + sums.GetElement(3);
-    }
-    
-    // 处理剩余字节
-    for (; i + 4 <= data.Length; i += 4)
-    {
-        sum += BinaryPrimitives.ReadUInt32BigEndian(data.Slice(i, 4));
-    }
-    
-    return sum;
-}
-```
+**性能提升**:
+- 1MB 缓冲区比较: **18.83x 加速** ⭐
+- 中等缓冲区 (1KB): 显著加速（启用SIMD)
+- 小缓冲区 (64字节): 与标量持平（低于SIMD阈值）
 
-**收益**: 4-8倍加速(取决于CPU架构)
+#### 3.1 CMAP GetMap() SIMD优化 ✅ 已完成
+**Commits**:
+- f766da7 - 优化 CMAP4 Format4.GetMap() 批量处理字符映射
+- 9077fe0 - 优化 CMAP6 和 CMAP0 的 GetMap() 批量处理
+- 860d816 - 优化 CMAP12 Format12.GetMap() 批量处理
 
-#### 3.2 CMAP 表查找优化
-**目标**: 使用SIMD加速Unicode到Glyph的映射查找
+**优化内容**:
+- CMAP4 Format4.GetMap: batchSize=64
+- CMAP6 Format6.GetMap: batchSize=64
+- CMAP0 Format0.GetMap: batchSize=64
+- CMAP12 Format12.GetMap: batchSize=64
+- 硬件加速检测 + 向量批处理 + 标量回退
 
-**Format 4 (分段查找)优化**:
-```csharp
-public ushort Format4LookupSIMD(ushort charCode)
-{
-    // SIMD加速的二分查找
-    if (Sse2.IsSupported)
-    {
-        var keys = new Span<ushort>(segCountX2 / 2);
-        // 使用SIMD指令比较多个key
-    }
-    
-    // fallback到常规查找
-}
-```
+#### 3.2 MBOBuffer.CalculateChecksum SIMD优化 ✅ 已完成
+**Commit**: 6bcda89d - 使用 Vector<uint> 优化 CalculateChecksum
 
-#### 3.3 表头快速解析
-**目标**: 使用SIMD批量读取和验证表头
+**优化内容**:
+- 使用 `Vector256<uint>` (AVX2) 进行向量累加
+- 自动大端序转换
+- 零内存分配实现
 
-**实现**: 批量比对多个表tag
+**性能提升**:
+- Vector512 零分配实现: **2.15x 加速** (53.43% 性能提升)
+- 测试结果验证通过 ✅
+
+#### 3.3 已移除的SIMD优化 ⚠️ 低收益，已revert
+**Commit**: a21d3da - Revert "feat: SIMD优化TTCHeader、Table_VORG和Table_Zapf的循环读取"
+
+**移除原因**: 优化意义不大
+
+**已移除的内容**:
+- ❌ TTCHeader DirectoryOffsets SIMD优化 (batchSize=4)
+- ❌ Table_VORG GetAllVertOriginYMetrics SIMD优化 (batchSize=8)
+- ❌ Table_Zapf GetAllGroups SIMD优化 (batchSize=8)
+
+**注意**: 这些优化在 commit f2d23f4 中实现，但因性能提升不明显而被移除
 
 ---
 
-### Phase 4: 字体表延迟加载和智能缓存
+#### 3.4 校验和计算优化 (~已实现为3.2)
+**当前**: ✅ 已使用 Vector<uint> 并行计算
+
+**优化详情**:
+```csharp
+if (Vector256.IsHardwareAccelerated && length >= 8)
+{
+    Vector256<uint> vSum = Vector256<uint>.Zero;
+    int i = 0;
+    const int batchSize = 8; // 8个uint32 = 32字节
+
+    while (i + batchSize <= length)
+    {
+        // 批量累加8个uint32
+        Vector256<uint> v = Vector256.Create(
+            BigEndianToHost(GetUint(i)),
+            BigEndianToHost(GetUint(i + 4)),
+            // ... 等6个
+        );
+        vSum = Vector256.Add(vSum, v);
+        i += batchSize * 4;
+    }
+
+    // 归约求和
+    // ... 处理剩余字节 ...
+}
+```
+
+**收益**: 2.15x加速（Vector512零分配版本）
+
+---
+
+#### 3.5 CMAP 表查找优化 (~已在3.1中部分实现)
+**目标**: 使用SIMD加速Unicode到Glyph的映射查找
+
+**Format 4 (分段查找)优化** (已通过batchSize=64实现批量读取):
+```csharp
+// 使用SIMD批量读取映射数据（已实现）
+public uint[]? GetMap()
+{
+    if (Vector.IsHardwareAccelerated && numChars >= 64)
+    {
+        const int batchSize = 64;
+        uint processed = 0;
+        while (processed + batchSize <= numChars)
+        {
+            // 批量读取64个映射
+            // 存储到数组并继续下一批...
+            processed += (uint)batchSize;
+        }
+        // 处理剩余元素...
+    }
+}
+```
+
+#### 3.6 表头快速解析
+**目标**: 使用SIMD批量读取和验证表头
+
+---
+
+### Phase 4: 字体表延迟加载和智能缓存 📋 计划中
 
 #### 4.1 智能预取
 **目标**: 基于访问模式预取常用表
@@ -564,30 +602,31 @@ public class SmartTableManager : TableManager
 {
     private readonly Dictionary<OTTag, int> _accessFrequency = new();
     private readonly HashSet<OTTag> _prefetched = new();
-    
+
     public OTTable? GetTableWithPrefetch(DirectoryEntry de)
     {
         var table = GetTableFromCache(de);
         if (table != null) return table;
-        
+
         // 记录访问
         _accessFrequency[de.tag] = _accessFrequency.GetValueOrDefault(de.tag, 0) + 1;
-        
+
         // 异步预取相关表
         if (_accessFrequency[de.tag] > 1)
         {
             _ = Task.Run(() => PrefetchRelatedTables(de.tag));
         }
-        
+
         return LoadTable(de);
     }
-    
+
     private void PrefetchRelatedTables(OTTag tag)
     {
         // cmap -> 预取 glyf, loca, hmtx
         // name -> 预取 head, OS2
         // ...
     }
+}
 }
 ```
 
@@ -752,6 +791,52 @@ public static bool TagEquals(Span<byte> buffer, ReadOnlySpan<byte> tag)
 // 使用
 if (TagEquals(buffer, "glyf"u8)) { ... }
 ```
+
+---
+
+## 当前优化状态
+
+### ✅ Phase 0: BinaryPrimitives 性能优化 - 100% 完成
+- ✅ Int/Uint 使用 BinaryPrimitives（40-47%提升）
+- ✅ Long/Ulong 使用 BinaryPrimitives（37-70%提升）
+- ✅ Short/Ushort 保留手动位操作（与BinaryPrimitives持平)
+
+### ✅ Phase 3: SIMD 优化 - 部分完成
+
+#### 已完成的优化（保留）:
+1. **MBOBuffer.BinaryEqual** ⭐
+   - Commit: 8f05cb1
+   - 实现: Vector512<byte>.Equals
+   - 性能: 1MB缓冲区比较 18.83x 加速
+
+2. **CMAP GetMap() 批量处理** ⭐
+   - Commits: f766da7, 9077fe0, 860d816
+   - 实现: batchSize=64
+   - 性能: 大型字体CMAP映射显著加速
+
+3. **MBOBuffer.CalculateChecksum**
+   - Commit: 6bcda89d + Vector512 零分配
+   - 实现: Vector256<uint> 向量累加 + 大端序转换
+   - 性能: 2.15x 加速 (53.43% 性能提升)
+
+#### 已移除的优化（低收益）:
+1. **TTCHeader DirectoryOffsets** ❌
+   - Commit: f2d23f4 (已reverted by a21d3da)
+   - 原因: 优化意义不大
+
+2. **Table_VORG GetAllVertOriginYMetrics** ❌
+   - Commit: f2d23f4 (已reverted by a21d3da)
+   - 原因: 优化意义不大
+
+3. **Table_Zapf GetAllGroups** ❌
+   - Commit: f2d23f4 (已reverted by a21d3da)
+   - 原因: 优化意义不大
+
+### 📋 计划中的优化:
+- Phase 2: 现代化 I/O (MemoryMappedFile, System.IO.Pipelines)
+- Phase 4: 字体表延迟加载和智能缓存
+- Phase 5: 多线程并发优化
+- Phase 6: 其他优化
 
 ---
 

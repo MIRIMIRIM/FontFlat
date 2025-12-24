@@ -123,105 +123,66 @@ Short/Ushort (16位):
 **已完成工作**：
 
 #### 9.1 TTCHeader DirectoryEntries SIMD优化
-- ✅ 使用 System.Numerics.Vector 批量读取 DirectoryCount
-- ✅ batchSize=4 优化 uint 序列读取
-- ✅ 硬件加速检测 + 向量批处理 + 标量回退
-- ✅ 同时优化 OTFontFile 和 OTFontFile.Baseline 两个版本
-
-**优化代码示例**：
-```csharp
-if (Vector.IsHardwareAccelerated && DirectoryCount >= 4)
-{
-    const int batchSize = 4;
-    uint processed = 0;
-    while (processed + batchSize <= DirectoryCount)
-    {
-        // Vector批处理
-        Vector<uint> vOffsets = new Vector<uint>(
-            GetUint((uint)FieldOffsets.TableDirectory + (processed + 0) * RecordSize),
-            GetUint((uint)FieldOffsets.TableDirectory + (processed + 1) * RecordSize),
-            GetUint((uint)FieldOffsets.TableDirectory + (processed + 2) * RecordSize),
-            GetUint((uint)FieldOffsets.TableDirectory + (processed + 3) * RecordSize)
-        );
-        // 存储结果并继续下一批...
-        processed += (uint)batchSize;
-    }
-    // 处理剩余元素...
-}
-```
+- ❌ **已移除**: 使用 System.Numerics.Vector 批量读取 DirectoryCount
+- ❌ **已移除**: batchSize=4 优化 uint 序列读取
+- ❌ **已移除**: 硬件加速检测 + 向量批处理 + 标量回退
+- 原因: 优化意义不大 (reverted by commit a21d3da)
 
 #### 9.2 Table_VORG GetAllVertOriginYMetrics SIMD优化
-- ✅ 新增 SIMD 优化方法批量读取 vertOriginYMetrics
-- ✅ batchSize=8 优化结构体数组读取 (glyphIndex, vertOriginY)
-- ✅ 向量批处理 + 剩余元素处理 + 标量回退
-
-**优化代码示例**：
-```csharp
-if (Vector.IsHardwareAccelerated && ActualNumberOfGlyphs >= 8)
-{
-    const int batchSize = 8;
-    uint processed = 0;
-    while (processed + batchSize <= ActualNumberOfGlyphs)
-    {
-        // Vector批处理8个元素
-        Vector<uint> vGlyphIndices = new Vector<uint>(/* 8个索引 */);
-        Vector<short> vVertOriginY = new Vector<short>(/* 8个Y值 */);
-        // 存储到数组并继续下一批...
-        processed += (uint)batchSize;
-    }
-    // 处理剩余元素...
-}
-```
+- ❌ **已移除**: 新增 SIMD 优化方法批量读取 vertOriginYMetrics
+- ❌ **已移除**: batchSize=8 优化结构体数组读取 (glyphIndex, vertOriginY)
+- ❌ **已移除**: 向量批处理 + 剩余元素处理 + 标量回退
+- 原因: 优化意义不大 (reverted by commit a21d3da)
 
 #### 9.3 Table_Zapf GetAllGroups SIMD优化
-- ✅ 在 GroupInfo 类中添加 SIMD 优化方法
-- ✅ batchSize=8 优化 NamedGroup 结构体读取
-- ✅ 处理 16位标志的可变长度结构
+- ❌ **已移除**: 在 GroupInfo 类中添加 SIMD 优化方法
+- ❌ **已移除**: batchSize=8 优化 NamedGroup 结构体读取
+- ❌ **已移除**: 处理 16位标志的可变长度结构
+- 原因: 优化意义不大 (reverted by commit a21d3da)
 
 **Commit记录**：
-- `f2d23f4` - feat: SIMD batch optimization for TTC/VORG/Zapf (completed all 3 components)
+- `f2d23f4` - feat: SIMD优化TTCHeader、Table_VORG和Table_Zapf的循环读取 (已reverted)
+- `a21d3da` - Revert "feat: SIMD优化TTCHeader、Table_VORG和Table_Zapf的循环读取" (因优化意义不大)
 - `781cba3` - Add SIMD optimization benchmarks
 
-### ✅ 10. SIMD 优化验证测试 (已完成)
+### ✅ 10. SIMD 优化验证测试 (部分完成，部分移除)
 **测试文件**：`OTFontFile.Performance.Tests/UnitTests/SimdTests.cs`
 
 **测试覆盖**：
-- ✅ `TTCHeader_DirectoryEntries_SimdMatchesBaseline` - 验证TTC DirectoryOffsets正确性
-- ✅ `Table_VORG_GetAllVertOriginYMetrics_SimdMatchesBaseline` - 验证VORG Metrics正确性
-- ✅ `Table_Zapf_GetAllGroups_SimdMatchesBaseline` - 验证Zapf Groups正确性（测试字体无Zapf表则跳过）
+- ❌ ~~`TTCHeader_DirectoryEntries_SimdMatchesBaseline`~~ - 已移除（优化意义不大）
+- ❌ ~~`Table_VORG_GetAllVertOriginYMetrics_SimdMatchesBaseline`~~ - 已移除（优化意义不大）
+- ❌ ~~`Table_Zapf_GetAllGroups_SimdMatchesBaseline`~~ - 已移除（优化意义不大）
 
 **测试结果**：
 ```
-TTCHeader优化:      PASSED ✅
-Table_VORG优化:     PASSED ✅
-Table_Zapf优化:     SKIPPED ⚠️ (测试字体无Zapf表)
+TTC/VORG/Zapf优化:   REMOVED ❌ (因优化意义不大，已reverted)
 ```
 
-### ✅ 11. SIMD 优化性能基准测试 (已完成)
+### ✅ 11. SIMD 优化性能基准测试 (部分完成)
 **测试文件**：`OTFontFile.Benchmarks/Benchmarks/SimdOptimizationsBenchmarks.cs`
 
 **基准测试覆盖**：
 
-1. **TTCHeader**：
-   - `TTCHeader_DirectoryOffsets_Read` - DirectoryOffsets读取性能
-   - `TTCHeader_MultipleFonts_Access` - TTC多字体访问
+1. **MBOBuffer.BinaryEqual** (commit 8f05cb1, Vector512):
+   - `BinaryEqual_SmallBuffer` - 64字节缓冲区比较（低于SIMD阈值）
+   - `BinaryEqual_MediumBuffer` - 1KB缓冲区比较（启用SIMD）
+   - `BinaryEqual_LargeBuffer` - 1MB缓冲区比较（SIMD收益最大）
 
-2. **Table_VORG**：
-   - `TableVORG_GetAllVertOriginYMetrics` - SIMD批量读取
-   - `TableVORG_Scalar_GetVertOriginYMetrics` - 标量读取（baseline）
+2. **CMAP GetMap()** (commits f766da7, 9077fe0, 860d816):
+   - `CMAP4_GetMap` - Format4 Unicode BMP子表（batchSize=64）
+   - `CMAP6_GetMap` - Format6 紧缩格式（batchSize=64）
+   - `CMAP0_GetMap` - Format0 字节编码格式（batchSize=64）
+   - `CMAP12_GetMap` - Format12 Unicode变体子表（batchSize=64）
 
-3. **Table_Zapf**：
-   - `TableZapf_GetAllGroups` - SIMD批量读取（需API重构后启用）
-   - `TableZapf_Scalar_GetGroups` - 标量读取（baseline）
+3. **已移除** (因优化意义不大, reverted by a21d3da):
+   - ~~TTCHeader DirectoryOffsets~~
+   - ~~Table_VORG GetAllVertOriginYMetrics~~
 
-4. **综合测试**：
-   - `Combined_SimdOptimizations` - 所有优化综合性能测试
-
-**BencharkdotNet 特性**：
-- ✅ 3次预热 + 10次迭代
-- ✅ 内存诊断
+**BenchmarkDotNet 特性**：
+- ✅ 2次预热 + 5次迭代
+- ✅ 内存诊断 (MemoryDiagnoser)
 - ✅ 多种导出格式（Markdown, HTML, R-plot）
-- ✅ 分类标记（SIMD/Baseline/Combined）
+- ✅ 分类标记（SIMD/Baseline）
 
 **测试字体文件准备**：
 ```
@@ -319,20 +280,29 @@ SequentialRead: 变慢 1%
 ```
 
 ### SIMD 优化状态
-✅ **Phase 1 SIMD 批处理优化 100% 完成**
+⚠️ **Phase 1 SIMD 批处理优化 - 部分完成，已revert低收益优化**
 
-**已完成的优化**：
-- ✅ TTCHeader DirectoryEntries (batchSize=4)
-- ✅ Table_VORG GetAllVertOriginYMetrics (batchSize=8)
-- ✅ Table_Zapf GetAllGroups (batchSize=8)
+**已完成的优化（保留）**：
+- ✅ MBOBuffer.BinaryEqual - Vector512<byte>.Equals (commit 8f05cb1)
+- ✅ CMAP4 Format4.GetMap - batchSize=64 (commit f766da7)
+- ✅ CMAP6 Format6.GetMap - batchSize=64 (commit 9077fe0)
+- ✅ CMAP0 Format0.GetMap - batchSize=64 (commit 9077fe0)
+- ✅ CMAP12 Format12.GetMap - batchSize=64 (commit 860d816)
+
+**已移除的优化（低收益）**：
+- ❌ TTCHeader DirectoryEntries - 优化意义不大 (reverted a21d3da)
+- ❌ Table_VORG GetAllVertOriginYMetrics - 优化意义不大 (reverted a21d3da)
+- ❌ Table_Zapf GetAllGroups - 优化意义不大 (reverted a21d3da)
 
 **测试验证**：
-- ✅ 功能测试：2个通过，1个跳过（测试字体无Zapf表）
-- ✅ 基准测试：已就绪，测试字体已准备
+- ✅ BinaryEqual基准测试：18.83x加速（1MB缓冲区）
+- ⚠️ TTC/VORG/Zapf测试已移除
 
-**已提交**：
-- `f2d23f4` - SIMD batch optimization for TTC/VORG/Zapf (completed all 3 components)
+**相关提交**：
+- `f2d23f4` - SIMD优化TTCHeader、Table_VORG和Table_Zapf的循环读取（已reverted）
+- `a21d3da` - Revert "feat: SIMD优化TTCHeader、Table_VORG和Table_Zapf的循环读取"
 - `781cba3` - Add SIMD optimization benchmarks
+- `6bcda89` - 使用 Vector<uint> 优化 CalculateChecksum（带大端序转换）
 
 ---
 

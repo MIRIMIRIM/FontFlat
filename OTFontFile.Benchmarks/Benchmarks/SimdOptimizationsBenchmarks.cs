@@ -10,16 +10,18 @@ namespace OTFontFile.Benchmarks.Benchmarks
     /// <summary>
     /// SIMD优化性能基准测试
     /// 用于验证所有SIMD批处理优化效果，包含Baseline对比
-    /// 
+    ///
     /// 优化列表（从 commit 8f05cb1 开始）:
-    /// 1. MBOBuffer.BinaryEqual - Vector<byte>.EqualsAll (commit 8f05cb1)
+    /// 1. MBOBuffer.BinaryEqual - Vector512<byte>.Equals (commit 8f05cb1)
     /// 2. CMAP4 Format4.GetMap - batchSize=64 (commit f766da7)
     /// 3. CMAP6 Format6.GetMap - batchSize=64 (commit 9077fe0)
-    /// 4. CMAP0 Format0.GetMap - Dynamic batchSize (commit 9077fe0)
+    /// 4. CMAP0 Format0.GetMap - batchSize=64 (commit 9077fe0)
     /// 5. CMAP12 Format12.GetMap - batchSize=64 (commit 860d816)
-    /// 6. TTCHeader DirectoryOffsets - batchSize=4 (commit f2d23f4)
-    /// 7. Table_VORG GetAllVertOriginYMetrics - batchSize=8 (commit f2d23f4)
-    /// 
+    ///
+    /// 注意: 以下优化因优化意义不大已被移除 (commit f2d23f4):
+    /// - TTCHeader DirectoryOffsets
+    /// - Table_VORG GetAllVertOriginYMetrics
+    ///
     /// 测试方法参考：OTFontFile.Performance.Tests/UnitTests/SimdTests.cs
     /// </summary>
     [MarkdownExporter, AsciiDocExporter, HtmlExporter, RPlotExporter]
@@ -33,14 +35,8 @@ namespace OTFontFile.Benchmarks.Benchmarks
         // CMAP 测试字体 - 使用大型字体以获得可测量的性能差异
         private static readonly string? s_cmapTestFontPath = Path.Combine(TestResourcesPath, "SourceHanSansCN-Regular.otf");
 
-        // VORG 测试字体（包含 VORG 表的字体）
-        private static readonly string? s_vorgFontPath = Path.Combine(TestResourcesPath, "SourceHanSansCN-Regular.otf");
-
         // CalculateChecksum 测试字体 - 使用大型字体
         private static readonly string? s_checksumFontPath = Path.Combine(TestResourcesPath, "SourceHanSansCN-Regular.otf");
-
-        // TTC 测试字体 - 使用大型 TTC 文件
-        private static readonly string? s_ttcFontPath = Path.Combine(TestResourcesPath, "SourceHanSans.ttc");
 
         // MBOBuffer 测试数据
         private MBOBuffer? _optimizedBufferSmall;
@@ -53,28 +49,16 @@ namespace OTFontFile.Benchmarks.Benchmarks
         // 字体文件对象
         private OTFile? _optimizedCmapFile;
         private Baseline.OTFile? _baselineCmapFile;
-        private OTFile? _optimizedVORGFile;
-        private Baseline.OTFile? _baselineVORGFile;
         private OTFile? _optimizedChecksumFile;
         private Baseline.OTFile? _baselineChecksumFile;
-        private OTFile? _optimizedTTCFile;
-        private Baseline.OTFile? _baselineTTCFile;
 
         // CMAP 表对象（使用同一个大字体）
         private Table_cmap? _optimizedCmap;
         private Baseline.Table_cmap? _baselineCmap;
 
-        // VORG 表对象
-        private Table_VORG? _optimizedVORG;
-        private Baseline.Table_VORG? _baselineVORG;
-
         // CalculateChecksum 测试对象 - MBOBuffer对象
         private MBOBuffer? _optimizedChecksumBuffer;
         private Baseline.MBOBuffer? _baselineChecksumBuffer;
-
-        // TTCHeader 对象
-        private TTCHeader? _optimizedTTCHeader;
-        private Baseline.TTCHeader? _baselineTTCHeader;
 
         [GlobalSetup]
         public void Setup()
@@ -94,14 +78,8 @@ namespace OTFontFile.Benchmarks.Benchmarks
             // 2. 加载 CMAP 字体
             LoadCmapFonts();
 
-            // 3. 加载 VORG 字体
-            LoadVORGFont();
-
-            // 4. 加载 Checksum 字体
+            // 3. 加载 Checksum 字体
             LoadChecksumFont();
-
-            // 5. 加载 TTC 字体
-            LoadTTCFont();
         }
 
         [GlobalCleanup]
@@ -110,12 +88,8 @@ namespace OTFontFile.Benchmarks.Benchmarks
             // 关闭所有打开的字体文件
             _optimizedCmapFile?.close();
             _baselineCmapFile?.close();
-            _optimizedVORGFile?.close();
-            _baselineVORGFile?.close();
             _optimizedChecksumFile?.close();
             _baselineChecksumFile?.close();
-            _optimizedTTCFile?.close();
-            _baselineTTCFile?.close();
         }
 
         private void LoadCmapFonts()
@@ -132,22 +106,6 @@ namespace OTFontFile.Benchmarks.Benchmarks
                 _baselineCmapFile.open(s_cmapTestFontPath);
                 var baselineFont = _baselineCmapFile.GetFont(0);
                 _baselineCmap = baselineFont.GetTable("cmap") as Baseline.Table_cmap;
-            }
-        }
-
-        private void LoadVORGFont()
-        {
-            if (s_vorgFontPath != null && File.Exists(s_vorgFontPath))
-            {
-                _optimizedVORGFile = new OTFile();
-                _optimizedVORGFile.open(s_vorgFontPath);
-                var optFont = _optimizedVORGFile.GetFont(0);
-                _optimizedVORG = optFont.GetTable("VORG") as Table_VORG;
-
-                _baselineVORGFile = new Baseline.OTFile();
-                _baselineVORGFile.open(s_vorgFontPath);
-                var baseFont = _baselineVORGFile.GetFont(0);
-                _baselineVORG = baseFont.GetTable("VORG") as Baseline.Table_VORG;
             }
         }
 
@@ -168,23 +126,6 @@ namespace OTFontFile.Benchmarks.Benchmarks
                 _baselineChecksumBuffer = _baselineChecksumFile.ReadPaddedBuffer(0, fileSize);
             }
         }
-
-        private void LoadTTCFont()
-        {
-            if (s_ttcFontPath != null && File.Exists(s_ttcFontPath))
-            {
-                // 加载 Optimized 版本
-                _optimizedTTCFile = new OTFile();
-                _optimizedTTCFile.open(s_ttcFontPath);
-                _optimizedTTCHeader = _optimizedTTCFile.GetTTCHeader();
-
-                // 加载 Baseline 版本
-                _baselineTTCFile = new Baseline.OTFile();
-                _baselineTTCFile.open(s_ttcFontPath);
-                _baselineTTCHeader = _baselineTTCFile.GetTTCHeader();
-            }
-        }
-
 
 
         #region 1. MBOBuffer.BinaryEqual - SIMD 批量字节比较 (commit 8f05cb1)
@@ -493,50 +434,11 @@ namespace OTFontFile.Benchmarks.Benchmarks
 
         #endregion
 
-        #region 6. TTCHeader DirectoryOffsets - SIMD 批量偏移量读取 (commit f2d23f4)
+        // NOTE: TTCHeader DirectoryOffsets and Table_VORG benchmarks removed 
+        // (commit f2d23f4) - these SIMD optimizations were removed as unnecessary
 
-        /// <summary>
-        /// TTCHeader DirectoryOffsets 批量读取
-        /// 优化：使用 SIMD 批量读取 batchSize=4 个目录偏移量
-        /// </summary>
-        [Benchmark]
-        [BenchmarkCategory("TTCHeader", "Baseline")]
-        public List<uint>? TTCHeader_DirectoryOffsets_Baseline()
-        {
-            return _baselineTTCHeader?.DirectoryOffsets;
-        }
-
-        [Benchmark]
-        [BenchmarkCategory("TTCHeader", "SIMD")]
-        public List<uint>? TTCHeader_DirectoryOffsets_Optimized()
-        {
-            return _optimizedTTCHeader?.DirectoryOffsets;
-        }
-
-        #endregion
-
-        #region 7. Table_VORG GetAllVertOriginYMetrics - SIMD 批量读取 (commit f2d23f4)
-
-        /// <summary>
-        /// Table_VORG GetAllVertOriginYMetrics 批量读取
-        /// 优化：使用 SIMD 批量读取 batchSize=8 个垂直原点度量
-        /// 注意：返回类型是 vertOriginYMetrics[] 数组，不是 List
-        /// </summary>
-        [Benchmark]
-        [BenchmarkCategory("Table_VORG", "Baseline")]
-        public Baseline.Table_VORG.vertOriginYMetrics[]? TableVORG_GetAllVertOriginYMetrics_Baseline()
-        {
-            return _baselineVORG?.GetAllVertOriginYMetrics();
-        }
-
-        [Benchmark]
-        [BenchmarkCategory("Table_VORG", "SIMD")]
-        public Table_VORG.vertOriginYMetrics[]? TableVORG_GetAllVertOriginYMetrics_Optimized()
-        {
-            return _optimizedVORG?.GetAllVertOriginYMetrics();
-        }
-
-        #endregion
+        // TTCHeader DirectoryOffsets (commit f2d23f4) - 优化意义不大
+        // Table_VORG GetAllVertOriginYMetrics (commit f2d23f4) - 优化意义不大
 
         #region 8. MBOBuffer CalculateChecksum - SIMD 向量化累加 (commit 6bcda89d)
 
