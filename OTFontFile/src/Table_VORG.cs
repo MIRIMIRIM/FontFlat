@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 
 namespace OTFontFile
 {
@@ -79,6 +80,50 @@ namespace OTFontFile
             }
 
             return voym;
+        }
+
+        public vertOriginYMetrics[]? GetAllVertOriginYMetrics()
+        {
+            if (numVertOriginYMetrics == 0)
+            {
+                return null;
+            }
+
+            vertOriginYMetrics[] voymArray = new vertOriginYMetrics[numVertOriginYMetrics];
+
+            if (Vector.IsHardwareAccelerated && numVertOriginYMetrics >= 8)
+            {
+                const int batchSize = 8;
+                uint processed = 0;
+                while (processed + batchSize <= numVertOriginYMetrics)
+                {
+                    for (int i = 0; i < batchSize; i++)
+                    {
+                        uint idx = processed + (uint)i;
+                        voymArray[idx] = new vertOriginYMetrics();
+                        voymArray[idx].glyphIndex = m_bufTable.GetUshort((uint)FieldOffsets.StartOfArray + idx * 4);
+                        voymArray[idx].vertOriginY = m_bufTable.GetShort((uint)FieldOffsets.StartOfArray + idx * 4 + 2);
+                    }
+                    processed += (uint)batchSize;
+                }
+                for (uint i = processed; i < numVertOriginYMetrics; i++)
+                {
+                    voymArray[i] = new vertOriginYMetrics();
+                    voymArray[i].glyphIndex = m_bufTable.GetUshort((uint)FieldOffsets.StartOfArray + i * 4);
+                    voymArray[i].vertOriginY = m_bufTable.GetShort((uint)FieldOffsets.StartOfArray + i * 4 + 2);
+                }
+            }
+            else
+            {
+                for (uint i = 0; i < numVertOriginYMetrics; i++)
+                {
+                    voymArray[i] = new vertOriginYMetrics();
+                    voymArray[i].glyphIndex = m_bufTable.GetUshort((uint)FieldOffsets.StartOfArray + i * 4);
+                    voymArray[i].vertOriginY = m_bufTable.GetShort((uint)FieldOffsets.StartOfArray + i * 4 + 2);
+                }
+            }
+
+            return voymArray;
         }
 
 

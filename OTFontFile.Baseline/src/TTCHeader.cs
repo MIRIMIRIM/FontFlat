@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Numerics;
 
 namespace Baseline
 {
@@ -61,10 +62,32 @@ namespace Baseline
                 buf = file.ReadPaddedBuffer(SIZEOF_FIRSTTHREEFIELDS, DirectoryCount*SIZEOF_UINT);
                 if (buf != null)
                 {
-                    for (uint i=0; i<ttc.DirectoryCount; i++)
+                    if (Vector.IsHardwareAccelerated && DirectoryCount >= 4)
                     {
-                        uint offset = buf.GetUint(i*SIZEOF_UINT);
-                        ttc.DirectoryOffsets.Add(offset);
+                        const int batchSize = 4;
+                        uint processed = 0;
+                        while (processed + batchSize <= DirectoryCount)
+                        {
+                            for (int i = 0; i < batchSize; i++)
+                            {
+                                uint offset = buf.GetUint((processed + (uint)i) * SIZEOF_UINT);
+                                ttc.DirectoryOffsets.Add(offset);
+                            }
+                            processed += (uint)batchSize;
+                        }
+                        for (uint i = processed; i < DirectoryCount; i++)
+                        {
+                            uint offset = buf.GetUint(i * SIZEOF_UINT);
+                            ttc.DirectoryOffsets.Add(offset);
+                        }
+                    }
+                    else
+                    {
+                        for (uint i = 0; i < DirectoryCount; i++)
+                        {
+                            uint offset = buf.GetUint(i * SIZEOF_UINT);
+                            ttc.DirectoryOffsets.Add(offset);
+                        }
                     }
                 }
 

@@ -1,5 +1,5 @@
 using System;
-
+using System.Numerics;
 
 namespace OTFontFile
 {
@@ -314,6 +314,55 @@ namespace OTFontFile
                 }
 
                 return new NamedGroup(offset, m_bufTable);
+            }
+
+            public NamedGroup[] GetAllGroups()
+            {
+                NamedGroup[] groups = new NamedGroup[ActualNumberOfGroups];
+                uint offset = m_offsetGroupInfo + 2;
+
+                if (Vector.IsHardwareAccelerated && ActualNumberOfGroups >= 8)
+                {
+                    const int batchSize = 8;
+                    uint processed = 0;
+                    while (processed + batchSize <= ActualNumberOfGroups)
+                    {
+                        for (int k = 0; k < batchSize; k++)
+                        {
+                            uint idx = processed + (uint)k;
+                            if (PrecededBy16BitFlag())
+                            {
+                                offset += 2;
+                            }
+                            groups[idx] = new NamedGroup(offset, m_bufTable);
+                            offset += groups[idx].GetLength();
+                        }
+                        processed += (uint)batchSize;
+                    }
+                    for (uint i = processed; i < ActualNumberOfGroups; i++)
+                    {
+                        if (PrecededBy16BitFlag())
+                        {
+                            offset += 2;
+                        }
+                        groups[i] = new NamedGroup(offset, m_bufTable);
+                        offset += groups[i].GetLength();
+                    }
+                }
+                else
+                {
+                    for (uint i = 0; i < ActualNumberOfGroups; i++)
+                    {
+                        if (PrecededBy16BitFlag())
+                        {
+                            offset += 2;
+                        }
+                        groups[i] = new NamedGroup(offset, m_bufTable);
+                        offset += groups[i].GetLength();
+                    }
+                }
+
+                return groups;
             }
 
             // member data
