@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 
 
 namespace OTFontFile
@@ -421,80 +422,123 @@ namespace OTFontFile
             return m_cachedChecksum;
         }
 
+        /// <summary>
+        /// 不使用缓存直接计算校验和 - 用于性能测试
+        /// </summary>
+        public uint CalcChecksumUncached()
+        {
+            return CalculateChecksum();
+        }
+
 
 
         /************************
          * private methods
          */
 
+        private static readonly Vector512<byte> Mask512 = Vector512.Create(
+            (byte)3, 2, 1, 0,   (byte)7, 6, 5, 4,
+            (byte)11,10, 9, 8,  (byte)15,14,13,12,
+            (byte)19,18,17,16,  (byte)23,22,21,20,
+            (byte)27,26,25,24,  (byte)31,30,29,28,
+            (byte)35,34,33,32,  (byte)39,38,37,36,
+            (byte)43,42,41,40,  (byte)47,46,45,44,
+            (byte)51,50,49,48,  (byte)55,54,53,52,
+            (byte)59,58,57,56,  (byte)63,62,61,60
+        );
 
+        private static readonly Vector256<byte> Mask256 = Vector256.Create(
+            (byte)3, 2, 1, 0,   (byte)7, 6, 5, 4,
+            (byte)11,10, 9, 8,  (byte)15,14,13,12,
+            (byte)19,18,17,16,  (byte)23,22,21,20,
+            (byte)27,26,25,24,  (byte)31,30,29,28
+        );
+
+        private static readonly Vector128<byte> Mask128 = Vector128.Create(
+            (byte)3, 2, 1, 0,   (byte)7, 6, 5, 4,
+            (byte)11,10, 9, 8,  (byte)15,14,13,12
+        );
         private uint CalculateChecksum()
         {
             Debug.Assert(m_length != 0);
 
-            uint nLongs = (m_length + 3) / 4;
+            uint nLongs = (uint)((m_length + 3) / 4);
+            uint sum = 0;
+            // 这相当于 byte* pBuf = m_buf; 但不需要 fixed
+            ref byte bufRef = ref MemoryMarshal.GetArrayDataReference(m_buf);
 
-            // SIMD 优化：使用 GetUint 批量读取再 SIMD 累加
-            // 策略：一次读取 4 个 uint（16 字节），使用 Vector<uint> 累加
-            // 阈值：至少 64 字节（16 个 uint）以启用 SIMD
-            if (Vector.IsHardwareAccelerated && nLongs >= 16)
+            uint totalBytes = nLongs * 4;
+
+            uint byteEnd512 = 0;
+            uint byteEnd256 = 0;
+            uint byteEnd128 = 0;
+
+            if (Vector512.IsHardwareAccelerated)
+                byteEnd512 = (nLongs & ~15u) * 4;   // 16 uint = 64 bytes
+            if (Vector256.IsHardwareAccelerated)
+                byteEnd256 = (nLongs & ~7u) * 4;    // 8 uint = 32 bytes
+            if (Vector128.IsHardwareAccelerated)
+                byteEnd128 = (nLongs & ~3u) * 4;    // 4 uint = 16 bytes
+
+            uint offset = 0;
+
+            if (Vector512.IsHardwareAccelerated && byteEnd512 != 0)
             {
-                unsafe
+                Vector512<uint> vSum512 = Vector512<uint>.Zero;
+
+                for (; offset < byteEnd512; offset += 64)
                 {
-                    fixed (byte* pBuf = m_buf)
-                    {
-                        int vecCount = Vector<uint>.Count;
-                        Vector<uint> sumVec = Vector<uint>.Zero;
-                        int i = 0;
-                        
-                        // 每次处理 vecCount 个 uint，使用 GetUint 保证端序正确
-                        int maxSIMD = (int)nLongs - ((int)nLongs & (vecCount - 1));
-                        
-                        uint[] tempUints = new uint[vecCount];
-                        
-                        for (; i < maxSIMD; i += vecCount)
-                        {
-                            // 使用 GetUint 读取 vecCount 个 uint（保证大端序转换正确）
-                            for (int k = 0; k < vecCount; k++)
-                            {
-                                tempUints[k] = GetUint((uint)((i + k) * 4));
-                            }
-                            
-                            // 构建 Vector<uint> 并累加
-                            Vector<uint> v = new Vector<uint>(tempUints, 0);
-                            sumVec += v;
-                        }
+                    ref byte cur = ref Unsafe.Add(ref bufRef, (nint)offset);
 
-                        // 累加向量化部分的和
-                        uint sum = 0;
-                        unchecked
-                        {
-                            for (int k = 0; k < vecCount; k++)
-                            {
-                                sum += sumVec[k];
-                            }
-                        }
+                    var bytes = Vector512.LoadUnsafe(ref cur);
+                    var swapped = Vector512.Shuffle(bytes, Mask512);
 
-                        // 处理剩余的个别 uint
-                        for (; i < (int)nLongs; i++)
-                        {
-                            sum += GetUint((uint)(i * 4));
-                        }
-
-                        return sum;
-                    }
+                    vSum512 = Vector512.Add(vSum512, swapped.AsUInt32());
                 }
+
+                sum += Vector512.Sum(vSum512);
             }
-            else
+
+            if (Vector256.IsHardwareAccelerated && offset < byteEnd256)
             {
-                // 使用原始实现
-                uint sum = 0;
-                for (uint i = 0; i < nLongs; i++)
+                Vector256<uint> vSum256 = Vector256<uint>.Zero;
+
+                for (; offset < byteEnd256; offset += 32)
                 {
-                    sum += GetUint(i*4);
+                    ref byte cur = ref Unsafe.Add(ref bufRef, (nint)offset);
+
+                    var bytes = Vector256.LoadUnsafe(ref cur);
+                    var swapped = Vector256.Shuffle(bytes, Mask256);
+
+                    vSum256 = Vector256.Add(vSum256, swapped.AsUInt32());
                 }
-                return sum;
+
+                sum += Vector256.Sum(vSum256);
             }
+            
+            if (Vector128.IsHardwareAccelerated && offset < byteEnd128)
+            {
+                Vector128<uint> vSum128 = Vector128<uint>.Zero;
+
+                for (; offset < byteEnd128; offset += 16)
+                {
+                    ref byte cur = ref Unsafe.Add(ref bufRef, (nint)offset);
+
+                    var bytes = Vector128.LoadUnsafe(ref cur);
+                    var swapped = Vector128.Shuffle(bytes, Mask128);
+
+                    vSum128 = Vector128.Add(vSum128, swapped.AsUInt32());
+                }
+
+                sum += Vector128.Sum(vSum128);
+            }
+            
+            for (; offset < totalBytes; offset += 4)
+            {
+                sum += GetUint(offset);
+            }
+
+            return sum;
         }
         
 

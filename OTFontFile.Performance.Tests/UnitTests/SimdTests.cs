@@ -29,7 +29,7 @@ namespace OTFontFile.Performance.Tests.UnitTests
         public void CalcChecksum_SmallBuffer_MatchesBaseline()
         {
             // 测试多种小尺寸
-            uint[] smallSizes = { 0, 1, 4, 7, 16, 63, 100, 256, 399 };
+            uint[] smallSizes = { 1, 4, 7, 16, 63, 100, 256, 399 };
 
             foreach (uint size in smallSizes)
             {

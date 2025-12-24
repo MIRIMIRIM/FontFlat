@@ -340,6 +340,14 @@ namespace Baseline
             return m_cachedChecksum;
         }
 
+        /// <summary>
+        /// 不使用缓存直接计算校验和 - 用于性能测试
+        /// </summary>
+        public uint CalcChecksumUncached()
+        {
+            return CalculateChecksum();
+        }
+
 
 
         /************************
