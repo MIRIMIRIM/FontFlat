@@ -110,42 +110,12 @@ namespace OTFontFile.Benchmarks.Benchmarks
             var vorgTable = _vorgFont.GetTable("VORG") as Table_VORG;
             if (vorgTable == null) return;
 
-            // 使用新的SIMD优化方法读取所有metrics
-            GetAllVertOriginYMetrics(vorgTable);
+            // 使用新的SIMD优化批量方法读取所有metrics
+            var allMetrics = vorgTable.GetAllVertOriginYMetrics();
 
-            static System.Collections.Generic.List<(uint glyphIndex, short vertOriginY)> GetAllVertOriginYMetrics(Table_VORG vorg)
-            {
-                var metrics = new System.Collections.Generic.List<(uint glyphIndex, short vertOriginY)>();
-                ushort count = vorg.numVertOriginYMetrics;
-
-                if (Vector.IsHardwareAccelerated)
-                {
-                    // SIMD批处理实现（已在Table_VORG.cs中实现）
-                    // 这里调用已优化的方法
-                    for (uint i = 0; i < count; i++)
-                    {
-                        var vorgYMetrics = vorg.GetVertOriginYMetrics(i);
-                        if (vorgYMetrics != null)
-                        {
-                            metrics.Add((i, vorgYMetrics.vertOriginY));
-                        }
-                    }
-                }
-                else
-                {
-                    // 标量回退
-                    for (uint i = 0; i < count; i++)
-                    {
-                        var vorgYMetrics = vorg.GetVertOriginYMetrics(i);
-                        if (vorgYMetrics != null)
-                        {
-                            metrics.Add((i, vorgYMetrics.vertOriginY));
-                        }
-                    }
-                }
-
-                return metrics;
-            }
+            // 确保结果不被优化掉
+            // ReSharper disable once UnusedVariable
+            var count = allMetrics.Length;
         }
 
         [Benchmark]
