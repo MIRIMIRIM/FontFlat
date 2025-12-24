@@ -444,6 +444,206 @@ namespace OTFontFile.Performance.Tests.UnitTests
             }
         }
 
+        /// <summary>
+        /// CMAP Format6 GetMap() 优化测试
+        /// 验证：使用真实字体测试 Format6 字符到字形映射的正确性
+        /// </summary>
+        [TestMethod]
+        public void CMAP6_GetMap_RealFont_MatchesBaseline()
+        {
+            var fontPath = ComparisonTests.GetTestFontForFormat("6");
+            if (fontPath == null)
+            {
+                Assert.Inconclusive("No Format6 test font available in TestResources/SampleFonts");
+                return;
+            }
+
+            // 加载基线版本
+            var baselineFile = new Baseline.OTFile();
+            baselineFile.open(fontPath);
+            var baselineFont = baselineFile.GetFont(0);
+            var baselineCmap = baselineFont.GetTable("cmap") as Baseline.Table_cmap;
+            baselineFile.close();
+
+            // 加载优化版本
+            var optimizedFile = new OTFontFile.OTFile();
+            optimizedFile.open(fontPath);
+            var optimizedFont = optimizedFile.GetFont(0);
+            var optimizedCmap = optimizedFont.GetTable("cmap") as OTFontFile.Table_cmap;
+            optimizedFile.close();
+
+            if (baselineCmap == null || optimizedCmap == null)
+            {
+                Assert.Inconclusive("Font does not contain cmap table");
+                return;
+            }
+
+            // 测试 Format6 (Platform=1, Encoding=0 是最常见的 Format6)
+            Baseline.Table_cmap.Subtable? baselineSubtable = null;
+            Table_cmap.Subtable? optimizedSubtable = null;
+
+            // 尝试 Format6 (Macintosh Roman 是最常见的 Format6)
+            baselineSubtable = baselineCmap.GetSubtable(1, 0); // Platform=1 (Macintosh), Encoding=0 (Roman)
+            if (baselineSubtable != null && baselineSubtable.format == 6)
+            {
+                optimizedSubtable = optimizedCmap.GetSubtable(1, 0);
+            }
+
+            // 如果没有找到 Format6，尝试遍历所有子表
+            if (baselineSubtable == null || baselineSubtable.format != 6)
+            {
+                for (uint plat = 0; plat < 10; plat++)
+                {
+                    for (uint enc = 0; enc < 10; enc++)
+                    {
+                        var st = baselineCmap.GetSubtable((ushort)plat, (ushort)enc);
+                        if (st != null && st.format == 6)
+                        {
+                            baselineSubtable = st;
+                            optimizedSubtable = optimizedCmap.GetSubtable((ushort)plat, (ushort)enc);
+                            break;
+                        }
+                    }
+                    if (baselineSubtable != null && baselineSubtable.format == 6)
+                        break;
+                }
+            }
+
+            if (baselineSubtable == null || baselineSubtable.format != 6)
+            {
+                Assert.Inconclusive("Font does not contain Format 6 subtable");
+                return;
+            }
+
+            var baselineMap = baselineSubtable.GetMap();
+            var optimizedMap = optimizedSubtable!.GetMap();
+
+            // 验证映射结果
+            Assert.AreEqual(baselineMap.Length, optimizedMap.Length, "Map length mismatch");
+
+            // 验证全部 65536 个字符映射
+            int mismatchCount = 0;
+            for (int i = 0; i < baselineMap.Length; i++)
+            {
+                if (baselineMap[i] != optimizedMap[i])
+                {
+                    mismatchCount++;
+                    if (mismatchCount <= 10)
+                    {
+                        Console.WriteLine($"CMAP6 mismatch at char {i}: Baseline={baselineMap[i]}, Optimized={optimizedMap[i]}");
+                    }
+                }
+            }
+
+            if (mismatchCount > 0)
+            {
+                Assert.Fail($"CMAP6 GetMap() produced {mismatchCount} mismatches");
+            }
+        }
+
+        #endregion
+
+        #region CMAP Tests - Format 0
+
+        /// <summary>
+        /// CMAP Format0 GetMap() 优化测试
+        /// 验证：使用真实字体测试 Format0 字符到字形映射的正确性
+        /// Format0 是单字节字符映射(256字符)，通常用于 Macintosh Roman 编码
+        /// </summary>
+        [TestMethod]
+        public void CMAP0_GetMap_RealFont_MatchesBaseline()
+        {
+            var fontPath = ComparisonTests.GetTestFontForFormat("0");
+            if (fontPath == null)
+            {
+                Assert.Inconclusive("No Format0 test font available in TestResources/SampleFonts");
+                return;
+            }
+
+            // 加载基线版本
+            var baselineFile = new Baseline.OTFile();
+            baselineFile.open(fontPath);
+            var baselineFont = baselineFile.GetFont(0);
+            var baselineCmap = baselineFont.GetTable("cmap") as Baseline.Table_cmap;
+            baselineFile.close();
+
+            // 加载优化版本
+            var optimizedFile = new OTFontFile.OTFile();
+            optimizedFile.open(fontPath);
+            var optimizedFont = optimizedFile.GetFont(0);
+            var optimizedCmap = optimizedFont.GetTable("cmap") as OTFontFile.Table_cmap;
+            optimizedFile.close();
+
+            if (baselineCmap == null || optimizedCmap == null)
+            {
+                Assert.Inconclusive("Font does not contain cmap table");
+                return;
+            }
+
+            // 测试 Format0 (Macintosh Roman 是最常见的 Format0)
+            Baseline.Table_cmap.Subtable? baselineSubtable = null;
+            Table_cmap.Subtable? optimizedSubtable = null;
+
+            // 尝试 Format0 (Macintosh Roman)
+            baselineSubtable = baselineCmap.GetSubtable(1, 0); // Platform=1 (Macintosh), Encoding=0 (Roman)
+            if (baselineSubtable != null && baselineSubtable.format == 0)
+            {
+                optimizedSubtable = optimizedCmap.GetSubtable(1, 0);
+            }
+
+            // 如果没有找到 Format0，尝试遍历所有子表
+            if (baselineSubtable == null || baselineSubtable.format != 0)
+            {
+                for (uint plat = 0; plat < 10; plat++)
+                {
+                    for (uint enc = 0; enc < 10; enc++)
+                    {
+                        var st = baselineCmap.GetSubtable((ushort)plat, (ushort)enc);
+                        if (st != null && st.format == 0)
+                        {
+                            baselineSubtable = st;
+                            optimizedSubtable = optimizedCmap.GetSubtable((ushort)plat, (ushort)enc);
+                            break;
+                        }
+                    }
+                    if (baselineSubtable != null && baselineSubtable.format == 0)
+                        break;
+                }
+            }
+
+            if (baselineSubtable == null || baselineSubtable.format != 0)
+            {
+                Assert.Inconclusive("Font does not contain Format 0 subtable");
+                return;
+            }
+
+            var baselineMap = baselineSubtable.GetMap();
+            var optimizedMap = optimizedSubtable!.GetMap();
+
+            // 验证映射结果
+            Assert.AreEqual(baselineMap.Length, optimizedMap.Length, "Map length mismatch");
+            Assert.AreEqual(256, optimizedMap.Length, "Format0 should always produce 256-length map");
+
+            // 验证全部 256 个字符映射
+            int mismatchCount = 0;
+            for (int i = 0; i < optimizedMap.Length; i++)
+            {
+                if (baselineMap[i] != optimizedMap[i])
+                {
+                    mismatchCount++;
+                    if (mismatchCount <= 10)
+                    {
+                        Console.WriteLine($"CMAP0 mismatch at char {i}: Baseline={baselineMap[i]}, Optimized={optimizedMap[i]}");
+                    }
+                }
+            }
+
+            if (mismatchCount > 0)
+            {
+                Assert.Fail($"CMAP0 GetMap() produced {mismatchCount} mismatches");
+            }
+        }
+
         #endregion
     }
 }

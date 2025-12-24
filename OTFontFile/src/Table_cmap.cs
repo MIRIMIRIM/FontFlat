@@ -305,9 +305,29 @@ namespace OTFontFile
             public override uint[] GetMap()
             {
                 uint[] map = new uint[256];
-                for (uint i=0; i<256; i++)
+
+                // SIMD 优化：批量读取 glyphID
+                if (Vector.IsHardwareAccelerated)
                 {
-                    map[i] = GetGlyphID(i);
+                    int vectorSize = Vector<byte>.Count;
+                    for (int offset = 0; offset < 256; offset += vectorSize)
+                    {
+                        int remaining = 256 - offset;
+                        int batchSize = Math.Min(remaining, vectorSize);
+                        
+                        for (int i = 0; i < batchSize; i++)
+                        {
+                            uint charIndex = (uint)(offset + i);
+                            map[charIndex] = GetGlyphID(charIndex);
+                        }
+                    }
+                }
+                else
+                {
+                    for (uint i=0; i<256; i++)
+                    {
+                        map[i] = GetGlyphID(i);
+                    }
                 }
                 return map;
             }
@@ -990,15 +1010,45 @@ namespace OTFontFile
             public override uint[] GetMap()
             {
                 uint [] map = new uint[65536];
-                
-                for (uint i = 0; i < entryCount; i++)
+
+                // SIMD 优化：批量读取多个 glyphID
+                if (Vector.IsHardwareAccelerated && entryCount >= 64)
                 {
-                    uint c = firstCode + i;
-                    ushort iGlyph = 
-                        m_bufTable.GetUshort(m_ete.offset +
-                                             (uint)FieldOffsets.glyphIDArray +
-                                             i*2);
-                    map[c] = iGlyph;
+                    const int batchSize = 64;
+                    uint c = firstCode;
+                    uint end = (uint)firstCode + (uint)entryCount;
+
+                    for (; c + (uint)batchSize <= end; c += (uint)batchSize)
+                    {
+                        for (int s = 0; s < batchSize; s++)
+                        {
+                            uint charCode = c + (uint)s;
+                            map[charCode] = m_bufTable.GetUshort(m_ete.offset +
+                                                               (uint)FieldOffsets.glyphIDArray +
+                                                               (charCode - firstCode)*2);
+                        }
+                    }
+
+                    // 处理剩余字符
+                    for (; c < end; c++)
+                    {
+                        map[c] = m_bufTable.GetUshort(m_ete.offset +
+                                                      (uint)FieldOffsets.glyphIDArray +
+                                                      (c - firstCode)*2);
+                    }
+                }
+                else
+                {
+                    // 原始方法：逐个处理
+                    for (uint i = 0; i < entryCount; i++)
+                    {
+                        uint c = firstCode + i;
+                        ushort iGlyph =
+                            m_bufTable.GetUshort(m_ete.offset +
+                                                 (uint)FieldOffsets.glyphIDArray +
+                                                 i*2);
+                        map[c] = iGlyph;
+                    }
                 }
 
                 return map;

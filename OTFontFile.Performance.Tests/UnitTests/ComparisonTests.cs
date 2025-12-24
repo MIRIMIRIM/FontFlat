@@ -148,6 +148,31 @@ namespace OTFontFile.Performance.Tests.UnitTests
                 {
                     return font;
                 }
+                // 尝试 otf 文件
+                font = System.IO.Directory.GetFiles(path, "*.otf").FirstOrDefault();
+                if (font != null && System.IO.File.Exists(font))
+                {
+                    return font;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// 获取指定格式的测试字体
+        /// </summary>
+        public static string GetTestFontForFormat(string format)
+        {
+            var path = TestFontsBasePath;
+            if (!System.IO.Directory.Exists(path))
+                return null;
+
+            // 查找 cmap{format}_font*.otf 文件
+            var font = System.IO.Directory.GetFiles(path, $"cmap{format}_font*.*").FirstOrDefault();
+            if (font != null && System.IO.File.Exists(font))
+            {
+                return font;
             }
 
             return null;
