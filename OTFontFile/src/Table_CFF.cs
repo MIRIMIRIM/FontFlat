@@ -25,6 +25,7 @@
 using System;
 using System.Text;
 using System.Collections;
+using System.Runtime.CompilerServices;
 
 using Compat;
 
@@ -33,14 +34,39 @@ namespace OTFontFile
     /// <summary>
     /// Summary description for Table_CFF.
     /// </summary>
-    public class Table_CFF : OTTable
+    public class Table_CFF : LazyTable
     {
         /************************
          * constructors
          */
         
-        public Table_CFF(OTTag tag, MBOBuffer buf) : base(tag, buf)
+        /// <summary>
+        /// 常规构造函数：立即加载表数据
+        /// </summary>
+        public Table_CFF(OTTag tag, MBOBuffer buf) : base(tag, buf, null, null)
         {
+            // 立即加载，已通过 buf 获取数据
+        }
+
+        /// <summary>
+        /// 延迟加载构造函数：不立即加载表数据，按需加载
+        /// </summary>
+        public Table_CFF(DirectoryEntry de, OTFile file) : base(de, file)
+        {
+            // 不立即加载，在首次访问时调用 EnsureContentLoadedPooled()
+        }
+
+        /// <summary>
+        /// 确保表数据已加载（在所有访问方法前调用）
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void EnsureDataLoaded()
+        {
+            if (!_contentLoaded)
+            {
+                // CFF 通常是大表，使用池化缓冲区
+                EnsureContentLoadedPooled();
+            }
         }
 
         /************************
@@ -61,27 +87,45 @@ namespace OTFontFile
 
         public byte major
         {
-            get {return m_bufTable.GetByte((uint)FieldOffsets.major);}
+            get 
+            {
+                EnsureDataLoaded();
+                return m_bufTable.GetByte((uint)FieldOffsets.major);
+            }
         }
 
         public byte minor
         {
-            get {return m_bufTable.GetByte((uint)FieldOffsets.minor);}
+            get 
+            {
+                EnsureDataLoaded();
+                return m_bufTable.GetByte((uint)FieldOffsets.minor);
+            }
         }
         
         public byte hdrSize
         {
-            get {return m_bufTable.GetByte((uint)FieldOffsets.hdrSize);}
+            get 
+            {
+                EnsureDataLoaded();
+                return m_bufTable.GetByte((uint)FieldOffsets.hdrSize);
+            }
         }
 
         public byte offSize
         {
-            get {return m_bufTable.GetByte((uint)FieldOffsets.offSize);}
+            get 
+            {
+                EnsureDataLoaded();
+                return m_bufTable.GetByte((uint)FieldOffsets.offSize);
+            }
         }
 
         public INDEXData Name
         {
-            get {
+            get 
+            {
+                EnsureDataLoaded();
                 if (m_Name == null)
                     m_Name = new INDEXData(hdrSize, m_bufTable);
                 return m_Name;
@@ -90,7 +134,9 @@ namespace OTFontFile
 
         public INDEXData TopDICT
         {
-            get {
+            get 
+            {
+                EnsureDataLoaded();
                 if (m_TopDICT == null)
                     m_TopDICT = new INDEXData(hdrSize + Name.size, m_bufTable);
                 return m_TopDICT;
@@ -99,7 +145,9 @@ namespace OTFontFile
 
         public INDEXData String
         {
-            get {
+            get 
+            {
+                EnsureDataLoaded();
                 if (m_String == null)
                     m_String = new INDEXData(hdrSize + Name.size + TopDICT.size, m_bufTable);
                 return m_String;
@@ -108,7 +156,9 @@ namespace OTFontFile
 
         public INDEXData GlobalSubr
         {
-            get {
+            get 
+            {
+                EnsureDataLoaded();
                 if (m_GlobalSubr == null)
                     m_GlobalSubr = new INDEXData(hdrSize + Name.size + TopDICT.size + String.size, m_bufTable);
                 return m_GlobalSubr;
@@ -117,11 +167,13 @@ namespace OTFontFile
 
         public INDEXData GetINDEX(int offset)
         {
+            EnsureDataLoaded();
             return new INDEXData((uint) offset, m_bufTable);
         }
 
         public DICTData GetTopDICT( uint i )
         {
+            EnsureDataLoaded();
             return new DICTData( TopDICT.GetData(i), String );
         }
 
@@ -129,6 +181,8 @@ namespace OTFontFile
         {
             if (thisTopDICT.sizePrivate == 0)
                 return null;
+            
+            EnsureDataLoaded();
 
             byte [] buf = new byte[thisTopDICT.sizePrivate];
             System.Buffer.BlockCopy(m_bufTable.GetBuffer(), thisTopDICT.offsetPrivate, buf, 0, thisTopDICT.sizePrivate);
@@ -137,6 +191,7 @@ namespace OTFontFile
 
         public DICTData GetDICT( byte[] data )
         {
+            EnsureDataLoaded();
             return new DICTData( data, String );
         }
 

@@ -1,6 +1,6 @@
 using System;
 using System.Diagnostics;
-
+using System.Runtime.CompilerServices;
 
 
 namespace OTFontFile
@@ -8,15 +8,39 @@ namespace OTFontFile
     /// <summary>
     /// Summary description for Table_EBDT.
     /// </summary>
-    public class Table_EBDT : OTTable
+    public class Table_EBDT : LazyTable
     {
         /************************
          * constructors
          */
         
-        
-        public Table_EBDT(OTTag tag, MBOBuffer buf) : base(tag, buf)
+        /// <summary>
+        /// 常规构造函数：立即加载表数据
+        /// </summary>
+        public Table_EBDT(OTTag tag, MBOBuffer buf) : base(tag, buf, null, null)
         {
+            // 立即加载，已通过 buf 获取数据
+        }
+
+        /// <summary>
+        /// 延迟加载构造函数：不立即加载表数据，按需加载
+        /// </summary>
+        public Table_EBDT(DirectoryEntry de, OTFile file) : base(de, file)
+        {
+            // 不立即加载，在首次访问时调用 EnsureContentLoadedPooled()
+        }
+
+        /// <summary>
+        /// 确保表数据已加载（在所有访问方法前调用）
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void EnsureDataLoaded()
+        {
+            if (!_contentLoaded)
+            {
+                // EBDT 通常是大表（包含位图数据），使用池化缓冲区
+                EnsureContentLoadedPooled();
+            }
         }
 
         /************************
@@ -141,11 +165,17 @@ namespace OTFontFile
         
         public OTFixed version
         {
-            get {return m_bufTable.GetFixed((uint)FieldOffsets.version);}
+            get 
+            {
+                EnsureDataLoaded();
+                return m_bufTable.GetFixed((uint)FieldOffsets.version); 
+            }
         }
 
         public smallGlyphMetrics? GetSmallMetrics( Table_EBLC.indexSubTable cIndexSubTable, uint nGlyphIndex, uint nStartGlyphIndex )
         {
+            EnsureDataLoaded();
+
             smallGlyphMetrics? sgm = null;
             int nIndexFormat = cIndexSubTable.header.indexFormat;
             int nImageFormat = cIndexSubTable.header.imageFormat;

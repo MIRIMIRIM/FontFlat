@@ -43,6 +43,16 @@ namespace OTFontFile
             return false;
         }
 
+        private static bool ShouldUseLazyLoad(DirectoryEntry de)
+        {
+            // 使用延迟加载的条件：大表
+            // glyf, CFF, CFF2, SVG, CBDT, EBDT 可以延迟加载
+            string tag = de.tag;
+            if (s_largeTableTags.Contains(tag))
+                return true;
+            return false;
+        }
+
         public OTTable? GetTable(DirectoryEntry de)
         {
             // first try getting it from the table cache
@@ -55,17 +65,29 @@ namespace OTFontFile
                     && de.offset < m_file.GetFileLength()
                     && de.offset + de.length <= m_file.GetFileLength())
                 {
-                    // read the table from the file, using pooled buffer for large tables
-                    var buf = ShouldUsePooledBuffer(de)
-                        ? m_file.ReadPooledBuffer(de.offset, de.length)
-                        : m_file.ReadPaddedBuffer(de.offset, de.length);
-
-                    if (buf != null)
+                    // 根据表类型决定是否使用延迟加载
+                    if (ShouldUseLazyLoad(de))
                     {
-                        // put the buffer into a table object
-                        table = CreateTableObject(de.tag, buf);
+                        // 创建延迟加载的表对象
+                        table = CreateTableObjectLazy(de.tag, de);
+                    }
+                    else
+                    {
+                        // 立即加载数据
+                        var buf = ShouldUsePooledBuffer(de)
+                            ? m_file.ReadPooledBuffer(de.offset, de.length)
+                            : m_file.ReadPaddedBuffer(de.offset, de.length);
 
-                        // add the table to the cache
+                        if (buf != null)
+                        {
+                            // 创建表对象
+                            table = CreateTableObject(de.tag, buf);
+                        }
+                    }
+
+                    // add the table to the cache
+                    if (table != null)
+                    {
                         CachedTables.Add(table);
                     }
                 }
@@ -227,6 +249,25 @@ namespace OTFontFile
                 _ => new Table__Unknown(tag, buf),
             };
             return table;
+        }
+
+        /// <summary>
+        /// 创建延迟加载的表对象（不立即加载数据）
+        /// </summary>
+        public virtual OTTable CreateTableObjectLazy(OTTag tag, DirectoryEntry de)
+        {
+            string sName = GetUnaliasedTableName(tag);
+
+            return sName switch
+            {
+                "glyf" => new Table_glyf(de, m_file),
+                "CFF " => new Table_CFF(de, m_file),
+                // CFF2 暂未实现，跳过
+                "SVG " => new Table_SVG(de, m_file),
+                "EBDT" => new Table_EBDT(de, m_file),
+                // CBDT 别名为 EBDT，已在 GetUnaliasedTableName 中处理
+                _ => throw new NotSupportedException($"Lazy loading not supported for table: {sName}"),
+            };
         }
 
         /************************

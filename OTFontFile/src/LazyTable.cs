@@ -30,7 +30,7 @@ namespace OTFontFile
         protected readonly OTFile _file;
 
         /// <summary>
-        /// 构造函数（子类表需要调用）
+        /// 延迟加载构造函数（子类表需要调用）
         /// </summary>
         protected LazyTable(DirectoryEntry de, OTFile file)
             : base(de.tag, new MBOBuffer())
@@ -38,6 +38,18 @@ namespace OTFontFile
             _directoryEntry = de;
             _file = file;
             _contentLoaded = false;
+            _isLoading = false;
+        }
+
+        /// <summary>
+        /// 立即加载构造函数（子类表需要调用）
+        /// </summary>
+        protected LazyTable(OTTag tag, MBOBuffer buf, DirectoryEntry? de, OTFile? file)
+            : base(tag, buf)
+        {
+            _directoryEntry = de;
+            _file = file;
+            _contentLoaded = true;  // 数据已经加载
             _isLoading = false;
         }
 
