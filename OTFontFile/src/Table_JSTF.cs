@@ -174,7 +174,8 @@ namespace OTFontFile
 
             public JstfLangSys? GetJstfLangSysTable(JstfLangSysRecord? jlsr)
             {
-                uint offset = m_offsetJstfScript + (uint)jlsr.JstfLangSysOffset;
+                if (jlsr == null) return null;
+                uint offset = m_offsetJstfScript + (uint)jlsr!.JstfLangSysOffset;
                 return new JstfLangSys((ushort)offset, m_bufTable);
             }
 
@@ -392,9 +393,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfPriority + (uint)FieldOffsets.ExtensionEnableGSUBOffset);}
             }
 
-            public JstfGSUBModList GetExtensionEnableGSUBTable()
+            public JstfGSUBModList? GetExtensionEnableGSUBTable()
             {
-                JstfGSUBModList jgml = null;
+                JstfGSUBModList? jgml = null;
 
                 if (ExtensionEnableGSUBOffset != 0)
                 {
@@ -645,7 +646,7 @@ namespace OTFontFile
         
         public class JSTF_cache : DataCache
         {
-            public override OTTable GenerateTable()
+            public override OTTable? GenerateTable()
             {
                 // not yet implemented!
                 return null;
