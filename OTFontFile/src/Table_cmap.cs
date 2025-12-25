@@ -244,7 +244,7 @@ namespace OTFontFile
             }
 
             /// <summary>Abstract method.</summary>
-            abstract public uint[] GetMap();
+            abstract public uint[]? GetMap();
 
             /// <summary>PlatformID, encodingID, and offset in 
             /// <c>m_bufTable</c>.
@@ -305,7 +305,7 @@ namespace OTFontFile
                                           (uint)FieldOffsets.glyphIDArray + n);
             }
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 uint[] map = new uint[256];
 
@@ -486,7 +486,7 @@ namespace OTFontFile
                 private uint m_offsetSubHeader;
             }
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 return null; // TODO: implement
             }
@@ -799,7 +799,7 @@ namespace OTFontFile
             }
 
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 uint [] map = new uint[65536];
 
@@ -1010,7 +1010,7 @@ namespace OTFontFile
             }
 
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 uint [] map = new uint[65536];
 
@@ -1256,7 +1256,7 @@ namespace OTFontFile
             }
 
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 return null; // TODO: implement
             }
@@ -1375,7 +1375,7 @@ namespace OTFontFile
                 return 4;
             }
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 return null; // TODO: implement
             }
@@ -1593,7 +1593,7 @@ namespace OTFontFile
             }
 
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 Group g = GetGroup(nGroups-1);
                 uint nArraySize = g.endCharCode + 1;
@@ -1939,7 +1939,7 @@ namespace OTFontFile
 
             /// I am pretty sure this never gets called, but there is a call
             /// in the cmap_cache that I need to track down.
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 return new uint[0];
             }
@@ -1986,9 +1986,9 @@ namespace OTFontFile
 
             public class SubtableArray : List<CachedSubtable> // ArrayList
             {
-                public CachedSubtable GetSubtable(ushort platID, ushort encID)
+                public CachedSubtable? GetSubtable(ushort platID, ushort encID)
                 {
-                    CachedSubtable st = null;
+                    CachedSubtable? st = null;
                     for (int i=0; i<Count; i++)
                     {
                         CachedSubtable temp = this[i];
@@ -2029,28 +2029,31 @@ namespace OTFontFile
             {
                 m_arrSubtables = new SubtableArray();
 
-                for ( uint iSubtable=0; 
-                      iSubtable < OwnerTable.NumberOfEncodingTables; 
+                for ( uint iSubtable=0;
+                      iSubtable < OwnerTable.NumberOfEncodingTables;
                       iSubtable++ ) {
-                    EncodingTableEntry ete = 
+                    EncodingTableEntry? ete =
                         OwnerTable.GetEncodingTableEntry(iSubtable);
-                    Subtable st = OwnerTable.GetSubtable(ete);
+                    Subtable? st = OwnerTable.GetSubtable(ete);
 
-                    CachedSubtable cst = new 
-                        CachedSubtable(ete.platformID, ete.encodingID);
-                    cst.m_CharToGlyphMap = st.GetMap();
+                    if (st != null)
+                    {
+                        CachedSubtable cst = new
+                            CachedSubtable(ete!.platformID, ete!.encodingID);
+                        uint[]? charMap = st.GetMap();
+                        cst.m_CharToGlyphMap = charMap;
+                        m_arrSubtables.Add(cst);
 
-                    m_arrSubtables.Add(cst);
-                    
-                    if (cst.m_platID == 3 && cst.m_encID == 10)
-                    {
-                        m_DefaultSubtable = cst;
-                    }
-                    
-                    if ( cst.m_platID == 3 && cst.m_encID == 1 && 
-                         m_DefaultSubtable == null)
-                    {
-                        m_DefaultSubtable = cst;
+                        if (cst.m_platID == 3 && cst.m_encID == 10)
+                        {
+                            m_DefaultSubtable = cst;
+                        }
+
+                        if ( cst.m_platID == 3 && cst.m_encID == 1 &&
+                             m_DefaultSubtable == null)
+                        {
+                            m_DefaultSubtable = cst;
+                        }
                     }
                 }
             }
@@ -2176,29 +2179,35 @@ namespace OTFontFile
                 m_bDirty = true;
             }
 
-            // generate a new table from the cached data
+            // generate a new table from cached data
             public override OTTable GenerateTable()
             {
                 // generate the subtables
                 List<byte[]> arrSubtableBuffers = [];
                 for (int i=0; i<m_arrSubtables.Count; i++)
                 {
-                    byte [] buf = null;
                     CachedSubtable st = m_arrSubtables[i];
 
+                    if (st.m_CharToGlyphMap == null)
+                    {
+                        arrSubtableBuffers.Add([]);
+                        continue;
+                    }
+
+                    byte []? buf = null;
                     if (st.m_platID == 3 && st.m_encID == 10)
                     {
-                        buf = GenerateFormat12Subtable(st.m_CharToGlyphMap);
+                        buf = GenerateFormat12Subtable(st.m_CharToGlyphMap!);
                     }
                     else if (st.m_platID == 1 && st.m_encID == 0)
                     {
-                        buf = GenerateFormat0Subtable(st.m_CharToGlyphMap, 0);
+                        buf = GenerateFormat0Subtable(st.m_CharToGlyphMap!, 0);
                     }
                     else
                     {
-                        buf = GenerateFormat4Subtable(st.m_CharToGlyphMap);
+                        buf = GenerateFormat4Subtable(st.m_CharToGlyphMap!);
                     }
-                    arrSubtableBuffers.Add(buf);
+                    arrSubtableBuffers.Add(buf!);
                 }
 
 
