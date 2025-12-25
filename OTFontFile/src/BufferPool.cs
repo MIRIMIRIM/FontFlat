@@ -2,9 +2,6 @@ using System.Buffers;
 
 namespace OTFontFile
 {
-    /// <summary>
-    /// 缓冲区池，使用 ArrayPool<byte> 减少 GC 压力
-    /// </summary>
     public static class BufferPool
     {
         /// <summary>
