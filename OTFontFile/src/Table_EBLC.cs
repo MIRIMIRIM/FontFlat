@@ -749,16 +749,16 @@ namespace OTFontFile
             }
 
             public bitmapSizeTableCache? getBitmapSizeTableCache( int nIndex )
-            {                
+            {
                 bitmapSizeTableCache? bstc = null;
 
                 if( nIndex >= m_numSizes )
                 {
-                    throw new ArgumentOutOfRangeException( "nIndex is out of range." ); 
-                }                    
+                    throw new ArgumentOutOfRangeException( "nIndex is out of range." );
+                }
                 else
                 {
-                    bstc = (bitmapSizeTableCache)((bitmapSizeTableCache)m_bitmapSizeTables[nIndex])!.Clone();    
+                    bstc = (bitmapSizeTableCache?)((bitmapSizeTableCache?)m_bitmapSizeTables[nIndex])?.Clone()!;
                 }
 
                 return bstc;
@@ -771,18 +771,18 @@ namespace OTFontFile
                 if( bstc == null )
                 {
                     bResult = false;
-                    throw new ArgumentNullException( "Argument can not be null" ); 
+                    throw new ArgumentNullException( "Argument can not be null" );
                 }
                 else if( nIndex >= m_numSizes )
                 {
                     bResult = false;
-                    throw new ArgumentOutOfRangeException( "nIndex is out of range." ); 
+                    throw new ArgumentOutOfRangeException( "nIndex is out of range." );
                 }
                 else
                 {
-                    m_bitmapSizeTables[nIndex] = bstc.Clone();    
+                    m_bitmapSizeTables[nIndex] = (object?)bstc.Clone() ?? throw new InvalidOperationException("Clone returned null");
                     m_bDirty = true;
-                }                    
+                }
 
                 return bResult;
             }
@@ -856,13 +856,13 @@ namespace OTFontFile
                 uint nEBDTBufSize = (uint)Table_EBDT.FieldOffsets.StartOfData;
                 for( ushort i = 0; i < m_numSizes; i++ )
                 {
-                    bitmapSizeTableCache bstc = (bitmapSizeTableCache)m_bitmapSizeTables[i];
+                    bitmapSizeTableCache bstc = (bitmapSizeTableCache)m_bitmapSizeTables[i]!;
                     for( int ii = 0; ii < bstc.numberOfIndexSubTables; ii++ )
                     {
-                        indexSubTableArrayCache istac = bstc.getIndexSubTableArrayCache( ii );
-                        if (istac.indexSubTable != null)
+                        indexSubTableArrayCache? istac = bstc.getIndexSubTableArrayCache( ii );
+                        if (istac?.indexSubTable != null)
                         {
-                            nEBDTBufSize += istac.indexSubTable!.imageDataSize();
+                            nEBDTBufSize += istac.indexSubTable.imageDataSize();
                         }
                     }
                 }            
@@ -879,7 +879,7 @@ namespace OTFontFile
 
                 for( ushort i = 0; i < m_numSizes; i++ )
                 {
-                    bitmapSizeTableCache bstc = (bitmapSizeTableCache)m_bitmapSizeTables[i];
+                    bitmapSizeTableCache bstc = (bitmapSizeTableCache)m_bitmapSizeTables[i]!;
                     //Set the offset to the bitmapSizeTable
                     uint bstOffset = (uint)(Table_EBLC.FieldOffsets.FirstbitmapSizeTable + (i * bitmapSizeTable.bufSize));
 
@@ -956,9 +956,12 @@ namespace OTFontFile
                                     newbuf.SetUint( imageOffset, idxSubTableOffset + indexSubTable.headerLength + (uint)(nIndex * 4));                                
                                     
                                     // Write image data for this indexSubTable to EBDT buffer
-                                    imageCache ic = istc.getImageCache( iii, istac.firstGlyphIndex );
-                                    writeEBDTBuffer( bufEBDT, (imageDataOffset + imageOffset), ic, istac.indexSubTable.imageFormat );
-                                    imageOffset += ic.imageDataSize();
+                                    imageCache? ic = istc.getImageCache( iii, istac.firstGlyphIndex );
+                                    if (ic != null && istac.indexSubTable != null)
+                                    {
+                                        writeEBDTBuffer( bufEBDT, (imageDataOffset + imageOffset), ic, istac.indexSubTable!.imageFormat );
+                                        imageOffset += ic.imageDataSize();
+                                    }
                                 }
                                 // Add the last one so size can be determined
                                 newbuf.SetUint( imageOffset, idxSubTableOffset + indexSubTable.headerLength + ((uint)(istac.lastGlyphIndex - istac.firstGlyphIndex + 1) * 4));
@@ -967,66 +970,83 @@ namespace OTFontFile
                             }
                             case 2:
                             {
-                                indexSubTableCache2 istc = (indexSubTableCache2)istac.indexSubTable;                                
-                                
-                                // offset + header length 
-                                newbuf.SetUint( istc.imageSize, idxSubTableOffset + indexSubTable.headerLength );
-                                //BigMetrics, + 12 = indexSubTable.headerLength + (uint)imageSize
-                                newbuf.SetByte( istc.bigMetrics.height,            idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.height );
-                                newbuf.SetByte( istc.bigMetrics.width,            idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.width );
-                                newbuf.SetSbyte( istc.bigMetrics.horiBearingX,    idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.horiBearingX );
-                                newbuf.SetSbyte( istc.bigMetrics.horiBearingY,    idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.horiBearingY );
-                                newbuf.SetByte( istc.bigMetrics.horiAdvance,    idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.horiAdvance );
-                                newbuf.SetSbyte( istc.bigMetrics.vertBearingX,    idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.vertBearingX );
-                                newbuf.SetSbyte( istc.bigMetrics.vertBearingY,    idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.vertBearingY );
-                                newbuf.SetByte( istc.bigMetrics.vertAdvance,    idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.vertAdvance );
+                                indexSubTableCache2? istc = (indexSubTableCache2?)istac.indexSubTable;
+                                if (istc != null && istac.indexSubTable != null)
+                                {
+                                    // offset + header length 
+                                    newbuf.SetUint( istc.imageSize, idxSubTableOffset + istac.indexSubTable!.headerLength );
+                                    //BigMetrics, + 12 = indexSubTable.headerLength + (uint)imageSize
+                                    newbuf.SetByte( istc.bigMetrics.height,            idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.height );
+                                    newbuf.SetByte( istc.bigMetrics.width,            idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.width );
+                                    newbuf.SetSbyte( istc.bigMetrics.horiBearingX,    idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.horiBearingX );
+                                    newbuf.SetSbyte( istc.bigMetrics.horiBearingY,    idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.horiBearingY );
+                                    newbuf.SetByte( istc.bigMetrics.horiAdvance,    idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.horiAdvance );
+                                    newbuf.SetSbyte( istc.bigMetrics.vertBearingX,    idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.vertBearingX );
+                                    newbuf.SetSbyte( istc.bigMetrics.vertBearingY,    idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.vertBearingY );
+                                    newbuf.SetByte( istc.bigMetrics.vertAdvance,    idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.vertAdvance );
 
-                                for( ushort iii = istac.firstGlyphIndex; iii <= istac.lastGlyphIndex; iii++ )
-                                {                                
-                                    // Write image data for this indexSubTable to EBDT buffer
-                                    imageCache ic = istc.getImageCache( iii, istac.firstGlyphIndex );
-                                    writeEBDTBuffer( bufEBDT, (imageDataOffset + imageOffset), ic, istac.indexSubTable.imageFormat );
-                                    imageOffset += ic.imageDataSize();
+                                    for( ushort iii = istac.firstGlyphIndex; iii <= istac.lastGlyphIndex; iii++ )
+                                    {                                
+                                        // Write image data for this indexSubTable to EBDT buffer
+                                        imageCache? ic = istc.getImageCache( iii, istac.firstGlyphIndex );
+                                        if (ic != null)
+                                        {
+                                            writeEBDTBuffer( bufEBDT, (imageDataOffset + imageOffset), ic, istac.indexSubTable!.imageFormat );
+                                            imageOffset += ic.imageDataSize();
+                                        }
+                                    }
                                 }
                                 break;
                             }
                             case 3:
                             {
-                                indexSubTableCache3 istc = (indexSubTableCache3)istac.indexSubTable;                                
+                                indexSubTableCache3? istc = (indexSubTableCache3?)istac.indexSubTable;                                
                                 
-                                for( ushort iii = istac.firstGlyphIndex; iii <= istac.lastGlyphIndex; iii++ )
+                                if (istc != null && istac.indexSubTable != null)
                                 {
-                                    ushort nIndex = (ushort)(iii - istac.firstGlyphIndex);
+                                    for( ushort iii = istac.firstGlyphIndex; iii <= istac.lastGlyphIndex; iii++ )
+                                    {
+                                        ushort nIndex = (ushort)(iii - istac.firstGlyphIndex);
 
-                                    // offset + header length + ushort offsetArray[iii]
-                                    newbuf.SetUshort( (ushort)imageOffset, idxSubTableOffset + indexSubTable.headerLength + (uint)(nIndex * 2 ));
-                                    // Write image data for this indexSubTable to EBDT buffer
-                                    imageCache ic = istc.getImageCache( iii, istac.firstGlyphIndex );
-                                    writeEBDTBuffer( bufEBDT, (imageDataOffset + imageOffset), ic, istac.indexSubTable.imageFormat );
-                                    imageOffset += ic.imageDataSize();
+                                        // offset + header length + ushort offsetArray[iii]
+                                        newbuf.SetUshort( (ushort)imageOffset, idxSubTableOffset + istac.indexSubTable!.headerLength + (uint)(nIndex * 2 ));
+                                        // Write image data for this indexSubTable to EBDT buffer
+                                        imageCache? ic = istc.getImageCache( iii, istac.firstGlyphIndex );
+                                        if (ic != null)
+                                        {
+                                            writeEBDTBuffer( bufEBDT, (imageDataOffset + imageOffset), ic, istac.indexSubTable!.imageFormat );
+                                            imageOffset += ic.imageDataSize();
+                                        }
+                                    }
+                                    // Add the last one so size can be determined
+                                    newbuf.SetUshort( (ushort)imageOffset, idxSubTableOffset + istac.indexSubTable!.headerLength + ((uint)(istac.lastGlyphIndex - istac.firstGlyphIndex + 1) * 2 ));
                                 }
-                                // Add the last one so size can be determined
-                                newbuf.SetUshort( (ushort)imageOffset, idxSubTableOffset + indexSubTable.headerLength + ((uint)(istac.lastGlyphIndex - istac.firstGlyphIndex + 1) * 2 ));
                                 break;
                             }
                             case 4:
                             {
-                                indexSubTableCache4 istc = (indexSubTableCache4)istac.indexSubTable;                                
-                                // offset + header length 
-                                newbuf.SetUint( istc.numGlyphs, idxSubTableOffset + indexSubTable.headerLength );
-                                for( ushort iii = 0; iii < istc.numGlyphs; iii++ )
+                                indexSubTableCache4? istc = (indexSubTableCache4?)istac.indexSubTable;
+                                if (istc != null && istac.indexSubTable != null)
                                 {
-                                    // offset + header length + (uint)numGlyphs + (4)codeOffsetPair[iii]
-                                    newbuf.SetUshort( istc.getGlyphCode(iii), idxSubTableOffset + 12 + (uint)(iii * 4));
-                                    newbuf.SetUshort( (ushort)imageOffset, idxSubTableOffset + 12 + (uint)(iii * 4) + 2 );
-                                    // Write image data for this indexSubTable to EBDT buffer
-                                    imageCache ic = istc.getImageCache( istc.getGlyphCode(iii));
-                                    writeEBDTBuffer( bufEBDT, (imageDataOffset + imageOffset), ic, istac.indexSubTable.imageFormat );
-                                    imageOffset += ic.imageDataSize();
+                                    // offset + header length 
+                                    newbuf.SetUint( istc.numGlyphs, idxSubTableOffset + istac.indexSubTable!.headerLength );
+                                    for( ushort iii = 0; iii < istc.numGlyphs; iii++ )
+                                    {
+                                        // offset + header length + (uint)numGlyphs + (4)codeOffsetPair[iii]
+                                        newbuf.SetUshort( istc.getGlyphCode(iii), idxSubTableOffset + 12 + (uint)(iii * 4));
+                                        newbuf.SetUshort( (ushort)imageOffset, idxSubTableOffset + 12 + (uint)(iii * 4) + 2 );
+                                        // Write image data for this indexSubTable to EBDT buffer
+                                        imageCache? ic = istc.getImageCache( istc.getGlyphCode(iii));
+                                        if (ic != null)
+                                        {
+                                            writeEBDTBuffer( bufEBDT, (imageDataOffset + imageOffset), ic, istac.indexSubTable!.imageFormat );
+                                            imageOffset += ic.imageDataSize();
+                                        }
+                                    }
+                                    // Add the last codeOffsetPair so size can be determined
+                                    newbuf.SetUshort( 0, idxSubTableOffset + 12 + (uint)(istc.numGlyphs * 4 ));
+                                    newbuf.SetUshort( (ushort)imageOffset, idxSubTableOffset + 12 + (uint)(istc.numGlyphs * 4 ) + 2 );
                                 }
-                                // Add the last codeOffsetPair so size can be determined
-                                newbuf.SetUshort( 0, idxSubTableOffset + 12 + (uint)(istc.numGlyphs * 4 ));
-                                newbuf.SetUshort( (ushort)imageOffset, idxSubTableOffset + 12 + (uint)(istc.numGlyphs * 4 ) + 2 );                                
                                 break;
                             }
                             case 5:
@@ -1051,11 +1071,14 @@ namespace OTFontFile
                                 {
                                     // offset + header length + (uint)imageSize + bigGlyphMetrics.bufSize + big(uint)numGlyphs + (ushort)glyphCodeArray[iii}
                                     newbuf.SetUshort( istc.getGlyphCode(iii), idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.bufSize + 4 + (uint)(iii * 2 ));
-                                    
+
                                     // Write image data for this indexSubTable to EBDT buffer
-                                    imageCache ic = istc.getImageCache( istc.getGlyphCode(iii));
-                                    writeEBDTBuffer( bufEBDT, (imageDataOffset + imageOffset), ic, istac.indexSubTable.imageFormat );
-                                    imageOffset += ic.imageDataSize();
+                                    imageCache? ic = istc.getImageCache( istc.getGlyphCode(iii));
+                                    if (ic != null && istac.indexSubTable != null)
+                                    {
+                                        writeEBDTBuffer( bufEBDT, (imageDataOffset + imageOffset), ic, istac.indexSubTable!.imageFormat );
+                                        imageOffset += ic.imageDataSize();
+                                    }
                                 }                            
                                 break;
                             }
@@ -1075,8 +1098,8 @@ namespace OTFontFile
                 }    
                 
                 // Put the EBDT buf to that table
-                Table_EBDT.EBDT_cache EBDTCache = (Table_EBDT.EBDT_cache)m_tableEBDT.GetCache();
-                EBDTCache.setCache( bufEBDT );
+                Table_EBDT.EBDT_cache? EBDTCache = (Table_EBDT.EBDT_cache?)m_tableEBDT.GetCache();
+                if (EBDTCache != null) EBDTCache.setCache( bufEBDT );
 
                 // put the buffer into a Table_EBLC object and return it
                 Table_EBLC EBLCTable = new Table_EBLC( "EBLC", newbuf );
@@ -1223,18 +1246,21 @@ namespace OTFontFile
 
                 public bitmapSizeTableCache( Table_EBLC OwnerTable, bitmapSizeTable bst )
                 {
-                    m_numberOfIndexSubTables = bst.numberOfIndexSubTables;                    
+                    m_numberOfIndexSubTables = bst.numberOfIndexSubTables;
                     m_indexSubTableArray = new ArrayList( (int)m_numberOfIndexSubTables );
-                    indexSubTableArray[] ista = OwnerTable.GetIndexSubTableArray( bst );
-                    for( int i = 0; i < m_numberOfIndexSubTables; i++ )
-                    {                        
-                        indexSubTableCache istc = getEBLCIndexSubTable( OwnerTable, bst, ista[i] );
-                        indexSubTableArrayCache istac = new indexSubTableArrayCache( ista[i].firstGlyphIndex, ista[i].lastGlyphIndex, istc );
-                        m_indexSubTableArray.Add( istac );
+                    indexSubTableArray[]? ista = OwnerTable.GetIndexSubTableArray( bst );
+                    if (ista != null)
+                    {
+                        for( int i = 0; i < m_numberOfIndexSubTables; i++ )
+                        {
+                            indexSubTableCache? istc = getEBLCIndexSubTable( OwnerTable, bst, ista[i] );
+                            indexSubTableArrayCache istac = new indexSubTableArrayCache( ista[i].firstGlyphIndex, ista[i].lastGlyphIndex, istc );
+                            m_indexSubTableArray.Add( istac );
 
-                        indexSubTable ic = bst.GetIndexSubTable(ista[i]);
+                            indexSubTable ic = bst.GetIndexSubTable(ista[i]);
 
-                        //ista[i].additionalOffsetToIndexSubtable += bst.indexSubTableArrayOffset;                        
+                            //ista[i].additionalOffsetToIndexSubtable += bst.indexSubTableArrayOffset;
+                        }
                     }
 
                     m_colorRef = bst.colorRef;
@@ -1257,7 +1283,11 @@ namespace OTFontFile
                         for( int i = 0; i < numberOfIndexSubTables; i++ )
                         {
                             nSize += indexSubTableArray.bufSize;
-                            nSize += ((indexSubTableArrayCache)m_indexSubTableArray[i]).indexSubTable.indexSubTableSize();                    
+                            var istac = (indexSubTableArrayCache?)m_indexSubTableArray[i];
+                            if (istac?.indexSubTable != null)
+                            {
+                                nSize += istac.indexSubTable.indexSubTableSize();
+                            }
                         }
 
                         return nSize;
@@ -1278,13 +1308,13 @@ namespace OTFontFile
                 
                 public sbitLineMetricsCache hori
                 {
-                    get{return (sbitLineMetricsCache)m_hori.Clone();}                    
+                    get{return (sbitLineMetricsCache)m_hori?.Clone()!;}                    
                     set{m_hori = (sbitLineMetricsCache)value.Clone(); }                    
                 }
-                
+
                 public sbitLineMetricsCache vert
                 {
-                    get{return (sbitLineMetricsCache)m_vert.Clone(); }                    
+                    get{return (sbitLineMetricsCache)m_vert?.Clone()!;}                    
                     set{m_vert = (sbitLineMetricsCache)value.Clone(); }                    
                 }
 
@@ -1334,7 +1364,7 @@ namespace OTFontFile
                     }                    
                     else
                     {
-                        istac = (indexSubTableArrayCache)((indexSubTableArrayCache)m_indexSubTableArray[nIndex]).Clone();    
+                        istac = (indexSubTableArrayCache)((indexSubTableArrayCache?)m_indexSubTableArray[nIndex])?.Clone()!;
                     }
 
                     return istac;
@@ -1356,9 +1386,9 @@ namespace OTFontFile
                     }
                     else
                     {
-                        m_indexSubTableArray[nIndex] = istac.Clone();
+                        m_indexSubTableArray[nIndex] = (object?)istac.Clone() ?? throw new InvalidOperationException("Clone returned null");
                         checkAndSetGlyphRange();
-                    }                    
+                    }
 
                     return bResult;
                 }
@@ -1370,16 +1400,16 @@ namespace OTFontFile
                     if( istac == null )
                     {
                         bResult = false;
-                        throw new ArgumentNullException( "Argument can not be null" ); 
+                        throw new ArgumentNullException( "Argument can not be null" );
                     }
                     else if( nIndex > numberOfIndexSubTables )
                     {
                         bResult = false;
-                        throw new ArgumentOutOfRangeException( "nIndex is out of range." ); 
+                        throw new ArgumentOutOfRangeException( "nIndex is out of range." );
                     }
                     else
                     {
-                        m_indexSubTableArray.Insert( nIndex, istac.Clone());    
+                        m_indexSubTableArray.Insert( nIndex, (object?)istac.Clone() ?? throw new InvalidOperationException("Clone returned null"));
                         m_numberOfIndexSubTables++;
                         checkAndSetGlyphRange();
                     }
@@ -1407,12 +1437,12 @@ namespace OTFontFile
                     return bResult;
                 }
 
-                public object Clone()
+                public object? Clone()
                 {
                     bitmapSizeTableCache bstc = new bitmapSizeTableCache();
                     bstc.m_numberOfIndexSubTables = m_numberOfIndexSubTables;
                     bstc.m_indexSubTableArray = (ArrayList)m_indexSubTableArray.Clone();
-                    
+
                     bstc.hori = hori;
                     bstc.vert = vert;
                     bstc.colorRef = colorRef;
@@ -1423,25 +1453,25 @@ namespace OTFontFile
                     bstc.ppemX = ppemX;
                     bstc.ppemY = ppemY;
                     bstc.bitDepth = bitDepth;
-                    bstc.flags = flags;        
+                    bstc.flags = flags;
                     return null;
                 }
 
                 private void checkAndSetGlyphRange()
                 {
-                    ushort nLowestGlyph = ((indexSubTableArray)m_indexSubTableArray[0]).firstGlyphIndex;
+                    ushort nLowestGlyph = ((indexSubTableArray?)m_indexSubTableArray[0])?.firstGlyphIndex ?? 0;
                     ushort nHighestGlyph = 0;
 
                     for( int i = 0; i < numberOfIndexSubTables; i++ )
                     {
-                        if( ((indexSubTableArray)m_indexSubTableArray[0]).firstGlyphIndex < nLowestGlyph )
+                        if( ((indexSubTableArray?)m_indexSubTableArray[i])?.firstGlyphIndex < nLowestGlyph )
                         {
-                            nLowestGlyph = ((indexSubTableArray)m_indexSubTableArray[0]).firstGlyphIndex;
+                            nLowestGlyph = ((indexSubTableArray?)m_indexSubTableArray[i])?.firstGlyphIndex ?? 0;
                         }
 
-                        if( ((indexSubTableArray)m_indexSubTableArray[0]).lastGlyphIndex > nHighestGlyph )
+                        if( ((indexSubTableArray?)m_indexSubTableArray[i])?.lastGlyphIndex > nHighestGlyph )
                         {
-                            nHighestGlyph = ((indexSubTableArray)m_indexSubTableArray[0]).lastGlyphIndex;
+                            nHighestGlyph = ((indexSubTableArray?)m_indexSubTableArray[i])?.lastGlyphIndex ?? 0;
                         }
                     }
                     
@@ -1468,15 +1498,15 @@ namespace OTFontFile
                             break;
                         }
                         case 2:
-                        {        
+                        {
                             ArrayList cImageCache = new ArrayList();
                             for( uint i = ista.firstGlyphIndex; i <= ista.lastGlyphIndex; i++ )
                             {
                                 cImageCache.Add( getEBDTImageFormat( tableEDBT, ist, i, ista.firstGlyphIndex ));
                             }
                             uint nImageSize = ((indexSubTable2)ist).imageSize;
-                            Table_EBDT.bigGlyphMetrics bgm = ((indexSubTable2)ist).bigMetrics;
-                            istc = new indexSubTableCache2( ist.header.indexFormat, ist.header.imageFormat, cImageCache, nImageSize, bgm );
+                            Table_EBDT.bigGlyphMetrics? bgm = ((indexSubTable2)ist).bigMetrics;
+                            istc = new indexSubTableCache2( ist.header.indexFormat, ist.header.imageFormat, cImageCache, nImageSize, bgm! );
                             break;
                         }
                         case 3:
@@ -1504,10 +1534,10 @@ namespace OTFontFile
                             break;
                         }
                         case 5:
-                        {                            
-                            ArrayList cImageCache = new ArrayList();                            
+                        {
+                            ArrayList cImageCache = new ArrayList();
                             uint nImageSize = ((indexSubTable5)ist).imageSize;
-                            Table_EBDT.bigGlyphMetrics bgm = ((indexSubTable5)ist).bigMetrics;
+                            Table_EBDT.bigGlyphMetrics? bgm = ((indexSubTable5)ist).bigMetrics;
                             ArrayList cGlyphCodes = new ArrayList();
 
                             for( uint i = 0; i < ((indexSubTable5)ist).numGlyphs; i++ )
@@ -1516,7 +1546,7 @@ namespace OTFontFile
                                 cGlyphCodes.Add( nGlyphCode );
                                 cImageCache.Add( getEBDTImageFormat( tableEDBT, ist, nGlyphCode, ista.firstGlyphIndex ));
                             }
-                            istc = new indexSubTableCache5( ist.header.indexFormat, ist.header.imageFormat, cImageCache, nImageSize, bgm, cGlyphCodes );
+                            istc = new indexSubTableCache5( ist.header.indexFormat, ist.header.imageFormat, cImageCache, nImageSize, bgm!, cGlyphCodes );
                             break;
                         }                        
                         default:
@@ -1530,71 +1560,92 @@ namespace OTFontFile
                     return istc;
                 }
 
-                private imageCache getEBDTImageFormat( Table_EBDT tableEDBT , indexSubTable ist, uint nGlyphIndex, uint nStartGlyphIndex )
-                {                    
-                    imageCache ic = null;
-                    
-            
+                private imageCache? getEBDTImageFormat( Table_EBDT tableEDBT , indexSubTable ist, uint nGlyphIndex, uint nStartGlyphIndex )
+                {
+                    imageCache? ic = null;
+
+
                     switch( ist.header.imageFormat )
                     {
                         case 1:
                         {
-                            Table_EBDT.smallGlyphMetrics sgm = tableEDBT.GetSmallMetrics( ist, nGlyphIndex, nStartGlyphIndex );
-                            byte[] bData = tableEDBT.GetImageData( ist, nGlyphIndex, nStartGlyphIndex );
-                            ic = new imageCache1( sgm, bData );                            
+                            Table_EBDT.smallGlyphMetrics? sgm = tableEDBT.GetSmallMetrics( ist, nGlyphIndex, nStartGlyphIndex );
+                            byte[]? bData = tableEDBT.GetImageData( ist, nGlyphIndex, nStartGlyphIndex );
+                            if (sgm != null && bData != null)
+                            {
+                                ic = new imageCache1( sgm, bData );
+                            }                            
                             break;
                         }
                         case 2:
                         {
-                            Table_EBDT.smallGlyphMetrics sgm = tableEDBT.GetSmallMetrics( ist, nGlyphIndex, nStartGlyphIndex );
-                            byte[] bData = tableEDBT.GetImageData( ist, nGlyphIndex, nStartGlyphIndex );
-                            ic = new imageCache2( sgm, bData );
+                            Table_EBDT.smallGlyphMetrics? sgm = tableEDBT.GetSmallMetrics( ist, nGlyphIndex, nStartGlyphIndex );
+                            byte[]? bData = tableEDBT.GetImageData( ist, nGlyphIndex, nStartGlyphIndex );
+                            if (sgm != null && bData != null)
+                            {
+                                ic = new imageCache2( sgm, bData );
+                            }
                             break;
-                        }                        
+                        }
                         case 5:
                         {
-                            byte[] bData = tableEDBT.GetImageData( ist, nGlyphIndex, nStartGlyphIndex );
-                            ic = new imageCache5( bData );                            
+                            byte[]? bData = tableEDBT.GetImageData( ist, nGlyphIndex, nStartGlyphIndex );
+                            if (bData != null)
+                            {
+                                ic = new imageCache5( bData );
+                            }
                             break;
-                        }        
+                        }
                         case 6:
                         {
-                            Table_EBDT.bigGlyphMetrics bgm = tableEDBT.GetBigMetrics( ist, nGlyphIndex, nStartGlyphIndex );
-                            byte[] bData = tableEDBT.GetImageData( ist, nGlyphIndex, nStartGlyphIndex );
-                            ic = new imageCache6( bgm, bData );
+                            Table_EBDT.bigGlyphMetrics? bgm = tableEDBT.GetBigMetrics( ist, nGlyphIndex, nStartGlyphIndex );
+                            byte[]? bData = tableEDBT.GetImageData( ist, nGlyphIndex, nStartGlyphIndex );
+                            if (bgm != null && bData != null)
+                            {
+                                ic = new imageCache6( bgm, bData );
+                            }
                             break;
-                        }        
+                        }
                         case 7:
                         {
-                            Table_EBDT.bigGlyphMetrics bgm = tableEDBT.GetBigMetrics( ist, nGlyphIndex, nStartGlyphIndex );
-                            byte[] bData = tableEDBT.GetImageData( ist, nGlyphIndex, nStartGlyphIndex );
-                            ic = new imageCache7( bgm, bData );                        
+                            Table_EBDT.bigGlyphMetrics? bgm = tableEDBT.GetBigMetrics( ist, nGlyphIndex, nStartGlyphIndex );
+                            byte[]? bData = tableEDBT.GetImageData( ist, nGlyphIndex, nStartGlyphIndex );
+                            if (bgm != null && bData != null)
+                            {
+                                ic = new imageCache7( bgm, bData );
+                            }
                             break;
-                        }        
+                        }
                         case 8:
                         {
-                            Table_EBDT.smallGlyphMetrics sgm = tableEDBT.GetSmallMetrics( ist, nGlyphIndex, nStartGlyphIndex );
+                            Table_EBDT.smallGlyphMetrics? sgm = tableEDBT.GetSmallMetrics( ist, nGlyphIndex, nStartGlyphIndex );
                             ushort nNumComp = tableEDBT.GetNumComponents( ist, nGlyphIndex, nStartGlyphIndex );
                             ArrayList components = new ArrayList( nNumComp );
                             for( uint i = 0; i < nNumComp; i++ )
                             {
-                                components.Add( tableEDBT.GetComponent( ist, nGlyphIndex, nStartGlyphIndex, i ));                                
+                                components.Add( tableEDBT.GetComponent( ist, nGlyphIndex, nStartGlyphIndex, i ));
                             }
-                            ic = new imageCache8( sgm, nNumComp, components );                    
+                            if (sgm != null)
+                            {
+                                ic = new imageCache8( sgm, nNumComp, components );
+                            }
                             break;
-                        }        
+                        }
                         case 9:
                         {
-                            Table_EBDT.bigGlyphMetrics bgm = tableEDBT.GetBigMetrics( ist, nGlyphIndex, nStartGlyphIndex );
+                            Table_EBDT.bigGlyphMetrics? bgm = tableEDBT.GetBigMetrics( ist, nGlyphIndex, nStartGlyphIndex );
                             ushort nNumComp = tableEDBT.GetNumComponents( ist, nGlyphIndex, nStartGlyphIndex );
                             ArrayList components = new ArrayList( nNumComp );
                             for( uint i = 0; i < nNumComp; i++ )
                             {
-                                components.Add( tableEDBT.GetComponent( ist, nGlyphIndex, nStartGlyphIndex, i ));                                
+                                components.Add( tableEDBT.GetComponent( ist, nGlyphIndex, nStartGlyphIndex, i ));
                             }
-                            ic = new imageCache9( bgm, nNumComp, components );                        
+                            if (bgm != null)
+                            {
+                                ic = new imageCache9( bgm, nNumComp, components );
+                            }
                             break;
-                        }        
+                        }
                         default:
                             Debug.Assert( false, "unsupported image format" );
                             break;
@@ -1611,11 +1662,11 @@ namespace OTFontFile
                 protected ushort m_lastGlyphIndex;
                 protected indexSubTableCache? m_indexSubTable;
 
-                public indexSubTableArrayCache(  ushort nFirstGlyphIndex, ushort nLastGlyphIndex, indexSubTableCache istc )
+                public indexSubTableArrayCache(  ushort nFirstGlyphIndex, ushort nLastGlyphIndex, indexSubTableCache? istc )
                 {
                     firstGlyphIndex = nFirstGlyphIndex;
                     lastGlyphIndex = nLastGlyphIndex;
-                    indexSubTable = istc;
+                    if (istc != null) indexSubTable = istc;
                 }
 
                 public ushort firstGlyphIndex
@@ -1633,18 +1684,23 @@ namespace OTFontFile
                 public indexSubTableCache? indexSubTable
                 {
                     get{ return m_indexSubTable != null ? (indexSubTableCache)m_indexSubTable.Clone() : null; }
-                    set{ m_indexSubTable = (indexSubTableCache)value.Clone(); }
+                    set{ m_indexSubTable = value; }
                 }
 
-                public object Clone()
+                public object? Clone()
                 {
-                    return new indexSubTableArrayCache( firstGlyphIndex, lastGlyphIndex, indexSubTable! );
-                }                
-            }
-
-            public abstract class indexSubTableCache : ICloneable
-            {
-                protected ushort m_indexFormat;
+                    // Create a cloned instance
+                    indexSubTableArrayCache clone = new indexSubTableArrayCache( firstGlyphIndex, lastGlyphIndex, null );
+                    // Clone the indexSubTable if not null
+                    if (m_indexSubTable != null)
+                    {
+                        indexSubTableCache? clonedSubTable = (indexSubTableCache?)m_indexSubTable.Clone();
+                        if (clonedSubTable != null)
+                        {
+                            clone.indexSubTable = clonedSubTable;
+                        }
+                    }
+                    return clone;
                 protected ushort m_imageFormat;
                 protected ArrayList m_imageCache; //imageCache[]
 
@@ -1692,17 +1748,17 @@ namespace OTFontFile
                 {
                 }
 
-                public imageCache getImageCache( ushort nGylphIndex, ushort nFirstGlyphIndex )
+                public imageCache? getImageCache( ushort nGylphIndex, ushort nFirstGlyphIndex )
                 {
-                    imageCache ic = (imageCache)m_imageCache[nGylphIndex - nFirstGlyphIndex];
-    
+                    imageCache? ic = (imageCache?)m_imageCache[nGylphIndex - nFirstGlyphIndex];
+
                     return ic;
                 }
 
                 override public uint indexSubTableSize()
                 {
                     //header size + (number of images + 1 * uint)
-                    uint nSize = (uint)(8 + ((m_imageCache.Count + 1) * 4));                                
+                    uint nSize = (uint)(8 + ((m_imageCache.Count + 1) * 4));
 
                     return nSize;
                 }
@@ -1732,14 +1788,14 @@ namespace OTFontFile
 
                 public Table_EBDT.bigGlyphMetrics bigMetrics
                 {
-                    get{return (Table_EBDT.bigGlyphMetrics)m_bigMetrics.Clone();}
+                    get{return (Table_EBDT.bigGlyphMetrics)m_bigMetrics!.Clone();}
                     set{ m_bigMetrics = (Table_EBDT.bigGlyphMetrics)value.Clone(); }
                 }
 
-                public imageCache getImageCache( ushort nGylphIndex, ushort nFirstGlyphIndex )
+                public imageCache? getImageCache( ushort nGylphIndex, ushort nFirstGlyphIndex )
                 {
-                    imageCache ic = (imageCache)m_imageCache[nGylphIndex - nFirstGlyphIndex];
-    
+                    imageCache? ic = (imageCache?)m_imageCache[nGylphIndex - nFirstGlyphIndex];
+
                     return ic;
                 }
 
@@ -1764,7 +1820,7 @@ namespace OTFontFile
                 {
                 }
 
-                public imageCache getImageCache( ushort nGylphIndex, ushort nFirstGlyphIndex )
+                public imageCache? getImageCache( ushort nGylphIndex, ushort nFirstGlyphIndex )
                 {
                     imageCache ic = (imageCache)m_imageCache[nGylphIndex - nFirstGlyphIndex];
     
@@ -1804,16 +1860,16 @@ namespace OTFontFile
                     return (ushort)m_glyphCode[nIndex]!;
                 }
 
-                public imageCache getImageCache( ushort nGylphCode )
+                public imageCache? getImageCache( ushort nGylphCode )
                 {
-                    imageCache ic = null;
+                    imageCache? ic = null;
                     for( ushort i = 0; i < numGlyphs; i++ )
                     {
                         if( nGylphCode == getGlyphCode( i ))
                         {
-                            ic = (imageCache)m_imageCache[i];
+                            ic = (imageCache?)m_imageCache[i];
                         }
-                    }    
+                    }
                     return ic;
                 }
 
@@ -1840,11 +1896,11 @@ namespace OTFontFile
                 public indexSubTableCache5( ushort nIndexFormat, ushort nImageFormat, ArrayList cImageCache, uint nImageSize, Table_EBDT.bigGlyphMetrics cBigMetrics, ArrayList cGlyphCode ) : base( nIndexFormat, nImageFormat, cImageCache )
                 {
                     imageSize = nImageSize;
-                    bigMetrics = cBigMetrics;                
+                    bigMetrics = cBigMetrics;
                     m_glyphCode = (ArrayList)cGlyphCode.Clone();
                 }
-                
-            
+
+
                 public uint imageSize
                 {
                     get{ return m_imageSize; }
@@ -1853,7 +1909,7 @@ namespace OTFontFile
 
                 public Table_EBDT.bigGlyphMetrics bigMetrics
                 {
-                    get{ return (Table_EBDT.bigGlyphMetrics)m_bigMetrics.Clone(); }
+                    get{ return (Table_EBDT.bigGlyphMetrics)m_bigMetrics!.Clone(); }
                     set{ m_bigMetrics = (Table_EBDT.bigGlyphMetrics)value.Clone(); }
                 }
 
@@ -1867,17 +1923,17 @@ namespace OTFontFile
                     return (ushort)m_glyphCode[nIndex]!;
                 }
 
-                public imageCache getImageCache( ushort nGylphCode )
+                public imageCache? getImageCache( ushort nGylphCode )
                 {
                     imageCache? ic = null;
                     for( ushort i = 0; i < numGlyphs; i++ )
                     {
                         if( nGylphCode == getGlyphCode( i ))
                         {
-                            ic = (imageCache)m_imageCache[i];
+                            ic = (imageCache?)m_imageCache[i];
                         }
-                    }    
-                    return ic!;
+                    }
+                    return ic;
                 }
 
                 override public uint indexSubTableSize()
@@ -1906,20 +1962,20 @@ namespace OTFontFile
                 protected byte[]? m_imageData;
 
                 public imageCache1( Table_EBDT.smallGlyphMetrics cSmallMetrics, byte[] bImageData )
-                {                        
+                {
                     smallMetrics = cSmallMetrics;
                     imageData = bImageData;
                 }
 
                 public Table_EBDT.smallGlyphMetrics smallMetrics
                 {
-                    get{ return (Table_EBDT.smallGlyphMetrics)m_smallMetrics.Clone(); }
+                    get{ return (Table_EBDT.smallGlyphMetrics)m_smallMetrics!.Clone(); }
                     set{ m_smallMetrics = (Table_EBDT.smallGlyphMetrics)value.Clone(); }
                 }
 
                 public byte[] imageData
                 {
-                    get{ return ( byte[])m_imageData.Clone(); }
+                    get{ return ( byte[])m_imageData!.Clone(); }
                     set{ m_imageData = ( byte[])value.Clone(); }
                 }
 
@@ -1943,27 +1999,27 @@ namespace OTFontFile
                 protected byte[]? m_imageData;
 
                 public imageCache2( Table_EBDT.smallGlyphMetrics cSmallMetrics, byte[] bImageData )
-                {                        
+                {
                     smallMetrics = cSmallMetrics;
                     imageData = bImageData;
                 }
 
                 public Table_EBDT.smallGlyphMetrics smallMetrics
                 {
-                    get{ return (Table_EBDT.smallGlyphMetrics)m_smallMetrics.Clone(); }
+                    get{ return (Table_EBDT.smallGlyphMetrics)m_smallMetrics!.Clone(); }
                     set{ m_smallMetrics = (Table_EBDT.smallGlyphMetrics)value.Clone(); }
                 }
 
                 public byte[] imageData
                 {
-                    get{ return ( byte[])m_imageData.Clone(); }
+                    get{ return ( byte[])m_imageData!.Clone(); }
                     set{ m_imageData = ( byte[])value.Clone(); }
                 }
 
                 override public uint imageDataSize()
                 {
                     uint nSize = Table_EBDT.smallGlyphMetrics.bufSize;
-                    nSize = (uint)m_imageData.Length;
+                    nSize = (uint)m_imageData!.Length;
 
                     return nSize;
                 }
@@ -1980,19 +2036,19 @@ namespace OTFontFile
                 protected byte[]? m_imageData;
 
                 public imageCache5( byte[] bImageData )
-                {                    
-                    imageData = bImageData;                    
+                {
+                    imageData = bImageData;
                 }
-            
+
                 public byte[] imageData
                 {
-                    get{ return ( byte[])m_imageData.Clone(); }
+                    get{ return ( byte[])m_imageData!.Clone(); }
                     set{ m_imageData = ( byte[])value.Clone(); }
                 }
 
                 override public uint imageDataSize()
                 {
-                    uint nSize = (uint)m_imageData.Length;
+                    uint nSize = (uint)m_imageData!.Length;
 
                     return nSize;
                 }
@@ -2009,27 +2065,27 @@ namespace OTFontFile
                 protected byte[]? m_imageData;
 
                 public imageCache6( Table_EBDT.bigGlyphMetrics cBigMetrics, byte[] bImageData )
-                {                    
+                {
                     bigMetrics = cBigMetrics;
                     imageData = bImageData;
                 }
 
                 public Table_EBDT.bigGlyphMetrics bigMetrics
                 {
-                    get{ return (Table_EBDT.bigGlyphMetrics)m_bigMetrics.Clone(); }
+                    get{ return (Table_EBDT.bigGlyphMetrics)m_bigMetrics!.Clone(); }
                     set{ m_bigMetrics = (Table_EBDT.bigGlyphMetrics)value.Clone(); }
                 }
 
                 public byte[] imageData
                 {
-                    get{ return ( byte[])m_imageData.Clone(); }
+                    get{ return ( byte[])m_imageData!.Clone(); }
                     set{ m_imageData = ( byte[])value.Clone(); }
                 }
 
                 override public uint imageDataSize()
                 {
                     uint nSize = Table_EBDT.bigGlyphMetrics.bufSize;
-                    nSize += (uint)m_imageData.Length;
+                    nSize += (uint)m_imageData!.Length;
 
                     return nSize;
                 }
@@ -2046,27 +2102,27 @@ namespace OTFontFile
                 protected byte[]? m_imageData;
 
                 public imageCache7( Table_EBDT.bigGlyphMetrics? cBigMetrics, byte[]? bImageData )
-                {    
-                    bigMetrics = cBigMetrics;
-                    imageData = bImageData;
+                {
+                    if (cBigMetrics != null) bigMetrics = cBigMetrics;
+                    if (bImageData != null) imageData = bImageData;
                 }
 
                 public Table_EBDT.bigGlyphMetrics bigMetrics
                 {
-                    get{ return (Table_EBDT.bigGlyphMetrics)m_bigMetrics.Clone(); }
+                    get{ return (Table_EBDT.bigGlyphMetrics)m_bigMetrics!.Clone(); }
                     set{ m_bigMetrics = (Table_EBDT.bigGlyphMetrics)value.Clone(); }
                 }
 
                 public byte[] imageData
                 {
-                    get{ return ( byte[])m_imageData.Clone(); }
+                    get{ return ( byte[])m_imageData!.Clone(); }
                     set{ m_imageData = ( byte[])value.Clone(); }
                 }
 
                 override public uint imageDataSize()
                 {
                     uint nSize = Table_EBDT.bigGlyphMetrics.bufSize;
-                    nSize += (uint)m_imageData.Length;
+                    nSize += (uint)m_imageData!.Length;
 
                     return nSize;
                 }
@@ -2084,17 +2140,17 @@ namespace OTFontFile
                 protected ushort m_numComponents;
                 protected ArrayList? m_componentArray; //Table_EBDT.ebdtComponent[]
 
-                public imageCache8( Table_EBDT.smallGlyphMetrics cSmallMetrics, ushort nNumComponents, ArrayList cComponentArray )
-                {                    
-                    smallMetrics = cSmallMetrics;
+                public imageCache8( Table_EBDT.smallGlyphMetrics? cSmallMetrics, ushort nNumComponents, ArrayList? cComponentArray )
+                {
+                    if (cSmallMetrics != null) smallMetrics = cSmallMetrics;
                     //pad = bPad;
                     numComponents = nNumComponents;
-                    m_componentArray = (ArrayList)cComponentArray.Clone();
+                    m_componentArray = cComponentArray != null ? (ArrayList)cComponentArray.Clone() : null;
                 }
 
                 public Table_EBDT.smallGlyphMetrics smallMetrics
                 {
-                    get{ return (Table_EBDT.smallGlyphMetrics)m_smallMetrics.Clone(); }
+                    get{ return (Table_EBDT.smallGlyphMetrics)m_smallMetrics!.Clone(); }
                     set{ m_smallMetrics = (Table_EBDT.smallGlyphMetrics)value.Clone(); }
                 }
 
@@ -2114,8 +2170,8 @@ namespace OTFontFile
 
                 public Table_EBDT.ebdtComponent getComponent( ushort nIndex )
                 {
-                    Table_EBDT.ebdtComponent ec = (Table_EBDT.ebdtComponent)m_componentArray[nIndex];
-                    
+                    Table_EBDT.ebdtComponent ec = (Table_EBDT.ebdtComponent)m_componentArray![nIndex];
+
                     return ec;
                 }
 
@@ -2129,30 +2185,30 @@ namespace OTFontFile
                     return nSize;
                 }
 
-                override public object Clone()
+                override public object? Clone()
                 {
-                    return new imageCache8( smallMetrics, numComponents, m_componentArray );
+                    return new imageCache8( m_smallMetrics != null ? smallMetrics : null, numComponents, m_componentArray );
                 }
             }
 
             public class imageCache9 : imageCache
             {
-                protected Table_EBDT.bigGlyphMetrics? m_bigMetrics;        
+                protected Table_EBDT.bigGlyphMetrics? m_bigMetrics;
                 protected ushort m_numComponents;
                 protected ArrayList? m_componentArray; //Table_EBDT.ebdtComponent[]
 
-                public imageCache9( Table_EBDT.bigGlyphMetrics cBigMetrics, ushort nNumComponents, ArrayList cComponentArray )
-                {                    
-                    bigMetrics = cBigMetrics;
+                public imageCache9( Table_EBDT.bigGlyphMetrics? cBigMetrics, ushort nNumComponents, ArrayList? cComponentArray )
+                {
+                    if (cBigMetrics != null) bigMetrics = cBigMetrics;
                     numComponents = nNumComponents;
-                    m_componentArray = (ArrayList)cComponentArray.Clone();
+                    m_componentArray = cComponentArray != null ? (ArrayList)cComponentArray.Clone() : null;
                 }
 
                 public Table_EBDT.bigGlyphMetrics bigMetrics
                 {
-                    get{ return (Table_EBDT.bigGlyphMetrics)m_bigMetrics.Clone(); }
+                    get{ return (Table_EBDT.bigGlyphMetrics)m_bigMetrics!.Clone(); }
                     set{ m_bigMetrics = (Table_EBDT.bigGlyphMetrics)value.Clone(); }
-                }                
+                }
 
                 public ushort numComponents
                 {
@@ -2162,8 +2218,8 @@ namespace OTFontFile
 
                 public Table_EBDT.ebdtComponent getComponent( ushort nIndex )
                 {
-                    Table_EBDT.ebdtComponent ec = (Table_EBDT.ebdtComponent)m_componentArray[nIndex];
-                    
+                    Table_EBDT.ebdtComponent ec = (Table_EBDT.ebdtComponent)m_componentArray![nIndex];
+
                     return ec;
                 }
 
@@ -2176,9 +2232,9 @@ namespace OTFontFile
                     return nSize;
                 }
 
-                override public object Clone()
+                override public object? Clone()
                 {
-                    return new imageCache9( bigMetrics, numComponents, m_componentArray );
+                    return new imageCache9( m_bigMetrics != null ? bigMetrics : null, numComponents, m_componentArray );
                 }
 
             }    
