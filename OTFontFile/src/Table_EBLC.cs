@@ -742,15 +742,15 @@ namespace OTFontFile
 
                 for( uint i = 0; i < m_numSizes; i++ )
                 {
-                    bitmapSizeTable bst = OwnerTable.GetBitmapSizeTable( i );
-                    m_bitmapSizeTables.Add( new bitmapSizeTableCache( OwnerTable, bst ));
+                    bitmapSizeTable? bst = OwnerTable.GetBitmapSizeTable( i );
+                    m_bitmapSizeTables.Add( new bitmapSizeTableCache( OwnerTable, bst! ));
                 }
 
             }
 
-            public bitmapSizeTableCache getBitmapSizeTableCache( int nIndex )
+            public bitmapSizeTableCache? getBitmapSizeTableCache( int nIndex )
             {                
-                bitmapSizeTableCache bstc = null;
+                bitmapSizeTableCache? bstc = null;
 
                 if( nIndex >= m_numSizes )
                 {
@@ -758,7 +758,7 @@ namespace OTFontFile
                 }                    
                 else
                 {
-                    bstc = (bitmapSizeTableCache)((bitmapSizeTableCache)m_bitmapSizeTables[nIndex]).Clone();    
+                    bstc = (bitmapSizeTableCache)((bitmapSizeTableCache)m_bitmapSizeTables[nIndex])!.Clone();    
                 }
 
                 return bstc;
@@ -1630,15 +1630,15 @@ namespace OTFontFile
                     set{ m_lastGlyphIndex = value; }
                 }
 
-                public indexSubTableCache indexSubTable
+                public indexSubTableCache? indexSubTable
                 {
-                    get{ return (indexSubTableCache)m_indexSubTable.Clone(); }
+                    get{ return m_indexSubTable != null ? (indexSubTableCache)m_indexSubTable.Clone() : null; }
                     set{ m_indexSubTable = (indexSubTableCache)value.Clone(); }
                 }
 
                 public object Clone()
                 {
-                    return new indexSubTableArrayCache( firstGlyphIndex, lastGlyphIndex, indexSubTable );
+                    return new indexSubTableArrayCache( firstGlyphIndex, lastGlyphIndex, indexSubTable! );
                 }                
             }
 
