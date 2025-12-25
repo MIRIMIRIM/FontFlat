@@ -441,14 +441,14 @@ namespace OTFontFile
                                           (uint)n*2);
             }
 
-            public SubHeader GetSubHeader(ushort n)
+            public SubHeader? GetSubHeader(ushort n)
             {
                 uint SIZEOF_SUBHEADER = 8;
 
                 uint SubHeaderOffset = m_ete.offset + 
                     (uint)FieldOffsets.subHeaders + n*SIZEOF_SUBHEADER;
 
-                SubHeader sh = null;
+                SubHeader? sh = null;
                 
                 if (SubHeaderOffset < m_bufTable.GetLength())
                 {
@@ -1828,9 +1828,9 @@ namespace OTFontFile
                     return off;
                 }
 
-                public NonDefaultUVSTable GetNonDefaultUVSTable()
+                public NonDefaultUVSTable? GetNonDefaultUVSTable()
                 {
-                    NonDefaultUVSTable tbl = null;
+                    NonDefaultUVSTable? tbl = null;
                     if ( nonDefaultUVSOffset > 0 ) {
                         tbl = new NonDefaultUVSTable();
                         tbl.Populate( m_buf, 
@@ -1840,9 +1840,9 @@ namespace OTFontFile
                     return tbl;
                 }
 
-                public DefaultUVSTable GetDefaultUVSTable()
+                public DefaultUVSTable? GetDefaultUVSTable()
                 {
-                    DefaultUVSTable tbl = null;
+                    DefaultUVSTable? tbl = null;
                     if ( defaultUVSOffset > 0 ) {
                         tbl = new DefaultUVSTable();
                         tbl.Populate( m_buf, 
