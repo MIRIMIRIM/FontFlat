@@ -80,13 +80,13 @@ namespace OTFontFile
         }
 
         static public bool operator != ( BigUn bg1, BigUn bg2 )
-        {            
+        {
             return bg1.m_char32 != bg2.m_char32;
         }
 
-        public override bool Equals(object o )
+        public override bool Equals(object? o )
         {
-            return this == (BigUn)o;
+            return this == (BigUn)o!;
         }
 
         public override int GetHashCode()
@@ -147,9 +147,9 @@ namespace OTFontFile
             return (!(f1 == f2));
         }
 
-        public override bool Equals(object obj)
+        public override bool Equals(object? obj)
         {
-            return (this == (OTF2Dot14)obj);
+            return (this == (OTF2Dot14)obj!);
         }
 
     }
@@ -200,9 +200,9 @@ namespace OTFontFile
             return (!(f1 == f2));
         }
 
-        public override bool Equals(object obj)
+        public override bool Equals(object? obj)
         {
-            return (this == (OTFixed)obj);
+            return (this == (OTFixed)obj!);
         }
 
         public override int GetHashCode()
@@ -328,9 +328,10 @@ namespace OTFontFile
          */
         
         
-        public override bool Equals(object obj)
+        public override bool Equals(object? obj)
         {
-            return (this == (OTTag)obj);
+            if (obj == null) return false;
+            return (this == (OTTag)obj!);
         }
 
         public override int GetHashCode()

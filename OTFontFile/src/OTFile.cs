@@ -297,7 +297,7 @@ namespace OTFontFile
         {
             byte[] buf = new byte[length];
             m_fs!.Seek(filepos, SeekOrigin.Begin);
-            m_fs.Read(buf, 0, (int)length);
+            m_fs.ReadExactly(buf, 0, (int)length);
             return buf;
         }
 

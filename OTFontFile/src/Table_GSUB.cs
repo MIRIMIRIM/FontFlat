@@ -273,9 +273,9 @@ namespace OTFontFile
                 protected MBOBuffer m_bufTable;
             }
 
-            public SequenceTable GetSequenceTable(uint i)
+            public SequenceTable? GetSequenceTable(uint i)
             {
-                SequenceTable st = null;
+                SequenceTable? st = null;
 
                 if (i < SequenceCount)
                 {
@@ -382,9 +382,9 @@ namespace OTFontFile
                 protected MBOBuffer m_bufTable;
             }
 
-            public AlternateSet GetAlternateSetTable(uint i)
+            public AlternateSet? GetAlternateSetTable(uint i)
             {
-                AlternateSet aset = null;
+                AlternateSet? aset = null;
 
                 if (i < AlternateSetCount)
                 {
@@ -429,13 +429,16 @@ namespace OTFontFile
 
                 for (uint iLigatureSet=0; iLigatureSet<LigSetCount; iLigatureSet++)
                 {
-                    LigatureSubst.LigatureSet ls = GetLigatureSetTable(iLigatureSet);
-                    for (uint iLigature=0; iLigature< ls.LigatureCount; iLigature++)
+                    LigatureSubst.LigatureSet? ls = GetLigatureSetTable(iLigatureSet);
+                    if (ls != null)
                     {
-                        LigatureSubst.LigatureSet.Ligature lig = ls.GetLigatureTable(iLigature);
-                        if (lig.CompCount > nLength)
+                        for (uint iLigature=0; iLigature< ls.LigatureCount; iLigature++)
                         {
-                            nLength = lig.CompCount;
+                            LigatureSubst.LigatureSet.Ligature? lig = ls.GetLigatureTable(iLigature);
+                            if (lig != null && lig.CompCount > nLength)
+                            {
+                                nLength = lig.CompCount;
+                            }
                         }
                     }
                 }
@@ -541,9 +544,9 @@ namespace OTFontFile
                     protected MBOBuffer m_bufTable;
                 }
 
-                public Ligature GetLigatureTable(uint i)
+                public Ligature? GetLigatureTable(uint i)
                 {
-                    Ligature l = null;
+                    Ligature? l = null;
 
                     if (i < LigatureCount)
                     {
@@ -557,9 +560,9 @@ namespace OTFontFile
                 protected MBOBuffer m_bufTable;
             }
 
-            public LigatureSet GetLigatureSetTable(uint i)
+            public LigatureSet? GetLigatureSetTable(uint i)
             {
-                LigatureSet ls = null;
+                LigatureSet? ls = null;
 
                 if (i < LigSetCount)
                 {
@@ -603,8 +606,8 @@ namespace OTFontFile
                         {
                             for (uint iSubRule = 0; iSubRule < srs.SubRuleCount; iSubRule++)
                             {
-                                ContextSubstFormat1.SubRuleSet.SubRule sr = srs.GetSubRuleTable(iSubRule);
-                                if (sr.GlyphCount > nLength)
+                                ContextSubstFormat1.SubRuleSet.SubRule? sr = srs.GetSubRuleTable(iSubRule);
+                                if (sr != null && sr.GlyphCount > nLength)
                                 {
                                     nLength = sr.GlyphCount;
                                 }
@@ -617,13 +620,13 @@ namespace OTFontFile
                     ContextSubstFormat2 csf2 = GetContextSubstFormat2();
                     for (uint iSubClassSet = 0; iSubClassSet < csf2.SubClassSetCount; iSubClassSet ++)
                     {
-                        ContextSubstFormat2.SubClassSet scs = csf2.GetSubClassSetTable(iSubClassSet);
+                        ContextSubstFormat2.SubClassSet? scs = csf2.GetSubClassSetTable(iSubClassSet);
                         if (scs != null)
                         {
                             for (uint iSubClassRule = 0; iSubClassRule < scs.SubClassRuleCount; iSubClassRule++)
                             {
-                                ContextSubstFormat2.SubClassSet.SubClassRule scr = scs.GetSubClassRuleTable(iSubClassRule);
-                                if (scr.GlyphCount > nLength)
+                                ContextSubstFormat2.SubClassSet.SubClassRule? scr = scs.GetSubClassRuleTable(iSubClassRule);
+                                if (scr != null && scr.GlyphCount > nLength)
                                 {
                                     nLength = scr.GlyphCount;
                                 }
@@ -791,9 +794,9 @@ namespace OTFontFile
                             return m_bufTable.GetUshort(offset);
                         }
 
-                        public SubstLookupRecord GetSubstLookupRecord(uint i)
+                        public SubstLookupRecord? GetSubstLookupRecord(uint i)
                         {
-                            SubstLookupRecord slr = null;
+                            SubstLookupRecord? slr = null;
 
                             if (i < SubstCount)
                             {
@@ -808,9 +811,9 @@ namespace OTFontFile
                         protected MBOBuffer m_bufTable;
                     }
 
-                    public SubRule GetSubRuleTable(uint i)
+                    public SubRule? GetSubRuleTable(uint i)
                     {
-                        SubRule sr = null;
+                        SubRule? sr = null;
 
                         if (i < SubRuleCount)
                         {
@@ -887,9 +890,9 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(offset);
                 }
 
-                public SubClassSet GetSubClassSetTable(uint i)
+                public SubClassSet? GetSubClassSetTable(uint i)
                 {
-                    SubClassSet scs = null;
+                    SubClassSet? scs = null;
                     if (GetSubClassSetOffset(i) != 0)
                     {
                         scs =  new SubClassSet(m_offsetContextSubst + GetSubClassSetOffset(i), m_bufTable);
@@ -963,9 +966,9 @@ namespace OTFontFile
                             return m_bufTable.GetUshort(offset);
                         }
 
-                        public SubstLookupRecord GetSubstLookupRecord(uint i)
+                        public SubstLookupRecord? GetSubstLookupRecord(uint i)
                         {
-                            SubstLookupRecord slr = null;
+                            SubstLookupRecord? slr = null;
 
                             if (i < SubstCount)
                             {
@@ -980,9 +983,9 @@ namespace OTFontFile
                         protected MBOBuffer m_bufTable;
                     }
 
-                    public SubClassRule GetSubClassRuleTable(uint i)
+                    public SubClassRule? GetSubClassRuleTable(uint i)
                     {
-                        SubClassRule scr = null;
+                        SubClassRule? scr = null;
 
                         if (i < SubClassRuleCount)
                         {
@@ -1047,9 +1050,9 @@ namespace OTFontFile
                     return new OTL.CoverageTable(m_offsetContextSubst + GetCoverageOffset(i), m_bufTable);
                 }
 
-                public SubstLookupRecord GetSubstLookupRecord(uint i)
+                public SubstLookupRecord? GetSubstLookupRecord(uint i)
                 {
-                    SubstLookupRecord slr = null;
+                    SubstLookupRecord? slr = null;
 
                     if (i < SubstCount)
                     {
@@ -1134,11 +1137,14 @@ namespace OTFontFile
                         {
                             for (uint iChainSubRule = 0; iChainSubRule < csrs.ChainSubRuleCount; iChainSubRule++)
                             {
-                                ChainContextSubstFormat1.ChainSubRuleSet.ChainSubRule csr = csrs.GetChainSubRuleTable(iChainSubRule);
-                                uint tempLength = (uint)(csr.InputGlyphCount + csr.LookaheadGlyphCount);
-                                if (tempLength > nLength)
+                                ChainContextSubstFormat1.ChainSubRuleSet.ChainSubRule? csr = csrs.GetChainSubRuleTable(iChainSubRule);
+                                if (csr != null)
                                 {
-                                    nLength = tempLength;
+                                    uint tempLength = (uint)(csr.InputGlyphCount + csr.LookaheadGlyphCount);
+                                    if (tempLength > nLength)
+                                    {
+                                        nLength = tempLength;
+                                    }
                                 }
                             }
                         }
@@ -1149,16 +1155,19 @@ namespace OTFontFile
                     ChainContextSubstFormat2 ccsf2 = GetChainContextSubstFormat2();
                     for (uint iChainSubClassSet = 0; iChainSubClassSet < ccsf2.ChainSubClassSetCount; iChainSubClassSet++)
                     {
-                        ChainContextSubstFormat2.ChainSubClassSet cscs = ccsf2.GetChainSubClassSetTable(iChainSubClassSet);
+                        ChainContextSubstFormat2.ChainSubClassSet? cscs = ccsf2.GetChainSubClassSetTable(iChainSubClassSet);
                         if (cscs != null)
                         {
                             for (uint iChainSubClassRule = 0; iChainSubClassRule < cscs.ChainSubClassRuleCount; iChainSubClassRule++)
                             {
-                                ChainContextSubstFormat2.ChainSubClassSet.ChainSubClassRule cscr = cscs.GetChainSubClassRuleTable(iChainSubClassRule);
-                                uint tempLength = (uint)(cscr.InputGlyphCount + cscr.LookaheadGlyphCount);
-                                if (tempLength > nLength)
+                                ChainContextSubstFormat2.ChainSubClassSet.ChainSubClassRule? cscr = cscs.GetChainSubClassRuleTable(iChainSubClassRule);
+                                if (cscr != null)
                                 {
-                                    nLength = tempLength;
+                                    uint tempLength = (uint)(cscr.InputGlyphCount + cscr.LookaheadGlyphCount);
+                                    if (tempLength > nLength)
+                                    {
+                                        nLength = tempLength;
+                                    }
                                 }
                             }
                         }
@@ -1367,9 +1376,9 @@ namespace OTFontFile
                             }
                         }
 
-                        public SubstLookupRecord GetSubstLookupRecord(uint i)
+                        public SubstLookupRecord? GetSubstLookupRecord(uint i)
                         {
-                            SubstLookupRecord slr = null;
+                            SubstLookupRecord? slr = null;
 
                             if (i < SubstCount)
                             {
@@ -1387,9 +1396,9 @@ namespace OTFontFile
                         protected MBOBuffer m_bufTable;
                     }
 
-                    public ChainSubRule GetChainSubRuleTable(uint i)
+                    public ChainSubRule? GetChainSubRuleTable(uint i)
                     {
-                        ChainSubRule csr = null;
+                        ChainSubRule? csr = null;
 
                         if (i < ChainSubRuleCount)
                         {
@@ -1487,9 +1496,9 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(m_offsetChainContextSubst + (uint)FieldOffsets.ChainSubClassSetOffsets + i*2);
                 }
 
-                public ChainSubClassSet GetChainSubClassSetTable(uint i)
+                public ChainSubClassSet? GetChainSubClassSetTable(uint i)
                 {
-                    ChainSubClassSet cscs = null;
+                    ChainSubClassSet? cscs = null;
                     if (GetChainSubClassSetOffset(i) != 0)
                     {
                         cscs = new ChainSubClassSet(m_offsetChainContextSubst + GetChainSubClassSetOffset(i), m_bufTable);
@@ -1605,9 +1614,9 @@ namespace OTFontFile
                             }
                         }
 
-                        public SubstLookupRecord GetSubstLookupRecord(uint i)
+                        public SubstLookupRecord? GetSubstLookupRecord(uint i)
                         {
-                            SubstLookupRecord slr = null;
+                            SubstLookupRecord? slr = null;
 
                             if (i < SubstCount)
                             {
@@ -1625,9 +1634,9 @@ namespace OTFontFile
                         protected MBOBuffer m_bufTable;
                     }
 
-                    public ChainSubClassRule GetChainSubClassRuleTable(uint i)
+                    public ChainSubClassRule? GetChainSubClassRuleTable(uint i)
                     {
-                        ChainSubClassRule cscr = null;
+                        ChainSubClassRule? cscr = null;
 
                         if (i < ChainSubClassRuleCount)
                         {
@@ -1747,9 +1756,9 @@ namespace OTFontFile
                     }
                 }
 
-                public SubstLookupRecord GetSubstLookupRecord(uint i)
+                public SubstLookupRecord? GetSubstLookupRecord(uint i)
                 {
-                    SubstLookupRecord slr = null;
+                    SubstLookupRecord? slr = null;
 
                     if (i < SubstCount)
                     {
@@ -1833,7 +1842,7 @@ namespace OTFontFile
             {
                 uint nLength = 0;
 
-                OTL.SubTable st = null;
+                OTL.SubTable? st = null;
                 switch (ExtensionLookupType)
                 {
                     case 1: st = new Table_GSUB.SingleSubst      (m_offsetExtensionSubst + ExtensionOffset, m_bufTable); break;
@@ -1846,7 +1855,7 @@ namespace OTFontFile
                 }
                 if (st != null)
                 {
-                    nLength = st.GetMaxContextLength();
+                    nLength = st!.GetMaxContextLength();
                 }
 
                 return nLength;
@@ -2045,15 +2054,21 @@ namespace OTFontFile
             {
                 for (uint iFeature=0; iFeature<flt.FeatureCount; iFeature++)
                 {
-                    OTL.FeatureListTable.FeatureRecord fr = flt.GetFeatureRecord(iFeature);
-                    OTL.FeatureTable ft = flt.GetFeatureTable(fr);
-                    for (uint iLookup = 0; iLookup < ft.LookupCount; iLookup++)
+                    OTL.FeatureListTable.FeatureRecord? fr = flt.GetFeatureRecord(iFeature);
+                    if (fr != null)
                     {
-                        ushort LookupIndex = ft.GetLookupListIndex(iLookup);
-                        ushort length = GetMaxContextFromLookup(LookupIndex);
-                        if (length > usMaxLength)
+                        OTL.FeatureTable ft = flt.GetFeatureTable(fr);
+                        if (ft != null)
                         {
-                            usMaxLength = length;
+                            for (uint iLookup = 0; iLookup < ft.LookupCount; iLookup++)
+                            {
+                                ushort LookupIndex = ft.GetLookupListIndex(iLookup);
+                                ushort length = GetMaxContextFromLookup(LookupIndex);
+                                if (length > usMaxLength)
+                                {
+                                    usMaxLength = length;
+                                }
+                            }
                         }
                     }
                 }
@@ -2069,12 +2084,12 @@ namespace OTFontFile
             OTL.LookupListTable llt = GetLookupListTable();
             if (llt != null)
             {
-                OTL.LookupTable lt = llt.GetLookupTable(iLookup);
+                OTL.LookupTable? lt = llt.GetLookupTable(iLookup);
                 if (lt != null)
                 {
                     for (uint iSubTable = 0; iSubTable < lt.SubTableCount; iSubTable++)
                     {
-                        OTL.SubTable st = lt.GetSubTable(iSubTable);
+                        OTL.SubTable? st = lt.GetSubTable(iSubTable);
                         if (st != null)
                         {
                             ushort tempLength = (ushort)st.GetMaxContextLength();
@@ -2108,7 +2123,7 @@ namespace OTFontFile
         
         public class GSUB_cache : DataCache
         {
-            public override OTTable GenerateTable()
+            public override OTTable? GenerateTable()
             {
                 // not yet implemented!
                 return null;
