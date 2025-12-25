@@ -63,13 +63,13 @@ namespace OTFontFile
 
         /// <summary>Get <c>ith</c> encoding table, or null if <c>i</c> out
         /// of range.</summary>
-        public EncodingTableEntry GetEncodingTableEntry(uint i)
+        public EncodingTableEntry? GetEncodingTableEntry(uint i)
         {
             uint SIZEOF_ENCODINGTABLEENTRY = 8;
 
-            EncodingTableEntry ete = null;
-            if ( i < NumberOfEncodingTables && 
-                 (uint)FieldOffsets.EncodingTableEntries + 
+            EncodingTableEntry? ete = null;
+            if ( i < NumberOfEncodingTables &&
+                 (uint)FieldOffsets.EncodingTableEntries +
                  (i+1)*SIZEOF_ENCODINGTABLEENTRY <= m_bufTable.GetLength())
             {
                 ete = new EncodingTableEntry();
@@ -94,17 +94,17 @@ namespace OTFontFile
         /// <c>platformID</c> and <c>encodingID</c>, or null if no
         /// such encoding table.
         /// </summary>
-        public EncodingTableEntry GetEncodingTableEntry( ushort platformID,
+        public EncodingTableEntry? GetEncodingTableEntry( ushort platformID,
                                                          ushort encodingID )
         {
-            EncodingTableEntry ete = null;
+            EncodingTableEntry? ete = null;
 
             for (uint i=0; i<NumberOfEncodingTables; i++)
             {
-                EncodingTableEntry eteTemp = GetEncodingTableEntry(i);
+                EncodingTableEntry? eteTemp = GetEncodingTableEntry(i);
                 if (eteTemp != null)
                 {
-                    if (eteTemp.platformID == platformID && 
+                    if (eteTemp.platformID == platformID &&
                         eteTemp.encodingID == encodingID)
                     {
                         ete = eteTemp;
@@ -116,22 +116,25 @@ namespace OTFontFile
             return ete;
         }
 
-        /// <summary>Get new subtable in this format by 
+        /// <summary>Get new subtable in this format by
         /// <c>EncodingTableEntry</c>.
         /// This method is virtual so that
         /// the corresponding validator class can override this and
         /// return an object of its subclass of the subtable.
         /// </summary>
-        virtual public Subtable GetSubtable(EncodingTableEntry ete)
+        virtual public Subtable? GetSubtable(EncodingTableEntry? ete)
         {
-            Subtable st = null;
+            Subtable? st = null;
 
             // identify the format of the table
             ushort format = 0xffff;
-            
+
             try
             {
-                format = m_bufTable.GetUshort(ete.offset);
+                if (ete != null)
+                {
+                    format = m_bufTable.GetUshort(ete.offset);
+                }
             }
             catch
             {
@@ -139,29 +142,29 @@ namespace OTFontFile
 
             switch(format)
             {
-                case 0:  st = new Format0 (ete, m_bufTable); break;
-                case 2:  st = new Format2 (ete, m_bufTable); break;
-                case 4:  st = new Format4 (ete, m_bufTable); break;
-                case 6:  st = new Format6 (ete, m_bufTable); break;
-                case 8:  st = new Format8 (ete, m_bufTable); break;
-                case 10: st = new Format10(ete, m_bufTable); break;
-                case 12: st = new Format12(ete, m_bufTable); break;
-                case 14: st = new Format14(ete, m_bufTable); break;
+                case 0:  st = new Format0 (ete!, m_bufTable); break;
+                case 2:  st = new Format2 (ete!, m_bufTable); break;
+                case 4:  st = new Format4 (ete!, m_bufTable); break;
+                case 6:  st = new Format6 (ete!, m_bufTable); break;
+                case 8:  st = new Format8 (ete!, m_bufTable); break;
+                case 10: st = new Format10(ete!, m_bufTable); break;
+                case 12: st = new Format12(ete!, m_bufTable); break;
+                case 14: st = new Format14(ete!, m_bufTable); break;
             }
 
             return st;
         }
-        
-        /// <summary>GetSubtable by <c>platformID</c> and 
+
+        /// <summary>GetSubtable by <c>platformID</c> and
         /// <c>encodingID</c>, but calls the virtual overloaded function.
         /// </summary>
-        public Subtable GetSubtable(ushort platformID, ushort encodingID)
+        public Subtable? GetSubtable(ushort platformID, ushort encodingID)
         {
-            Subtable st = null;
+            Subtable? st = null;
 
             try
             {
-                EncodingTableEntry ete = GetEncodingTableEntry( platformID, 
+                EncodingTableEntry? ete = GetEncodingTableEntry( platformID,
                                                                 encodingID);
                 if (ete != null)
                 {

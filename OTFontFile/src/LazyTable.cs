@@ -22,18 +22,18 @@ namespace OTFontFile
         /// <summary>
         /// 目录条目，包含表的元信息
         /// </summary>
-        protected readonly DirectoryEntry _directoryEntry;
+        protected readonly DirectoryEntry? _directoryEntry;
 
         /// <summary>
         /// 关联的 OTFile，用于延迟加载数据
         /// </summary>
-        protected readonly OTFile _file;
+        protected readonly OTFile? _file;
 
         /// <summary>
         /// 延迟加载构造函数（子类表需要调用）
         /// </summary>
-        protected LazyTable(DirectoryEntry de, OTFile file)
-            : base(de.tag, new MBOBuffer())
+        protected LazyTable(DirectoryEntry? de, OTFile? file)
+            : base(de!.tag, new MBOBuffer())
         {
             _directoryEntry = de;
             _file = file;
@@ -71,7 +71,7 @@ namespace OTFontFile
                 try
                 {
                     // 从文件读取表数据
-                    var buf = _file.ReadPaddedBuffer(_directoryEntry.offset, _directoryEntry.length);
+                    var buf = _file!.ReadPaddedBuffer(_directoryEntry!.offset, _directoryEntry!.length);
 
                     if (buf != null)
                     {
@@ -108,7 +108,7 @@ namespace OTFontFile
                 try
                 {
                     // 从对象池读取表数据
-                    pooledBuf = _file.ReadPooledBuffer(_directoryEntry.offset, _directoryEntry.length);
+                    pooledBuf = _file!.ReadPooledBuffer(_directoryEntry!.offset, _directoryEntry!.length);
 
                     if (pooledBuf != null)
                     {
@@ -145,7 +145,7 @@ namespace OTFontFile
         /// <summary>
         /// 获取目录条目信息
         /// </summary>
-        public DirectoryEntry DirectoryEntry => _directoryEntry;
+        public DirectoryEntry? DirectoryEntry => _directoryEntry;
 
         /// <summary>
         /// 释放资源

@@ -106,9 +106,9 @@ namespace OTFontFile
             get {return m_bufTable.GetUint((uint)FieldOffsets.numSizes);}
         }
 
-        public bitmapScaleTable GetBitmapScaleTable(uint i)
+        public bitmapScaleTable? GetBitmapScaleTable(uint i)
         {
-            bitmapScaleTable bst = null;
+            bitmapScaleTable? bst = null;
 
             if (i < numSizes)
             {
@@ -175,10 +175,10 @@ namespace OTFontFile
                 get{ return m_numSizes; }
                 
             }
-            
-            public bitmapScaleTable getBitmapScaleTable( uint nIndex )
+
+            public bitmapScaleTable? getBitmapScaleTable( uint nIndex )
             {
-                bitmapScaleTable bst = null;
+                bitmapScaleTable? bst = null;
 
                 if( nIndex > m_numSizes )
                 {
@@ -186,10 +186,10 @@ namespace OTFontFile
                 }
                 else
                 {
-                    bst = (bitmapScaleTable)m_bitmapScaleTables[(int)nIndex];
+                    bst = (bitmapScaleTable?)m_bitmapScaleTables[(int)nIndex];
                 }
 
-                return bst;        
+                return bst;
             }
 
             public bool setBitmapScaleTable( bitmapScaleTable cBitmapScaleTable, uint nIndex )
@@ -328,8 +328,8 @@ namespace OTFontFile
                 static public bitmapScaleTableCache FromBitmapScaleTable(bitmapScaleTable bst)
                 {
                     bitmapScaleTableCache bstc = new bitmapScaleTableCache();
-                    bstc.hori = Table_EBLC.EBLC_cache.sbitLineMetricsCache.FromSbitLineMetrics(bst?.hori);
-                    bstc.vert = Table_EBLC.EBLC_cache.sbitLineMetricsCache.FromSbitLineMetrics(bst?.vert);
+                    bstc.hori = Table_EBLC.EBLC_cache.sbitLineMetricsCache.FromSbitLineMetrics(bst?.hori!);
+                    bstc.vert = Table_EBLC.EBLC_cache.sbitLineMetricsCache.FromSbitLineMetrics(bst?.vert!);
                     bstc.ppemX = bst?.ppemX ?? 0;
                     bstc.ppemY = bst?.ppemY ?? 0;
                     bstc.substitutePpemX = bst?.substitutePpemX ?? 0;

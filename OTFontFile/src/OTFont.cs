@@ -470,10 +470,10 @@ namespace OTFontFile
                 Table_cmap cmapTable = (Table_cmap)GetTable("cmap")!;
                 if (cmapTable != null)
                 {
-                    Table_cmap.EncodingTableEntry eteUni = cmapTable.GetEncodingTableEntry(3,1);
+                    Table_cmap.EncodingTableEntry? eteUni = cmapTable.GetEncodingTableEntry(3,1);
                     if (eteUni != null)
                     {
-                        Table_cmap.Subtable st = cmapTable.GetSubtable(eteUni);
+                        Table_cmap.Subtable? st = cmapTable.GetSubtable(eteUni);
 
                         if (st != null)
                         {
@@ -511,7 +511,7 @@ namespace OTFontFile
             Table_cmap cmapTable = (Table_cmap)GetTable("cmap")!;
             if (cmapTable != null)
             {
-                Table_cmap.Format12 subtable = (Table_cmap.Format12)cmapTable.GetSubtable(3,10);
+                Table_cmap.Format12? subtable = (Table_cmap.Format12?)cmapTable.GetSubtable(3,10);
                 if (subtable != null)
                     return true;
             }
@@ -530,13 +530,13 @@ namespace OTFontFile
                 Table_cmap cmapTable = (Table_cmap)GetTable("cmap")!;
                 if (cmapTable != null)
                 {
-                    Table_cmap.Format12 subtable = (Table_cmap.Format12)cmapTable.GetSubtable(3,10);
+                    Table_cmap.Format12? subtable = (Table_cmap.Format12?)cmapTable.GetSubtable(3,10);
 
                     // Apple Color Emoji does not have a 3.10 charmap
                     if (subtable == null)
                         return glyphID;
 
-                    Table_cmap.Format12.Group g = subtable.GetGroup(subtable.nGroups-1);
+                    Table_cmap.Format12.Group g = subtable!.GetGroup(subtable.nGroups-1);
                     uint nArraySize = g.endCharCode + 1;
 
 
@@ -619,7 +619,7 @@ namespace OTFontFile
                 Table_cmap cmapTable = (Table_cmap)GetTable("cmap")!;
                 if (cmapTable != null)
                 {
-                    Table_cmap.EncodingTableEntry eteUni = cmapTable.GetEncodingTableEntry(3,0);
+                    Table_cmap.EncodingTableEntry? eteUni = cmapTable.GetEncodingTableEntry(3,0);
                     if (eteUni != null)
                     {
                         m_bContainsMsSymbolEncodedCmap = true;

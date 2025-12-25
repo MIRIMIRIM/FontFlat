@@ -130,11 +130,11 @@ namespace OTFontFile
 
 
             // methods
-            public indexSubTableArray FindIndexSubTableArray(ushort idGlyph)
+            public indexSubTableArray? FindIndexSubTableArray(ushort idGlyph)
             {
-                indexSubTableArray ista = null;
+                indexSubTableArray? ista = null;
 
-                for (uint i=0; i<numberOfIndexSubTables; i++)
+                for (uint i=0; i< numberOfIndexSubTables; i++)
                 {
                     if (indexSubTableArrayOffset < m_bufTable.GetLength())
                     {
@@ -154,9 +154,9 @@ namespace OTFontFile
                 return ista;
             }
 
-            public indexSubTable GetIndexSubTable(indexSubTableArray ista)
+            public indexSubTable? GetIndexSubTable(indexSubTableArray ista)
             {
-                indexSubTable ist = null;
+                indexSubTable? ist = null;
 
                 uint offset = indexSubTableArrayOffset + ista.additionalOffsetToIndexSubtable;
 
@@ -641,9 +641,9 @@ namespace OTFontFile
             get {return m_bufTable.GetUint((uint)FieldOffsets.numSizes);}
         }
 
-        public bitmapSizeTable GetBitmapSizeTable(uint i)
+        public bitmapSizeTable? GetBitmapSizeTable(uint i)
         {
-            bitmapSizeTable bst = null;
+            bitmapSizeTable? bst = null;
 
             if (i < numSizes)
             {
@@ -654,13 +654,13 @@ namespace OTFontFile
             return bst;
         }
 
-        public bitmapSizeTable FindBitmapSizeTable(byte ppemX, byte ppemY)
+        public bitmapSizeTable? FindBitmapSizeTable(byte ppemX, byte ppemY)
         {
-            bitmapSizeTable bst = null;
+            bitmapSizeTable? bst = null;
             for (uint i=0; i<this.numSizes; i++)
             {
-                bitmapSizeTable t = GetBitmapSizeTable(i);
-                if (t.ppemX == ppemX && t.ppemY == ppemY)
+                bitmapSizeTable? t = GetBitmapSizeTable(i);
+                if (t!.ppemX == ppemX && t.ppemY == ppemY)
                 {
                     bst = t;
                     break;
@@ -670,9 +670,9 @@ namespace OTFontFile
             return bst;
         }
 
-        public indexSubTableArray GetIndexSubTableArray(bitmapSizeTable bst, uint i)
+        public indexSubTableArray? GetIndexSubTableArray(bitmapSizeTable bst, uint i)
         {
-            indexSubTableArray ista = null;
+            indexSubTableArray? ista = null;
 
             if (bst.indexSubTableArrayOffset < m_bufTable.GetLength())
             {
@@ -686,9 +686,9 @@ namespace OTFontFile
             return ista;
         }
 
-        public indexSubTableArray[] GetIndexSubTableArray(bitmapSizeTable bst)
+        public indexSubTableArray[]? GetIndexSubTableArray(bitmapSizeTable bst)
         {
-            indexSubTableArray[] ista = null;
+            indexSubTableArray[]? ista = null;
 
             if (bst.indexSubTableArrayOffset < m_bufTable.GetLength())
             {
@@ -696,7 +696,11 @@ namespace OTFontFile
 
                 for (uint i=0; i<bst.numberOfIndexSubTables; i++)
                 {
-                    ista[i] = GetIndexSubTableArray(bst, i);
+                    indexSubTableArray? item = GetIndexSubTableArray(bst, i);
+                    if (item != null)
+                    {
+                        ista[i] = item;
+                    }
                 }
             }
 
@@ -856,7 +860,10 @@ namespace OTFontFile
                     for( int ii = 0; ii < bstc.numberOfIndexSubTables; ii++ )
                     {
                         indexSubTableArrayCache istac = bstc.getIndexSubTableArrayCache( ii );
-                        nEBDTBufSize += istac.indexSubTable.imageDataSize();
+                        if (istac.indexSubTable != null)
+                        {
+                            nEBDTBufSize += istac.indexSubTable!.imageDataSize();
+                        }
                     }
                 }            
 
@@ -917,21 +924,25 @@ namespace OTFontFile
                     uint idxSubTableOffset = idxArrOffset + (bstc.numberOfIndexSubTables * indexSubTableArray.bufSize);
                     
 
-                    // Write this bitmapSizeTable indexSubTableArray and indexSubTable                    
+                    // Write this bitmapSizeTable indexSubTableArray and indexSubTable
                     for( int ii = 0; ii < bstc.numberOfIndexSubTables; ii++ )
                     {
-                        
+
                         // Write out the indexSubTableArray
                         indexSubTableArrayCache istac = bstc.getIndexSubTableArrayCache( ii );
+                        if (istac.indexSubTable == null)
+                        {
+                            continue;
+                        }
                         newbuf.SetUshort( istac.firstGlyphIndex,            idxArrOffset + (uint)indexSubTableArray.FieldOffsets.firstGlyphIndex + (uint)(ii * indexSubTableArray.bufSize));
-                        newbuf.SetUshort( istac.lastGlyphIndex,                idxArrOffset + (uint)indexSubTableArray.FieldOffsets.lastGlyphIndex + (uint)(ii * indexSubTableArray.bufSize));                        
+                        newbuf.SetUshort( istac.lastGlyphIndex,                idxArrOffset + (uint)indexSubTableArray.FieldOffsets.lastGlyphIndex + (uint)(ii * indexSubTableArray.bufSize));
                         newbuf.SetUint( (idxSubTableOffset - idxArrOffset),    idxArrOffset + (uint)indexSubTableArray.FieldOffsets.additionalOffsetToIndexSubtable + (uint)(ii * indexSubTableArray.bufSize));
-                        
+
                         // Write out the indexSubTable, The header is the same for all indexFormats
-                        newbuf.SetUshort( istac.indexSubTable.indexFormat,    idxSubTableOffset + (uint)indexSubHeader.FieldOffsets.indexFormat );
+                        newbuf.SetUshort( istac.indexSubTable!.indexFormat,    idxSubTableOffset + (uint)indexSubHeader.FieldOffsets.indexFormat );
                         newbuf.SetUshort( istac.indexSubTable.imageFormat,    idxSubTableOffset + (uint)indexSubHeader.FieldOffsets.imageFormat );
-                        newbuf.SetUint( imageDataOffset,                    idxSubTableOffset + (uint)indexSubHeader.FieldOffsets.imageDataOffset );                        
-                        
+                        newbuf.SetUint( imageDataOffset,                    idxSubTableOffset + (uint)indexSubHeader.FieldOffsets.imageDataOffset );
+
                         uint imageOffset = 0;
                         switch( istac.indexSubTable.indexFormat )
                         {
@@ -1054,7 +1065,10 @@ namespace OTFontFile
                         imageDataOffset += imageOffset;
 
                         // This will take care of any byte boundaries pads required by some indexSubTables
-                        idxSubTableOffset += istac.indexSubTable.indexSubTableSize();            
+                        if (istac.indexSubTable != null)
+                        {
+                            idxSubTableOffset += istac.indexSubTable.indexSubTableSize();
+                        }
                     }
 
                     idxArrOffset += bstc.indexSubTablesSize;                    
