@@ -167,7 +167,7 @@ namespace OTFontFile
                     for (uint i=(uint)nFirstWidthPos+1; i<numberOfHMetrics; i++)
                     {
                         longHorMetric? hm = GetHMetric(i, fontOwner);
-                        ushort nWidth = hm != null ? hm.advanceWidth : 0;
+                        ushort nWidth = hm != null ? hm.advanceWidth : (ushort)0;
                         if (nWidth != 0 && nWidth != nFirstWidth)
                         {
                             bHmtxMono = false;
