@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Collections;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Text;
 
 
 namespace OTFontFile
@@ -2061,8 +2062,8 @@ namespace OTFontFile
             // accessors for the cached data
 
             public ushort MapCharToGlyph( ushort platID,
-                                          ushort encID, 
-                                          BigUn charcode )
+                                          ushort encID,
+                                          System.Text.Rune charcode )
             {
                 ushort glyphID = 0xffff;
 
@@ -2071,7 +2072,7 @@ namespace OTFontFile
                 {
                     if (st.m_CharToGlyphMap != null)
                     {
-                        glyphID = (ushort)st.m_CharToGlyphMap[(uint)charcode];
+                        glyphID = (ushort)st.m_CharToGlyphMap[charcode.Value];
                     }
                 }
                 else
@@ -2133,15 +2134,15 @@ namespace OTFontFile
 
             public void AddChar( ushort platID,
                                  ushort encID,
-                                 BigUn charcode,
+                                 System.Text.Rune charcode,
                                  ushort glyphID )
             {
                 CachedSubtable? st = m_arrSubtables.GetSubtable(platID, encID);
                 if (st != null)
                 {
-                    if (st.m_CharToGlyphMap != null && (uint)charcode >= (uint)st.m_CharToGlyphMap.Length)
+                    if (st.m_CharToGlyphMap != null && charcode.Value >= (uint)st.m_CharToGlyphMap.Length)
                     {
-                        uint[] newmap = new uint[(uint)charcode+1];
+                        uint[] newmap = new uint[charcode.Value+1];
                         System.Buffer.BlockCopy( st.m_CharToGlyphMap, 0,
                                                  newmap, 0,
                                                  st.m_CharToGlyphMap.Length*4);
@@ -2150,7 +2151,7 @@ namespace OTFontFile
 
                     if (st.m_CharToGlyphMap != null)
                     {
-                        st.m_CharToGlyphMap[(uint)charcode] = glyphID;
+                        st.m_CharToGlyphMap[charcode.Value] = glyphID;
                     }
                 }
                 else
@@ -2161,14 +2162,14 @@ namespace OTFontFile
                 m_bDirty = true;
             }
 
-            public void RemoveChar(ushort platID, ushort encID, BigUn charcode)
+            public void RemoveChar(ushort platID, ushort encID, System.Text.Rune charcode)
             {
                 CachedSubtable? st = m_arrSubtables.GetSubtable(platID, encID);
                 if (st != null)
                 {
                     if (st.m_CharToGlyphMap != null)
                     {
-                        st.m_CharToGlyphMap[(uint)charcode] = 0;
+                        st.m_CharToGlyphMap[charcode.Value] = 0;
                     }
                 }
                 else

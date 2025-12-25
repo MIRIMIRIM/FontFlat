@@ -813,15 +813,60 @@ dotnet run --project OTFontFile.Benchmarks -- -c Release
 - 继续后续优化阶段（Phase 2-6）
 - 修复Nullable警告（低优先级）
 
-**项目进度**: 约 50% 完成（基础设施 + Phase 0 + Phase 1完成）
+**项目进度**: 约 55% 完成（基础设施 + Phase 0 + Phase 1完成 + BigUn替换完成）
 
 ---
 
-**最后更新**: 2025-12-26
+### ✅ 10. BigUn → Rune 替换 (已完成)
+**目标**: 用 .NET 标准类型 `System.Text.Rune` 替换自定义 `BigUn` 结构体
+
+**已完成工作**：
+- ✅ 从 `OTFontFile/src/OTTypes.cs` 移除 BigUn 结构体定义（85行代码）
+- ✅ 更新 `Table_cmap.cs` 中的 3 个方法：
+  - `MapCharToGlyph` - BigUn → System.Text.Rune
+  - `AddChar` - BigUn → System.Text.Rune，使用 `.Value` 访问属性
+  - `RemoveChar` - BigUn → System.Text.Rune，使用 `.Value` 访问属性
+- ✅ 添加 `using System.Text;` 引用
+- ✅ OTFontFile 编译验证通过（0错误，7警告 - 预期的 Table_EBLC.cs CS8602警告）
+- ✅ 创建 `BigUnRuneBenchmarks.cs` 性能基准测试（600+行综合测试）
+- ✅ 创建 `RuneTests.cs` 功能测试（8个测试方法全部通过）
+
+**测试覆盖**：
+```csharp
+✅ Constructor_FromChar_Ascii - ASCII字符构造
+✅ Constructor_FromUint_Cjk - CJK Unicode点数构造
+✅ Constructor_FromSurrogatePair_Supplementary - 代理对处理（𠮷）
+✅ CmapMapping_HttpCharacters - HTTP字符映射
+✅ CmapMapping_CjkCharacters - CJK字符映射
+✅ MinMaxUnicodeScalarValues - Unicode边界值测试
+✅ ComparisonOperators - 比较操作符测试
+✅ ArrayIndexBehavior_Verification - 数组索引行为验证
+```
+
+**技术细节**：
+- **Rune.Value** 类型为 `int`，需通过 `charcode.Value` 访问（旧BigUn需要显式 `(uint)`转换）
+- **构造函数支持**：`Rune(char)`, `Rune(uint)`, `Rune(int)`, `Rune(char highSurrogate, char lowSurrogate)`
+- **比较操作符**：支持 `==`, `!=`, `<`, `>`, `<=`, `>=`（比BigUn更完整）
+- **与Baseline兼容性**：Baseline.BigUn构造函数为私有，无法直接创建等效性测试，采用功能性测试验证
+
+**BigUn vs. Rune 对比**：
+| 特性 | BigUn (旧) | System.Text.Rune (新) |
+|------|-----------|----------------------|
+| 存储类型 | `uint m_char32` | `uint _value` |
+| 构造函数 | 3个私有 | 多个公共构造函数 |
+| 访问器 | `(uint)charcode`（显式转换） | `charcode.Value`（属性访问） |
+| 比较操作符 | 4个（==, !=, <, >） | 6个（==, !=, <, >, <=, >=） |
+| 代理对支持 | `SurrogatePairToUnicodeScalar` 静态方法 | `Rune(char, char)` 构造函数 |
+| .NET标准 | 自定义类型 | .NET Standard 2.1+ |
+
+---
+
+**最后更新**: 2025-12-26 (BigUn替换完成)
 **分支**: feature/performance-optimization
-**状态**: Nullable 警告修复工作已完成（阶段1），编译成功 0错误 7警告
+**状态**:
+- ✅ BigUn → Rune 替换完成并通过所有测试
+- ⚠️ 7个 CS8602 警告存在于 Table_EBLC.cs（ArrayList nullable操作，非BigUn相关问题）
 **推荐行动**:
-1. 分析 Table_EBLC.cs 剩余的 7 个 CS8602 警告（ArrayList nullable 操作）
-2. ✅ BigUn → Rune 替换可行性评估已完成（见第12节，建议实施）
-3. 继续运行基准测试收集性能数据
-4. 按计划继续 Phase 2-6 优化工作
+1. 运行基准测试收集Rune替换后的性能数据
+2. 分析Table_EBLC.cs剩余的 7 个 CS8602 警告（可选，低优先级）
+3. 继续后续优化阶段（Phase 2-6）

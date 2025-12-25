@@ -1,7 +1,8 @@
 # Nullable Reference Types 修复计划
 
-> **最后更新**: 2025-12-26
-> **状态**: ✅ 主要修复工作已完成（770 → 7 警告）
+> **最后更新**: 2025-12-26 (BigUn替换完成)
+> **状态**: ✅ 主要修复工作已完成（770 → 7 警告）, ✅ BigUn → Rune 替换完成
+> **重要**: BigUn结构体已完全替换为 System.Text.Rune，相关编译通过且测试全部通过
 
 ## 统计概况
 
@@ -438,10 +439,34 @@ dotnet analyze --severity warning
 
 **文档更新记录**:
 - 2025-12-26: 添加实际修复进度、最终状态和剩余工作建议
+- 2025-12-26 (BigUn替换完成): 更新状态为完成，记录Rune测试通过
 
 ### 下一步行动
 1. ✅ 执行阶段 1 快速修复
 2. ✅ 更新 `.csproj` 禁用部分 CA 分析器警告
-3. ✅ 提交代码并运行回归测试
+3. ✅ 提交代码并运行回归测试（commit c3b6d38）
 4. ✅ 执行阶段 2-3 复杂修复
 5. ✅ 完成后建立新基线
+6. ✅ **BigUn → Rune 替换完成并通过测试**
+
+---
+
+## BigUn → Rune 替换完成总结
+
+> **状态**: ✅ 已完成
+> **完成时间**: 2025-12-26
+> **测试状态**: 8/8 通过
+
+### 主要变更
+1. **移除自定义结构体** `OTFontFile/src/OTTypes.cs` - 删除BigUn定义（85行代码）
+2. **更新Table_cmap.cs** - 3个方法使用System.Text.Rune
+3. **添加测试覆盖** - `RuneTests.cs` 功能测试 + `BigUnRuneBenchmarks.cs` 性能基准
+
+### 技术细节
+- **访问模式**: `(uint)charcode` → `charcode.Value`（Rune.Value为int类型）
+- **构造函数**: 支持char、uint、int、代理对构造
+- **操作符**: 完整比较操作符支持（==, !=, <, >, <=, >=）
+
+### 编译状态
+- OTFontFile: ✅ 0错误 7警告（警告来自Table_EBLC.cs ArrayList nullable操作，与BigUn无关）
+- RuneTests: ✅ 8/8测试通过

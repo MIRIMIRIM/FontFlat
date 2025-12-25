@@ -62,6 +62,11 @@ namespace OTFontFile.Benchmarks
                         BenchmarkRunner.Run<QuickWinsBenchmarks>();
                         break;
 
+                    case "rune":
+                        Console.WriteLine("Running BigUn vs Rune comparison benchmarks...\n");
+                        BenchmarkRunner.Run<BigUnRuneBenchmarks>();
+                        break;
+
                     case "testChecksum":
                     case "testchecksum":
                         Console.WriteLine("Running Manual Checksum Performance Test...\n");
@@ -87,6 +92,7 @@ namespace OTFontFile.Benchmarks
                         Console.WriteLine("  shortlong  - BinaryPrimitives comparison benchmarks (Short/Long)");
                         Console.WriteLine("  simd       - SIMD Optimizations benchmarks");
                         Console.WriteLine("  pool       - Object Pooling benchmarks");
+                        Console.WriteLine("  rune       - BigUn vs Rune comparison benchmarks");
                         Console.WriteLine("  all        - Run all benchmarks");
                         break;
                 }
