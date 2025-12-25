@@ -974,7 +974,7 @@ namespace OTFontFile
                                 if (istc != null && istac.indexSubTable != null)
                                 {
                                     // offset + header length 
-                                    newbuf.SetUint( istc.imageSize, idxSubTableOffset + istac.indexSubTable!.headerLength );
+                                    newbuf.SetUint( istc.imageSize, idxSubTableOffset + indexSubTableCache.headerLength );
                                     //BigMetrics, + 12 = indexSubTable.headerLength + (uint)imageSize
                                     newbuf.SetByte( istc.bigMetrics.height,            idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.height );
                                     newbuf.SetByte( istc.bigMetrics.width,            idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.width );
@@ -1000,8 +1000,8 @@ namespace OTFontFile
                             }
                             case 3:
                             {
-                                indexSubTableCache3? istc = (indexSubTableCache3?)istac.indexSubTable;                                
-                                
+                                indexSubTableCache3? istc = (indexSubTableCache3?)istac.indexSubTable;
+
                                 if (istc != null && istac.indexSubTable != null)
                                 {
                                     for( ushort iii = istac.firstGlyphIndex; iii <= istac.lastGlyphIndex; iii++ )
@@ -1009,7 +1009,7 @@ namespace OTFontFile
                                         ushort nIndex = (ushort)(iii - istac.firstGlyphIndex);
 
                                         // offset + header length + ushort offsetArray[iii]
-                                        newbuf.SetUshort( (ushort)imageOffset, idxSubTableOffset + istac.indexSubTable!.headerLength + (uint)(nIndex * 2 ));
+                                        newbuf.SetUshort( (ushort)imageOffset, idxSubTableOffset + indexSubTableCache.headerLength + (uint)(nIndex * 2 ));
                                         // Write image data for this indexSubTable to EBDT buffer
                                         imageCache? ic = istc.getImageCache( iii, istac.firstGlyphIndex );
                                         if (ic != null)
@@ -1019,7 +1019,7 @@ namespace OTFontFile
                                         }
                                     }
                                     // Add the last one so size can be determined
-                                    newbuf.SetUshort( (ushort)imageOffset, idxSubTableOffset + istac.indexSubTable!.headerLength + ((uint)(istac.lastGlyphIndex - istac.firstGlyphIndex + 1) * 2 ));
+                                    newbuf.SetUshort( (ushort)imageOffset, idxSubTableOffset + indexSubTableCache.headerLength + ((uint)(istac.lastGlyphIndex - istac.firstGlyphIndex + 1) * 2 ));
                                 }
                                 break;
                             }
@@ -1029,7 +1029,7 @@ namespace OTFontFile
                                 if (istc != null && istac.indexSubTable != null)
                                 {
                                     // offset + header length 
-                                    newbuf.SetUint( istc.numGlyphs, idxSubTableOffset + istac.indexSubTable!.headerLength );
+                                    newbuf.SetUint( istc.numGlyphs, idxSubTableOffset + indexSubTableCache.headerLength );
                                     for( ushort iii = 0; iii < istc.numGlyphs; iii++ )
                                     {
                                         // offset + header length + (uint)numGlyphs + (4)codeOffsetPair[iii]
@@ -1051,9 +1051,9 @@ namespace OTFontFile
                             }
                             case 5:
                             {
-                                indexSubTableCache5 istc = (indexSubTableCache5)istac.indexSubTable;                                
-                                // offset + header length 
-                                newbuf.SetUint( istc.imageSize, idxSubTableOffset + indexSubTable.headerLength );
+                                indexSubTableCache5 istc = (indexSubTableCache5)istac.indexSubTable;
+                                // offset + header length
+                                newbuf.SetUint( istc.imageSize, idxSubTableOffset + indexSubTableCache.headerLength );
 
                                 //BigMetrics, + 12 = indexSubTable.headerLength + (uint)imageSize
                                 newbuf.SetByte( istc.bigMetrics.height,            idxSubTableOffset + 12 + (uint)Table_EBDT.bigGlyphMetrics.FieldOffsets.height );
@@ -1701,8 +1701,15 @@ namespace OTFontFile
                         }
                     }
                     return clone;
+                }
+            }
+
+            public abstract class indexSubTableCache : ICloneable
+            {
+                protected ushort m_indexFormat;
                 protected ushort m_imageFormat;
                 protected ArrayList m_imageCache; //imageCache[]
+                public static uint headerLength = 8;
 
                 public indexSubTableCache( ushort nIndexFormat, ushort nImageFormat, ArrayList cImageCache )
                 {
@@ -1738,7 +1745,7 @@ namespace OTFontFile
                 }
 
                 public abstract uint indexSubTableSize();
-                public abstract object Clone();
+                public abstract object? Clone();
                 
             }
 
