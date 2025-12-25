@@ -25,6 +25,7 @@
 using System;
 using System.Text;
 using System.Collections;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 
 using Compat;
@@ -171,10 +172,15 @@ namespace OTFontFile
             return new INDEXData((uint) offset, m_bufTable);
         }
 
-        public DICTData GetTopDICT( uint i )
+        public DICTData? GetTopDICT( uint i )
         {
             EnsureDataLoaded();
-            return new DICTData( TopDICT.GetData(i), String );
+            byte[]? data = TopDICT.GetData(i);
+            if (data == null)
+            {
+                return null;
+            }
+            return new DICTData( data, String );
         }
 
         public DICTData? GetPrivate( DICTData thisTopDICT )
@@ -266,12 +272,14 @@ namespace OTFontFile
 
             public string GetString(uint i)
             {
-                return encoding.GetString(GetData(i));
+                byte[]? data = GetData(i);
+                return encoding.GetString(data ?? Array.Empty<byte>());
             }
 
             public string GetUTFString(uint i)
             {
-                return UTF8Encoding.UTF8.GetString(GetData(i));
+                byte[]? data = GetData(i);
+                return UTF8Encoding.UTF8.GetString(data ?? Array.Empty<byte>());
             }
 
             public string StringForID(ushort sid)
@@ -560,13 +568,13 @@ namespace OTFontFile
                                         break;
                                     case 0x1e:
                                         op = "ROS";
-                                        int supplement  = (int) operandStack.Pop();
-                                        int sidOrdering = (int) operandStack.Pop();
-                                        int sidRegistry = (int) operandStack.Pop();
+                                        int supplement  = (int) operandStack.Pop()!;
+                                        int sidOrdering = (int) operandStack.Pop()!;
+                                        int sidRegistry = (int) operandStack.Pop()!;
                                         ROS = m_String.StringForID(sidRegistry) + " " + m_String.StringForID(sidOrdering) + " " + supplement;
                                         break;
                                     case 0x1f:
-                                        object oCIDFontVersion = operandStack.Pop();
+                                        object oCIDFontVersion = operandStack.Pop()!;
                                         op = "CIDFontVersion";
                                         break;
                                     case 0x20:
@@ -589,11 +597,11 @@ namespace OTFontFile
                                         offsetFDArray  = (int) operandStack.Pop()!;
                                         op = "FDArray";
                                         break;
-                                    case 0x05:
+                                    case 0x25:
                                         offsetFDSelect = (int) operandStack.Pop()!;
                                         op = "FDSelect";
                                         break;
-                                    case 0x06:
+                                    case 0x26:
                                         sidFontName = (int) operandStack.Pop()!;
                                         op = "FontName";
                                         break;
@@ -754,7 +762,7 @@ namespace OTFontFile
         
         public class CFF_cache : DataCache
         {
-            public override OTTable GenerateTable()
+            public override OTTable? GenerateTable()
             {
                 // not yet implemented!
                 return null;

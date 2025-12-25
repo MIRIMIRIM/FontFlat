@@ -154,9 +154,9 @@ namespace OTFontFile
             }
         }
 
-        public DeviceRecord GetDeviceRecord(uint i, ushort numGlyphs)
+        public DeviceRecord? GetDeviceRecord(uint i, ushort numGlyphs)
         {
-            DeviceRecord dr = null;
+            DeviceRecord? dr = null;
 
             if (i < NumberDeviceRecords)
             {
@@ -175,7 +175,7 @@ namespace OTFontFile
         {
             if (m_numGlyphs == 0)
             {
-                Table_maxp maxpTable = (Table_maxp)fontOwner.GetTable("maxp");
+                Table_maxp? maxpTable = fontOwner.GetTable("maxp") as Table_maxp;
 
                 if (maxpTable != null)
                 {
@@ -231,9 +231,12 @@ namespace OTFontFile
                 m_DeviceRecords = new ArrayList( m_NumberDeviceRecords );
                 for( short i = 0; i < m_NumberDeviceRecords; i++ )
                 {
-                    DeviceRecord dr = OwnerTable.GetDeviceRecord( (uint)i, m_NumGlyphs );
-                    DeviceRecordCache drc = new DeviceRecordCache( dr );
-                    m_DeviceRecords.Add( drc );
+                    DeviceRecord? dr = OwnerTable.GetDeviceRecord( (uint)i, m_NumGlyphs );
+                    if( dr != null )
+                    {
+                        DeviceRecordCache drc = new DeviceRecordCache( dr );
+                        m_DeviceRecords.Add( drc );
+                    }
                 }
             }
 

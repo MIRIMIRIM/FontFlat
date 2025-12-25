@@ -480,12 +480,12 @@ namespace OTFontFile
         {
             byte [,]? bits = null;
 
-            Table_EBLC.indexSubTableArray ista = bst.FindIndexSubTableArray(glyphID);
+            Table_EBLC.indexSubTableArray? ista = bst.FindIndexSubTableArray(glyphID);
             if (ista != null)
             {
-                Table_EBLC.indexSubTable ist = bst.GetIndexSubTable(ista);
+                Table_EBLC.indexSubTable? ist = bst.GetIndexSubTable(ista);
             
-                if (ist.header.imageFormat < 8)
+                if (ist != null && ist.header.imageFormat < 8)
                 {
                     // simple bitmap
                     byte [] encodedDataBuf = GetImageData(ist, glyphID, ista.firstGlyphIndex);
@@ -539,14 +539,14 @@ namespace OTFontFile
 
                     if (encodedDataBuf != null)
                     {
-                        bits = DecodeImageData(ist, width, height, bst.bitDepth, encodedDataBuf);
+                        bits = DecodeImageData(ist!, width, height, bst.bitDepth, encodedDataBuf);
                     }
                     else
                     {
                         //Debug.Assert(false);
                     }
                 }
-                else if (ist.header.imageFormat <10)
+                else if (ist != null && ist.header.imageFormat <10)
                 {
                     // composite bitmap
                     throw new ApplicationException("TODO: impelement bitmap composites");

@@ -873,7 +873,11 @@ namespace OTFontFile
 
         public override DataCache GetCache()
         {
-            return m_cache;
+            if (m_cache == null)
+            {
+                m_cache = new glyf_cache(this, null!);
+            }
+            return m_cache!;
         }
 
         public void BuildCache(OTFont fontOwner)

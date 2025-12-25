@@ -55,14 +55,14 @@ namespace OTFontFile
             public short lsb;
         }
 
-        public longHorMetric GetHMetric(uint i, OTFont fontOwner)
+        public longHorMetric? GetHMetric(uint i, OTFont fontOwner)
         {
             if (i >= GetNumberOfHMetrics(fontOwner))
             {
                 throw new ArgumentOutOfRangeException("i");
             }
 
-            longHorMetric hm = new longHorMetric();
+            longHorMetric? hm = new longHorMetric();
             hm.advanceWidth = m_bufTable.GetUshort(i*4);
             hm.lsb          = m_bufTable.GetShort(i*4+2);
 
@@ -71,7 +71,7 @@ namespace OTFontFile
 
         public longHorMetric GetOrMakeHMetric(uint i, OTFont fontOwner)
         {
-            longHorMetric hm = null;
+            longHorMetric? hm = null;
             m_nGlyphsInTheFont = fontOwner.GetMaxpNumGlyphs();            
             m_nNumberOfHMetrics = GetNumberOfHMetrics(fontOwner);
             uint nlsb = GetNumLeftSideBearingEntries(fontOwner);

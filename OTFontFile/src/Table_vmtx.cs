@@ -111,13 +111,16 @@ namespace OTFontFile
         }
 
         // NOTE: This set method should be removed later
-        public Table_vhea vheaTable
+        public Table_vhea? vheaTable
         {
             get {return m_vheaTable;}
             set
             {
                 m_vheaTable = value;
-                m_nLongVerMetrics = m_vheaTable.numOfLongVerMetrics;
+                if (value != null)
+                {
+                    m_nLongVerMetrics = m_vheaTable!.numOfLongVerMetrics;
+                }
             }
         }
 
@@ -130,7 +133,7 @@ namespace OTFontFile
             if (m_nLongVerMetrics == 0)
             {
                 // get the vhea table (to get access to the numOfLongVerMetrics property)
-                Table_vhea vheaTable = (Table_vhea)fontOwner.GetTable("vhea")!;
+                Table_vhea? vheaTable = fontOwner.GetTable("vhea") as Table_vhea;
 
                 if (vheaTable != null)
                 {

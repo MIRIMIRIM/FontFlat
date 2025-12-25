@@ -379,7 +379,7 @@ namespace OTFontFile
 
                 ushort nGlyph = 0;
                 ushort SubHeaderIndex = (ushort)(GetSubHeaderKey(byte1) / 8);
-                SubHeader sh = GetSubHeader(SubHeaderIndex);
+                SubHeader? sh = GetSubHeader(SubHeaderIndex);
                 
                 if (sh != null)
                 {
@@ -2103,7 +2103,7 @@ namespace OTFontFile
 
             public void AddSubtable(ushort platID, ushort encID)
             {
-                CachedSubtable st = m_arrSubtables.GetSubtable(platID, encID);
+                CachedSubtable? st = m_arrSubtables.GetSubtable(platID, encID);
                 if (st != null)
                 {
                     throw new 
@@ -2131,12 +2131,12 @@ namespace OTFontFile
                 m_bDirty = true;
             }
 
-            public void AddChar( ushort platID, 
-                                 ushort encID, 
-                                 BigUn charcode, 
+            public void AddChar( ushort platID,
+                                 ushort encID,
+                                 BigUn charcode,
                                  ushort glyphID )
             {
-                CachedSubtable st = m_arrSubtables.GetSubtable(platID, encID);
+                CachedSubtable? st = m_arrSubtables.GetSubtable(platID, encID);
                 if (st != null)
                 {
                     if (st.m_CharToGlyphMap != null && (uint)charcode >= (uint)st.m_CharToGlyphMap.Length)
@@ -2163,7 +2163,7 @@ namespace OTFontFile
 
             public void RemoveChar(ushort platID, ushort encID, BigUn charcode)
             {
-                CachedSubtable st = m_arrSubtables.GetSubtable(platID, encID);
+                CachedSubtable? st = m_arrSubtables.GetSubtable(platID, encID);
                 if (st != null)
                 {
                     if (st.m_CharToGlyphMap != null)
@@ -2175,8 +2175,6 @@ namespace OTFontFile
                 {
                     throw new ApplicationException("subtable not found");
                 }
-
-                m_bDirty = true;
             }
 
             // generate a new table from cached data
