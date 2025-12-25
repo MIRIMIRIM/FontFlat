@@ -349,7 +349,7 @@ namespace OTFontFile
             public DICTData( byte[] data, INDEXData String, bool isPrivate )
             {
                 uint cursor = 0;
-                Stack operandStack = new Stack();
+                Stack<object?> operandStack = new Stack<object?>();
                 m_String = String;
                 ROS = null;
 
@@ -450,23 +450,23 @@ namespace OTFontFile
                         switch(data[cursor])
                         {
                             case 0x00:
-                                int sidversion = (int) operandStack.Pop();
+                                int sidversion = (int) operandStack.Pop()!;
                                 op = "version";
                                 break;
                             case 0x01:
-                                int sidNotice = (int) operandStack.Pop();
+                                int sidNotice = (int) operandStack.Pop()!;
                                 op = "Notice";
                                 break;
                             case 0x02:
-                                sidFullName = (int) operandStack.Pop();
+                                sidFullName = (int) operandStack.Pop()!;
                                 op = "FullName";
                                 break;
                             case 0x03:
-                                int sidFamilyName = (int) operandStack.Pop();
+                                int sidFamilyName = (int) operandStack.Pop()!;
                                 op = "FamilyName";
                                 break;
                             case 0x04:
-                                int sidWeight = (int) operandStack.Pop();
+                                int sidWeight = (int) operandStack.Pop()!;
                                 op = "Weight";
                                 break;
                             case 0x05:
@@ -485,27 +485,27 @@ namespace OTFontFile
                                 op = "XUID";
                                 break;
                             case 0x0f:
-                                offsetCharset = (int) operandStack.Pop();
+                                offsetCharset = (int) operandStack.Pop()!;
                                 op = "charset";
                                 break;
                             case 0x10:
-                                offsetEncoding = (int) operandStack.Pop();
+                                offsetEncoding = (int) operandStack.Pop()!;
                                 op = "Encoding";
                                 break;
                             case 0x11:
-                                offsetCharStrings = (int) operandStack.Pop();
+                                offsetCharStrings = (int) operandStack.Pop()!;
                                 op = "CharStrings";
                                 break;
                             case 0x12:
-                                offsetPrivate = (int) operandStack.Pop();
-                                sizePrivate   = (int) operandStack.Pop();
+                                offsetPrivate = (int) operandStack.Pop()!;
+                                sizePrivate   = (int) operandStack.Pop()!;
                                 op = "Private";
                                 break;
                             case 0x0c:
                                 switch(data[cursor+1])
                                 {
                                     case 0x00:
-                                        int sidCopyright = (int) operandStack.Pop();
+                                        int sidCopyright = (int) operandStack.Pop()!;
                                         op = "Copyright";
                                         break;
                                     case 0x01:
@@ -529,7 +529,7 @@ namespace OTFontFile
                                         op = "PaintType";
                                         break;
                                     case 0x06:
-                                        int CharstringType = (int) operandStack.Pop();
+                                        int CharstringType = (int) operandStack.Pop()!;
                                         if ( CharstringType != 2 )
                                             throw new ArgumentOutOfRangeException("Invalid CharstringType:" + CharstringType );
                                         op = "CharstringType";
@@ -586,15 +586,15 @@ namespace OTFontFile
                                         op = "UIDBase";
                                         break;
                                     case 0x24:
-                                        offsetFDArray  = (int) operandStack.Pop();
+                                        offsetFDArray  = (int) operandStack.Pop()!;
                                         op = "FDArray";
                                         break;
-                                    case 0x25:
-                                        offsetFDSelect = (int) operandStack.Pop();
+                                    case 0x05:
+                                        offsetFDSelect = (int) operandStack.Pop()!;
                                         op = "FDSelect";
                                         break;
-                                    case 0x26:
-                                        sidFontName = (int) operandStack.Pop();
+                                    case 0x06:
+                                        sidFontName = (int) operandStack.Pop()!;
                                         op = "FontName";
                                         break;
                                     default:
@@ -643,7 +643,7 @@ namespace OTFontFile
                                 op = "StdVW";
                                 break;
                             case 0x13:
-                                Subrs = (int) operandStack.Pop();
+                                Subrs = (int) operandStack.Pop()!;
                                 op = "Subrs";
                                 break;
                             case 0x14:
