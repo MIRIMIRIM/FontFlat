@@ -1894,7 +1894,7 @@ namespace OTFontFile
                     + ( i * VarSelectorRecord.BYTES_PER_RECORD );
             }
 
-            public VarSelectorRecord GetIthSelectorRecord( uint i )
+            public VarSelectorRecord? GetIthSelectorRecord( uint i )
             {
                 if ( i >= NumVarSelectorRecs ) {
                     return null;

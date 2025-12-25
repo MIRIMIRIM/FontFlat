@@ -230,9 +230,9 @@ namespace OTFontFile
             get {return m_bufTable.GetUshort((uint)FieldOffsets.nTables);}
         }
 
-        public SubTableHeader GetSubTableHeader(uint i)
+        public SubTableHeader? GetSubTableHeader(uint i)
         {
-            SubTableHeader sth = null;
+            SubTableHeader? sth = null;
 
             if (i < nTables)
             {
@@ -247,11 +247,11 @@ namespace OTFontFile
             return sth;
         }
 
-        public SubTable GetSubTable(uint i)
+        public SubTable? GetSubTable(uint i)
         {
-            SubTable st = null;
+            SubTable? st = null;
 
-            SubTableHeader sth = GetSubTableHeader(i);
+            SubTableHeader? sth = GetSubTableHeader(i);
             if (sth != null)
             {
                 if (sth.GetFormat() == 0)
@@ -299,7 +299,7 @@ namespace OTFontFile
 
                 for( ushort i = 0; i < nTablesTemp; i ++ )
                 {    
-                    SubTable SubTableTemp = OwnerTable.GetSubTable( i );
+                    SubTable? SubTableTemp = OwnerTable.GetSubTable( i );
 
                     //NOTE: Since these subtables could be Format 2 and we don't support them we will strip them out
                     if( null != SubTableTemp && 0 == SubTableTemp.GetFormat() )
@@ -336,14 +336,14 @@ namespace OTFontFile
                 }                
             }
 
-            public SubTable getSubTable( ushort nIndex )
+            public SubTable? getSubTable( ushort nIndex )
             {
                 if( nIndex >= m_nTables )
                 {
                     throw new ArgumentOutOfRangeException( "Index is greater than number of tables." );
                 }
 
-                SubTable st = (SubTable)m_SubTable[nIndex];
+                SubTable? st = m_SubTable[nIndex] as SubTable;
 
                 return st;
             }

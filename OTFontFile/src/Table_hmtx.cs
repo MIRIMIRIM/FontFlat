@@ -88,12 +88,12 @@ namespace OTFontFile
                 hm = GetOrMakeHMetric( i );                
             }
 
-            return hm;
+            return hm!;
         }
 
-        // This method is for the data cache but should be used later once the 
+        // This method is for the data cache but should be used later once the
         // the constructor that sets the number of glyphs is used
-        public longHorMetric GetOrMakeHMetric( uint i )
+        public longHorMetric? GetOrMakeHMetric( uint i )
         {
             if( m_nGlyphsInTheFont == 0 )
             {
@@ -150,11 +150,15 @@ namespace OTFontFile
                 uint nFirstWidthPos = 1;
                 for (uint i=nFirstWidthPos; i<numberOfHMetrics; i++)
                 {
-                    nFirstWidth = GetHMetric(i, fontOwner).advanceWidth;
-                    if (nFirstWidth != 0)
+                    longHorMetric? hm = GetHMetric(i, fontOwner);
+                    if (hm != null)
                     {
-                        nFirstWidthPos = i;
-                        break;
+                        nFirstWidth = hm.advanceWidth;
+                        if (nFirstWidth != 0)
+                        {
+                            nFirstWidthPos = i;
+                            break;
+                        }
                     }
                 }
 
@@ -162,7 +166,8 @@ namespace OTFontFile
                 {
                     for (uint i=(uint)nFirstWidthPos+1; i<numberOfHMetrics; i++)
                     {
-                        ushort nWidth = GetHMetric(i, fontOwner).advanceWidth;
+                        longHorMetric? hm = GetHMetric(i, fontOwner);
+                        ushort nWidth = hm != null ? hm.advanceWidth : 0;
                         if (nWidth != 0 && nWidth != nFirstWidth)
                         {
                             bHmtxMono = false;
@@ -193,11 +198,14 @@ namespace OTFontFile
         // NOTE: This set method should be removed later
         public Table_hhea hheaTable
         {
-            get {return m_hheaTable;}
+            get {return m_hheaTable!;}
             set
             {
                 m_hheaTable = value;
-                m_nNumberOfHMetrics = m_hheaTable.numberOfHMetrics;
+                if (value != null)
+                {
+                    m_nNumberOfHMetrics = value.numberOfHMetrics;
+                }
             }
         }
 
@@ -209,7 +217,7 @@ namespace OTFontFile
         protected ushort GetNumberOfHMetrics(OTFont fontOwner)
         {
 
-            Table_hhea hheaTable = (Table_hhea)fontOwner.GetTable("hhea");
+            Table_hhea? hheaTable = fontOwner.GetTable("hhea") as Table_hhea;
             if (hheaTable != null)
             {
                 m_nNumberOfHMetrics = hheaTable.numberOfHMetrics;
