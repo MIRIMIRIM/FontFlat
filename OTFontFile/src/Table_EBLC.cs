@@ -1801,7 +1801,7 @@ namespace OTFontFile
 
                 public ushort getGlyphCode( ushort nIndex ) 
                 {                    
-                    return (ushort)m_glyphCode[nIndex];                    
+                    return (ushort)m_glyphCode[nIndex]!;
                 }
 
                 public imageCache getImageCache( ushort nGylphCode )
@@ -1864,7 +1864,7 @@ namespace OTFontFile
 
                 public ushort getGlyphCode( ushort nIndex ) 
                 {                    
-                    return (ushort)m_glyphCode[nIndex];                    
+                    return (ushort)m_glyphCode[nIndex]!;
                 }
 
                 public imageCache getImageCache( ushort nGylphCode )

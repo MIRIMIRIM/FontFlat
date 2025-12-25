@@ -515,7 +515,7 @@ namespace OTFontFile
                 public byte getWidth( ushort nIndex )
                 {
                     
-                    return (byte)m_Widths[nIndex];
+                    return (byte)m_Widths[nIndex]!;
                 }
 
                 public void setWidth( ushort nIndex, byte bWidth )
