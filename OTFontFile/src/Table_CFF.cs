@@ -177,7 +177,7 @@ namespace OTFontFile
             return new DICTData( TopDICT.GetData(i), String );
         }
 
-        public DICTData GetPrivate( DICTData thisTopDICT )
+        public DICTData? GetPrivate( DICTData thisTopDICT )
         {
             if (thisTopDICT.sizePrivate == 0)
                 return null;
@@ -252,7 +252,7 @@ namespace OTFontFile
                 return val;
             }
 
-            public byte[] GetData(uint i)
+            public byte[]? GetData(uint i)
             {
                 if (i >= count)
                     return null;

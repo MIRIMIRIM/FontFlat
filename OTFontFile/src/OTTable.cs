@@ -124,7 +124,7 @@ namespace OTFontFile
                 return m_bDirty;
             }
 
-            public abstract OTTable GenerateTable();
+            public abstract OTTable? GenerateTable();
             protected bool m_bDirty;
         }
 
