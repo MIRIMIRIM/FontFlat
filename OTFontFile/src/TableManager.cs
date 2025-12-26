@@ -27,12 +27,12 @@ namespace OTFontFile
         
         private static readonly HashSet<uint> s_largeTableTags = new()
         {
-            0x676C7966, // glyf
-            0x43464620, // CFF 
-            0x43464632, // CFF2
-            0x43424454, // CBDT
-            0x45424454, // EBDT
-            0x53564720  // SVG 
+            OTTagConstants.TAG_GLYF,
+            OTTagConstants.TAG_CFF,
+            OTTagConstants.TAG_CFF2,
+            OTTagConstants.TAG_CBDT,
+            OTTagConstants.TAG_EBDT,
+            OTTagConstants.TAG_SVG
         };
 
         private static bool ShouldUsePooledBuffer(DirectoryEntry de)
@@ -111,22 +111,19 @@ namespace OTFontFile
             return table;
         }
 
-
-        public static string GetUnaliasedTableName(OTTag? tag)
+        public static string GetUnaliasedTableName(OTTag tag)
         {
-            if (tag is null) return "";
-
-            string sName = tag;
-            if (sName == "bloc" || sName == "CBLC" )
+            uint val = tag;
+            if (val == OTTagConstants.TAG_BLOC || val == OTTagConstants.TAG_CBLC)
             {
-                sName = "EBLC";
+                return "EBLC";
             }
-            else if (sName == "bdat" || sName == "CBDT" )
+            if (val == OTTagConstants.TAG_BDAT || val == OTTagConstants.TAG_CBDT)
             {
-                sName = "EBDT";
+                return "EBDT";
             }
             
-            return sName;
+            return tag;
         }
 
         static public string [] GetKnownOTTableTypes()
@@ -190,19 +187,17 @@ namespace OTFontFile
 
         static public bool IsKnownOTTableType(OTTag tag)
         {
-            bool bFound = false;
-
             string [] sTables = GetKnownOTTableTypes();
             for (uint i=0; i<sTables.Length; i++)
             {
-                if (sTables[i] == (string)tag)
+                // Comparing OTTag (struct) with string literal
+                if (tag == sTables[i])
                 {
-                    bFound = true;
-                    break;
+                    return true;
                 }
             }
 
-            return bFound;
+            return false;
         }
 
         public virtual OTTable CreateTableObject(OTTag tag, MBOBuffer buf)

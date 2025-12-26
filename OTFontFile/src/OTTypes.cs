@@ -121,30 +121,84 @@ namespace OTFontFile
         
     }
 
+    /// <summary>
+    /// Well-known OpenType font signature and table tag constants.
+    /// Values are stored as Big-Endian uint (network byte order).
+    /// </summary>
+    public static class OTTagConstants
+    {
+        // Font Signature Tags (sfntVersion)
+        public const uint SFNT_VERSION_TRUETYPE = 0x00010000;  // TrueType outlines
+        public const uint SFNT_OTTO = 0x4F54544F;              // 'OTTO' - CFF outlines
+        public const uint SFNT_TRUE = 0x74727565;              // 'true' - Apple TrueType
+        public const uint SFNT_TYP1 = 0x74797031;              // 'typ1' - Apple Type 1
+
+        // Collection Tags
+        public const uint TTC_TTCF = 0x74746366;               // 'ttcf' - TrueType Collection
+        public const uint TTC_DSIG = 0x44534947;               // 'DSIG' - Digital Signature
+
+        // Version Constants
+        public const uint VERSION_1_0 = 0x00010000;
+        public const uint VERSION_2_0 = 0x00020000;
+        public const uint VERSION_0_5 = 0x00005000;            // maxp CFF version
+
+        // Common Table Tags (for reference, can be used with OTTag comparison)
+        public const uint TAG_GLYF = 0x676C7966;               // 'glyf'
+        public const uint TAG_CFF  = 0x43464620;               // 'CFF '
+        public const uint TAG_CFF2 = 0x43464632;               // 'CFF2'
+        public const uint TAG_CBDT = 0x43424454;               // 'CBDT'
+        public const uint TAG_EBDT = 0x45424454;               // 'EBDT'
+        public const uint TAG_SVG  = 0x53564720;               // 'SVG '
+        public const uint TAG_BLOC = 0x626C6F63;               // 'bloc'
+        public const uint TAG_CBLC = 0x43424C43;               // 'CBLC'
+        public const uint TAG_BDAT = 0x62646174;               // 'bdat'
+        public const uint TAG_EBLC = 0x45424C43;               // 'EBLC'
+    }
 
 
-    public class OTTag
+    [DebuggerDisplay("{ToString()}")]
+    public readonly struct OTTag : IEquatable<OTTag>
     {
         /***************
          * constructors
          */
 
-        public OTTag(byte[] tagbuf)
+        public OTTag(ReadOnlySpan<byte> tagbuf)
         {
-            m_tag = new byte[4];
-            for (int i=0; i<4; i++)
-            {
-                m_tag[i] = tagbuf[i];
-            }
+            if (tagbuf.Length < 4) throw new ArgumentException("Tag buffer too small");
+            m_tag = (uint)(tagbuf[0] << 24 | tagbuf[1] << 16 | tagbuf[2] << 8 | tagbuf[3]);
         }
 
-        public OTTag(byte[] tagbuf, uint offset)
+        public OTTag(ReadOnlySpan<byte> tagbuf, uint offset)
         {
-            m_tag = new byte[4];
-            for (int i=0; i<4; i++)
-            {
-                m_tag[i] = tagbuf[i+offset];
-            }
+            if (tagbuf.Length < offset + 4) throw new ArgumentException("Tag buffer too small");
+            int o = (int)offset;
+            m_tag = (uint)(tagbuf[o] << 24 | tagbuf[o+1] << 16 | tagbuf[o+2] << 8 | tagbuf[o+3]);
+        }
+
+        public OTTag(uint tagVal)
+        {
+            m_tag = tagVal;
+        }
+
+        // Keep this for string-based initialization
+        public OTTag(string tagStr)
+        {
+             if (tagStr.Length != 4)
+             {
+                  // Handle shorter/longer strings if necessary, or throw. 
+                  // Original code didn't check length explicitly but looped 4 times.
+                  // Pad with space if short? Original code didn't.
+                  // Let's assume input is correct size or handle safely.
+             }
+             
+             uint val = 0;
+             for (int i=0; i<4; i++)
+             {
+                 byte b = (i < tagStr.Length) ? (byte)tagStr[i] : (byte)0x20; 
+                 val = (val << 8) | b;
+             }
+             m_tag = val;
         }
 
         /************************
@@ -158,77 +212,32 @@ namespace OTFontFile
 
         static public implicit operator OTTag(uint tagvalue) 
         {
-            byte[] buf = new byte[4];
-
-            buf[0] = (byte)((tagvalue&0xff000000) >> 24);
-            buf[1] = (byte)((tagvalue&0x00ff0000) >> 16);
-            buf[2] = (byte)((tagvalue&0x0000ff00) >> 8);
-            buf[3] = (byte)(tagvalue&0x000000ff);
-
-            return new OTTag(buf);
+            return new OTTag(tagvalue);
         }
 
         static public implicit operator uint(OTTag tag)
         {
-            byte[] buf = tag.GetBytes();
-
-            uint tagValue = 0;
-
-            tagValue += (uint)(buf[0]<<24);
-            tagValue += (uint)(buf[1]<<16);
-            tagValue += (uint)(buf[2]<<8);
-            tagValue += (uint)(buf[3]);
-
-            return tagValue;
+            return tag.m_tag;
         }
 
         static public implicit operator OTTag(string value)
         {
-            byte[] tagbuf = new byte[4];
-
-            for (int i=0; i<4; i++)
-            {
-                tagbuf[i] = (byte)value[i];
-            }
-
-            return new OTTag(tagbuf);
+            return new OTTag(value);
         }
 
         static public implicit operator string (OTTag tag)
         {
-            byte[] buf = tag.GetBytes();
-
-            string s = "";
-
-            for (int i=0; i<4; i++)
-            {
-                s += (char)buf[i];
-            }
-
-            return s;
+            return tag.ToString();
         }
 
         static public bool operator == (OTTag t1, OTTag t2)
         {
-            if (t1 is null && t2 is null)
-            {
-                return true;
-            }
-            else if (t1 is null || t2 is null)
-            {
-                return false;
-            }
-            else
-            {
-                uint u1 = t1;
-                uint u2 = t2;
-                return (u1 == u2);
-            }
+            return t1.m_tag == t2.m_tag;
         }
 
         static public bool operator != (OTTag t1, OTTag t2)
         {
-            return (!(t1 == t2));
+            return t1.m_tag != t2.m_tag;
         }
 
 
@@ -239,43 +248,60 @@ namespace OTFontFile
         
         public override bool Equals(object? obj)
         {
-            if (obj == null) return false;
-            return (this == (OTTag)obj!);
+            if (obj is OTTag tag)
+                return m_tag == tag.m_tag;
+            return false;
+        }
+        
+        public bool Equals(OTTag other)
+        {
+             return m_tag == other.m_tag;
         }
 
         public override int GetHashCode()
         {
-            return (int)(uint)this;
+            return (int)m_tag; // Direct mapping
         }
         
         public byte[] GetBytes()
         {
-            return m_tag;
+            byte[] buf = new byte[4];
+            buf[0] = (byte)((m_tag >> 24) & 0xff);
+            buf[1] = (byte)((m_tag >> 16) & 0xff);
+            buf[2] = (byte)((m_tag >> 8) & 0xff);
+            buf[3] = (byte)(m_tag & 0xff);
+            return buf;
         }
 
 
         public bool IsValid()
         {
-            bool bRet = true;
-
-
             for (int i=0; i<4; i++)
             {
-                if (m_tag[i] < 32 || m_tag[i] > 126)
+                int shift = (3-i)*8;
+                byte b = (byte)((m_tag >> shift) & 0xff);
+                if (b < 32 || b > 126)
                 {
-                    bRet = false;
-                    break;
+                    return false;
                 }
             }
-
-            return bRet;
+            return true;
         }
 
+        public override string ToString()
+        {
+             char[] c = new char[4];
+             c[0] = (char)((m_tag >> 24) & 0xff);
+             c[1] = (char)((m_tag >> 16) & 0xff);
+             c[2] = (char)((m_tag >> 8) & 0xff);
+             c[3] = (char)(m_tag & 0xff);
+             return new string(c);
+        }
 
         /**************
          * member data
          */
-        readonly byte[] m_tag;
+        readonly uint m_tag; // Stored as Big Endian uint
     }
 
     public class DirectoryEntry
@@ -303,7 +329,9 @@ namespace OTFontFile
         {
             if (m_buf == null)
                 m_buf = new MBOBuffer(16);
-            tag = new OTTag(obj.tag.GetBytes());
+            // Copy buffer content instead of creating new objects
+            // Or just use the property setters
+            tag = obj.tag;
             checkSum = obj.checkSum;
             offset   = obj.offset;
             length   = obj.length;
@@ -311,8 +339,8 @@ namespace OTFontFile
 
         public OTTag tag
         {
-            get {return new OTTag(m_buf.GetBuffer());}
-            set {m_buf.SetTag(value, (uint)FieldOffsets.tag);}
+            get { return new OTTag(m_buf.GetUint((uint)FieldOffsets.tag)); }
+            set { m_buf.SetUint((uint)value, (uint)FieldOffsets.tag); }
         }
 
         public uint checkSum

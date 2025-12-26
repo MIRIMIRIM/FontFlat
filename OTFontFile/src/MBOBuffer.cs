@@ -91,6 +91,7 @@ namespace OTFontFile
          */
         
         
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int CalcPadBytes(int nLength, int nByteAlignment)
         {
             int nPadBytes = 0;
@@ -106,24 +107,28 @@ namespace OTFontFile
 
 
         // get a short from a buffer that is storing data in MBO
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static short GetMBOshort(byte[] buf, uint offset)
         {
             return (short)(buf[offset]<<8 | buf[offset+1]);
         }
 
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ushort GetMBOushort(byte[] buf, uint offset)
         {
             return (ushort)(buf[offset]<<8 | buf[offset+1]);
         }
 
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int GetMBOint(byte[] buf, uint offset)
         {
             return buf[offset]<<24 | buf[offset+1]<<16 | buf[offset+2]<<8 | buf[offset+3];
         }
 
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint GetMBOuint(byte[] buf, uint offset)
         {
             return (uint)(buf[offset]<<24 | buf[offset+1]<<16 | buf[offset+2]<<8 | buf[offset+3]);
@@ -200,16 +205,19 @@ namespace OTFontFile
          */
 
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public byte[] GetBuffer()
         {
             return m_buf;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public uint GetLength()
         {
             return m_length;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public uint GetPaddedLength()
         {
             return m_length + m_nPadBytes;
@@ -218,11 +226,13 @@ namespace OTFontFile
 
         // get/set
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public sbyte GetSbyte(uint offset)
         {
             return (sbyte)m_buf[offset];
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetSbyte(sbyte value, uint offset)
         {
             m_buf[offset] = (byte)value;
@@ -231,11 +241,13 @@ namespace OTFontFile
         }
         
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public byte GetByte(uint offset)
         {
                 return m_buf[offset];
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetByte(byte value, uint offset)
         {
             m_buf[offset] = value;
@@ -310,6 +322,7 @@ namespace OTFontFile
         }
 
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public uint GetUint24( uint offset )
         {
             return ( uint )
@@ -404,6 +417,7 @@ namespace OTFontFile
         }
 
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public OTFixed GetFixed(uint offset)
         {
             OTFixed f;
@@ -412,34 +426,36 @@ namespace OTFontFile
             return f;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetFixed(OTFixed value, uint offset)
         {
             uint n = value.GetUint();
             SetUint(n, offset);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public OTF2Dot14 GetF2Dot14(uint offset)
         {
             return new OTF2Dot14(this.GetShort(offset));
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public OTTag GetTag(uint offset)
         {
-            OTTag t = new OTTag(GetBuffer(), offset);
-            return t;
+            return new OTTag(GetUint(offset));
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetTag(OTTag tag, uint offset)
         {
-            byte [] buf = tag.GetBytes();
-            for (int i=0; i<4; i++) m_buf[offset+i] = buf[i];
-            m_bValidChecksumAvailable = false;
+            SetUint((uint)tag, offset);
         }
 
 
 
 
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public long GetFilePos()
         {
             return m_filepos;

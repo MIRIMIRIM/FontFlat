@@ -181,19 +181,12 @@ namespace OTFontFile
         /// <summary>Check magic bytes at beginning of file</summary>
         public static bool IsValidSfntVersion(uint sfnt)
         {
-            bool bRet = false;
-
             OTTag tag = sfnt;
 
-            if (tag == 0x00010000 || // from MS OpenType spec
-                "OTTO"u8.SequenceEqual((byte[])tag) ||   // from MS OpenType spec
-                "true"u8.SequenceEqual((byte[])tag) ||   // from Apple TrueType Reference
-                "typ1"u8.SequenceEqual((byte[])tag))     // from Apple TrueType Reference
-            {
-                bRet = true;
-            }
-
-            return bRet;
+            return tag == OTTagConstants.SFNT_VERSION_TRUETYPE ||
+                   tag == OTTagConstants.SFNT_OTTO ||
+                   tag == OTTagConstants.SFNT_TRUE ||
+                   tag == OTTagConstants.SFNT_TYP1;
         }
 
         public uint GetNumPadBytesAfterTable(OTTable t)

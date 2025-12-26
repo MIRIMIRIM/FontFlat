@@ -38,7 +38,7 @@ namespace OTFontFile
 
             if (buf != null)
             {
-                tag = new OTTag(buf.GetBuffer());
+                tag = buf.GetTag(0);
                 version = buf.GetUint(4);
                 DirectoryCount = buf.GetUint(8);
             }
@@ -46,8 +46,10 @@ namespace OTFontFile
 
             // if the tag and the version and the dir count seem correct then
             // allocate a TTCHeader object and try to read the rest of the header
-            if ("ttcf"u8.SequenceEqual(tag!.GetBytes()) &&
-                (version == 0x00010000 || version == 0x00020000) &&
+            // if the tag and the version and the dir count seem correct then
+            // allocate a TTCHeader object and try to read the rest of the header
+            if (tag.HasValue && tag.Value == OTTagConstants.TTC_TTCF &&
+                (version == OTTagConstants.VERSION_1_0 || version == OTTagConstants.VERSION_2_0) &&
                 12 + DirectoryCount * SIZEOF_UINT < file.GetFileLength())
             {
                 ttc = new TTCHeader
@@ -69,15 +71,15 @@ namespace OTFontFile
                 }
 
                 // only read Dsig fields if version 2.0 and last buffer was successfully read
-                if ((version == 0x00010000 || version == 0x00020000) && buf != null)
+                if ((version == OTTagConstants.VERSION_1_0 || version == OTTagConstants.VERSION_2_0) && buf != null)
                 {
                     uint filepos = SIZEOF_FIRSTTHREEFIELDS + DirectoryCount*SIZEOF_UINT;
                     buf = file.ReadPaddedBuffer(filepos, 3*SIZEOF_UINT);
                     if (buf != null)
                     {
                         // DsigTag
-                        ttc.DsigTag = new OTTag(buf.GetBuffer());
-                        if ( ( version == 0x00010000 ) && ( (string) ttc.DsigTag != "DSIG" ) )
+                        ttc.DsigTag = buf.GetTag(0);
+                        if ( ( version == OTTagConstants.VERSION_1_0 ) && ( ttc.DsigTag.Value != OTTagConstants.TTC_DSIG ) )
                         {
                             // failed v1 trial - reset & bail
                             ttc.DsigTag = null;
