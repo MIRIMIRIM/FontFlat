@@ -9,7 +9,7 @@ namespace OTFontFile
     /// <summary>
     /// A font read in from a disk file. May be a single OTF or a TT collection.
     /// </summary>
-    public class OTFile
+    public class OTFile : IDisposable
     {
         /***************
          * constructors
@@ -27,6 +27,7 @@ namespace OTFontFile
             m_ttch = null;
             m_fs = null;
             m_fileHandle = null;
+            _disposed = false;
         }
 
         /*****************
@@ -42,7 +43,7 @@ namespace OTFontFile
             switch (m_FontFileType)
             {
                 case FontFileType.INVALID:
-                    close();
+                    Dispose();
                     return false;
 
                 case FontFileType.SINGLE:
@@ -62,7 +63,7 @@ namespace OTFontFile
                     }
                     return true;
                 default:
-                    close();
+                    Dispose();
                     return false;
             }
 
@@ -100,19 +101,49 @@ namespace OTFontFile
 
         /// <summary>Close filestream and set type to file type to 
         /// invalid.</summary>
+        /// <remarks>This method is kept for backward compatibility. 
+        /// Prefer using Dispose() or the using statement.</remarks>
+        [Obsolete("Use Dispose() instead for proper resource management.")]
         public void close()
         {
-            if (m_fs != null)
+            Dispose();
+        }
+
+        /// <summary>
+        /// Releases all resources used by the OTFile.
+        /// </summary>
+        public void Dispose()
+        {
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and optionally releases the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; 
+        /// false to release only unmanaged resources.</param>
+        protected virtual void Dispose(bool disposing)
+        {
+            if (_disposed) return;
+
+            if (disposing)
             {
-                m_fs.Close();
-                m_fs.Close();
-                m_fs = null;
-                m_fileHandle = null;
+                // Dispose managed resources
+                if (m_fs != null)
+                {
+                    m_fs.Dispose();
+                    m_fs = null;
+                    m_fileHandle = null;
+                }
             }
-            m_TableManager = new TableManager(this); // JJF: Why?
+
+            // Reset state
+            m_TableManager = new TableManager(this);
             m_FontFileType = FontFileType.INVALID;
             m_ttch = null;
             m_nFonts = 0;
+            _disposed = true;
         }
 
         /// <summary>Accessor for filestream length.</summary>
@@ -851,5 +882,6 @@ namespace OTFontFile
         protected FileStream? m_fs;
         protected uint m_nFonts;
         protected TTCHeader? m_ttch;
+        private bool _disposed;
     }
 }
