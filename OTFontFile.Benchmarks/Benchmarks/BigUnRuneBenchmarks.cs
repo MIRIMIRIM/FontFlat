@@ -144,7 +144,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
         /// <summary>
         /// BigUn: 从 ASCII 字符构造
         /// </summary>
-        [Benchmark(Baseline = true)]
+        [Benchmark]
         public void BigUn_Constructor_FromAsciiChar()
         {
             uint sum = 0;
@@ -165,14 +165,14 @@ namespace OTFontFile.Benchmarks.Benchmarks
             foreach (var c in asciiChars)
             {
                 var rune = new System.Text.Rune(c);
-                sum += rune.Value;
+                sum += (uint)rune.Value;
             }
         }
 
         /// <summary>
         /// BigUn: 从 CJK 字符构造
         /// </summary>
-        [Benchmark(Baseline = true)]
+        [Benchmark]
         public void BigUn_Constructor_FromCjkChar()
         {
             uint sum = 0;
@@ -193,14 +193,14 @@ namespace OTFontFile.Benchmarks.Benchmarks
             foreach (var c in cjkChars)
             {
                 var rune = new System.Text.Rune(c);
-                sum += rune.Value;
+                sum += (uint)rune.Value;
             }
         }
 
         /// <summary>
         /// BigUn: 从代理对构造
         /// </summary>
-        [Benchmark(Baseline = true)]
+        [Benchmark]
         public void BigUn_Constructor_FromSurrogatePair()
         {
             uint sum = 0;
@@ -221,14 +221,14 @@ namespace OTFontFile.Benchmarks.Benchmarks
             foreach (var pair in surrogatePairs)
             {
                 var rune = new System.Text.Rune(pair.high, pair.low);
-                sum += rune.Value;
+                sum += (uint)rune.Value;
             }
         }
 
         /// <summary>
         /// BigUn: 从 uint 构造
         /// </summary>
-        [Benchmark(Baseline = true)]
+        [Benchmark]
         public void BigUn_Constructor_FromUint()
         {
             uint sum = 0;
@@ -249,7 +249,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
             foreach (var cp in codePoints)
             {
                 var rune = new System.Text.Rune(cp);
-                sum += rune.Value;
+                sum += (uint)rune.Value;
             }
         }
 
@@ -260,7 +260,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
         /// <summary>
         /// BigUn: 转换为 uint（模拟 Table_cmap.MapCharToGlyph 中的数组索引）
         /// </summary>
-        [Benchmark(Baseline = true)]
+        [Benchmark]
         public void BigUn_ToUint_ArrayIndexAccess()
         {
             uint sum = 0;
@@ -282,7 +282,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
             foreach (var rune in runeArray)
             {
                 // 模拟字符映射：使用 uint 值作为数组索引
-                uint index = rune.Value;
+                uint index = (uint)rune.Value;
                 sum += index;
             }
         }
@@ -294,7 +294,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
         /// <summary>
         /// BigUn: 相等比较
         /// </summary>
-        [Benchmark(Baseline = true)]
+        [Benchmark]
         public bool BigUn_Comparison_Equality()
         {
             bool result = true;
@@ -324,7 +324,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
         /// <summary>
         /// BigUn: 小于比较
         /// </summary>
-        [Benchmark(Baseline = true)]
+        [Benchmark]
         public bool BigUn_Comparison_LessThan()
         {
             bool result = true;
@@ -356,7 +356,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
         /// <summary>
         /// BigUn: 模拟 Table_cmap.MapCharToGlyph - HTTP 字符
         /// </summary>
-        [Benchmark(Baseline = true)]
+        [Benchmark]
         public void BigUn_CmapMapping_HttpChars()
         {
             var glyphMap = new Dictionary<uint, ushort>
@@ -401,7 +401,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
             foreach (var c in asciiChars)
             {
                 var rune = new System.Text.Rune(c);
-                uint charCode = rune.Value;
+                uint charCode = (uint)rune.Value;
                 if (glyphMap.TryGetValue(charCode, out ushort glyph))
                 {
                     result = glyph;
@@ -412,7 +412,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
         /// <summary>
         /// BigUn: 模拟 Table_cmap.MapCharToGlyph - CJK 字符
         /// </summary>
-        [Benchmark(Baseline = true)]
+        [Benchmark]
         public void BigUn_CmapMapping_CjkChars()
         {
             // 模拟 CJK 字形映射表
@@ -448,7 +448,7 @@ namespace OTFontFile.Benchmarks.Benchmarks
             foreach (var c in cjkChars)
             {
                 var rune = new System.Text.Rune(c);
-                uint charCode = rune.Value;
+                uint charCode = (uint)rune.Value;
                 glyphMap.TryGetValue(charCode, out result);
             }
         }
