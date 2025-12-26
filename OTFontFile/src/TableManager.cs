@@ -55,15 +55,20 @@ namespace OTFontFile
 
         public OTTable? GetTable(DirectoryEntry de)
         {
-            OTTable? table = GetTableFromCache(de);
+            OTTable? table;
+            lock (m_cacheLock)
+            {
+                table = GetTableFromCache(de);
+            }
 
             if (table == null)
             {
-                if (   de.length != 0 
-                    && de.offset != 0 
+                if (de.length != 0
+                    && de.offset != 0
                     && de.offset < m_file.GetFileLength()
                     && de.offset + de.length <= m_file.GetFileLength())
                 {
+                    // Load table outside lock for concurrency
                     if (ShouldUseLazyLoad(de))
                     {
                         table = CreateTableObjectLazy(de.tag, de);
@@ -82,13 +87,30 @@ namespace OTFontFile
 
                     if (table != null)
                     {
-                        CachedTables.Add(table);
+                        lock (m_cacheLock)
+                        {
+                            // Double-check locking
+                            var existing = GetTableFromCache(de);
+                            if (existing != null)
+                            {
+                                // Another thread beat us to it
+                                table = existing;
+                                // Note: we might have allocated 'table' unnecessarily, 
+                                // but for 'LazyTable' it's cheap. Only for full tables it's a bit wasteful.
+                                // Given collision is rare for unique tables, it's acceptable for perf gain.
+                            }
+                            else
+                            {
+                                CachedTables.Add(table);
+                            }
+                        }
                     }
                 }
             }
 
             return table;
         }
+
 
         public static string GetUnaliasedTableName(OTTag? tag)
         {
@@ -287,6 +309,7 @@ namespace OTFontFile
          */
         
         OTFile m_file = file;
+        private readonly object m_cacheLock = new object();
 
         //System.Collections.ArrayList CachedTables;
         List<OTTable> CachedTables = [];

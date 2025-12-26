@@ -116,19 +116,25 @@ namespace OTFontFile
             
             if (m_OffsetTable != null)
             {
-                for (int i = 0; i<m_OffsetTable.DirectoryEntries.Count; i++)
+                object lockObj = new object();
+                
+                // Use Parallel.ForEach to calculate checksums of tables concurrently
+                System.Threading.Tasks.Parallel.ForEach(m_OffsetTable.DirectoryEntries, () => 0u, (de, loop, localSum) =>
                 {
-                    DirectoryEntry de = m_OffsetTable.DirectoryEntries[i];
-
                     var table = GetTable(de);
-
-                    uint calcChecksum = 0;
                     if (table != null)
                     {
-                        calcChecksum = table.CalcChecksum();
+                        localSum += table.CalcChecksum();
                     }
-                    sum += calcChecksum;
-                }
+                    return localSum;
+                },
+                (localSum) =>
+                {
+                    lock (lockObj)
+                    {
+                        sum += localSum;
+                    }
+                });
             }
 
             return sum;

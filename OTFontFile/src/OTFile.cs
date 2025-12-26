@@ -26,11 +26,14 @@ namespace OTFontFile
             m_nFonts = 0;
             m_ttch = null;
             m_fs = null;
+            m_fileHandle = null;
         }
 
         /*****************
         * private methods
         */
+
+        private SafeFileHandle? m_fileHandle;
 
         private bool TestFileType()
         {
@@ -76,9 +79,10 @@ namespace OTFontFile
         {
             // NOTE: creating a filestream can throw exceptions
             // Should they be handled here, or let the caller worry about it?
-            // Use SequentialScan for better performance when reading fonts sequentially
+            // Use RandomAccess for thread-safe reads
             m_fs = new FileStream(sFilename, FileMode.Open, FileAccess.Read, FileShare.Read,
-                                 bufferSize: 4096, options: FileOptions.SequentialScan);
+                                 bufferSize: 4096, options: FileOptions.RandomAccess);
+            m_fileHandle = m_fs.SafeFileHandle;
 
             return TestFileType();
 
@@ -89,6 +93,7 @@ namespace OTFontFile
         public bool open(SafeFileHandle handle)
         {
             m_fs = new FileStream(handle,FileAccess.Read);
+            m_fileHandle = handle;
 
             return TestFileType();
         }
@@ -100,7 +105,9 @@ namespace OTFontFile
             if (m_fs != null)
             {
                 m_fs.Close();
+                m_fs.Close();
                 m_fs = null;
+                m_fileHandle = null;
             }
             m_TableManager = new TableManager(this); // JJF: Why?
             m_FontFileType = FontFileType.INVALID;
@@ -239,13 +246,13 @@ namespace OTFontFile
             // allocate a buffer to hold the table
             MBOBuffer? buf = new MBOBuffer(filepos, length);
 
-            // read the table
-            m_fs!.Seek(filepos, SeekOrigin.Begin);
-            int nBytes = m_fs.Read(buf.GetBuffer(), 0, (int)length);
+            // read the table thread-safely
+            int nBytes = RandomAccess.Read(m_fileHandle!, buf.GetBuffer().AsSpan(0, (int)length), filepos);
+            
             if (nBytes != length)
             {
                 // check for premature EOF
-                if (m_fs.Position == m_fs.Length)
+                if (filepos + nBytes == m_fs!.Length)
                 {
                     // EOF
                 }
@@ -260,6 +267,7 @@ namespace OTFontFile
             return buf;
         }
 
+
         /// <summary>Read part of filestream into MBOBuffer (使用对象池)</summary>
         /// <remarks>
         /// 使用 BufferPool 来减少 GC 压力。大表（如 glyf、CFF2）应该使用此方法。
@@ -270,13 +278,13 @@ namespace OTFontFile
             // allocate a buffer from the pool to hold the table
             MBOBuffer? buf = BufferPool.Rent((int)length, filepos);
 
-            // read the table
-            m_fs!.Seek(filepos, SeekOrigin.Begin);
-            int nBytes = m_fs.Read(buf.GetBuffer(), 0, (int)length);
+            // read the table thread-safely
+            int nBytes = RandomAccess.Read(m_fileHandle!, buf.GetBuffer().AsSpan(0, (int)length), filepos);
+
             if (nBytes != length)
             {
                 // check for premature EOF
-                if (m_fs.Position == m_fs.Length)
+                if (filepos + nBytes == m_fs!.Length)
                 {
                     // EOF
                 }
@@ -296,16 +304,11 @@ namespace OTFontFile
         public byte[] ReadBytes(long filepos, uint length)
         {
             byte[] buf = new byte[length];
-            m_fs!.Seek(filepos, SeekOrigin.Begin);
-            m_fs.ReadExactly(buf, 0, (int)length);
+            RandomAccess.Read(m_fileHandle!, buf, filepos);
             return buf;
         }
 
-        /// <summary>Accessor for filestream field.</summary>
-        public FileStream GetFileStream()
-        {
-            return m_fs!;
-        }
+
 
         /// <summary>Accessor for TTC header field.</summary>
         public TTCHeader? GetTTCHeader()

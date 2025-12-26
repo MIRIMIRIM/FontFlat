@@ -28,6 +28,15 @@ public abstract class LazyTable : OTTable, IDisposable
         _isLoading = false;
     }
 
+    public override uint CalcChecksum()
+    {
+        if (!_contentLoaded)
+        {
+            EnsureContentLoadedPooled();
+        }
+        return base.CalcChecksum();
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     protected void EnsureContentLoaded()
     {
@@ -70,6 +79,7 @@ public abstract class LazyTable : OTTable, IDisposable
         {
             _isLoading = true;
             MBOBuffer? pooledBuf = null;
+            bool success = false;
             try
             {
                 pooledBuf = _file!.ReadPooledBuffer(_directoryEntry!.offset, _directoryEntry!.length);
@@ -77,6 +87,7 @@ public abstract class LazyTable : OTTable, IDisposable
                 if (pooledBuf != null)
                 {
                     UpdateBuffer(pooledBuf);
+                    success = true;
                 }
 
                 _contentLoaded = true;
@@ -84,13 +95,18 @@ public abstract class LazyTable : OTTable, IDisposable
             finally
             {
                 _isLoading = false;
-                pooledBuf?.Dispose();
+                // Only dispose if we failed to assign/keep the buffer
+                if (!success)
+                {
+                    pooledBuf?.Dispose(); 
+                }
             }
         }
     }
 
     protected virtual void UpdateBuffer(MBOBuffer buf)
     {
+        m_bufTable = buf;
     }
 
     public bool IsContentLoaded => _contentLoaded;
@@ -99,6 +115,8 @@ public abstract class LazyTable : OTTable, IDisposable
 
     public virtual void Dispose()
     {
+        // Dispose the buffer if it exists (crucial for pooled buffers)
+        m_bufTable?.Dispose();
         GC.SuppressFinalize(this);
     }
 }
