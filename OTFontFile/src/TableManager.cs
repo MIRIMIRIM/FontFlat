@@ -25,7 +25,6 @@ namespace OTFontFile
          */
         
         
-        // 使用 uint 而非 string 进行标签比较，避免字符串分配，提升性能
         private static readonly HashSet<uint> s_largeTableTags = new()
         {
             0x676C7966, // glyf
@@ -38,10 +37,7 @@ namespace OTFontFile
 
         private static bool ShouldUsePooledBuffer(DirectoryEntry de)
         {
-            // 使用池化缓冲区的条件：
-            // 1. 表标签在已知大表列表中，或者
-            // 2. 表大小超过 64KB
-            uint tag = de.tag;  // OTTag 隐式转换为 uint
+            uint tag = de.tag;
             if (s_largeTableTags.Contains(tag))
                 return true;
             if (de.length > 64 * 1024)
@@ -51,9 +47,7 @@ namespace OTFontFile
 
         private static bool ShouldUseLazyLoad(DirectoryEntry de)
         {
-            // 使用延迟加载的条件：大表
-            // glyf, CFF, CFF2, SVG, CBDT, EBDT 可以延迟加载
-            uint tag = de.tag;  // OTTag 隐式转换为 uint
+            uint tag = de.tag;
             if (s_largeTableTags.Contains(tag))
                 return true;
             return false;
@@ -61,7 +55,6 @@ namespace OTFontFile
 
         public OTTable? GetTable(DirectoryEntry de)
         {
-            // first try getting it from the table cache
             OTTable? table = GetTableFromCache(de);
 
             if (table == null)
@@ -71,27 +64,22 @@ namespace OTFontFile
                     && de.offset < m_file.GetFileLength()
                     && de.offset + de.length <= m_file.GetFileLength())
                 {
-                    // 根据表类型决定是否使用延迟加载
                     if (ShouldUseLazyLoad(de))
                     {
-                        // 创建延迟加载的表对象
                         table = CreateTableObjectLazy(de.tag, de);
                     }
                     else
                     {
-                        // 立即加载数据
                         var buf = ShouldUsePooledBuffer(de)
                             ? m_file.ReadPooledBuffer(de.offset, de.length)
                             : m_file.ReadPaddedBuffer(de.offset, de.length);
 
                         if (buf != null)
                         {
-                            // 创建表对象
                             table = CreateTableObject(de.tag, buf);
                         }
                     }
 
-                    // add the table to the cache
                     if (table != null)
                     {
                         CachedTables.Add(table);
@@ -257,9 +245,6 @@ namespace OTFontFile
             return table;
         }
 
-        /// <summary>
-        /// 创建延迟加载的表对象（不立即加载数据）
-        /// </summary>
         public virtual OTTable CreateTableObjectLazy(OTTag tag, DirectoryEntry de)
         {
             string sName = GetUnaliasedTableName(tag);
