@@ -1228,7 +1228,7 @@ namespace OTFontFile
 
             public class bitmapSizeTableCache : ICloneable
             {
-                protected ArrayList? m_indexSubTableArray;
+                protected ArrayList m_indexSubTableArray;
                 protected uint m_numberOfIndexSubTables;
                 protected uint m_colorRef;
                 protected sbitLineMetricsCache? m_hori;
@@ -1242,6 +1242,7 @@ namespace OTFontFile
 
                 public bitmapSizeTableCache()
                 {
+                    m_indexSubTableArray = [];
                 }
 
                 public bitmapSizeTableCache( Table_EBLC OwnerTable, bitmapSizeTable bst )
