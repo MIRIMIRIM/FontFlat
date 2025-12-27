@@ -151,9 +151,205 @@ public class Subsetter
         var gsub = font.GetTable("GSUB") as Table_GSUB;
         if (gsub == null) return;
 
-        // TODO: Implement GSUB closure
-        // For now, we skip GSUB closure as it requires deep traversal of lookup tables
-        // This is a future enhancement - the basic subsetting will still work
+        // Get the lookup list
+        var lookupList = gsub.GetLookupListTable();
+        if (lookupList == null) return;
+
+        bool changed;
+        do
+        {
+            changed = false;
+            int previousCount = _retainedGlyphs.Count;
+
+            // Iterate through all lookups
+            for (uint i = 0; i < lookupList.LookupCount; i++)
+            {
+                var lookup = lookupList.GetLookupTable(i);
+                if (lookup == null) continue;
+
+                // Process each subtable
+                for (uint st = 0; st < lookup.SubTableCount; st++)
+                {
+                    var subTable = lookup.GetSubTable(st);
+                    if (subTable == null) continue;
+
+                    ProcessGSUBSubtable(lookup.LookupType, subTable);
+                }
+            }
+
+            changed = _retainedGlyphs.Count > previousCount;
+        } while (changed);
+    }
+
+    private void ProcessGSUBSubtable(ushort lookupType, OTL.SubTable subTable)
+    {
+        switch (lookupType)
+        {
+            case 1: // Single Substitution
+                ProcessSingleSubst((Table_GSUB.SingleSubst)subTable);
+                break;
+            case 2: // Multiple Substitution
+                ProcessMultipleSubst((Table_GSUB.MultipleSubst)subTable);
+                break;
+            case 3: // Alternate Substitution
+                ProcessAlternateSubst((Table_GSUB.AlternateSubst)subTable);
+                break;
+            case 4: // Ligature Substitution
+                ProcessLigatureSubst((Table_GSUB.LigatureSubst)subTable);
+                break;
+            case 7: // Extension Substitution
+                var extSubst = (Table_GSUB.ExtensionSubst)subTable;
+                // Recursively handle the extended subtable
+                // Note: Extension wraps another lookup type
+                break;
+            // Types 5, 6, 8 are context-based and more complex
+            // For basic closure, we skip these as they require context matching
+        }
+    }
+
+    private void ProcessSingleSubst(Table_GSUB.SingleSubst singleSubst)
+    {
+        if (singleSubst.SubstFormat == 1)
+        {
+            var format1 = singleSubst.GetSingleSubstFormat1();
+            var coverage = format1.GetCoverageTable();
+            short delta = (short)format1.DeltaGlyphID;
+            
+            foreach (var coverageGlyph in EnumerateCoverageGlyphs(coverage))
+            {
+                if (_retainedGlyphs.Contains(coverageGlyph))
+                {
+                    // Add the substitute glyph
+                    int substituteGlyph = (coverageGlyph + delta) & 0xFFFF;
+                    _retainedGlyphs.Add(substituteGlyph);
+                }
+            }
+        }
+        else if (singleSubst.SubstFormat == 2)
+        {
+            var format2 = singleSubst.GetSingleSubstFormat2();
+            var coverage = format2.GetCoverageTable();
+            
+            uint index = 0;
+            foreach (var coverageGlyph in EnumerateCoverageGlyphs(coverage))
+            {
+                if (_retainedGlyphs.Contains(coverageGlyph) && index < format2.GlyphCount)
+                {
+                    ushort substituteGlyph = format2.GetSubstituteGlyphID(index);
+                    _retainedGlyphs.Add(substituteGlyph);
+                }
+                index++;
+            }
+        }
+    }
+
+    private void ProcessMultipleSubst(Table_GSUB.MultipleSubst multiSubst)
+    {
+        var coverage = multiSubst.GetCoverageTable();
+        
+        uint index = 0;
+        foreach (var coverageGlyph in EnumerateCoverageGlyphs(coverage))
+        {
+            if (_retainedGlyphs.Contains(coverageGlyph) && index < multiSubst.SequenceCount)
+            {
+                var sequence = multiSubst.GetSequenceTable(index);
+                if (sequence != null)
+                {
+                    for (uint g = 0; g < sequence.GlyphCount; g++)
+                    {
+                        _retainedGlyphs.Add(sequence.GetSubstituteGlyphID(g));
+                    }
+                }
+            }
+            index++;
+        }
+    }
+
+    private void ProcessAlternateSubst(Table_GSUB.AlternateSubst alternateSubst)
+    {
+        var coverage = alternateSubst.GetCoverageTable();
+        
+        uint index = 0;
+        foreach (var coverageGlyph in EnumerateCoverageGlyphs(coverage))
+        {
+            if (_retainedGlyphs.Contains(coverageGlyph) && index < alternateSubst.AlternateSetCount)
+            {
+                var altSet = alternateSubst.GetAlternateSetTable(index);
+                if (altSet != null)
+                {
+                    for (uint g = 0; g < altSet.GlyphCount; g++)
+                    {
+                        _retainedGlyphs.Add(altSet.GetAlternateGlyphID(g));
+                    }
+                }
+            }
+            index++;
+        }
+    }
+
+    private void ProcessLigatureSubst(Table_GSUB.LigatureSubst ligSubst)
+    {
+        var coverage = ligSubst.GetCoverageTable();
+        
+        uint index = 0;
+        foreach (var coverageGlyph in EnumerateCoverageGlyphs(coverage))
+        {
+            if (_retainedGlyphs.Contains(coverageGlyph) && index < ligSubst.LigSetCount)
+            {
+                var ligSet = ligSubst.GetLigatureSetTable(index);
+                if (ligSet != null)
+                {
+                    for (uint l = 0; l < ligSet.LigatureCount; l++)
+                    {
+                        var lig = ligSet.GetLigatureTable(l);
+                        if (lig == null) continue;
+
+                        // Check if all component glyphs are in retained set
+                        bool allComponentsRetained = true;
+                        for (uint c = 0; c < lig.CompCount - 1; c++)
+                        {
+                            if (!_retainedGlyphs.Contains(lig.GetComponentGlyphID(c)))
+                            {
+                                allComponentsRetained = false;
+                                break;
+                            }
+                        }
+
+                        // If first glyph and all components are retained, add the ligature glyph
+                        if (allComponentsRetained)
+                        {
+                            _retainedGlyphs.Add(lig.LigGlyph);
+                        }
+                    }
+                }
+            }
+            index++;
+        }
+    }
+
+    private static IEnumerable<int> EnumerateCoverageGlyphs(OTL.CoverageTable coverage)
+    {
+        if (coverage.CoverageFormat == 1)
+        {
+            for (uint i = 0; i < coverage.F1GlyphCount; i++)
+            {
+                yield return coverage.F1GetGlyphID(i);
+            }
+        }
+        else if (coverage.CoverageFormat == 2)
+        {
+            for (uint i = 0; i < coverage.F2RangeCount; i++)
+            {
+                var range = coverage.F2GetRangeRecord(i);
+                if (range != null)
+                {
+                    for (int gid = range.Start; gid <= range.End; gid++)
+                    {
+                        yield return gid;
+                    }
+                }
+            }
+        }
     }
 
     // ================== Phase 2: Glyph ID Mapping ==================
