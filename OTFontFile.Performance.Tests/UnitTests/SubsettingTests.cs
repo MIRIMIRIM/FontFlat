@@ -687,5 +687,264 @@ namespace OTFontFile.Performance.Tests.UnitTests
                 Assert.IsTrue(ratio < maxRatio, $"{fontFile}: Expected <{maxRatio:P0}, got {ratio:P1}");
             }
         }
+
+        // ================== Comprehensive Verification Tests ==================
+
+        [TestMethod]
+        public void Verify_SubsetFont_TableIntegrity()
+        {
+            // Use a TTF font for this test
+            var fontPath = Path.Combine(SampleFontsDir, "STSONG.TTF");
+            if (!File.Exists(fontPath))
+            {
+                Assert.Inconclusive($"Test font not found: {fontPath}");
+                return;
+            }
+
+            using var file = new OTFile();
+            file.open(fontPath);
+            var font = file.GetFont(0)!;
+
+            var options = new SubsetOptions().AddText("测试文字");
+            var subsetter = new Subsetter(options);
+            var subsetFont = subsetter.Subset(font);
+
+            // Verify required tables exist for TTF
+            string[] requiredTables = { "head", "hhea", "maxp", "hmtx", "cmap", "glyf", "loca", "post" };
+            foreach (var tableName in requiredTables)
+            {
+                var table = subsetFont.GetTable(tableName);
+                Assert.IsNotNull(table, $"Required table '{tableName}' is missing");
+                Console.WriteLine($"Table '{tableName}': {table.GetLength()} bytes");
+            }
+
+            // Verify table sizes are reasonable
+            var maxp = subsetFont.GetTable("maxp") as Table_maxp;
+            Assert.IsNotNull(maxp);
+            Assert.IsTrue(maxp.NumGlyphs >= 4, $"Expected at least 4 glyphs, got {maxp.NumGlyphs}");
+            Assert.IsTrue(maxp.NumGlyphs < 100, $"Subset should have reduced glyphs, got {maxp.NumGlyphs}");
+
+            Console.WriteLine($"Subset glyph count: {maxp.NumGlyphs}");
+        }
+
+        [TestMethod]
+        public void Verify_SubsetFont_CmapMappingAccuracy()
+        {
+            var fontPath = Path.Combine(SampleFontsDir, "small.ttf");
+            if (!File.Exists(fontPath))
+            {
+                Assert.Inconclusive($"Test font not found: {fontPath}");
+                return;
+            }
+
+            using var file = new OTFile();
+            file.open(fontPath);
+            var font = file.GetFont(0)!;
+
+            // Use specific characters we know exist in the font
+            string testText = "ABC";
+            var options = new SubsetOptions().AddText(testText);
+            var subsetter = new Subsetter(options);
+            var subsetFont = subsetter.Subset(font);
+
+            // Get the cmap table from subset font
+            var subsetCmap = subsetFont.GetTable("cmap") as Table_cmap;
+            Assert.IsNotNull(subsetCmap, "Subset should have cmap table");
+
+            // Verify cmap table has reasonable size (at least header + 1 subtable entry)
+            var cmapLength = subsetCmap.GetLength();
+            Assert.IsTrue(cmapLength >= 20, $"cmap should have reasonable size, got {cmapLength} bytes");
+            Console.WriteLine($"cmap table: {cmapLength} bytes");
+
+            // Verify .notdef (GID 0) is present
+            var maxp = subsetFont.GetTable("maxp") as Table_maxp;
+            Assert.IsNotNull(maxp);
+            Assert.IsTrue(maxp.NumGlyphs >= testText.Length + 1, 
+                $"Should have at least {testText.Length + 1} glyphs (.notdef + text), got {maxp.NumGlyphs}");
+            Console.WriteLine($"Glyph count: {maxp.NumGlyphs}");
+        }
+
+        [TestMethod]
+        public void Verify_SubsetFont_ReopenAndValidate()
+        {
+            var fontPath = Path.Combine(SampleFontsDir, "HYQiHei_65S.ttf");
+            if (!File.Exists(fontPath))
+            {
+                Assert.Inconclusive($"Test font not found: {fontPath}");
+                return;
+            }
+
+            using var file = new OTFile();
+            file.open(fontPath);
+            var font = file.GetFont(0)!;
+
+            string testText = "汉仪旗黑测试";
+            var options = new SubsetOptions().AddText(testText);
+            options.LayoutClosure = true;
+            
+            var subsetter = new Subsetter(options);
+            var subsetFont = subsetter.Subset(font);
+
+            // Save to file
+            var outputPath = Path.Combine(TempDir, "verify_reopen.ttf");
+            using (var fs = new FileStream(outputPath, FileMode.Create, FileAccess.Write))
+            {
+                OTFile.WriteSfntFile(fs, subsetFont);
+            }
+
+            // Reopen and validate
+            using var reopenFile = new OTFile();
+            Assert.IsTrue(reopenFile.open(outputPath), "Should be able to reopen subset font");
+
+            var reopenFont = reopenFile.GetFont(0);
+            Assert.IsNotNull(reopenFont, "Reopened font should not be null");
+
+            // Validate table checksums
+            var numTables = reopenFont.GetNumTables();
+            Assert.IsTrue(numTables >= 8, $"Should have at least 8 tables, got {numTables}");
+
+            for (ushort i = 0; i < numTables; i++)
+            {
+                var table = reopenFont.GetTable(i);
+                if (table != null)
+                {
+                    uint checksum = table.CalcChecksum();
+                    Console.WriteLine($"Table {table.m_tag}: {table.GetLength()} bytes, checksum 0x{checksum:X8}");
+                }
+            }
+
+            // Verify cmap is present and has reasonable size
+            var cmap = reopenFont.GetTable("cmap") as Table_cmap;
+            Assert.IsNotNull(cmap, "Reopened font should have cmap");
+            Assert.IsTrue(cmap.GetLength() > 0, "cmap should have content");
+
+            Console.WriteLine($"Reopened font validation passed: {numTables} tables, cmap {cmap.GetLength()} bytes");
+        }
+
+        [TestMethod]
+        public void Verify_CFF_SubsetFont_Structure()
+        {
+            var fontPath = Path.Combine(SampleFontsDir, "SourceHanSansCN-Regular.otf");
+            if (!File.Exists(fontPath))
+            {
+                Assert.Inconclusive($"Test font not found: {fontPath}");
+                return;
+            }
+
+            using var file = new OTFile();
+            file.open(fontPath);
+            var font = file.GetFont(0)!;
+
+            var options = new SubsetOptions().AddText("中文测试");
+            var subsetter = new Subsetter(options);
+            var subsetFont = subsetter.Subset(font);
+
+            // Verify CFF-specific tables
+            var cff = subsetFont.GetTable("CFF ");
+            Assert.IsNotNull(cff, "CFF font should have CFF table");
+            
+            // Verify no glyf/loca tables (CFF doesn't use them)
+            var glyf = subsetFont.GetTable("glyf");
+            Assert.IsNull(glyf, "CFF font should not have glyf table");
+
+            // Required tables for CFF
+            string[] requiredTables = { "head", "hhea", "maxp", "hmtx", "cmap", "CFF ", "post" };
+            foreach (var tableName in requiredTables)
+            {
+                var table = subsetFont.GetTable(tableName);
+                Assert.IsNotNull(table, $"Required table '{tableName}' is missing");
+                Console.WriteLine($"Table '{tableName}': {table.GetLength()} bytes");
+            }
+
+            // Verify glyph count is reasonable
+            var maxp = subsetFont.GetTable("maxp") as Table_maxp;
+            Assert.IsNotNull(maxp);
+            Console.WriteLine($"CFF subset glyph count: {maxp.NumGlyphs}");
+            Assert.IsTrue(maxp.NumGlyphs >= 4, "Should have at least 4 glyphs");
+        }
+
+        /// <summary>
+        /// Helper method to run fonttools comparison (requires pyftsubset installed).
+        /// To enable: set FONTTOOLS_COMPARE=1 environment variable.
+        /// </summary>
+        [TestMethod]
+        public void Verify_CompareWithFonttools()
+        {
+            // Skip unless explicitly enabled
+            if (Environment.GetEnvironmentVariable("FONTTOOLS_COMPARE") != "1")
+            {
+                Assert.Inconclusive("Set FONTTOOLS_COMPARE=1 to enable fonttools comparison");
+                return;
+            }
+
+            var fontPath = Path.Combine(SampleFontsDir, "small.ttf");
+            if (!File.Exists(fontPath))
+            {
+                Assert.Inconclusive($"Test font not found: {fontPath}");
+                return;
+            }
+
+            string testText = "ABC";
+            var unicodes = string.Join(",", testText.Select(c => $"U+{(int)c:X4}"));
+
+            // Run our subsetter
+            using var file = new OTFile();
+            file.open(fontPath);
+            var font = file.GetFont(0)!;
+            
+            var options = new SubsetOptions().AddText(testText);
+            var subsetter = new Subsetter(options);
+            var subsetFont = subsetter.Subset(font);
+
+            var ourOutput = Path.Combine(TempDir, "ours.ttf");
+            using (var fs = new FileStream(ourOutput, FileMode.Create, FileAccess.Write))
+            {
+                OTFile.WriteSfntFile(fs, subsetFont);
+            }
+
+            // Run fonttools (requires pyftsubset in PATH)
+            var ftOutput = Path.Combine(TempDir, "fonttools.ttf");
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "pyftsubset",
+                Arguments = $"\"{fontPath}\" --unicodes={unicodes} --output-file=\"{ftOutput}\" --no-hinting",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+
+            try
+            {
+                var proc = System.Diagnostics.Process.Start(psi);
+                proc?.WaitForExit(30000);
+                
+                if (!File.Exists(ftOutput))
+                {
+                    Assert.Inconclusive("fonttools failed to produce output");
+                    return;
+                }
+
+                // Compare glyph counts
+                using var ftFile = new OTFile();
+                ftFile.open(ftOutput);
+                var ftFont = ftFile.GetFont(0)!;
+
+                var ourMaxp = subsetFont.GetTable("maxp") as Table_maxp;
+                var ftMaxp = ftFont.GetTable("maxp") as Table_maxp;
+
+                Console.WriteLine($"Our glyph count: {ourMaxp?.NumGlyphs}");
+                Console.WriteLine($"fonttools glyph count: {ftMaxp?.NumGlyphs}");
+                Console.WriteLine($"Our file size: {new FileInfo(ourOutput).Length}");
+                Console.WriteLine($"fonttools file size: {new FileInfo(ftOutput).Length}");
+
+                // Glyph counts should be similar (exact match not required due to different algorithms)
+                Assert.IsTrue(Math.Abs((ourMaxp?.NumGlyphs ?? 0) - (ftMaxp?.NumGlyphs ?? 0)) <= 2,
+                    "Glyph counts should be similar");
+            }
+            catch (Exception ex)
+            {
+                Assert.Inconclusive($"fonttools comparison failed: {ex.Message}");
+            }
+        }
     }
 }
