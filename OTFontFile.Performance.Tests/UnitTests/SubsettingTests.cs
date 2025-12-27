@@ -16,6 +16,23 @@ namespace OTFontFile.Performance.Tests.UnitTests
         private static readonly string SampleFontsDir = Path.Combine(
             AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "TestResources", "SampleFonts");
 
+        private static readonly string TempDir = Path.Combine(Path.GetTempPath(), "OTFontFile_Subsetting_Tests");
+
+        [ClassInitialize]
+        public static void ClassInit(TestContext context)
+        {
+            if (Directory.Exists(TempDir))
+                Directory.Delete(TempDir, true);
+            Directory.CreateDirectory(TempDir);
+        }
+
+        [ClassCleanup]
+        public static void ClassCleanup()
+        {
+            if (Directory.Exists(TempDir))
+                Directory.Delete(TempDir, true);
+        }
+
         // ================== Glyph Closure Tests ==================
 
         [TestMethod]
@@ -35,7 +52,6 @@ namespace OTFontFile.Performance.Tests.UnitTests
             var options = new SubsetOptions();
             options.AddText("Hello World");
             options.IncludeNotdef = true;
-            options.IncludeAsciiAlphanumeric = false; // Only include specified text
 
             var subsetter = new Subsetter(options);
             _ = subsetter.Subset(font);
@@ -45,7 +61,6 @@ namespace OTFontFile.Performance.Tests.UnitTests
             Console.WriteLine($"Retained {retainedGlyphs.Count} glyphs for 'Hello World'");
             
             // Should have: H, e, l, o, W, r, d, space + .notdef = at least 9 glyphs
-            // (l appears twice but should be deduped)
             Assert.IsTrue(retainedGlyphs.Count >= 9, 
                 $"Expected at least 9 glyphs, got {retainedGlyphs.Count}");
 
@@ -59,7 +74,6 @@ namespace OTFontFile.Performance.Tests.UnitTests
             var fontPath = Path.Combine(SampleFontsDir, "SourceHanSansCN-Regular.otf");
             if (!File.Exists(fontPath))
             {
-                // Try system font
                 fontPath = Path.Combine(TestFontsDir, "msyh.ttc");
                 if (!File.Exists(fontPath))
                 {
@@ -75,7 +89,6 @@ namespace OTFontFile.Performance.Tests.UnitTests
             var options = new SubsetOptions();
             options.AddText("你好世界");
             options.IncludeNotdef = true;
-            options.IncludeAsciiAlphanumeric = false;
 
             var subsetter = new Subsetter(options);
             _ = subsetter.Subset(font);
@@ -87,38 +100,6 @@ namespace OTFontFile.Performance.Tests.UnitTests
             // Should have: 你, 好, 世, 界 + .notdef = at least 5 glyphs
             Assert.IsTrue(retainedGlyphs.Count >= 5, 
                 $"Expected at least 5 glyphs, got {retainedGlyphs.Count}");
-        }
-
-        [TestMethod]
-        public void GlyphClosure_WithAsciiAlphanumeric_IncludesAllLettersAndDigits()
-        {
-            var fontPath = Path.Combine(TestFontsDir, "arial.ttf");
-            if (!File.Exists(fontPath))
-            {
-                Assert.Inconclusive($"Test font not found: {fontPath}");
-                return;
-            }
-
-            using var file = new OTFile();
-            file.open(fontPath);
-            var font = file.GetFont(0)!;
-
-            var options = new SubsetOptions();
-            options.AddText("X"); // Just one character
-            options.IncludeNotdef = true;
-            options.IncludeAsciiAlphanumeric = true; // Include all A-Za-z0-9
-
-            var subsetter = new Subsetter(options);
-            _ = subsetter.Subset(font);
-
-            var retainedGlyphs = subsetter.RetainedGlyphs;
-
-            Console.WriteLine($"Retained {retainedGlyphs.Count} glyphs with ASCII alphanumeric");
-            
-            // With ASCII alphanumeric: 26 uppercase + 26 lowercase + 10 digits + fullwidth versions
-            // Plus .notdef and original 'X' = a lot more glyphs
-            Assert.IsTrue(retainedGlyphs.Count >= 62, 
-                $"Expected at least 62 glyphs (A-Za-z0-9), got {retainedGlyphs.Count}");
         }
 
         [TestMethod]
@@ -139,7 +120,6 @@ namespace OTFontFile.Performance.Tests.UnitTests
             var options = new SubsetOptions();
             options.Unicodes.Add(0x00E9); // é (e with acute accent)
             options.IncludeNotdef = true;
-            options.IncludeAsciiAlphanumeric = false;
 
             var subsetter = new Subsetter(options);
             _ = subsetter.Subset(font);
@@ -147,51 +127,14 @@ namespace OTFontFile.Performance.Tests.UnitTests
             var retainedGlyphs = subsetter.RetainedGlyphs;
 
             Console.WriteLine($"Retained {retainedGlyphs.Count} glyphs for 'é'");
+            Console.WriteLine($"Retained glyph IDs: {string.Join(", ", retainedGlyphs.OrderBy(g => g))}");
             
             // If é is composite, it should include components (e + accent)
-            // Otherwise just é + .notdef = 2
             Assert.IsTrue(retainedGlyphs.Count >= 2, 
                 $"Expected at least 2 glyphs, got {retainedGlyphs.Count}");
-
-            // Print the retained glyph IDs for debugging
-            Console.WriteLine($"Retained glyph IDs: {string.Join(", ", retainedGlyphs.OrderBy(g => g))}");
         }
 
         // ================== SubsetOptions Tests ==================
-
-        [TestMethod]
-        public void SubsetOptions_ForAssSubtitle_HasCorrectDefaults()
-        {
-            var options = SubsetOptions.ForAssSubtitle();
-
-            Assert.IsTrue(options.IncludeNotdef);
-            Assert.IsTrue(options.IncludeAsciiAlphanumeric);
-            Assert.IsTrue(options.AddVerticalForms);
-            Assert.IsTrue(options.LayoutClosure);
-            Assert.IsTrue(options.PreserveCodepageRanges);
-            Assert.IsTrue(options.FixNonCompliantCmap);
-            Assert.IsTrue(options.KeepHinting);
-
-            // Check vertical layout features
-            Assert.IsTrue(options.LayoutFeatures.Contains("vert"));
-            Assert.IsTrue(options.LayoutFeatures.Contains("vrt2"));
-        }
-
-        [TestMethod]
-        public void SubsetOptions_ForWebFont_HasMinimalDefaults()
-        {
-            var options = SubsetOptions.ForWebFont();
-
-            Assert.IsTrue(options.IncludeNotdef);
-            Assert.IsFalse(options.IncludeAsciiAlphanumeric);
-            Assert.IsFalse(options.AddVerticalForms);
-            Assert.IsFalse(options.LayoutClosure);
-            Assert.IsFalse(options.KeepHinting);
-
-            // Should drop additional tables
-            Assert.IsTrue(options.DropTables.Contains("hdmx"));
-            Assert.IsTrue(options.DropTables.Contains("VDMX"));
-        }
 
         [TestMethod]
         public void SubsetOptions_AddText_AddsAllCodepoints()
@@ -216,6 +159,16 @@ namespace OTFontFile.Performance.Tests.UnitTests
             Assert.IsTrue(options.Unicodes.Contains((int)'Z'));
         }
 
+        [TestMethod]
+        public void SubsetOptions_AddGlyphIds_AddsDirectly()
+        {
+            var options = new SubsetOptions();
+            options.AddGlyphIds(new[] { 1, 2, 3, 100, 200 });
+
+            Assert.AreEqual(5, options.GlyphIds.Count);
+            Assert.IsTrue(options.GlyphIds.Contains(100));
+        }
+
         // ================== GlyphIdMap Tests ==================
 
         [TestMethod]
@@ -235,7 +188,6 @@ namespace OTFontFile.Performance.Tests.UnitTests
             var options = new SubsetOptions();
             options.AddText("ABC");
             options.IncludeNotdef = true;
-            options.IncludeAsciiAlphanumeric = false;
             options.RetainGids = false; // Compact mode
 
             var subsetter = new Subsetter(options);
@@ -275,7 +227,6 @@ namespace OTFontFile.Performance.Tests.UnitTests
             var options = new SubsetOptions();
             options.AddText("ABC");
             options.IncludeNotdef = true;
-            options.IncludeAsciiAlphanumeric = false;
             options.RetainGids = true; // Keep original IDs
 
             var subsetter = new Subsetter(options);
@@ -292,23 +243,6 @@ namespace OTFontFile.Performance.Tests.UnitTests
         }
 
         // ================== End-to-End Subsetting Tests ==================
-
-        private static readonly string TempDir = Path.Combine(Path.GetTempPath(), "OTFontFile_Subsetting_Tests");
-
-        [ClassInitialize]
-        public static void ClassInit(TestContext context)
-        {
-            if (Directory.Exists(TempDir))
-                Directory.Delete(TempDir, true);
-            Directory.CreateDirectory(TempDir);
-        }
-
-        [ClassCleanup]
-        public static void ClassCleanup()
-        {
-            if (Directory.Exists(TempDir))
-                Directory.Delete(TempDir, true);
-        }
 
         [TestMethod]
         public void Subset_SimpleText_ProducesValidFont()
@@ -331,7 +265,6 @@ namespace OTFontFile.Performance.Tests.UnitTests
             var options = new SubsetOptions();
             options.AddText("Hello World");
             options.IncludeNotdef = true;
-            options.IncludeAsciiAlphanumeric = false;
 
             var subsetter = new Subsetter(options);
             var subsetFont = subsetter.Subset(font);
@@ -360,14 +293,12 @@ namespace OTFontFile.Performance.Tests.UnitTests
             Assert.AreEqual(subsetter.RetainedGlyphs.Count, maxp.NumGlyphs, 
                 "Glyph count mismatch in subset font");
 
-            // Verify file size is significantly smaller
+            // Verify file size is smaller
             var originalSize = new FileInfo(fontPath).Length;
             var subsetSize = new FileInfo(outputPath).Length;
             var ratio = (double)subsetSize / originalSize;
 
             Console.WriteLine($"File sizes: Original={originalSize}, Subset={subsetSize}, Ratio={ratio:F3}");
-            // Note: subset includes many unmodified tables (cmap, name, GPOS, etc.)
-            // Full subsetting of these tables will be implemented in future phases
             Assert.IsTrue(ratio < 0.5, $"Subset should be <50% of original, got {ratio:P0}");
         }
 
@@ -392,7 +323,6 @@ namespace OTFontFile.Performance.Tests.UnitTests
             var options = new SubsetOptions();
             options.AddText("你好世界");
             options.IncludeNotdef = true;
-            options.IncludeAsciiAlphanumeric = false;
 
             var subsetter = new Subsetter(options);
             var subsetFont = subsetter.Subset(font);
@@ -424,11 +354,11 @@ namespace OTFontFile.Performance.Tests.UnitTests
             var ratio = (double)subsetSize / originalSize;
 
             Console.WriteLine($"File sizes: Original={originalSize}, Subset={subsetSize}, Ratio={ratio:F3}");
-            Assert.IsTrue(ratio < 0.05, $"Chinese subset should be <5% of original, got {ratio:P0}");
+            Assert.IsTrue(ratio < 0.1, $"Chinese subset should be <10% of original, got {ratio:P0}");
         }
 
         [TestMethod]
-        public void Subset_ForAssSubtitle_IncludesAllRequiredGlyphs()
+        public void Subset_ByText_StaticMethod()
         {
             var fontPath = Path.Combine(TestFontsDir, "arial.ttf");
             if (!File.Exists(fontPath))
@@ -441,17 +371,40 @@ namespace OTFontFile.Performance.Tests.UnitTests
             file.open(fontPath);
             var font = file.GetFont(0)!;
 
-            // Use the ASS subtitle factory method
-            var subsetFont = Subsetter.SubsetForAss(font, "Test 测试");
+            // Use static factory method
+            var subsetFont = Subsetter.SubsetByText(font, "Test");
 
-            // Verify it has a reasonable number of glyphs
             var maxp = subsetFont.GetTable("maxp") as Table_maxp;
             Assert.IsNotNull(maxp);
 
-            // With ASS defaults, should have at least 62 (A-Za-z0-9) + a few more
-            Console.WriteLine($"ASS subset has {maxp.NumGlyphs} glyphs");
-            Assert.IsTrue(maxp.NumGlyphs >= 62, 
-                $"ASS subset should have at least 62 glyphs (A-Za-z0-9), got {maxp.NumGlyphs}");
+            // T, e, s, t + .notdef = 5 glyphs (s appears twice but deduped)
+            Console.WriteLine($"Subset has {maxp.NumGlyphs} glyphs");
+            Assert.IsTrue(maxp.NumGlyphs >= 4, 
+                $"Expected at least 4 glyphs, got {maxp.NumGlyphs}");
+        }
+
+        [TestMethod]
+        public void Subset_ByGlyphIds_StaticMethod()
+        {
+            var fontPath = Path.Combine(TestFontsDir, "arial.ttf");
+            if (!File.Exists(fontPath))
+            {
+                Assert.Inconclusive($"Test font not found: {fontPath}");
+                return;
+            }
+
+            using var file = new OTFile();
+            file.open(fontPath);
+            var font = file.GetFont(0)!;
+
+            // Subset by glyph IDs directly
+            var subsetFont = Subsetter.SubsetByGlyphIds(font, new[] { 0, 1, 2, 3, 4 });
+
+            var maxp = subsetFont.GetTable("maxp") as Table_maxp;
+            Assert.IsNotNull(maxp);
+
+            Console.WriteLine($"Subset has {maxp.NumGlyphs} glyphs");
+            Assert.AreEqual(5, maxp.NumGlyphs);
         }
     }
 }

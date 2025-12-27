@@ -7,13 +7,13 @@ namespace OTFontFile.Subsetting;
 
 /// <summary>
 /// Font subsetter that creates a reduced font containing only specified glyphs.
+/// This is a pure subsetting API - character preprocessing should be done by the caller.
 /// </summary>
 public class Subsetter
 {
     private readonly SubsetOptions _options;
     private readonly HashSet<int> _retainedGlyphs = new();
     private readonly Dictionary<int, int> _glyphIdMap = new(); // old → new
-    private readonly HashSet<int> _retainedUnicodes = new();
 
     public Subsetter(SubsetOptions options)
     {
@@ -54,153 +54,35 @@ public class Subsetter
     private void ComputeGlyphClosure(OTFont font)
     {
         _retainedGlyphs.Clear();
-        _retainedUnicodes.Clear();
 
-        // Step 1: Collect all requested Unicode codepoints
-        CollectRequestedUnicodes();
-
-        // Step 2: Map Unicodes to glyph IDs via cmap
+        // Step 1: Map Unicodes to glyph IDs via cmap
         MapUnicodesToGlyphs(font);
 
-        // Step 3: Add explicit glyph IDs
+        // Step 2: Add explicit glyph IDs
         foreach (var gid in _options.GlyphIds)
         {
             _retainedGlyphs.Add(gid);
         }
 
-        // Step 4: Always include .notdef if requested
+        // Step 3: Always include .notdef if requested
         if (_options.IncludeNotdef)
         {
             _retainedGlyphs.Add(0);
         }
 
-        // Step 5: Composite glyph closure (TrueType glyf table)
+        // Step 4: Composite glyph closure (TrueType glyf table)
         CloseOverCompositeGlyphs(font);
 
-        // Step 6: GSUB closure (if layout closure is enabled)
+        // Step 5: GSUB closure (if layout closure is enabled)
         if (_options.LayoutClosure)
         {
             CloseOverGSUB(font);
         }
     }
 
-    private void CollectRequestedUnicodes()
-    {
-        // Add explicit unicodes
-        foreach (var unicode in _options.Unicodes)
-        {
-            _retainedUnicodes.Add(unicode);
-        }
-
-        // Add unicodes from text
-        if (!string.IsNullOrEmpty(_options.Text))
-        {
-            foreach (var rune in _options.Text.EnumerateRunes())
-            {
-                _retainedUnicodes.Add(rune.Value);
-            }
-        }
-
-        // Add ASCII alphanumeric if requested
-        if (_options.IncludeAsciiAlphanumeric)
-        {
-            AddAsciiAlphanumericUnicodes();
-        }
-
-        // Add vertical form mappings if requested
-        if (_options.AddVerticalForms)
-        {
-            AddVerticalFormUnicodes();
-        }
-    }
-
-    private void AddAsciiAlphanumericUnicodes()
-    {
-        // Uppercase Latin (A-Z and Ａ-Ｚ)
-        for (int i = 0x0041; i <= 0x005A; i++)
-        {
-            _retainedUnicodes.Add(i);
-            _retainedUnicodes.Add(i + 0xFEE0);
-        }
-
-        // Lowercase Latin (a-z and ａ-ｚ)
-        for (int i = 0x0061; i <= 0x007A; i++)
-        {
-            _retainedUnicodes.Add(i);
-            _retainedUnicodes.Add(i + 0xFEE0);
-        }
-
-        // Digits (0-9 and ０-９)
-        for (int i = 0x0030; i <= 0x0039; i++)
-        {
-            _retainedUnicodes.Add(i);
-            _retainedUnicodes.Add(i + 0xFEE0);
-        }
-
-        // Common punctuation
-        _retainedUnicodes.Add(0xFF1F); // ？
-        _retainedUnicodes.Add(0xFF20); // ＠
-    }
-
-    private void AddVerticalFormUnicodes()
-    {
-        // Vertical Forms (from FontConstant.VertMapping in AssFontSubset.Core)
-        var verticalMappings = new Dictionary<int, int>
-        {
-            // Vertical Forms block (FE10-FE1F)
-            { 0x002C, 0xFE10 }, // comma
-            { 0x3001, 0xFE11 }, // ideographic comma
-            { 0x3002, 0xFE12 }, // ideographic period
-            { 0x003A, 0xFE13 }, // colon
-            { 0x003B, 0xFE14 }, // semicolon
-            { 0x0021, 0xFE15 }, // exclamation mark
-            { 0x003F, 0xFE16 }, // question mark
-            { 0x3016, 0xFE17 }, // left white lenticular bracket
-            { 0x3017, 0xFE18 }, // right white lenticular bracket
-            { 0x2026, 0xFE19 }, // horizontal ellipsis → vertical
-
-            // CJK Compatibility Forms (FE30-FE4F)
-            { 0x2014, 0xFE31 }, // em dash
-            { 0x2013, 0xFE32 }, // en dash
-            { 0x0028, 0xFE35 }, // left parenthesis
-            { 0x0029, 0xFE36 }, // right parenthesis
-            { 0x007B, 0xFE37 }, // left curly bracket
-            { 0x007D, 0xFE38 }, // right curly bracket
-            { 0x3014, 0xFE39 }, // left tortoise shell bracket
-            { 0x3015, 0xFE3A }, // right tortoise shell bracket
-            { 0x3010, 0xFE3B }, // left black lenticular bracket
-            { 0x3011, 0xFE3C }, // right black lenticular bracket
-            { 0x300A, 0xFE3D }, // left double angle bracket
-            { 0x300B, 0xFE3E }, // right double angle bracket
-            { 0x2329, 0xFE3F }, // left-pointing angle bracket
-            { 0x232A, 0xFE40 }, // right-pointing angle bracket
-            { 0x300C, 0xFE41 }, // left corner bracket
-            { 0x300D, 0xFE42 }, // right corner bracket
-            { 0x300E, 0xFE43 }, // left white corner bracket
-            { 0x300F, 0xFE44 }, // right white corner bracket
-            { 0x005B, 0xFE47 }, // left square bracket
-            { 0x005D, 0xFE48 }, // right square bracket
-        };
-
-        // For each retained horizontal unicode, add its vertical form
-        var toAdd = new List<int>();
-        foreach (var unicode in _retainedUnicodes)
-        {
-            if (verticalMappings.TryGetValue(unicode, out var verticalForm))
-            {
-                toAdd.Add(verticalForm);
-            }
-        }
-
-        foreach (var unicode in toAdd)
-        {
-            _retainedUnicodes.Add(unicode);
-        }
-    }
-
     private void MapUnicodesToGlyphs(OTFont font)
     {
-        foreach (var unicode in _retainedUnicodes)
+        foreach (var unicode in _options.Unicodes)
         {
             uint gid;
             if (unicode <= 0xFFFF)
@@ -372,27 +254,39 @@ public class Subsetter
     // ================== Static Factory Methods ==================
 
     /// <summary>
-    /// Create a subset font for ASS subtitle embedding.
+    /// Create a subset font with specified Unicode codepoints.
     /// </summary>
-    public static OTFont SubsetForAss(OTFont font, string text, string? newName = null)
+    public static OTFont SubsetByUnicodes(OTFont font, IEnumerable<int> unicodes)
     {
-        var options = SubsetOptions.ForAssSubtitle();
-        options.Text = text;
-        options.NewFamilyName = newName;
+        var options = new SubsetOptions();
+        foreach (var unicode in unicodes)
+        {
+            options.Unicodes.Add(unicode);
+        }
 
         var subsetter = new Subsetter(options);
         return subsetter.Subset(font);
     }
 
     /// <summary>
-    /// Create a subset font with specific Unicode codepoints.
+    /// Create a subset font with specified text.
     /// </summary>
-    public static OTFont SubsetUnicodes(OTFont font, IEnumerable<int> unicodes)
+    public static OTFont SubsetByText(OTFont font, string text)
+    {
+        var options = new SubsetOptions().AddText(text);
+        var subsetter = new Subsetter(options);
+        return subsetter.Subset(font);
+    }
+
+    /// <summary>
+    /// Create a subset font with specified glyph IDs.
+    /// </summary>
+    public static OTFont SubsetByGlyphIds(OTFont font, IEnumerable<int> glyphIds)
     {
         var options = new SubsetOptions();
-        foreach (var unicode in unicodes)
+        foreach (var gid in glyphIds)
         {
-            options.Unicodes.Add(unicode);
+            options.GlyphIds.Add(gid);
         }
 
         var subsetter = new Subsetter(options);
