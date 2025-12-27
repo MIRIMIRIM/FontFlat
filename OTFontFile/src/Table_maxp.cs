@@ -570,7 +570,8 @@ namespace OTFontFile
                 // create a Motorola Byte Order buffer for the new table
                 MBOBuffer newbuf;
                 
-                if( m_TableVersionNumber.GetUint() == 0x00000000 )
+                // CFF fonts use version 0.5 (0x00005000), which only has numGlyphs (6 bytes)
+                if( m_TableVersionNumber.GetUint() == 0x00005000 )
                 {
                     newbuf = new MBOBuffer(6);
 
