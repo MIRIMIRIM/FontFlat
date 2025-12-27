@@ -591,7 +591,20 @@ public class Subsetter
                 }
             }
 
-            // Skip color/bitmap tables if DropColorBitmapTables is enabled
+            // Handle GDEF Subsetting
+            if (tag == "GDEF" && !_options.DropLayoutTables)
+            {
+                var gdef = table as Table_GDEF;
+                if (gdef != null)
+                {
+                    var subsetGdef = builder.BuildGDEF();
+                    if (subsetGdef != null)
+                    {
+                        subsetFont.AddTable(subsetGdef);
+                    }
+                    continue;
+                }
+            }
 
             // Skip color/bitmap tables if DropColorBitmapTables is enabled
             if (_options.DropColorBitmapTables && IsColorBitmapTable(tag))

@@ -825,6 +825,211 @@ internal class SubsetTableBuilder
     }
 
     /// <summary>
+    /// Build subset GDEF table, filtering ClassDefs to retained glyphs.
+    /// Matches fonttools GDEF.subset_glyphs behavior.
+    /// </summary>
+    public OTTable? BuildGDEF()
+    {
+        var sourceGDEF = _sourceFont.GetTable("GDEF") as Table_GDEF;
+        if (sourceGDEF == null)
+            return null;
+
+        // GDEF structure:
+        // Header (12 bytes for v1.0, 14 for v1.2, 18 for v1.3):
+        //   Version (4), GlyphClassDefOffset (2), AttachListOffset (2), 
+        //   LigCaretListOffset (2), MarkAttachClassDefOffset (2)
+        //   [v1.2+] MarkGlyphSetsDefOffset (2)
+        //   [v1.3+] ItemVarStoreOffset (4)
+        
+        // For simplicity, if GlyphClassDef exists, we rebuild it.
+        // Otherwise, we just copy the original table (or build minimal structure).
+        
+        ushort glyphClassDefOffset = sourceGDEF.GlyphClassDefOffset;
+        ushort attachListOffset = sourceGDEF.AttachListOffset;
+        ushort ligCaretListOffset = sourceGDEF.LigCaretListOffset;
+        ushort markAttachClassDefOffset = sourceGDEF.MarkAttachClassDefOffset;
+        
+        // Check if there's anything to subset
+        if (glyphClassDefOffset == 0 && markAttachClassDefOffset == 0 && 
+            attachListOffset == 0 && ligCaretListOffset == 0)
+        {
+            // Empty GDEF, just return minimal header
+            var minBuf = new MBOBuffer(12);
+            minBuf.SetUint(sourceGDEF.Version.GetUint(), 0);
+            minBuf.SetUshort(0, 4); // GlyphClassDefOffset
+            minBuf.SetUshort(0, 6); // AttachListOffset
+            minBuf.SetUshort(0, 8); // LigCaretListOffset
+            minBuf.SetUshort(0, 10); // MarkAttachClassDefOffset
+            return new Table_GDEF("GDEF", minBuf);
+        }
+        
+        // Build subsetted GlyphClassDef if present
+        List<(ushort newGid, ushort classValue)>? glyphClasses = null;
+        if (glyphClassDefOffset != 0)
+        {
+            var glyphClassDef = sourceGDEF.GetGlyphClassDefTable()!;
+            glyphClasses = new List<(ushort, ushort)>();
+            
+            // Iterate through retained glyphs and get their class values
+            foreach (var oldGid in _retainedGlyphs)
+            {
+                if (_glyphIdMap.TryGetValue(oldGid, out int newGid))
+                {
+                    ushort classVal = glyphClassDef.GetClassValue((ushort)oldGid);
+                    if (classVal != 0) // Class 0 = not in table
+                    {
+                        glyphClasses.Add(((ushort)newGid, (ushort)classVal));
+                    }
+                }
+            }
+            glyphClasses.Sort((a, b) => a.newGid.CompareTo(b.newGid));
+        }
+        
+        // Build subsetted MarkAttachClassDef if present
+        List<(ushort newGid, ushort classValue)>? markClasses = null;
+        if (markAttachClassDefOffset != 0)
+        {
+            var markClassDef = sourceGDEF.GetMarkAttachClassDefTable()!;
+            markClasses = new List<(ushort, ushort)>();
+            
+            foreach (var oldGid in _retainedGlyphs)
+            {
+                if (_glyphIdMap.TryGetValue(oldGid, out int newGid))
+                {
+                    ushort classVal = markClassDef.GetClassValue((ushort)oldGid);
+                    if (classVal != 0)
+                    {
+                        markClasses.Add(((ushort)newGid, (ushort)classVal));
+                    }
+                }
+            }
+            markClasses.Sort((a, b) => a.newGid.CompareTo(b.newGid));
+        }
+        
+        // Calculate sizes for Format 2 ClassDef (most compact for sparse data)
+        // Format 2: Format(2) + ClassRangeCount(2) + ClassRangeRecords(6 each)
+        int glyphClassDefSize = 0;
+        int markClassDefSize = 0;
+        
+        if (glyphClasses != null && glyphClasses.Count > 0)
+        {
+            // Use Format 2 (range format) - count ranges
+            int rangeCount = CountRanges(glyphClasses);
+            glyphClassDefSize = 4 + rangeCount * 6;
+        }
+        
+        if (markClasses != null && markClasses.Count > 0)
+        {
+            int rangeCount = CountRanges(markClasses);
+            markClassDefSize = 4 + rangeCount * 6;
+        }
+        
+        // If no classes remain, drop GDEF entirely (matching fonttools behavior)
+        if (glyphClassDefSize == 0 && markClassDefSize == 0)
+        {
+            return null;
+        }
+        
+        // Build table: header (12) + GlyphClassDef + MarkAttachClassDef
+        int headerSize = 12;
+        int totalSize = headerSize + glyphClassDefSize + markClassDefSize;
+        
+        var buffer = new MBOBuffer((uint)totalSize);
+        buffer.SetUint(0x00010000, 0); // Version 1.0
+        
+        uint offset = (uint)headerSize;
+        
+        // GlyphClassDef
+        if (glyphClasses != null && glyphClasses.Count > 0)
+        {
+            buffer.SetUshort((ushort)offset, 4);
+            WriteClassDefFormat2(buffer, offset, glyphClasses);
+            offset += (uint)glyphClassDefSize;
+        }
+        else
+        {
+            buffer.SetUshort(0, 4);
+        }
+        
+        // AttachList - not subsetted, set to 0
+        buffer.SetUshort(0, 6);
+        
+        // LigCaretList - not subsetted, set to 0
+        buffer.SetUshort(0, 8);
+        
+        // MarkAttachClassDef
+        if (markClasses != null && markClasses.Count > 0)
+        {
+            buffer.SetUshort((ushort)offset, 10);
+            WriteClassDefFormat2(buffer, offset, markClasses);
+        }
+        else
+        {
+            buffer.SetUshort(0, 10);
+        }
+        
+        return new Table_GDEF("GDEF", buffer);
+    }
+    
+    private int CountRanges(List<(ushort gid, ushort classVal)> entries)
+    {
+        if (entries.Count == 0) return 0;
+        
+        int ranges = 1;
+        ushort lastGid = entries[0].gid;
+        ushort lastClass = entries[0].classVal;
+        
+        for (int i = 1; i < entries.Count; i++)
+        {
+            if (entries[i].gid != lastGid + 1 || entries[i].classVal != lastClass)
+            {
+                ranges++;
+            }
+            lastGid = entries[i].gid;
+            lastClass = entries[i].classVal;
+        }
+        return ranges;
+    }
+    
+    private void WriteClassDefFormat2(MBOBuffer buffer, uint offset, List<(ushort gid, ushort classVal)> entries)
+    {
+        buffer.SetUshort(2, offset); // Format 2
+        
+        // Build ranges
+        var ranges = new List<(ushort start, ushort end, ushort classVal)>();
+        ushort rangeStart = entries[0].gid;
+        ushort rangeEnd = entries[0].gid;
+        ushort rangeClass = entries[0].classVal;
+        
+        for (int i = 1; i < entries.Count; i++)
+        {
+            if (entries[i].gid == rangeEnd + 1 && entries[i].classVal == rangeClass)
+            {
+                rangeEnd = entries[i].gid;
+            }
+            else
+            {
+                ranges.Add((rangeStart, rangeEnd, rangeClass));
+                rangeStart = entries[i].gid;
+                rangeEnd = entries[i].gid;
+                rangeClass = entries[i].classVal;
+            }
+        }
+        ranges.Add((rangeStart, rangeEnd, rangeClass));
+        
+        buffer.SetUshort((ushort)ranges.Count, offset + 2);
+        
+        uint recOffset = offset + 4;
+        foreach (var (start, end, classVal) in ranges)
+        {
+            buffer.SetUshort(start, recOffset);
+            buffer.SetUshort(end, recOffset + 2);
+            buffer.SetUshort(classVal, recOffset + 4);
+            recOffset += 6;
+        }
+    }
+
+    /// <summary>
     /// Build subset name table with renamed font.
     /// Updates family name, unique ID, full name, and PostScript name.
     /// </summary>
@@ -885,11 +1090,9 @@ internal class SubsetTableBuilder
     }
 
     /// <summary>
-    /// Build subset name table keeping only specified name IDs.
     /// Build subset name table keeping only specified name IDs, languages, and optionally only Unicode.
     /// Matches fonttools/pyftsubset default behavior.
     /// </summary>
-    public OTTable? BuildSubsettedNameTable(HashSet<int> retainedNameIds)
     public OTTable? BuildSubsettedNameTable(HashSet<int> retainedNameIds, HashSet<int>? retainedLanguages = null, bool unicodeOnly = true)
     {
         var sourceName = _sourceFont.GetTable("name") as Table_name;
@@ -899,7 +1102,6 @@ internal class SubsetTableBuilder
         // Get cache from source table
         var cache = (Table_name.name_cache)sourceName.GetCache();
         
-        // Find records to remove (those not in retained set)
         // Find records to remove
         var recordsToRemove = new List<(ushort platformID, ushort encodingID, ushort languageID, ushort nameID)>();
         
