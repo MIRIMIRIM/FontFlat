@@ -45,11 +45,18 @@ public class SubsetOptions
 
     /// <summary>
     /// Tables to always drop from the output.
-    /// Default: DSIG (Digital Signature - invalid after modification).
+    /// Matches fonttools defaults.
     /// </summary>
     public HashSet<string> DropTables { get; set; } = new()
     {
         "DSIG",  // Digital signature - invalid after subsetting
+        "JSTF",  // Justification - rarely used
+        "PCLT",  // PCL 5 - legacy
+        "LTSH",  // Linear Threshold - legacy hinting
+        // Graphite tables
+        "Feat", "Glat", "Gloc", "Silf", "Sill",
+        // FontForge metadata - not needed
+        "FFTM",
     };
 
     /// <summary>

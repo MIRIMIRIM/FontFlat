@@ -114,10 +114,10 @@ namespace OTFontFile.Performance.Tests.UnitTests
                 OTFile.WriteSfntFile(fs, subsetFont);
             }
 
-            // Run pyftsubset
+            // Run pyftsubset with all layout features
             var ftOutput = Path.Combine(TempDir, "fonttools_ttf.ttf");
             var ftResult = RunProcess(_pyftsubsetPath, 
-                $"\"{fontPath}\" --unicodes={unicodes} --output-file=\"{ftOutput}\"");
+                $"\"{fontPath}\" --unicodes={unicodes} --layout-features=* --output-file=\"{ftOutput}\"");
 
             if (!File.Exists(ftOutput))
             {
@@ -215,10 +215,10 @@ namespace OTFontFile.Performance.Tests.UnitTests
                 OTFile.WriteSfntFile(fs, subsetFont);
             }
 
-            // Run hb-subset
+            // Run hb-subset with all layout features
             var hbOutput = Path.Combine(TempDir, "hb_subset.ttf");
             var hbResult = RunProcess(_hbSubsetPath,
-                $"--unicodes={unicodes} --output-file=\"{hbOutput}\" \"{fontPath}\"");
+                $"--unicodes={unicodes} --layout-features=* --output-file=\"{hbOutput}\" \"{fontPath}\"");
 
             if (!File.Exists(hbOutput))
             {
