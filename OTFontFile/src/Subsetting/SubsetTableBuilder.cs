@@ -886,9 +886,11 @@ internal class SubsetTableBuilder
 
     /// <summary>
     /// Build subset name table keeping only specified name IDs.
+    /// Build subset name table keeping only specified name IDs, languages, and optionally only Unicode.
     /// Matches fonttools/pyftsubset default behavior.
     /// </summary>
     public OTTable? BuildSubsettedNameTable(HashSet<int> retainedNameIds)
+    public OTTable? BuildSubsettedNameTable(HashSet<int> retainedNameIds, HashSet<int>? retainedLanguages = null, bool unicodeOnly = true)
     {
         var sourceName = _sourceFont.GetTable("name") as Table_name;
         if (sourceName == null)
@@ -898,12 +900,33 @@ internal class SubsetTableBuilder
         var cache = (Table_name.name_cache)sourceName.GetCache();
         
         // Find records to remove (those not in retained set)
+        // Find records to remove
         var recordsToRemove = new List<(ushort platformID, ushort encodingID, ushort languageID, ushort nameID)>();
         
         for (ushort i = 0; i < cache.count; i++)
         {
             var nrc = cache.getNameRecord(i);
+            bool shouldRemove = false;
+            
+            // Check name ID
             if (!retainedNameIds.Contains(nrc.nameID))
+                shouldRemove = true;
+            
+            // Check language (if restricted)
+            if (!shouldRemove && retainedLanguages != null && !retainedLanguages.Contains(nrc.languageID))
+                shouldRemove = true;
+            
+            // Check Unicode-only (fonttools name_legacy=False behavior)
+            // Unicode records: platformID=0 (Unicode), or platformID=3 (Windows) with encodingID=1 or 10
+            if (!shouldRemove && unicodeOnly)
+            {
+                bool isUnicode = nrc.platformID == 0 || 
+                                 (nrc.platformID == 3 && (nrc.encodingID == 1 || nrc.encodingID == 10));
+                if (!isUnicode)
+                    shouldRemove = true;
+            }
+            
+            if (shouldRemove)
             {
                 recordsToRemove.Add((nrc.platformID, nrc.encodingID, nrc.languageID, nrc.nameID));
             }
@@ -927,6 +950,7 @@ internal class SubsetTableBuilder
         
         return (Table_name)cache.GenerateTable();
     }
+
 
     /// <summary>
     /// Build subset CFF table with de-subroutinized CharStrings.

@@ -501,8 +501,12 @@ public class Subsetter
         }
         else if (_options.SubsetNameTable)
         {
-            // Subset name table to only retained name IDs (matching fonttools default)
-            var newName = builder.BuildSubsettedNameTable(_options.RetainedNameIds);
+            // Subset name table to only retained name IDs, languages, and Unicode-only (matching fonttools default)
+            var newName = builder.BuildSubsettedNameTable(
+                _options.RetainedNameIds,
+                _options.RetainedNameLanguages,
+                !_options.NameLegacy  // unicodeOnly = !name_legacy
+            );
             if (newName != null)
             {
                 subsetFont.AddTable(newName);

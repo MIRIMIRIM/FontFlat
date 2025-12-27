@@ -108,6 +108,19 @@ public class SubsetOptions
     /// </summary>
     public HashSet<int> RetainedNameIds { get; set; } = new() { 0, 1, 2, 3, 4, 5, 6 };
 
+    /// <summary>
+    /// Language IDs to keep when SubsetNameTable is true.
+    /// Default: {0x0409} (English US) matching fonttools default.
+    /// Set to null to keep all languages.
+    /// </summary>
+    public HashSet<int>? RetainedNameLanguages { get; set; } = new() { 0x0409 };
+
+    /// <summary>
+    /// Keep non-Unicode name records (legacy Mac/platform-specific).
+    /// Default: false (only keep Unicode records, matching fonttools name_legacy=False).
+    /// </summary>
+    public bool NameLegacy { get; set; } = false;
+
     // ================== Helper Methods ==================
 
     /// <summary>
