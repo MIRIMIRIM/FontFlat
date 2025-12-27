@@ -168,6 +168,193 @@ namespace OTFontFile.Subsetting.Layout
     }
 
     /// <summary>
+    /// Subsetter for GSUB Lookup Type 2: Multiple Substitution.
+    /// One glyph -> multiple glyphs (decomposition).
+    /// </summary>
+    public class MultipleSubstSubsetter : ISubtableSubsetter
+    {
+        public byte[]? Subset(MBOBuffer file, uint offset, SubsetPlan plan)
+        {
+            ushort format = file.GetUshort(offset);
+            if (format != 1) return null;
+
+            uint coverageOffset = offset + (uint)file.GetUshort(offset + 2);
+            ushort seqCount = file.GetUshort(offset + 4);
+            
+            var candidateCoverage = CoverageSubsetter.Subset(file, coverageOffset, plan);
+            if (candidateCoverage.Count == 0)
+                return null;
+
+            // Filter sequences: only keep if ALL substitutes are retained
+            var retainedSequences = new List<(ushort NewGid, byte[] Data)>();
+            
+            foreach (var item in candidateCoverage)
+            {
+                if (item.OldCovIndex >= seqCount) continue;
+                
+                uint seqOffset = offset + (uint)file.GetUshort(offset + 6 + (uint)item.OldCovIndex * 2);
+                ushort glyphCount = file.GetUshort(seqOffset);
+                
+                bool allRetained = true;
+                var newGlyphs = new List<ushort>();
+                
+                for (int i = 0; i < glyphCount; i++)
+                {
+                    ushort oldGid = file.GetUshort(seqOffset + 2 + (uint)i * 2);
+                    if (plan.TryGetNewGid(oldGid, out ushort newGid))
+                    {
+                        newGlyphs.Add(newGid);
+                    }
+                    else
+                    {
+                        allRetained = false;
+                        break;
+                    }
+                }
+                
+                if (allRetained && newGlyphs.Count > 0)
+                {
+                    // Build Sequence data
+                    var seqData = new List<byte>();
+                    ushort count = (ushort)newGlyphs.Count;
+                    seqData.Add((byte)(count >> 8)); seqData.Add((byte)count);
+                    foreach (var g in newGlyphs)
+                    {
+                        seqData.Add((byte)(g >> 8)); seqData.Add((byte)g);
+                    }
+                    retainedSequences.Add((item.NewGid, seqData.ToArray()));
+                }
+            }
+
+            if (retainedSequences.Count == 0)
+                return null;
+
+            // Build output
+            var newCoverageGlyphs = new List<ushort>();
+            foreach (var item in retainedSequences) newCoverageGlyphs.Add(item.NewGid);
+            byte[] newCoverageBytes = CoverageSubsetter.BuildCoverage(newCoverageGlyphs);
+
+            int headerSize = 6 + retainedSequences.Count * 2;
+            int totalSeqSize = 0;
+            foreach (var s in retainedSequences) totalSeqSize += s.Data.Length;
+            
+            List<byte> output = new();
+            output.Add(0); output.Add(1); // Format 1
+            
+            int coverageOffsetVal = headerSize + totalSeqSize;
+            output.Add((byte)(coverageOffsetVal >> 8)); output.Add((byte)coverageOffsetVal);
+            
+            ushort seqCountNew = (ushort)retainedSequences.Count;
+            output.Add((byte)(seqCountNew >> 8)); output.Add((byte)seqCountNew);
+            
+            int currentOffset = headerSize;
+            foreach (var s in retainedSequences)
+            {
+                output.Add((byte)(currentOffset >> 8)); output.Add((byte)currentOffset);
+                currentOffset += s.Data.Length;
+            }
+            
+            foreach (var s in retainedSequences)
+            {
+                output.AddRange(s.Data);
+            }
+            
+            output.AddRange(newCoverageBytes);
+            return output.ToArray();
+        }
+    }
+
+    /// <summary>
+    /// Subsetter for GSUB Lookup Type 3: Alternate Substitution.
+    /// One glyph -> one of several alternates.
+    /// </summary>
+    public class AlternateSubstSubsetter : ISubtableSubsetter
+    {
+        public byte[]? Subset(MBOBuffer file, uint offset, SubsetPlan plan)
+        {
+            ushort format = file.GetUshort(offset);
+            if (format != 1) return null;
+
+            uint coverageOffset = offset + (uint)file.GetUshort(offset + 2);
+            ushort altSetCount = file.GetUshort(offset + 4);
+            
+            var candidateCoverage = CoverageSubsetter.Subset(file, coverageOffset, plan);
+            if (candidateCoverage.Count == 0)
+                return null;
+
+            // Filter: keep alternates that are in retained set
+            var retainedAltSets = new List<(ushort NewGid, byte[] Data)>();
+            
+            foreach (var item in candidateCoverage)
+            {
+                if (item.OldCovIndex >= altSetCount) continue;
+                
+                uint altSetOffset = offset + (uint)file.GetUshort(offset + 6 + (uint)item.OldCovIndex * 2);
+                ushort glyphCount = file.GetUshort(altSetOffset);
+                
+                var retainedAlts = new List<ushort>();
+                for (int i = 0; i < glyphCount; i++)
+                {
+                    ushort oldGid = file.GetUshort(altSetOffset + 2 + (uint)i * 2);
+                    if (plan.TryGetNewGid(oldGid, out ushort newGid))
+                    {
+                        retainedAlts.Add(newGid);
+                    }
+                }
+                
+                // fonttools: keep if ANY alternate is retained
+                if (retainedAlts.Count > 0)
+                {
+                    var altData = new List<byte>();
+                    ushort count = (ushort)retainedAlts.Count;
+                    altData.Add((byte)(count >> 8)); altData.Add((byte)count);
+                    foreach (var g in retainedAlts)
+                    {
+                        altData.Add((byte)(g >> 8)); altData.Add((byte)g);
+                    }
+                    retainedAltSets.Add((item.NewGid, altData.ToArray()));
+                }
+            }
+
+            if (retainedAltSets.Count == 0)
+                return null;
+
+            // Build output
+            var newCoverageGlyphs = new List<ushort>();
+            foreach (var item in retainedAltSets) newCoverageGlyphs.Add(item.NewGid);
+            byte[] newCoverageBytes = CoverageSubsetter.BuildCoverage(newCoverageGlyphs);
+
+            int headerSize = 6 + retainedAltSets.Count * 2;
+            int totalAltSize = 0;
+            foreach (var s in retainedAltSets) totalAltSize += s.Data.Length;
+            
+            List<byte> output = new();
+            output.Add(0); output.Add(1); // Format 1
+            
+            int coverageOffsetVal = headerSize + totalAltSize;
+            output.Add((byte)(coverageOffsetVal >> 8)); output.Add((byte)coverageOffsetVal);
+            
+            ushort altSetCountNew = (ushort)retainedAltSets.Count;
+            output.Add((byte)(altSetCountNew >> 8)); output.Add((byte)altSetCountNew);
+            
+            int currentOffset = headerSize;
+            foreach (var s in retainedAltSets)
+            {
+                output.Add((byte)(currentOffset >> 8)); output.Add((byte)currentOffset);
+                currentOffset += s.Data.Length;
+            }
+            
+            foreach (var s in retainedAltSets)
+            {
+                output.AddRange(s.Data);
+            }
+            
+            output.AddRange(newCoverageBytes);
+            return output.ToArray();
+        }
+    }
+
+    /// <summary>
     /// Subsetter for GSUB Lookup Type 4: Ligature Substitution.
     /// Filters ligatures based on component availability.
     /// </summary>

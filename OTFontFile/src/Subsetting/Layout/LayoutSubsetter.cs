@@ -12,8 +12,10 @@ namespace OTFontFile.Subsetting.Layout
         public LayoutSubsetter()
         {
             // Register GSUB subsetters (GSUB lookup types)
-            _gsubSubsetters[1] = new SingleSubstSubsetter();   // Type 1: SingleSubst
-            _gsubSubsetters[4] = new LigatureSubstSubsetter(); // Type 4: LigatureSubst
+            _gsubSubsetters[1] = new SingleSubstSubsetter();     // Type 1: SingleSubst
+            _gsubSubsetters[2] = new MultipleSubstSubsetter();   // Type 2: MultipleSubst
+            _gsubSubsetters[3] = new AlternateSubstSubsetter();  // Type 3: AlternateSubst
+            _gsubSubsetters[4] = new LigatureSubstSubsetter();   // Type 4: LigatureSubst
             
             // Register GPOS subsetters (GPOS lookup types)
             _gposSubsetters[1] = new SinglePosSubsetter();     // Type 1: SinglePos
