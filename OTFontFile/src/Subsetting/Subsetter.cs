@@ -482,6 +482,11 @@ public class Subsetter
                 subsetFont.AddTable(newVmtx);
         }
 
+        // Build VORG table for CFF fonts with vertical metrics
+        var newVORG = builder.BuildVORG();
+        if (newVORG != null)
+            subsetFont.AddTable(newVORG);
+
         // Build name table (optionally with renaming)
         if (_options.NewFontNameSuffix != null)
         {
@@ -492,7 +497,7 @@ public class Subsetter
 
         // Copy other tables that don't need subsetting
         var numTables = sourceFont.GetNumTables();
-        var handledTables = new HashSet<string> { "glyf", "loca", "maxp", "hhea", "hmtx", "head", "cmap", "post", "OS/2", "vmtx", "vhea", "CFF " };
+        var handledTables = new HashSet<string> { "glyf", "loca", "maxp", "hhea", "hmtx", "head", "cmap", "post", "OS/2", "vmtx", "vhea", "CFF ", "VORG" };
         
         // Add name to handled if we built a new one
         if (_options.NewFontNameSuffix != null)

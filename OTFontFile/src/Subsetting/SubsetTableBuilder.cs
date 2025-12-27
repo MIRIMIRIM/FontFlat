@@ -776,6 +776,55 @@ internal class SubsetTableBuilder
     }
 
     /// <summary>
+    /// Build subset VORG table (Vertical Origin) with only retained glyphs.
+    /// </summary>
+    public OTTable? BuildVORG()
+    {
+        var sourceVORG = _sourceFont.GetTable("VORG") as Table_VORG;
+        if (sourceVORG == null)
+            return null;
+
+        short defaultY = sourceVORG.defaultVertOriginY;
+        
+        // Collect entries for retained glyphs
+        var retainedEntries = new List<(ushort newGid, short vertOriginY)>();
+        
+        for (uint i = 0; i < sourceVORG.numVertOriginYMetrics; i++)
+        {
+            var entry = sourceVORG.GetVertOriginYMetrics(i);
+            if (entry == null) continue;
+            
+            if (_glyphIdMap.TryGetValue(entry.glyphIndex, out int newGid))
+            {
+                retainedEntries.Add(((ushort)newGid, entry.vertOriginY));
+            }
+        }
+        
+        // Sort by new glyph ID
+        retainedEntries.Sort((a, b) => a.newGid.CompareTo(b.newGid));
+        
+        // Build new table
+        // Header: 8 bytes + 4 bytes per entry
+        uint tableSize = (uint)(8 + retainedEntries.Count * 4);
+        var buffer = new MBOBuffer(tableSize);
+        
+        buffer.SetUshort(sourceVORG.majorVersion, 0); // majorVersion
+        buffer.SetUshort(sourceVORG.minorVersion, 2); // minorVersion
+        buffer.SetShort(defaultY, 4); // defaultVertOriginY
+        buffer.SetUshort((ushort)retainedEntries.Count, 6); // numVertOriginYMetrics
+        
+        uint offset = 8;
+        foreach (var (newGid, vertOriginY) in retainedEntries)
+        {
+            buffer.SetUshort(newGid, offset);
+            buffer.SetShort(vertOriginY, offset + 2);
+            offset += 4;
+        }
+        
+        return new Table_VORG("VORG", buffer);
+    }
+
+    /// <summary>
     /// Build subset name table with renamed font.
     /// Updates family name, unique ID, full name, and PostScript name.
     /// </summary>
