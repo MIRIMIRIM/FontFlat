@@ -302,7 +302,8 @@ internal class SubsetTableBuilder
         }
 
         // Calculate subtable count and sizes
-        int subtableCount = hasNonBmp ? 2 : 1; // Format 4 + optional Format 12
+        // HarfBuzz #4980 workaround: Generate both Unicode (PID=0) and Windows (PID=3) entries
+        int subtableCount = hasNonBmp ? 4 : 2; // (Unicode + Windows) * (BMP + optional full)
         
         // Generate Format 4 subtable (BMP)
         byte[] format4Data = GenerateFormat4Subtable(bmpMappings);
@@ -324,16 +325,30 @@ internal class SubsetTableBuilder
         buffer.SetUshort(0, 0); // version
         buffer.SetUshort((ushort)subtableCount, 2); // numTables
 
-        // Encoding table entry for Format 4 (Windows Unicode BMP)
         uint eteOffset = 4;
+
+        // Encoding table entry 1: Unicode BMP (platformID=0, encodingID=3)
+        buffer.SetUshort(0, eteOffset);     // platformID = Unicode
+        buffer.SetUshort(3, eteOffset + 2); // encodingID = Unicode 2.0 BMP
+        buffer.SetUint(format4Offset, eteOffset + 4);
+        eteOffset += 8;
+
+        // Encoding table entry 2: Windows Unicode BMP (platformID=3, encodingID=1)
         buffer.SetUshort(3, eteOffset);     // platformID = Windows
         buffer.SetUshort(1, eteOffset + 2); // encodingID = Unicode BMP
         buffer.SetUint(format4Offset, eteOffset + 4);
+        eteOffset += 8;
 
-        // Encoding table entry for Format 12 if present
+        // Encoding table entries for Format 12 if present (non-BMP support)
         if (hasNonBmp && format12Data != null)
         {
+            // Unicode full (platformID=0, encodingID=4) - HarfBuzz #4980 fix
+            buffer.SetUshort(0, eteOffset);      // platformID = Unicode
+            buffer.SetUshort(4, eteOffset + 2);  // encodingID = Unicode 2.0 full
+            buffer.SetUint(format12Offset, eteOffset + 4);
             eteOffset += 8;
+
+            // Windows Unicode full (platformID=3, encodingID=10)
             buffer.SetUshort(3, eteOffset);     // platformID = Windows
             buffer.SetUshort(10, eteOffset + 2); // encodingID = Unicode full
             buffer.SetUint(format12Offset, eteOffset + 4);

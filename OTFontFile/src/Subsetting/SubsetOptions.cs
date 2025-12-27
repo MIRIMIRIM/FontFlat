@@ -65,6 +65,14 @@ public class SubsetOptions
     /// </summary>
     public string? NewFontNameSuffix { get; set; } = null;
 
+    /// <summary>
+    /// Preserve OS/2 ulCodePageRange bits even when subsetting.
+    /// This is equivalent to fonttools' --no-prune-codepage-ranges option.
+    /// Required for VSFilter compatibility.
+    /// Default: true (preserve for compatibility).
+    /// </summary>
+    public bool PreserveCodePageRanges { get; set; } = true;
+
     // ================== Helper Methods ==================
 
     /// <summary>
