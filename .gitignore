@@ -10,3 +10,6 @@
 !*/BenchmarkResources/SampleFonts/.gitkeep
 */BenchmarkDotNet.Artifacts/*
 BenchmarkDotNet.Artifacts/*
+
+# Reference projects (not part of this library)
+AssFontSubset.Core/
