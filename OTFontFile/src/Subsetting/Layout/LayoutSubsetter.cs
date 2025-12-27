@@ -162,7 +162,11 @@ namespace OTFontFile.Subsetting.Layout
             }
             layout.FeatureList = newFeatureList;
 
-            // 4. Prune Scripts - Keep script structure even with empty features (fonttools behavior)
+            // 4. Prune Scripts
+            // fonttools behavior: GSUB keeps empty scripts, GPOS drops them
+            // https://github.com/fonttools/fonttools/issues/518
+            bool retainEmptyScripts = (tag == "GSUB");
+            
             var newScriptList = new ScriptList();
             if (layout.ScriptList != null)
             {
@@ -170,32 +174,47 @@ namespace OTFontFile.Subsetting.Layout
                 {
                     var script = scriptPair.Value;
                     var newLangSysRecs = new Dictionary<string, LangSys>();
+                    bool hasFeatures = false;
 
-                    // Update DefaultLangSys (but always keep it if source had it)
+                    // Update DefaultLangSys
                     if (script.DefaultLangSys != null)
                     {
-                        PruneLangSys(script.DefaultLangSys, plan);
-                        // Keep DefaultLangSys structure even if empty
+                        if (PruneLangSys(script.DefaultLangSys, plan))
+                        {
+                            hasFeatures = true;
+                        }
+                        else if (!retainEmptyScripts)
+                        {
+                            script.DefaultLangSys = null;
+                        }
                     }
 
                     // Update LangSysRecords
                     foreach (var langPair in script.LangSysRecords)
                     {
-                        PruneLangSys(langPair.Value, plan);
-                        // Keep all LangSys records (fonttools preserves structure)
-                        newLangSysRecs[langPair.Key] = langPair.Value;
+                        if (PruneLangSys(langPair.Value, plan))
+                        {
+                            newLangSysRecs[langPair.Key] = langPair.Value;
+                            hasFeatures = true;
+                        }
+                        else if (retainEmptyScripts)
+                        {
+                            newLangSysRecs[langPair.Key] = langPair.Value;
+                        }
                     }
                     script.LangSysRecords.Clear();
                     foreach (var kvp in newLangSysRecs) script.LangSysRecords[kvp.Key] = kvp.Value;
 
-                    // Always keep scripts that exist in source
-                    newScriptList.Scripts[scriptPair.Key] = script;
+                    // Keep script if has features OR if retaining empty scripts
+                    if (hasFeatures || retainEmptyScripts)
+                    {
+                        newScriptList.Scripts[scriptPair.Key] = script;
+                    }
                 }
             }
             layout.ScriptList = newScriptList;
             
-            // Keep table structure as long as scripts exist (fonttools behavior)
-            // This preserves script information even with empty features/lookups
+            // Drop table if no scripts remain
             if (newScriptList.Scripts.Count == 0)
             {
                 return null;
