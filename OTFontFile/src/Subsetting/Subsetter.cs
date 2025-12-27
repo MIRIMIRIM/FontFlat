@@ -517,6 +517,60 @@ public class Subsetter
             if (!_options.KeepHinting && (tag == "fpgm" || tag == "prep" || tag == "cvt "))
                 continue;
 
+            // Skip layout tables if DropLayoutTables is enabled
+            if (_options.DropLayoutTables && IsLayoutTable(tag))
+                continue;
+
+            // Handle GSUB Subsetting
+            if (tag == "GSUB" && !_options.DropLayoutTables)
+            {
+                var gsub = table as Table_GSUB;
+                if (gsub != null)
+                {
+                    var plan = new OTFontFile.Subsetting.Layout.SubsetPlan(
+                        _retainedGlyphs, 
+                        _glyphIdMap
+                    );
+                    
+                    var layoutSubsetter = new OTFontFile.Subsetting.Layout.LayoutSubsetter();
+                    var subsetGsub = layoutSubsetter.SubsetGsub(gsub, plan);
+
+                    if (subsetGsub != null)
+                    {
+                        subsetFont.AddTable(subsetGsub);
+                        continue;
+                    }
+                }
+            }
+
+            // Handle GPOS Subsetting (Kerning)
+            if (tag == "GPOS" && !_options.DropLayoutTables)
+            {
+                var gpos = table as Table_GPOS;
+                if (gpos != null)
+                {
+                    var plan = new OTFontFile.Subsetting.Layout.SubsetPlan(
+                        _retainedGlyphs, 
+                        _glyphIdMap
+                    );
+                    
+                    var layoutSubsetter = new OTFontFile.Subsetting.Layout.LayoutSubsetter();
+                    var subsetGpos = layoutSubsetter.SubsetGpos(gpos, plan);
+
+                    if (subsetGpos != null)
+                    {
+                        subsetFont.AddTable(subsetGpos);
+                        continue;
+                    }
+                }
+            }
+
+            // Skip color/bitmap tables if DropColorBitmapTables is enabled
+
+            // Skip color/bitmap tables if DropColorBitmapTables is enabled
+            if (_options.DropColorBitmapTables && IsColorBitmapTable(tag))
+                continue;
+
             // Copy table as-is
             subsetFont.AddTable(table);
         }
@@ -585,5 +639,44 @@ public class Subsetter
 
         var subsetter = new Subsetter(options);
         return subsetter.Subset(font);
+    }
+
+    // ================== Helper Methods ==================
+
+    /// <summary>
+    /// Check if a table tag is an OpenType layout table.
+    /// </summary>
+    private static bool IsLayoutTable(string tag)
+    {
+        return tag switch
+        {
+            "GSUB" => true,
+            "GPOS" => true,
+            "GDEF" => true,
+            "BASE" => true,
+            "JSTF" => true,
+            "MATH" => true,
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// Check if a table tag is a color or bitmap glyph table.
+    /// </summary>
+    private static bool IsColorBitmapTable(string tag)
+    {
+        return tag switch
+        {
+            "COLR" => true,
+            "CPAL" => true,
+            "SVG " => true,
+            "sbix" => true,
+            "CBDT" => true,
+            "CBLC" => true,
+            "EBDT" => true,
+            "EBLC" => true,
+            "EBSC" => true,
+            _ => false
+        };
     }
 }
