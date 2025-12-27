@@ -12,4 +12,4 @@
 BenchmarkDotNet.Artifacts/*
 
 # Reference projects (not part of this library)
-AssFontSubset.Core/
+Ref/

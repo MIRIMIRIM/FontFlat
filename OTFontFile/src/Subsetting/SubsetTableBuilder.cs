@@ -91,6 +91,9 @@ internal class SubsetTableBuilder
                     {
                         RemapCompositeGlyphIds(glyphData);
                     }
+                    
+                    // Pad to word boundary for better compatibility
+                    glyphData = PadToWordBoundary(glyphData);
                 }
             }
 
@@ -264,5 +267,302 @@ internal class SubsetTableBuilder
         cache.modified = sourceHead.DateTimeToSecondsSince1904(dt);
 
         return (Table_head)cache.GenerateTable();
+    }
+
+    /// <summary>
+    /// Build subset cmap table with only retained Unicode mappings.
+    /// Creates Format 4 for BMP and Format 12 for non-BMP characters.
+    /// </summary>
+    public Table_cmap? BuildCmap(IReadOnlyDictionary<int, int> unicodeToNewGid)
+    {
+        if (unicodeToNewGid.Count == 0)
+            return null;
+
+        // Separate BMP and non-BMP mappings
+        var bmpMappings = new SortedDictionary<ushort, ushort>();
+        var fullMappings = new SortedDictionary<uint, uint>();
+        bool hasNonBmp = false;
+
+        foreach (var kv in unicodeToNewGid)
+        {
+            int unicode = kv.Key;
+            int newGid = kv.Value;
+
+            if (unicode >= 0 && unicode <= 0xFFFF)
+            {
+                bmpMappings[(ushort)unicode] = (ushort)newGid;
+            }
+            
+            if (unicode >= 0)
+            {
+                fullMappings[(uint)unicode] = (uint)newGid;
+                if (unicode > 0xFFFF)
+                    hasNonBmp = true;
+            }
+        }
+
+        // Calculate subtable count and sizes
+        int subtableCount = hasNonBmp ? 2 : 1; // Format 4 + optional Format 12
+        
+        // Generate Format 4 subtable (BMP)
+        byte[] format4Data = GenerateFormat4Subtable(bmpMappings);
+        
+        // Generate Format 12 subtable if needed
+        byte[]? format12Data = hasNonBmp ? GenerateFormat12Subtable(fullMappings) : null;
+
+        // Calculate total cmap size
+        uint headerSize = 4; // version + numTables
+        uint encodingEntrySize = (uint)(8 * subtableCount);
+        uint format4Offset = headerSize + encodingEntrySize;
+        uint format12Offset = format4Offset + (uint)format4Data.Length;
+        uint totalSize = format12Offset + (uint)(format12Data?.Length ?? 0);
+
+        // Build cmap buffer
+        var buffer = new MBOBuffer(totalSize);
+
+        // Header
+        buffer.SetUshort(0, 0); // version
+        buffer.SetUshort((ushort)subtableCount, 2); // numTables
+
+        // Encoding table entry for Format 4 (Windows Unicode BMP)
+        uint eteOffset = 4;
+        buffer.SetUshort(3, eteOffset);     // platformID = Windows
+        buffer.SetUshort(1, eteOffset + 2); // encodingID = Unicode BMP
+        buffer.SetUint(format4Offset, eteOffset + 4);
+
+        // Encoding table entry for Format 12 if present
+        if (hasNonBmp && format12Data != null)
+        {
+            eteOffset += 8;
+            buffer.SetUshort(3, eteOffset);     // platformID = Windows
+            buffer.SetUshort(10, eteOffset + 2); // encodingID = Unicode full
+            buffer.SetUint(format12Offset, eteOffset + 4);
+        }
+
+        // Copy subtable data
+        byte[] tableBuffer = buffer.GetBuffer();
+        Array.Copy(format4Data, 0, tableBuffer, format4Offset, format4Data.Length);
+        if (format12Data != null)
+        {
+            Array.Copy(format12Data, 0, tableBuffer, format12Offset, format12Data.Length);
+        }
+
+        return new Table_cmap("cmap", buffer);
+    }
+
+    private byte[] GenerateFormat4Subtable(SortedDictionary<ushort, ushort> mappings)
+    {
+        // Build segments for Format 4
+        var segments = new List<(ushort startCode, ushort endCode, short idDelta, ushort[] glyphIds)>();
+        
+        if (mappings.Count == 0)
+        {
+            // Add terminating segment only
+            segments.Add((0xFFFF, 0xFFFF, 1, Array.Empty<ushort>()));
+        }
+        else
+        {
+            var codes = mappings.Keys.ToList();
+            int i = 0;
+            
+            while (i < codes.Count)
+            {
+                ushort startCode = codes[i];
+                ushort endCode = startCode;
+                
+                // Try to extend the range
+                while (i + 1 < codes.Count && codes[i + 1] == codes[i] + 1)
+                {
+                    i++;
+                    endCode = codes[i];
+                }
+                
+                // Check if we can use idDelta (sequential glyph IDs)
+                short delta = (short)(mappings[startCode] - startCode);
+                bool canUseDelta = true;
+                
+                for (ushort c = startCode; c <= endCode; c++)
+                {
+                    if ((ushort)(c + delta) != mappings[c])
+                    {
+                        canUseDelta = false;
+                        break;
+                    }
+                }
+                
+                if (canUseDelta)
+                {
+                    segments.Add((startCode, endCode, delta, Array.Empty<ushort>()));
+                }
+                else
+                {
+                    // Need to use glyphIdArray
+                    var glyphIds = new ushort[endCode - startCode + 1];
+                    for (int j = 0; j < glyphIds.Length; j++)
+                    {
+                        glyphIds[j] = mappings[(ushort)(startCode + j)];
+                    }
+                    segments.Add((startCode, endCode, 0, glyphIds));
+                }
+                
+                i++;
+            }
+            
+            // Add terminating segment
+            segments.Add((0xFFFF, 0xFFFF, 1, Array.Empty<ushort>()));
+        }
+
+        // Calculate size
+        int segCount = segments.Count;
+        int glyphIdArraySize = segments.Sum(s => s.glyphIds.Length * 2);
+        int size = 14 + segCount * 8 + 2 + glyphIdArraySize; // header + segments + reservedPad + glyphIds
+        
+        var buffer = new MBOBuffer((uint)size);
+
+        // Format 4 header
+        ushort segCountX2 = (ushort)(segCount * 2);
+        ushort searchRange = (ushort)(2 * (1 << (int)Math.Floor(Math.Log2(segCount))));
+        ushort entrySelector = (ushort)Math.Floor(Math.Log2(segCount));
+        ushort rangeShift = (ushort)(segCountX2 - searchRange);
+
+        buffer.SetUshort(4, 0);             // format
+        buffer.SetUshort((ushort)size, 2);  // length
+        buffer.SetUshort(0, 4);             // language
+        buffer.SetUshort(segCountX2, 6);
+        buffer.SetUshort(searchRange, 8);
+        buffer.SetUshort(entrySelector, 10);
+        buffer.SetUshort(rangeShift, 12);
+
+        // Segment arrays
+        uint endCodeOffset = 14;
+        uint startCodeOffset = endCodeOffset + (uint)(segCount * 2) + 2; // +2 for reservedPad
+        uint idDeltaOffset = startCodeOffset + (uint)(segCount * 2);
+        uint idRangeOffset = idDeltaOffset + (uint)(segCount * 2);
+        uint glyphIdOffset = idRangeOffset + (uint)(segCount * 2);
+
+        int glyphIdPos = 0;
+        for (int s = 0; s < segCount; s++)
+        {
+            var seg = segments[s];
+            buffer.SetUshort(seg.endCode, endCodeOffset + (uint)(s * 2));
+            buffer.SetUshort(seg.startCode, startCodeOffset + (uint)(s * 2));
+            buffer.SetShort(seg.idDelta, idDeltaOffset + (uint)(s * 2));
+            
+            if (seg.glyphIds.Length > 0)
+            {
+                // Calculate idRangeOffset
+                ushort rangeOffset = (ushort)((segCount - s + glyphIdPos) * 2);
+                buffer.SetUshort(rangeOffset, idRangeOffset + (uint)(s * 2));
+                
+                // Write glyph IDs
+                foreach (var gid in seg.glyphIds)
+                {
+                    buffer.SetUshort(gid, glyphIdOffset + (uint)(glyphIdPos * 2));
+                    glyphIdPos++;
+                }
+            }
+            else
+            {
+                buffer.SetUshort(0, idRangeOffset + (uint)(s * 2));
+            }
+        }
+
+        return buffer.GetBuffer();
+    }
+
+    private byte[] GenerateFormat12Subtable(SortedDictionary<uint, uint> mappings)
+    {
+        // Build groups for Format 12
+        var groups = new List<(uint startCharCode, uint endCharCode, uint startGlyphID)>();
+        
+        if (mappings.Count > 0)
+        {
+            var codes = mappings.Keys.ToList();
+            int i = 0;
+            
+            while (i < codes.Count)
+            {
+                uint startCode = codes[i];
+                uint endCode = startCode;
+                uint startGid = mappings[startCode];
+                
+                // Extend range while codes and glyph IDs are sequential
+                while (i + 1 < codes.Count && 
+                       codes[i + 1] == codes[i] + 1 &&
+                       mappings[codes[i + 1]] == mappings[codes[i]] + 1)
+                {
+                    i++;
+                    endCode = codes[i];
+                }
+                
+                groups.Add((startCode, endCode, startGid));
+                i++;
+            }
+        }
+
+        // Calculate size: header (16) + groups (12 each)
+        uint size = 16 + (uint)(groups.Count * 12);
+        var buffer = new MBOBuffer(size);
+
+        // Format 12 header
+        buffer.SetUshort(12, 0);            // format
+        buffer.SetUshort(0, 2);             // reserved
+        buffer.SetUint(size, 4);            // length
+        buffer.SetUint(0, 8);               // language
+        buffer.SetUint((uint)groups.Count, 12); // numGroups
+
+        // Groups
+        uint offset = 16;
+        foreach (var group in groups)
+        {
+            buffer.SetUint(group.startCharCode, offset);
+            buffer.SetUint(group.endCharCode, offset + 4);
+            buffer.SetUint(group.startGlyphID, offset + 8);
+            offset += 12;
+        }
+
+        return buffer.GetBuffer();
+    }
+
+    /// <summary>
+    /// Build post table version 3.0 (no glyph names).
+    /// This is the safest option for subset fonts.
+    /// </summary>
+    public Table_post? BuildPost()
+    {
+        var sourcePost = _sourceFont.GetTable("post") as Table_post;
+        if (sourcePost == null)
+            return null;
+
+        // Create a version 3.0 post table (32 bytes, no glyph names)
+        var buffer = new MBOBuffer(32);
+
+        // Version 3.0
+        buffer.SetUint(0x00030000, 0);
+        
+        // Copy other fields from source
+        buffer.SetUint(sourcePost.italicAngle.GetUint(), 4);
+        buffer.SetShort(sourcePost.underlinePosition, 8);
+        buffer.SetShort(sourcePost.underlineThickness, 10);
+        buffer.SetUint(sourcePost.isFixedPitch, 12);
+        buffer.SetUint(sourcePost.minMemType42, 16);
+        buffer.SetUint(sourcePost.maxMemType42, 20);
+        buffer.SetUint(sourcePost.minMemType1, 24);
+        buffer.SetUint(sourcePost.maxMemType1, 28);
+
+        return new Table_post("post", buffer);
+    }
+
+    /// <summary>
+    /// Pad glyph data to word boundary (2 bytes).
+    /// </summary>
+    private static byte[] PadToWordBoundary(byte[] data)
+    {
+        if (data.Length % 2 == 0)
+            return data;
+        
+        var padded = new byte[data.Length + 1];
+        Array.Copy(data, padded, data.Length);
+        return padded;
     }
 }

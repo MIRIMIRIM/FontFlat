@@ -14,6 +14,7 @@ public class Subsetter
     private readonly SubsetOptions _options;
     private readonly HashSet<int> _retainedGlyphs = new();
     private readonly Dictionary<int, int> _glyphIdMap = new(); // old → new
+    private readonly Dictionary<int, int> _unicodeToOldGid = new(); // unicode → old glyph ID
 
     public Subsetter(SubsetOptions options)
     {
@@ -82,6 +83,8 @@ public class Subsetter
 
     private void MapUnicodesToGlyphs(OTFont font)
     {
+        _unicodeToOldGid.Clear();
+        
         foreach (var unicode in _options.Unicodes)
         {
             uint gid;
@@ -99,6 +102,7 @@ public class Subsetter
             if (gid != 0 || unicode == 0)
             {
                 _retainedGlyphs.Add((int)gid);
+                _unicodeToOldGid[unicode] = (int)gid;
             }
         }
     }
@@ -221,9 +225,20 @@ public class Subsetter
                 subsetFont.AddTable(newHead);
         }
 
+        // Build cmap table with only retained Unicode mappings
+        var unicodeToNewGid = BuildUnicodeToNewGidMap();
+        var newCmap = builder.BuildCmap(unicodeToNewGid);
+        if (newCmap != null)
+            subsetFont.AddTable(newCmap);
+
+        // Build post table version 3.0 (no glyph names)
+        var newPost = builder.BuildPost();
+        if (newPost != null)
+            subsetFont.AddTable(newPost);
+
         // Copy other tables that don't need subsetting
         var numTables = sourceFont.GetNumTables();
-        var handledTables = new HashSet<string> { "glyf", "loca", "maxp", "hhea", "hmtx", "head" };
+        var handledTables = new HashSet<string> { "glyf", "loca", "maxp", "hhea", "hmtx", "head", "cmap", "post" };
 
         for (ushort i = 0; i < numTables; i++)
         {
@@ -244,11 +259,32 @@ public class Subsetter
             if (!_options.KeepHinting && (tag == "fpgm" || tag == "prep" || tag == "cvt "))
                 continue;
 
-            // Copy table as-is (cmap, name, etc. will be subset in future phases)
+            // Copy table as-is
             subsetFont.AddTable(table);
         }
 
         return subsetFont;
+    }
+
+    /// <summary>
+    /// Build Unicode to new glyph ID mapping for cmap subsetting.
+    /// </summary>
+    private Dictionary<int, int> BuildUnicodeToNewGidMap()
+    {
+        var result = new Dictionary<int, int>();
+        
+        foreach (var kv in _unicodeToOldGid)
+        {
+            int unicode = kv.Key;
+            int oldGid = kv.Value;
+            
+            if (_glyphIdMap.TryGetValue(oldGid, out int newGid))
+            {
+                result[unicode] = newGid;
+            }
+        }
+        
+        return result;
     }
 
     // ================== Static Factory Methods ==================
