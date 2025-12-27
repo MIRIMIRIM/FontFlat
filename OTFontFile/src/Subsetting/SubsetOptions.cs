@@ -58,6 +58,13 @@ public class SubsetOptions
     /// </summary>
     public bool KeepHinting { get; set; } = true;
 
+    /// <summary>
+    /// Suffix to add to font name for subset identification.
+    /// If null, name table is copied as-is.
+    /// Default: null.
+    /// </summary>
+    public string? NewFontNameSuffix { get; set; } = null;
+
     // ================== Helper Methods ==================
 
     /// <summary>

@@ -759,4 +759,64 @@ internal class SubsetTableBuilder
 
         return (Table_vhea)cache.GenerateTable();
     }
+
+    /// <summary>
+    /// Build subset name table with renamed font.
+    /// Updates family name, unique ID, full name, and PostScript name.
+    /// </summary>
+    public Table_name? BuildName(string? suffix = null)
+    {
+        var sourceName = _sourceFont.GetTable("name") as Table_name;
+        if (sourceName == null)
+            return null;
+
+        // Generate a unique suffix if not provided
+        suffix ??= "_subset";
+
+        var cache = (Table_name.name_cache)sourceName.GetCache();
+
+        // Name IDs to modify:
+        // 1 = Font Family name
+        // 3 = Unique font identifier
+        // 4 = Full font name
+        // 6 = PostScript name
+
+        var nameIds = new ushort[] { 1, 3, 4, 6 };
+
+        for (ushort i = 0; i < cache.count; i++)
+        {
+            var nrc = cache.getNameRecord(i);
+            
+            foreach (var nameId in nameIds)
+            {
+                if (nrc.nameID == nameId && !string.IsNullOrEmpty(nrc.sNameString))
+                {
+                    // Add suffix to the name
+                    string newName = nrc.sNameString;
+                    
+                    // For PostScript name (ID 6), replace spaces with hyphens
+                    if (nameId == 6)
+                    {
+                        newName = newName.Replace(" ", "-") + suffix.Replace(" ", "-");
+                    }
+                    else
+                    {
+                        newName += suffix;
+                    }
+
+                    try
+                    {
+                        cache.UpdateNameRecord(nrc.platformID, nrc.encodingID, nrc.languageID, nrc.nameID, newName);
+                    }
+                    catch
+                    {
+                        // Record may have already been updated in a previous iteration
+                    }
+                    break;
+                }
+            }
+        }
+
+        return (Table_name)cache.GenerateTable();
+    }
 }

@@ -453,9 +453,21 @@ public class Subsetter
                 subsetFont.AddTable(newVmtx);
         }
 
+        // Build name table (optionally with renaming)
+        if (_options.NewFontNameSuffix != null)
+        {
+            var newName = builder.BuildName(_options.NewFontNameSuffix);
+            if (newName != null)
+                subsetFont.AddTable(newName);
+        }
+
         // Copy other tables that don't need subsetting
         var numTables = sourceFont.GetNumTables();
         var handledTables = new HashSet<string> { "glyf", "loca", "maxp", "hhea", "hmtx", "head", "cmap", "post", "OS/2", "vmtx", "vhea" };
+        
+        // Add name to handled if we built a new one
+        if (_options.NewFontNameSuffix != null)
+            handledTables.Add("name");
 
         for (ushort i = 0; i < numTables; i++)
         {
