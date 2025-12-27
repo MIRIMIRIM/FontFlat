@@ -290,5 +290,168 @@ namespace OTFontFile.Performance.Tests.UnitTests
                     $"Expected glyph ID to be retained: {kv.Key}");
             }
         }
+
+        // ================== End-to-End Subsetting Tests ==================
+
+        private static readonly string TempDir = Path.Combine(Path.GetTempPath(), "OTFontFile_Subsetting_Tests");
+
+        [ClassInitialize]
+        public static void ClassInit(TestContext context)
+        {
+            if (Directory.Exists(TempDir))
+                Directory.Delete(TempDir, true);
+            Directory.CreateDirectory(TempDir);
+        }
+
+        [ClassCleanup]
+        public static void ClassCleanup()
+        {
+            if (Directory.Exists(TempDir))
+                Directory.Delete(TempDir, true);
+        }
+
+        [TestMethod]
+        public void Subset_SimpleText_ProducesValidFont()
+        {
+            var fontPath = Path.Combine(TestFontsDir, "arial.ttf");
+            if (!File.Exists(fontPath))
+            {
+                Assert.Inconclusive($"Test font not found: {fontPath}");
+                return;
+            }
+
+            var outputPath = Path.Combine(TempDir, "subset_hello.ttf");
+
+            using var file = new OTFile();
+            file.open(fontPath);
+            var font = file.GetFont(0)!;
+
+            Console.WriteLine($"Original font: {font.GetMaxpNumGlyphs()} glyphs");
+
+            var options = new SubsetOptions();
+            options.AddText("Hello World");
+            options.IncludeNotdef = true;
+            options.IncludeAsciiAlphanumeric = false;
+
+            var subsetter = new Subsetter(options);
+            var subsetFont = subsetter.Subset(font);
+
+            Console.WriteLine($"Subset font: {subsetter.RetainedGlyphs.Count} glyphs");
+            Console.WriteLine($"Tables: {subsetFont.GetNumTables()}");
+
+            // Write subset font
+            using (var fs = new FileStream(outputPath, FileMode.Create, FileAccess.Write))
+            {
+                bool success = OTFile.WriteSfntFile(fs, subsetFont);
+                Assert.IsTrue(success, "WriteSfntFile failed");
+            }
+
+            // Read back and verify
+            using var rebuilt = new OTFile();
+            Assert.IsTrue(rebuilt.open(outputPath), "Failed to open subset font");
+
+            var rebuiltFont = rebuilt.GetFont(0);
+            Assert.IsNotNull(rebuiltFont, "Failed to get font from subset file");
+
+            var maxp = rebuiltFont.GetTable("maxp") as Table_maxp;
+            Assert.IsNotNull(maxp, "maxp table not found");
+
+            Console.WriteLine($"Rebuilt font: {maxp.NumGlyphs} glyphs");
+            Assert.AreEqual(subsetter.RetainedGlyphs.Count, maxp.NumGlyphs, 
+                "Glyph count mismatch in subset font");
+
+            // Verify file size is significantly smaller
+            var originalSize = new FileInfo(fontPath).Length;
+            var subsetSize = new FileInfo(outputPath).Length;
+            var ratio = (double)subsetSize / originalSize;
+
+            Console.WriteLine($"File sizes: Original={originalSize}, Subset={subsetSize}, Ratio={ratio:F3}");
+            // Note: subset includes many unmodified tables (cmap, name, GPOS, etc.)
+            // Full subsetting of these tables will be implemented in future phases
+            Assert.IsTrue(ratio < 0.5, $"Subset should be <50% of original, got {ratio:P0}");
+        }
+
+        [TestMethod]
+        public void Subset_ChineseText_ProducesValidFont()
+        {
+            var fontPath = Path.Combine(TestFontsDir, "msyh.ttc");
+            if (!File.Exists(fontPath))
+            {
+                Assert.Inconclusive($"Test font not found: {fontPath}");
+                return;
+            }
+
+            var outputPath = Path.Combine(TempDir, "subset_chinese.ttf");
+
+            using var file = new OTFile();
+            file.open(fontPath);
+            var font = file.GetFont(0)!;
+
+            Console.WriteLine($"Original font: {font.GetMaxpNumGlyphs()} glyphs");
+
+            var options = new SubsetOptions();
+            options.AddText("你好世界");
+            options.IncludeNotdef = true;
+            options.IncludeAsciiAlphanumeric = false;
+
+            var subsetter = new Subsetter(options);
+            var subsetFont = subsetter.Subset(font);
+
+            Console.WriteLine($"Subset font: {subsetter.RetainedGlyphs.Count} glyphs");
+
+            // Write subset font
+            using (var fs = new FileStream(outputPath, FileMode.Create, FileAccess.Write))
+            {
+                bool success = OTFile.WriteSfntFile(fs, subsetFont);
+                Assert.IsTrue(success, "WriteSfntFile failed");
+            }
+
+            // Read back and verify
+            using var rebuilt = new OTFile();
+            Assert.IsTrue(rebuilt.open(outputPath), "Failed to open subset font");
+
+            var rebuiltFont = rebuilt.GetFont(0);
+            Assert.IsNotNull(rebuiltFont, "Failed to get font from subset file");
+
+            var maxp = rebuiltFont.GetTable("maxp") as Table_maxp;
+            Assert.IsNotNull(maxp, "maxp table not found");
+
+            Console.WriteLine($"Rebuilt font: {maxp.NumGlyphs} glyphs");
+
+            // Verify significant size reduction
+            var originalSize = new FileInfo(fontPath).Length;
+            var subsetSize = new FileInfo(outputPath).Length;
+            var ratio = (double)subsetSize / originalSize;
+
+            Console.WriteLine($"File sizes: Original={originalSize}, Subset={subsetSize}, Ratio={ratio:F3}");
+            Assert.IsTrue(ratio < 0.05, $"Chinese subset should be <5% of original, got {ratio:P0}");
+        }
+
+        [TestMethod]
+        public void Subset_ForAssSubtitle_IncludesAllRequiredGlyphs()
+        {
+            var fontPath = Path.Combine(TestFontsDir, "arial.ttf");
+            if (!File.Exists(fontPath))
+            {
+                Assert.Inconclusive($"Test font not found: {fontPath}");
+                return;
+            }
+
+            using var file = new OTFile();
+            file.open(fontPath);
+            var font = file.GetFont(0)!;
+
+            // Use the ASS subtitle factory method
+            var subsetFont = Subsetter.SubsetForAss(font, "Test 测试");
+
+            // Verify it has a reasonable number of glyphs
+            var maxp = subsetFont.GetTable("maxp") as Table_maxp;
+            Assert.IsNotNull(maxp);
+
+            // With ASS defaults, should have at least 62 (A-Za-z0-9) + a few more
+            Console.WriteLine($"ASS subset has {maxp.NumGlyphs} glyphs");
+            Assert.IsTrue(maxp.NumGlyphs >= 62, 
+                $"ASS subset should have at least 62 glyphs (A-Za-z0-9), got {maxp.NumGlyphs}");
+        }
     }
 }

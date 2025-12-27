@@ -299,11 +299,49 @@ public class Subsetter
 
     private OTFont CreateSubsetFont(OTFont sourceFont)
     {
-        // For now, create a simple copy with table filtering
-        // Full table subsetting will be implemented incrementally
+        var subsetFont = new OTFont();
+        var builder = new SubsetTableBuilder(sourceFont, _retainedGlyphs, _glyphIdMap, _options);
 
+        // Build core tables that need subsetting
+        var (newGlyf, newLoca, newNumGlyphs) = builder.BuildGlyfLoca();
+        
+        // If TrueType font, add subset glyf/loca
+        if (newGlyf != null && newLoca != null && newNumGlyphs > 0)
+        {
+            subsetFont.AddTable(newGlyf);
+            subsetFont.AddTable(newLoca);
+
+            // Build dependent tables
+            var newMaxp = builder.BuildMaxp(newNumGlyphs);
+            if (newMaxp != null)
+                subsetFont.AddTable(newMaxp);
+
+            var newHhea = builder.BuildHhea(newNumGlyphs);
+            if (newHhea != null)
+                subsetFont.AddTable(newHhea);
+
+            var newHmtx = builder.BuildHmtx();
+            if (newHmtx != null)
+                subsetFont.AddTable(newHmtx);
+
+            // Determine loca format from BuildGlyfLoca result
+            var sourceHead = sourceFont.GetTable("head") as Table_head;
+            short locaFormat = 0;
+            if (sourceHead != null && newLoca != null)
+            {
+                // Calculate based on glyf table size
+                var glyfSize = newGlyf.GetLength();
+                locaFormat = glyfSize > 0x1FFFE ? (short)1 : (short)0;
+            }
+
+            var newHead = builder.BuildHead(locaFormat);
+            if (newHead != null)
+                subsetFont.AddTable(newHead);
+        }
+
+        // Copy other tables that don't need subsetting
         var numTables = sourceFont.GetNumTables();
-        var tablesToKeep = new List<OTTable>();
+        var handledTables = new HashSet<string> { "glyf", "loca", "maxp", "hhea", "hmtx", "head" };
 
         for (ushort i = 0; i < numTables; i++)
         {
@@ -311,6 +349,10 @@ public class Subsetter
             if (table == null) continue;
 
             var tag = table.m_tag.ToString();
+
+            // Skip already handled tables
+            if (handledTables.Contains(tag))
+                continue;
 
             // Skip tables marked for dropping
             if (_options.DropTables.Contains(tag))
@@ -320,16 +362,7 @@ public class Subsetter
             if (!_options.KeepHinting && (tag == "fpgm" || tag == "prep" || tag == "cvt "))
                 continue;
 
-            tablesToKeep.Add(table);
-        }
-
-        // Create new font from tables
-        // Note: This is a placeholder - actual subsetting of table contents
-        // will be implemented in subsequent phases
-        var subsetFont = new OTFont();
-
-        foreach (var table in tablesToKeep)
-        {
+            // Copy table as-is (cmap, name, etc. will be subset in future phases)
             subsetFont.AddTable(table);
         }
 
