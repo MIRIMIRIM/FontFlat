@@ -565,4 +565,198 @@ internal class SubsetTableBuilder
         Array.Copy(data, padded, data.Length);
         return padded;
     }
+
+    /// <summary>
+    /// Build subset OS/2 table with updated Unicode ranges and char indices.
+    /// </summary>
+    public Table_OS2? BuildOS2(IEnumerable<int> retainedUnicodes)
+    {
+        var sourceOS2 = _sourceFont.GetTable("OS/2") as Table_OS2;
+        if (sourceOS2 == null)
+            return null;
+
+        var cache = (Table_OS2.OS2_cache)sourceOS2.GetCache();
+        
+        // Calculate Unicode ranges from retained unicodes
+        var (range1, range2, range3, range4) = CalculateUnicodeRanges(retainedUnicodes);
+        
+        // Prune - only keep bits that were originally set AND are still needed
+        cache.ulUnicodeRange1 = sourceOS2.ulUnicodeRange1 & range1;
+        cache.ulUnicodeRange2 = sourceOS2.ulUnicodeRange2 & range2;
+        cache.ulUnicodeRange3 = sourceOS2.ulUnicodeRange3 & range3;
+        cache.ulUnicodeRange4 = sourceOS2.ulUnicodeRange4 & range4;
+
+        // Update usFirstCharIndex and usLastCharIndex
+        ushort minChar = 0xFFFF;
+        ushort maxChar = 0;
+        
+        foreach (var unicode in retainedUnicodes)
+        {
+            if (unicode >= 0 && unicode <= 0xFFFF)
+            {
+                if (unicode < minChar) minChar = (ushort)unicode;
+                if (unicode > maxChar) maxChar = (ushort)unicode;
+            }
+        }
+        
+        if (minChar <= maxChar)
+        {
+            cache.usFirstCharIndex = minChar;
+            cache.usLastCharIndex = maxChar;
+        }
+
+        return (Table_OS2)cache.GenerateTable();
+    }
+
+    /// <summary>
+    /// Calculate Unicode range bits based on retained unicodes.
+    /// Based on OpenType spec 1.9 Unicode ranges.
+    /// </summary>
+    private static (uint range1, uint range2, uint range3, uint range4) CalculateUnicodeRanges(IEnumerable<int> unicodes)
+    {
+        uint range1 = 0, range2 = 0, range3 = 0, range4 = 0;
+
+        foreach (var u in unicodes)
+        {
+            int bit = GetUnicodeRangeBit(u);
+            if (bit < 0) continue;
+            
+            if (bit < 32)
+                range1 |= 1u << bit;
+            else if (bit < 64)
+                range2 |= 1u << (bit - 32);
+            else if (bit < 96)
+                range3 |= 1u << (bit - 64);
+            else if (bit < 128)
+                range4 |= 1u << (bit - 96);
+        }
+
+        return (range1, range2, range3, range4);
+    }
+
+    /// <summary>
+    /// Get the Unicode range bit for a codepoint.
+    /// Returns -1 if no range applies.
+    /// </summary>
+    private static int GetUnicodeRangeBit(int unicode)
+    {
+        // Based on OpenType spec OS/2 ulUnicodeRange
+        // This is a simplified mapping - full mapping would need 128 ranges
+        return unicode switch
+        {
+            >= 0x0000 and <= 0x007F => 0,   // Basic Latin
+            >= 0x0080 and <= 0x00FF => 1,   // Latin-1 Supplement
+            >= 0x0100 and <= 0x017F => 2,   // Latin Extended-A
+            >= 0x0180 and <= 0x024F => 3,   // Latin Extended-B
+            >= 0x0250 and <= 0x02AF => 4,   // IPA Extensions
+            >= 0x02B0 and <= 0x02FF => 5,   // Spacing Modifier Letters
+            >= 0x0300 and <= 0x036F => 6,   // Combining Diacritical Marks
+            >= 0x0370 and <= 0x03FF => 7,   // Greek and Coptic
+            >= 0x0400 and <= 0x04FF => 9,   // Cyrillic
+            >= 0x0530 and <= 0x058F => 10,  // Armenian
+            >= 0x0590 and <= 0x05FF => 11,  // Hebrew
+            >= 0x0600 and <= 0x06FF => 13,  // Arabic
+            >= 0x0900 and <= 0x097F => 15,  // Devanagari
+            >= 0x0980 and <= 0x09FF => 16,  // Bengali
+            >= 0x0A00 and <= 0x0A7F => 17,  // Gurmukhi
+            >= 0x0A80 and <= 0x0AFF => 18,  // Gujarati
+            >= 0x0B00 and <= 0x0B7F => 19,  // Oriya
+            >= 0x0B80 and <= 0x0BFF => 20,  // Tamil
+            >= 0x0C00 and <= 0x0C7F => 21,  // Telugu
+            >= 0x0C80 and <= 0x0CFF => 22,  // Kannada
+            >= 0x0D00 and <= 0x0D7F => 23,  // Malayalam
+            >= 0x0E00 and <= 0x0E7F => 24,  // Thai
+            >= 0x0E80 and <= 0x0EFF => 25,  // Lao
+            >= 0x10A0 and <= 0x10FF => 26,  // Georgian
+            >= 0x1100 and <= 0x11FF => 28,  // Hangul Jamo
+            >= 0x1E00 and <= 0x1EFF => 29,  // Latin Extended Additional
+            >= 0x1F00 and <= 0x1FFF => 30,  // Greek Extended
+            >= 0x2000 and <= 0x206F => 31,  // General Punctuation
+            >= 0x2070 and <= 0x209F => 32,  // Superscripts and Subscripts
+            >= 0x20A0 and <= 0x20CF => 33,  // Currency Symbols
+            >= 0x20D0 and <= 0x20FF => 34,  // Combining Diacritical Marks for Symbols
+            >= 0x2100 and <= 0x214F => 35,  // Letterlike Symbols
+            >= 0x2150 and <= 0x218F => 36,  // Number Forms
+            >= 0x2190 and <= 0x21FF => 37,  // Arrows
+            >= 0x2200 and <= 0x22FF => 38,  // Mathematical Operators
+            >= 0x2300 and <= 0x23FF => 39,  // Miscellaneous Technical
+            >= 0x2400 and <= 0x243F => 40,  // Control Pictures
+            >= 0x2440 and <= 0x245F => 41,  // Optical Character Recognition
+            >= 0x2460 and <= 0x24FF => 42,  // Enclosed Alphanumerics
+            >= 0x2500 and <= 0x257F => 43,  // Box Drawing
+            >= 0x2580 and <= 0x259F => 44,  // Block Elements
+            >= 0x25A0 and <= 0x25FF => 45,  // Geometric Shapes
+            >= 0x2600 and <= 0x26FF => 46,  // Miscellaneous Symbols
+            >= 0x2700 and <= 0x27BF => 47,  // Dingbats
+            >= 0x3000 and <= 0x303F => 48,  // CJK Symbols and Punctuation
+            >= 0x3040 and <= 0x309F => 49,  // Hiragana
+            >= 0x30A0 and <= 0x30FF => 50,  // Katakana
+            >= 0x3100 and <= 0x312F => 51,  // Bopomofo
+            >= 0x3130 and <= 0x318F => 52,  // Hangul Compatibility Jamo
+            >= 0x3190 and <= 0x319F => 53,  // Kanbun (Bopomofo Extended in bit 53)
+            >= 0x31A0 and <= 0x31BF => 51,  // Bopomofo Extended (same as Bopomofo)
+            >= 0x3200 and <= 0x32FF => 54,  // Enclosed CJK Letters and Months
+            >= 0x3300 and <= 0x33FF => 55,  // CJK Compatibility
+            >= 0x4E00 and <= 0x9FFF => 59,  // CJK Unified Ideographs
+            >= 0xAC00 and <= 0xD7AF => 56,  // Hangul Syllables
+            >= 0xE000 and <= 0xF8FF => 60,  // Private Use Area
+            >= 0xF900 and <= 0xFAFF => 61,  // CJK Compatibility Ideographs
+            >= 0xFB00 and <= 0xFB4F => 62,  // Alphabetic Presentation Forms
+            >= 0xFB50 and <= 0xFDFF => 63,  // Arabic Presentation Forms-A
+            >= 0xFE20 and <= 0xFE2F => 64,  // Combining Half Marks
+            >= 0xFE30 and <= 0xFE4F => 65,  // CJK Compatibility Forms
+            >= 0xFE50 and <= 0xFE6F => 66,  // Small Form Variants
+            >= 0xFE70 and <= 0xFEFF => 67,  // Arabic Presentation Forms-B
+            >= 0xFF00 and <= 0xFFEF => 68,  // Halfwidth and Fullwidth Forms
+            >= 0xFFF0 and <= 0xFFFF => 69,  // Specials
+            >= 0x10000 and <= 0x1007F => 101, // Linear B Syllabary (using non-BMP bits)
+            >= 0x20000 and <= 0x2A6DF => 59,  // CJK Unified Ideographs Extension B (same as CJK)
+            _ => -1
+        };
+    }
+
+    /// <summary>
+    /// Build subset vmtx table with only retained glyphs.
+    /// </summary>
+    public Table_vmtx? BuildVmtx()
+    {
+        var sourceVmtx = _sourceFont.GetTable("vmtx") as Table_vmtx;
+        var sourceVhea = _sourceFont.GetTable("vhea") as Table_vhea;
+
+        if (sourceVmtx == null || sourceVhea == null)
+            return null;
+
+        var sortedNewGlyphs = _glyphIdMap.OrderBy(kv => kv.Value).ToList();
+        var newNumGlyphs = (ushort)sortedNewGlyphs.Count;
+
+        // For simplicity, store all glyphs as full vMetric entries (4 bytes each)
+        var bufferSize = (uint)(newNumGlyphs * 4);
+        var buffer = new MBOBuffer(bufferSize);
+
+        uint offset = 0;
+        foreach (var (oldGid, newGid) in sortedNewGlyphs)
+        {
+            var metric = sourceVmtx.GetVMetric((ushort)oldGid, _sourceFont);
+            buffer.SetUshort(metric.advanceHeight, offset);
+            buffer.SetShort(metric.topSideBearing, offset + 2);
+            offset += 4;
+        }
+
+        return new Table_vmtx("vmtx", buffer, sourceVhea, newNumGlyphs);
+    }
+
+    /// <summary>
+    /// Build subset vhea table with updated numOfLongVerMetrics.
+    /// </summary>
+    public Table_vhea? BuildVhea(ushort newNumberOfVMetrics)
+    {
+        var sourceVhea = _sourceFont.GetTable("vhea") as Table_vhea;
+        if (sourceVhea == null)
+            return null;
+
+        var cache = (Table_vhea.vhea_cache)sourceVhea.GetCache();
+        cache.numOfLongVerMetrics = newNumberOfVMetrics;
+
+        return (Table_vhea)cache.GenerateTable();
+    }
 }

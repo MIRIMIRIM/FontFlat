@@ -236,9 +236,30 @@ public class Subsetter
         if (newPost != null)
             subsetFont.AddTable(newPost);
 
+        // Build OS/2 table with updated Unicode ranges
+        var newOS2 = builder.BuildOS2(_options.Unicodes);
+        if (newOS2 != null)
+            subsetFont.AddTable(newOS2);
+
+        // Build vmtx/vhea if source font has vertical metrics
+        var sourceVmtx = sourceFont.GetTable("vmtx");
+        var sourceVhea = sourceFont.GetTable("vhea");
+        if (sourceVmtx != null && sourceVhea != null)
+        {
+            var (_, _, numGlyphs) = builder.BuildGlyfLoca();
+            
+            var newVhea = builder.BuildVhea(numGlyphs);
+            if (newVhea != null)
+                subsetFont.AddTable(newVhea);
+
+            var newVmtx = builder.BuildVmtx();
+            if (newVmtx != null)
+                subsetFont.AddTable(newVmtx);
+        }
+
         // Copy other tables that don't need subsetting
         var numTables = sourceFont.GetNumTables();
-        var handledTables = new HashSet<string> { "glyf", "loca", "maxp", "hhea", "hmtx", "head", "cmap", "post" };
+        var handledTables = new HashSet<string> { "glyf", "loca", "maxp", "hhea", "hmtx", "head", "cmap", "post", "OS/2", "vmtx", "vhea" };
 
         for (ushort i = 0; i < numTables; i++)
         {
