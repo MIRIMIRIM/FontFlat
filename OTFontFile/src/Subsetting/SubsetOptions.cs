@@ -45,11 +45,29 @@ public class SubsetOptions
 
     /// <summary>
     /// Tables to drop entirely from the output.
-    /// Default: DSIG (Digital Signature - invalid after modification).
+    /// Default: DSIG (Digital Signature - invalid after modification),
+    ///          GSUB/GPOS (OpenType layout - not needed for basic rendering),
+    ///          GDEF, BASE (layout-related tables),
+    ///          and other large non-essential tables.
+    /// Set LayoutClosure to true and clear these if you need layout features.
     /// </summary>
     public HashSet<string> DropTables { get; set; } = new()
     {
-        "DSIG",
+        "DSIG",  // Digital signature - invalid after subsetting
+        "GSUB",  // Substitution rules - often very large in CJK fonts
+        "GPOS",  // Positioning rules - often very large
+        "GDEF",  // Glyph definitions for layout
+        "BASE",  // Baseline table
+        "JSTF",  // Justification table
+        "MATH",  // Math layout table
+        "COLR",  // Color table
+        "CPAL",  // Color palette
+        "SVG ",  // SVG outlines
+        "sbix",  // Apple bitmap images
+        "CBDT",  // Color bitmap data
+        "CBLC",  // Color bitmap location
+        "EBDT",  // Embedded bitmap data
+        "EBLC",  // Embedded bitmap location
     };
 
     /// <summary>
