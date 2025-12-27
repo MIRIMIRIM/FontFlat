@@ -538,8 +538,9 @@ public class Subsetter
                     if (subsetGsub != null)
                     {
                         subsetFont.AddTable(subsetGsub);
-                        continue;
                     }
+                    // Either we added subsetted table OR we drop it (don't fall through to copy original)
+                    continue;
                 }
             }
 
@@ -560,8 +561,9 @@ public class Subsetter
                     if (subsetGpos != null)
                     {
                         subsetFont.AddTable(subsetGpos);
-                        continue;
                     }
+                    // Either we added subsetted table OR we drop it (don't fall through to copy original)
+                    continue;
                 }
             }
 

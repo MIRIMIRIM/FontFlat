@@ -470,12 +470,10 @@ namespace OTFontFile.Performance.Tests.UnitTests
                 $"Glyph count difference too large: {glyphDiff}");
 
             // Our output should be reasonably sized (not massively larger)
-            // NOTE: Reference tools (hb-subset, pyftsubset) do more aggressive lookup content pruning
-            // within GSUB/GPOS subtables. They only keep lookup entries that actually apply to the
-            // retained glyph set. Our current implementation keeps all entries that reference retained
-            // glyphs, resulting in larger but still correct output.
+            // NOTE: We now implement fonttools-compatible lookup content pruning.
+            // Remaining size differences are mainly due to VORG/GDEF/name tables that aren't fully subsetted yet.
             var sizeRatio = (double)ourSize / refSize;
-            Assert.IsTrue(sizeRatio < 35.0, // Known optimization gap in layout table pruning
+            Assert.IsTrue(sizeRatio < 10.0, // Remaining gap is mainly VORG/GDEF/name tables
                 $"Our output is too large compared to {refName}: {sizeRatio:P1}");
         }
 
