@@ -103,9 +103,10 @@ public class SubsetOptions
 
     /// <summary>
     /// Name IDs to keep when SubsetNameTable is true.
-    /// Default: {1, 2} (Family name, Subfamily name) matching pyftsubset.
+    /// Default: {0,1,2,3,4,5,6} matching fonttools default.
+    /// 0=Copyright, 1=Family, 2=Subfamily, 3=UniqueID, 4=FullName, 5=Version, 6=PostScript
     /// </summary>
-    public HashSet<int> RetainedNameIds { get; set; } = new() { 1, 2 };
+    public HashSet<int> RetainedNameIds { get; set; } = new() { 0, 1, 2, 3, 4, 5, 6 };
 
     // ================== Helper Methods ==================
 

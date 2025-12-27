@@ -1,0 +1,62 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="fc18c6aa-8250-4810-b016-998cc4914c23" name="rain@DESKTOP-2V5N3AA 2025-12-28 01:29:01" runUser="DESKTOP-2V5N3AA\rain" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2025-12-28T01:29:01.6418079+08:00" queuing="2025-12-28T01:29:01.6418079+08:00" start="2025-12-28T01:29:00.8179613+08:00" finish="2025-12-28T01:29:01.6465236+08:00" />
+  <TestSettings name="default" id="beb26b6b-86d0-4d31-9043-e7223e9aed54">
+    <Deployment runDeploymentRoot="rain_DESKTOP-2V5N3AA_2025-12-28_01_29_01" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="eac7c1d6-f75e-4e65-962c-0ac2614226ae" testId="efc52b5f-1ae2-c91a-d1e7-899ea948d944" testName="Compare_CFF_Subsetting_WithPyftsubset" computerName="DESKTOP-2V5N3AA" duration="00:00:00.4545487" startTime="2025-12-28T01:29:01.0943010+08:00" endTime="2025-12-28T01:29:01.5646353+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="eac7c1d6-f75e-4e65-962c-0ac2614226ae">
+      <Output>
+        <StdOut>pyftsubset: F:\Software\Python\Scripts\pyftsubset.exe&#xD;
+hb-subset: F:\code\_test\afs_hbsubset\10.1.0\hb-subset.exe&#xD;
+=== Comparison with pyftsubset (CFF) ===&#xD;
+Glyph count - Ours: 3, pyftsubset (CFF): 3&#xD;
+File size - Ours: 1,752, pyftsubset (CFF): 1,908&#xD;
+Size ratio: 91.8%&#xD;
+
+=== Per-Table Size Comparison ===&#xD;
+Table    Ours       Ref        Ratio    Diff      &#xD;
+--------------------------------------------------&#xD;
+!BASE           228          0      0%       +228&#xD;
+!CFF              0          0      0%          0&#xD;
+ cmap            60         60    100%          0&#xD;
+!GDEF            28          0      0%        +28&#xD;
+!GPOS             0         32      0%        -32&#xD;
+!GSUB             0         66      0%        -66&#xD;
+ head            54         54    100%          0&#xD;
+ hhea            36         36    100%          0&#xD;
+ hmtx            12          8    150%         +4&#xD;
+ maxp             6          6    100%          0&#xD;
+!name           132        518     25%       -386&#xD;
+ OS/2            96         96    100%          0&#xD;
+ post            32         32    100%          0&#xD;
+ vhea            36         36    100%          0&#xD;
+ vmtx            12          8    150%         +4&#xD;
+ VORG             8          8    100%          0&#xD;
+&#xD;
+
+=== GSUB Table Comparison ===&#xD;
+! Ours: MISSING, Ref: present&#xD;
+
+=== GPOS Table Comparison ===&#xD;
+! Ours: MISSING, Ref: present</StdOut>
+      </Output>
+    </UnitTestResult>
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="Compare_CFF_Subsetting_WithPyftsubset" storage="f:\github\fontflat\otfontfile.performance.tests\bin\debug\net10.0\otfontfile.performance.tests.dll" id="efc52b5f-1ae2-c91a-d1e7-899ea948d944">
+      <Execution id="eac7c1d6-f75e-4e65-962c-0ac2614226ae" />
+      <TestMethod codeBase="F:\GitHub\FontFlat\OTFontFile.Performance.Tests\bin\Debug\net10.0\OTFontFile.Performance.Tests.dll" adapterTypeName="executor://mstestadapter/v2" className="OTFontFile.Performance.Tests.UnitTests.ExternalToolComparisonTests" name="Compare_CFF_Subsetting_WithPyftsubset" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="efc52b5f-1ae2-c91a-d1e7-899ea948d944" executionId="eac7c1d6-f75e-4e65-962c-0ac2614226ae" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="列表中未列出的结果" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="所有已加载的结果" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Completed">
+    <Counters total="1" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+  </ResultSummary>
+</TestRun>
