@@ -175,6 +175,10 @@ namespace OTFontFile.Subsetting.Layout
                     var script = scriptPair.Value;
                     var newLangSysRecs = new Dictionary<string, LangSys>();
                     bool hasFeatures = false;
+                    
+                    // fonttools: keepEmptyDefaultLangSys only for DFLT script
+                    // https://bugzilla.mozilla.org/show_bug.cgi?id=1331737#c32
+                    bool keepEmptyDefaultLangSys = (scriptPair.Key == "DFLT");
 
                     // Update DefaultLangSys
                     if (script.DefaultLangSys != null)
@@ -183,8 +187,9 @@ namespace OTFontFile.Subsetting.Layout
                         {
                             hasFeatures = true;
                         }
-                        else if (!retainEmptyScripts)
+                        else if (!keepEmptyDefaultLangSys)
                         {
+                            // Drop empty DefaultLangSys for non-DFLT scripts
                             script.DefaultLangSys = null;
                         }
                     }
@@ -197,16 +202,13 @@ namespace OTFontFile.Subsetting.Layout
                             newLangSysRecs[langPair.Key] = langPair.Value;
                             hasFeatures = true;
                         }
-                        else if (retainEmptyScripts)
-                        {
-                            newLangSysRecs[langPair.Key] = langPair.Value;
-                        }
+                        // Drop empty LangSys records (fonttools doesn't keep these)
                     }
                     script.LangSysRecords.Clear();
                     foreach (var kvp in newLangSysRecs) script.LangSysRecords[kvp.Key] = kvp.Value;
 
-                    // Keep script if has features OR if retaining empty scripts
-                    if (hasFeatures || retainEmptyScripts)
+                    // Keep script if has features OR has non-empty DefaultLangSys OR retaining empty scripts
+                    if (hasFeatures || script.DefaultLangSys != null || retainEmptyScripts)
                     {
                         newScriptList.Scripts[scriptPair.Key] = script;
                     }
