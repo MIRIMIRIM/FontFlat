@@ -819,4 +819,51 @@ internal class SubsetTableBuilder
 
         return (Table_name)cache.GenerateTable();
     }
+
+    /// <summary>
+    /// Build subset CFF table with de-subroutinized CharStrings.
+    /// </summary>
+    public Table_CFF? BuildCFF()
+    {
+        var sourceCFF = _sourceFont.GetTable("CFF ") as Table_CFF;
+        if (sourceCFF == null)
+            return null;
+
+        // Trigger lazy loading by accessing a property
+        // This ensures EnsureDataLoaded() is called internally
+        _ = sourceCFF.major;
+
+        // Get the original CFF data
+        var originalData = sourceCFF.m_bufTable.GetBuffer();
+        if (originalData == null || originalData.Length == 0)
+            return null;
+
+        // Get sorted retained glyphs (by new GID)
+        var sortedRetained = _glyphIdMap
+            .OrderBy(kv => kv.Value)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        // Build subset CFF
+        var cffBuilder = new CFFBuilder();
+        var subsetData = cffBuilder.BuildCFF(
+            originalData,
+            sortedRetained,
+            (Dictionary<int, int>)_glyphIdMap);
+
+        // Create new CFF table
+        var newBuf = new MBOBuffer((uint)subsetData.Length);
+        Array.Copy(subsetData, newBuf.GetBuffer(), subsetData.Length);
+
+        return new Table_CFF("CFF ", newBuf);
+    }
+
+    /// <summary>
+    /// Check if the font uses CFF outlines (OTF format).
+    /// </summary>
+    public bool IsCFFFont()
+    {
+        return _sourceFont.GetTable("CFF ") != null;
+    }
 }
+

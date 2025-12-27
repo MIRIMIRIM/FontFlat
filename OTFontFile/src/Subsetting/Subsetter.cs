@@ -420,6 +420,35 @@ public class Subsetter
             if (newHead != null)
                 subsetFont.AddTable(newHead);
         }
+        else if (builder.IsCFFFont())
+        {
+            // CFF/OTF font - use CFF subsetting
+            var newCFF = builder.BuildCFF();
+            if (newCFF != null)
+            {
+                subsetFont.AddTable(newCFF);
+
+                // Build dependent tables for CFF
+                var cffNumGlyphs = (ushort)_glyphIdMap.Count;
+
+                var newMaxp = builder.BuildMaxp(cffNumGlyphs);
+                if (newMaxp != null)
+                    subsetFont.AddTable(newMaxp);
+
+                var newHhea = builder.BuildHhea(cffNumGlyphs);
+                if (newHhea != null)
+                    subsetFont.AddTable(newHhea);
+
+                var newHmtx = builder.BuildHmtx();
+                if (newHmtx != null)
+                    subsetFont.AddTable(newHmtx);
+
+                // CFF uses indexToLocFormat = 0 (doesn't matter for CFF)
+                var newHead = builder.BuildHead(0);
+                if (newHead != null)
+                    subsetFont.AddTable(newHead);
+            }
+        }
 
         // Build cmap table with only retained Unicode mappings
         var unicodeToNewGid = BuildUnicodeToNewGidMap();
@@ -463,7 +492,7 @@ public class Subsetter
 
         // Copy other tables that don't need subsetting
         var numTables = sourceFont.GetNumTables();
-        var handledTables = new HashSet<string> { "glyf", "loca", "maxp", "hhea", "hmtx", "head", "cmap", "post", "OS/2", "vmtx", "vhea" };
+        var handledTables = new HashSet<string> { "glyf", "loca", "maxp", "hhea", "hmtx", "head", "cmap", "post", "OS/2", "vmtx", "vhea", "CFF " };
         
         // Add name to handled if we built a new one
         if (_options.NewFontNameSuffix != null)

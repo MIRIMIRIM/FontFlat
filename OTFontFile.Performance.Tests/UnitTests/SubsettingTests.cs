@@ -410,9 +410,59 @@ namespace OTFontFile.Performance.Tests.UnitTests
         // ================== Comprehensive Real Font Tests ==================
 
         [TestMethod]
+        public void Subset_SourceHanSans_CFF_ChineseText()
+        {
+            // Test CFF/OTF font subsetting
+            var fontPath = Path.Combine(SampleFontsDir, "SourceHanSansCN-Regular.otf");
+            if (!File.Exists(fontPath))
+            {
+                Assert.Inconclusive($"Test font not found: {fontPath}");
+                return;
+            }
+
+            using var file = new OTFile();
+            file.open(fontPath);
+            var font = file.GetFont(0)!;
+
+            // Verify it's a CFF font
+            var cffTable = font.GetTable("CFF ");
+            Assert.IsNotNull(cffTable, "Font should have CFF table");
+
+            var options = new SubsetOptions().AddText("你好世界");
+            options.LayoutClosure = true;
+
+            var subsetter = new Subsetter(options);
+            var subsetFont = subsetter.Subset(font);
+
+            // Verify subset has CFF table
+            var subsetCFF = subsetFont.GetTable("CFF ");
+            Assert.IsNotNull(subsetCFF, "Subset font should have CFF table");
+
+            var maxp = subsetFont.GetTable("maxp") as Table_maxp;
+            Assert.IsNotNull(maxp);
+            Console.WriteLine($"SourceHanSans CFF subset: {maxp.NumGlyphs} glyphs");
+            Assert.IsTrue(maxp.NumGlyphs >= 4, $"Expected at least 4 glyphs, got {maxp.NumGlyphs}");
+
+            // Save and verify size reduction
+            var outputPath = Path.Combine(TempDir, "SourceHanSans_CFF_subset.otf");
+            using (var fs = new FileStream(outputPath, FileMode.Create, FileAccess.Write))
+            {
+                OTFile.WriteSfntFile(fs, subsetFont);
+            }
+
+            var originalSize = new FileInfo(fontPath).Length;
+            var subsetSize = new FileInfo(outputPath).Length;
+            var ratio = (double)subsetSize / originalSize;
+            Console.WriteLine($"CFF Size: {originalSize:N0} -> {subsetSize:N0} ({ratio:P1})");
+            
+            // CFF subsetting should reduce size significantly
+            Assert.IsTrue(ratio < 0.1, $"Expected <10% size, got {ratio:P1}");
+        }
+
+        [TestMethod]
         public void Subset_STSONG_ChineseText()
         {
-            // Note: Using TTF font. CFF/OTF subsetting not yet implemented.
+            // Using TTF font for TrueType subsetting
             var fontPath = Path.Combine(SampleFontsDir, "STSONG.TTF");
             if (!File.Exists(fontPath))
             {
