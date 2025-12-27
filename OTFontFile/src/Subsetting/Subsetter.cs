@@ -487,12 +487,27 @@ public class Subsetter
         if (newVORG != null)
             subsetFont.AddTable(newVORG);
 
-        // Build name table (optionally with renaming)
+        // Build name table
+        bool nameHandled = false;
         if (_options.NewFontNameSuffix != null)
         {
+            // If renaming is requested, use the renaming method
             var newName = builder.BuildName(_options.NewFontNameSuffix);
             if (newName != null)
+            {
                 subsetFont.AddTable(newName);
+                nameHandled = true;
+            }
+        }
+        else if (_options.SubsetNameTable)
+        {
+            // Subset name table to only retained name IDs (matching fonttools default)
+            var newName = builder.BuildSubsettedNameTable(_options.RetainedNameIds);
+            if (newName != null)
+            {
+                subsetFont.AddTable(newName);
+                nameHandled = true;
+            }
         }
 
         // Copy other tables that don't need subsetting
@@ -500,7 +515,7 @@ public class Subsetter
         var handledTables = new HashSet<string> { "glyf", "loca", "maxp", "hhea", "hmtx", "head", "cmap", "post", "OS/2", "vmtx", "vhea", "CFF ", "VORG" };
         
         // Add name to handled if we built a new one
-        if (_options.NewFontNameSuffix != null)
+        if (nameHandled)
             handledTables.Add("name");
 
         for (ushort i = 0; i < numTables; i++)

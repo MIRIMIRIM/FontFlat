@@ -885,6 +885,50 @@ internal class SubsetTableBuilder
     }
 
     /// <summary>
+    /// Build subset name table keeping only specified name IDs.
+    /// Matches fonttools/pyftsubset default behavior.
+    /// </summary>
+    public OTTable? BuildSubsettedNameTable(HashSet<int> retainedNameIds)
+    {
+        var sourceName = _sourceFont.GetTable("name") as Table_name;
+        if (sourceName == null)
+            return null;
+
+        // Get cache from source table
+        var cache = (Table_name.name_cache)sourceName.GetCache();
+        
+        // Find records to remove (those not in retained set)
+        var recordsToRemove = new List<(ushort platformID, ushort encodingID, ushort languageID, ushort nameID)>();
+        
+        for (ushort i = 0; i < cache.count; i++)
+        {
+            var nrc = cache.getNameRecord(i);
+            if (!retainedNameIds.Contains(nrc.nameID))
+            {
+                recordsToRemove.Add((nrc.platformID, nrc.encodingID, nrc.languageID, nrc.nameID));
+            }
+        }
+        
+        // Remove unwanted records
+        foreach (var (platformID, encodingID, languageID, nameID) in recordsToRemove)
+        {
+            try
+            {
+                cache.removeNameRecord(platformID, encodingID, languageID, nameID);
+            }
+            catch
+            {
+                // Record may not exist or already removed
+            }
+        }
+        
+        if (cache.count == 0)
+            return null;
+        
+        return (Table_name)cache.GenerateTable();
+    }
+
+    /// <summary>
     /// Build subset CFF table with de-subroutinized CharStrings.
     /// </summary>
     public Table_CFF? BuildCFF()

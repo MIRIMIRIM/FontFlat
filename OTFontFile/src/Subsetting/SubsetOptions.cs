@@ -93,6 +93,20 @@ public class SubsetOptions
     /// </summary>
     public bool PreserveCodePageRanges { get; set; } = true;
 
+    /// <summary>
+    /// Subset name table to only essential records (name IDs 1, 2).
+    /// This matches fonttools/pyftsubset default behavior.
+    /// Set to false to keep all name records.
+    /// Default: true.
+    /// </summary>
+    public bool SubsetNameTable { get; set; } = true;
+
+    /// <summary>
+    /// Name IDs to keep when SubsetNameTable is true.
+    /// Default: {1, 2} (Family name, Subfamily name) matching pyftsubset.
+    /// </summary>
+    public HashSet<int> RetainedNameIds { get; set; } = new() { 1, 2 };
+
     // ================== Helper Methods ==================
 
     /// <summary>
