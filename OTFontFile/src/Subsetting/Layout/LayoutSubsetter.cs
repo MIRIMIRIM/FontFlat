@@ -120,9 +120,9 @@ namespace OTFontFile.Subsetting.Layout
                 }
             }
             
-            // If no lookups survive, drop table? 
-            if (newLookupsModel.Count == 0 && tag == "GSUB") return null; 
-            // GPOS might allow empty lookup list but still have features? No, features point to lookups.
+            // Note: Unlike before, we DON'T drop tables with empty lookup lists.
+            // fonttools keeps the table structure (scripts/features) even with no lookups,
+            // as this preserves script information.
 
             // 3. Prune Features
             var newFeatureList = new FeatureList();
@@ -162,7 +162,7 @@ namespace OTFontFile.Subsetting.Layout
             }
             layout.FeatureList = newFeatureList;
 
-            // 4. Prune Scripts
+            // 4. Prune Scripts - Keep script structure even with empty features (fonttools behavior)
             var newScriptList = new ScriptList();
             if (layout.ScriptList != null)
             {
@@ -170,44 +170,33 @@ namespace OTFontFile.Subsetting.Layout
                 {
                     var script = scriptPair.Value;
                     var newLangSysRecs = new Dictionary<string, LangSys>();
-                    bool keepScript = false;
 
-                    // Update DefaultLangSys
+                    // Update DefaultLangSys (but always keep it if source had it)
                     if (script.DefaultLangSys != null)
                     {
-                        if (PruneLangSys(script.DefaultLangSys, plan))
-                        {
-                            keepScript = true;
-                        }
-                        else
-                        {
-                            script.DefaultLangSys = null; // Drop empty default?
-                        }
+                        PruneLangSys(script.DefaultLangSys, plan);
+                        // Keep DefaultLangSys structure even if empty
                     }
 
                     // Update LangSysRecords
                     foreach (var langPair in script.LangSysRecords)
                     {
-                        if (PruneLangSys(langPair.Value, plan))
-                        {
-                            newLangSysRecs[langPair.Key] = langPair.Value;
-                            keepScript = true;
-                        }
+                        PruneLangSys(langPair.Value, plan);
+                        // Keep all LangSys records (fonttools preserves structure)
+                        newLangSysRecs[langPair.Key] = langPair.Value;
                     }
                     script.LangSysRecords.Clear();
                     foreach (var kvp in newLangSysRecs) script.LangSysRecords[kvp.Key] = kvp.Value;
 
-                    if (keepScript)
-                    {
-                        newScriptList.Scripts[scriptPair.Key] = script;
-                    }
+                    // Always keep scripts that exist in source
+                    newScriptList.Scripts[scriptPair.Key] = script;
                 }
             }
             layout.ScriptList = newScriptList;
             
-            // If no scripts/features/lookups survived, drop the table entirely
-            // This matches reference tools behavior (pyftsubset, hb-subset)
-            if (newFeatureList.Features.Count == 0 || newScriptList.Scripts.Count == 0)
+            // Keep table structure as long as scripts exist (fonttools behavior)
+            // This preserves script information even with empty features/lookups
+            if (newScriptList.Scripts.Count == 0)
             {
                 return null;
             }
