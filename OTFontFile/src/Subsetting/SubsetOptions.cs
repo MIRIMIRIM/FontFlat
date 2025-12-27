@@ -53,6 +53,7 @@ public class SubsetOptions
         "JSTF",  // Justification - rarely used
         "PCLT",  // PCL 5 - legacy
         "LTSH",  // Linear Threshold - legacy hinting
+        "BASE",  // Baseline table - rarely needed after subsetting
         // Graphite tables
         "Feat", "Glat", "Gloc", "Silf", "Sill",
         // FontForge metadata - not needed
