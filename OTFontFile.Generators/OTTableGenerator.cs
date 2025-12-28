@@ -65,6 +65,12 @@ public class OTTableGenerator : IIncrementalGenerator
 
             var offset = (int)fieldAttr.ConstructorArguments[0].Value!;
             var fieldType = (int)fieldAttr.ConstructorArguments[1].Value!;
+            
+            // Get MinVersion from named arguments
+            int minVersion = -1;
+            var minVersionArg = fieldAttr.NamedArguments.FirstOrDefault(a => a.Key == "MinVersion");
+            if (minVersionArg.Value.Value is int mv)
+                minVersion = mv;
 
             var fieldName = fieldSymbol.Name;
             var propName = StringExtensions.ToPascalCase(fieldName);
@@ -75,7 +81,8 @@ public class OTTableGenerator : IIncrementalGenerator
                 PropertyName = propName,
                 Offset = offset,
                 FieldType = (OTFieldType)fieldType,
-                ClrType = fieldSymbol.Type.ToDisplayString()
+                ClrType = fieldSymbol.Type.ToDisplayString(),
+                MinVersion = minVersion
             });
         }
 
@@ -123,8 +130,26 @@ public class OTTableGenerator : IIncrementalGenerator
         foreach (var field in info.Fields)
         {
             var getter = GetBufferGetter(field.FieldType);
-            sb.AppendLine($"        public {field.ClrType} {field.PropertyName}");
-            sb.AppendLine($"            => m_bufTable.{getter}((uint)FieldOffsets.{field.PropertyName});");
+            
+            if (field.MinVersion >= 0)
+            {
+                // Version-conditional accessor
+                sb.AppendLine($"        public {field.ClrType} {field.PropertyName}");
+                sb.AppendLine("        {");
+                sb.AppendLine("            get");
+                sb.AppendLine("            {");
+                sb.AppendLine($"                if (version < 0x{field.MinVersion:X4})");
+                sb.AppendLine("                    throw new System.InvalidOperationException();");
+                sb.AppendLine($"                return m_bufTable.{getter}((uint)FieldOffsets.{field.PropertyName});");
+                sb.AppendLine("            }");
+                sb.AppendLine("        }");
+            }
+            else
+            {
+                // Simple accessor
+                sb.AppendLine($"        public {field.ClrType} {field.PropertyName}");
+                sb.AppendLine($"            => m_bufTable.{getter}((uint)FieldOffsets.{field.PropertyName});");
+            }
             sb.AppendLine();
         }
 
@@ -243,6 +268,7 @@ internal class FieldInfo
     public int Offset { get; set; }
     public OTFieldType FieldType { get; set; }
     public string ClrType { get; set; } = "";
+    public int MinVersion { get; set; } = -1;
 }
 
 internal static class StringExtensions

@@ -55,6 +55,14 @@ public sealed class OTFieldAttribute : Attribute
     public int Offset { get; }
     public OTFieldType Type { get; }
     
+    /// <summary>
+    /// Minimum table version required for this field. 
+    /// If set, the generated accessor will throw InvalidOperationException 
+    /// if the table version is less than this value.
+    /// Use -1 (default) for fields available in all versions.
+    /// </summary>
+    public int MinVersion { get; set; } = -1;
+    
     public OTFieldAttribute(int offset, OTFieldType type)
     {
         Offset = offset;
