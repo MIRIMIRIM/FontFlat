@@ -184,7 +184,17 @@ public class OTTableGenerator : IIncrementalGenerator
         sb.AppendLine("            {");
         foreach (var field in info.Fields)
         {
-            sb.AppendLine($"                m_{field.PropertyName} = owner.{field.PropertyName};");
+            if (field.MinVersion >= 0)
+            {
+                // Conditional field - check version first
+                sb.AppendLine($"                if (owner.version >= 0x{field.MinVersion:X4})");
+                sb.AppendLine($"                    m_{field.PropertyName} = owner.{field.PropertyName};");
+            }
+            else
+            {
+                // Always available
+                sb.AppendLine($"                m_{field.PropertyName} = owner.{field.PropertyName};");
+            }
         }
         sb.AppendLine("            }");
         sb.AppendLine();
