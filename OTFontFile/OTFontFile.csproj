@@ -30,4 +30,10 @@
     <None Include="LICENSE" Pack="true" PackagePath="" />
 </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\OTFontFile.Generators\OTFontFile.Generators.csproj" 
+                      OutputItemType="Analyzer" 
+                      ReferenceOutputAssembly="true" />
+  </ItemGroup>
+
 </Project>
