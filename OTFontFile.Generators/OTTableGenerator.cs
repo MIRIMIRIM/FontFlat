@@ -251,11 +251,10 @@ internal static class StringExtensions
     {
         if (string.IsNullOrEmpty(name)) return name;
         
-        // Remove leading underscore and capitalize first letter
+        // Remove leading underscore only
         if (name.StartsWith("_"))
-            name = name.Substring(1);
+            return name.Substring(1);
         
-        if (name.Length == 0) return name;
-        return char.ToUpperInvariant(name[0]) + name.Substring(1);
+        return name;
     }
 }
