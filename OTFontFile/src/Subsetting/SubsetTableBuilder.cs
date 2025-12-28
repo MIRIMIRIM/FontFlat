@@ -203,21 +203,57 @@ internal class SubsetTableBuilder
         var sortedNewGlyphs = _glyphIdMap.OrderBy(kv => kv.Value).ToList();
         var newNumGlyphs = (ushort)sortedNewGlyphs.Count;
 
-        // For simplicity, store all glyphs as full longHorMetric entries (4 bytes each)
-        // A more optimized version could compress trailing entries with same advanceWidth
-        var bufferSize = (uint)(newNumGlyphs * 4);
-        var buffer = new MBOBuffer(bufferSize);
-
-        uint offset = 0;
+        // Collect metrics 
+        var metrics = new List<(ushort advanceWidth, short lsb)>();
         foreach (var (oldGid, newGid) in sortedNewGlyphs)
         {
             var metric = sourceHmtx.GetOrMakeHMetric((ushort)oldGid, _sourceFont);
-            buffer.SetUshort(metric.advanceWidth, offset);
-            buffer.SetShort(metric.lsb, offset + 2);
-            offset += 4;
+            metrics.Add((metric.advanceWidth, metric.lsb));
         }
 
-        return new Table_hmtx("hmtx", buffer, sourceHhea, newNumGlyphs);
+        // Calculate optimal numberOfHMetrics: find trailing glyphs with same advanceWidth
+        // Per OpenType spec, trailing glyphs can share last advanceWidth, only storing LSB
+        ushort numberOfHMetrics = newNumGlyphs;
+        if (newNumGlyphs >= 2)
+        {
+            ushort lastAdvanceWidth = metrics[newNumGlyphs - 1].advanceWidth;
+            // Count how many trailing glyphs share this advance width
+            for (int i = newNumGlyphs - 2; i >= 0; i--)
+            {
+                if (metrics[i].advanceWidth == lastAdvanceWidth)
+                    numberOfHMetrics = (ushort)(i + 1);
+                else
+                    break;
+            }
+            // Must keep at least 1 full entry
+            if (numberOfHMetrics == 0) numberOfHMetrics = 1;
+        }
+
+        // Calculate buffer size: numberOfHMetrics * 4 + (numGlyphs - numberOfHMetrics) * 2
+        uint fullEntries = (uint)(numberOfHMetrics * 4);
+        uint lsbOnlyEntries = (uint)((newNumGlyphs - numberOfHMetrics) * 2);
+        var bufferSize = fullEntries + lsbOnlyEntries;
+        var buffer = new MBOBuffer(bufferSize);
+
+        uint offset = 0;
+        for (int i = 0; i < newNumGlyphs; i++)
+        {
+            if (i < numberOfHMetrics)
+            {
+                // Full longHorMetric entry (4 bytes)
+                buffer.SetUshort(metrics[i].advanceWidth, offset);
+                buffer.SetShort(metrics[i].lsb, offset + 2);
+                offset += 4;
+            }
+            else
+            {
+                // LSB-only entry (2 bytes)
+                buffer.SetShort(metrics[i].lsb, offset);
+                offset += 2;
+            }
+        }
+
+        return new Table_hmtx("hmtx", buffer, sourceHhea, numberOfHMetrics);
     }
 
     /// <summary>
@@ -744,20 +780,52 @@ internal class SubsetTableBuilder
         var sortedNewGlyphs = _glyphIdMap.OrderBy(kv => kv.Value).ToList();
         var newNumGlyphs = (ushort)sortedNewGlyphs.Count;
 
-        // For simplicity, store all glyphs as full vMetric entries (4 bytes each)
-        var bufferSize = (uint)(newNumGlyphs * 4);
-        var buffer = new MBOBuffer(bufferSize);
-
-        uint offset = 0;
+        // Collect metrics 
+        var metrics = new List<(ushort advanceHeight, short tsb)>();
         foreach (var (oldGid, newGid) in sortedNewGlyphs)
         {
             var metric = sourceVmtx.GetVMetric((ushort)oldGid, _sourceFont);
-            buffer.SetUshort(metric.advanceHeight, offset);
-            buffer.SetShort(metric.topSideBearing, offset + 2);
-            offset += 4;
+            metrics.Add((metric.advanceHeight, metric.topSideBearing));
         }
 
-        return new Table_vmtx("vmtx", buffer, sourceVhea, newNumGlyphs);
+        // Calculate optimal numOfLongVerMetrics: find trailing glyphs with same advanceHeight
+        ushort numOfLongVerMetrics = newNumGlyphs;
+        if (newNumGlyphs >= 2)
+        {
+            ushort lastAdvanceHeight = metrics[newNumGlyphs - 1].advanceHeight;
+            for (int i = newNumGlyphs - 2; i >= 0; i--)
+            {
+                if (metrics[i].advanceHeight == lastAdvanceHeight)
+                    numOfLongVerMetrics = (ushort)(i + 1);
+                else
+                    break;
+            }
+            if (numOfLongVerMetrics == 0) numOfLongVerMetrics = 1;
+        }
+
+        // Calculate buffer size
+        uint fullEntries = (uint)(numOfLongVerMetrics * 4);
+        uint tsbOnlyEntries = (uint)((newNumGlyphs - numOfLongVerMetrics) * 2);
+        var bufferSize = fullEntries + tsbOnlyEntries;
+        var buffer = new MBOBuffer(bufferSize);
+
+        uint offset = 0;
+        for (int i = 0; i < newNumGlyphs; i++)
+        {
+            if (i < numOfLongVerMetrics)
+            {
+                buffer.SetUshort(metrics[i].advanceHeight, offset);
+                buffer.SetShort(metrics[i].tsb, offset + 2);
+                offset += 4;
+            }
+            else
+            {
+                buffer.SetShort(metrics[i].tsb, offset);
+                offset += 2;
+            }
+        }
+
+        return new Table_vmtx("vmtx", buffer, sourceVhea, numOfLongVerMetrics);
     }
 
     /// <summary>
