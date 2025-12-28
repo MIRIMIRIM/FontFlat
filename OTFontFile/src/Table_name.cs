@@ -843,46 +843,72 @@ namespace OTFontFile
 
             public override OTTable GenerateTable()
             {
-                List<byte[]> bytesNameString = [];
-                ushort nLengthOfStrings = 0;
-                ushort nStartOfStringStorage = (ushort)(6 + (m_nameRecords.Count * 12));
-
-                for( ushort i = 0; i < m_nameRecords.Count; i++ )
+                // First pass: encode strings and deduplicate
+                var encodedStrings = new List<byte[]>();
+                var stringOffsets = new List<ushort>();
+                var stringCache = new Dictionary<string, (ushort offset, ushort length)>();
+                ushort currentOffset = 0;
+                var uniqueStrings = new List<byte[]>();
+                
+                for (ushort i = 0; i < m_nameRecords.Count; i++)
                 {
                     NameRecordCache nrc = m_nameRecords[i];
                     var byteString = EncodeString(nrc.sNameString!, nrc.platformID, nrc.encodingID)!;
-                    bytesNameString.Add( byteString );
-                    nLengthOfStrings += (ushort)byteString.Length;
+                    encodedStrings.Add(byteString);
+                    
+                    // Create cache key: platform+encoding+string content
+                    // Same string with same encoding should share storage
+                    string cacheKey = $"{nrc.platformID}:{nrc.encodingID}:{nrc.sNameString}";
+                    
+                    if (stringCache.TryGetValue(cacheKey, out var cached))
+                    {
+                        // Reuse existing string offset
+                        stringOffsets.Add(cached.offset);
+                    }
+                    else
+                    {
+                        // New string, add to storage
+                        stringOffsets.Add(currentOffset);
+                        stringCache[cacheKey] = (currentOffset, (ushort)byteString.Length);
+                        uniqueStrings.Add(byteString);
+                        currentOffset += (ushort)byteString.Length;
+                    }
                 }
+                
+                ushort nStartOfStringStorage = (ushort)(6 + (m_nameRecords.Count * 12));
+                ushort nTotalStringBytes = currentOffset;
 
                 // create a Motorola Byte Order buffer for the new table
-                MBOBuffer newbuf = new MBOBuffer( (uint)(Table_name.FieldOffsets.NameRecords + (m_nameRecords.Count * 12) + nLengthOfStrings));
+                MBOBuffer newbuf = new MBOBuffer((uint)(nStartOfStringStorage + nTotalStringBytes));
 
                 // populate the buffer                
-                newbuf.SetUshort( m_format,                        (uint)FieldOffsets.FormatSelector );
-                newbuf.SetUshort( (ushort)m_nameRecords.Count,    (uint)FieldOffsets.NumberNameRecords );
-                newbuf.SetUshort( nStartOfStringStorage,        (uint)FieldOffsets.OffsetToStrings );
+                newbuf.SetUshort(m_format, (uint)FieldOffsets.FormatSelector);
+                newbuf.SetUshort((ushort)m_nameRecords.Count, (uint)FieldOffsets.NumberNameRecords);
+                newbuf.SetUshort(nStartOfStringStorage, (uint)FieldOffsets.OffsetToStrings);
 
-                ushort nOffset = 0;
-                // Write the NameRecords and Strings
-                for( ushort i = 0; i < m_nameRecords.Count; i++ )
+                // Write the NameRecords
+                for (ushort i = 0; i < m_nameRecords.Count; i++)
                 {    
-                    byte[] bString = bytesNameString[i];
+                    byte[] bString = encodedStrings[i];
+                    ushort stringOffset = stringOffsets[i];
                     
-                    newbuf.SetUshort(m_nameRecords[i].platformID,    (uint)(FieldOffsets.NameRecords + (i * 12)));
-                    newbuf.SetUshort(m_nameRecords[i].encodingID,    (uint)(FieldOffsets.NameRecords + (i * 12) + 2));
-                    newbuf.SetUshort(m_nameRecords[i].languageID,    (uint)(FieldOffsets.NameRecords + (i * 12) + 4));
-                    newbuf.SetUshort(m_nameRecords[i].nameID,        (uint)(FieldOffsets.NameRecords + (i * 12) + 6));
-                    newbuf.SetUshort( (ushort)bString.Length,        (uint)(FieldOffsets.NameRecords + (i * 12) + 8));
-                    newbuf.SetUshort( nOffset,                       (uint)(FieldOffsets.NameRecords + (i * 12) + 10));
-                    
-                    //Write the string to the buffer
-                    for( int ii = 0; ii < bString.Length; ii++ )
+                    newbuf.SetUshort(m_nameRecords[i].platformID, (uint)(FieldOffsets.NameRecords + (i * 12)));
+                    newbuf.SetUshort(m_nameRecords[i].encodingID, (uint)(FieldOffsets.NameRecords + (i * 12) + 2));
+                    newbuf.SetUshort(m_nameRecords[i].languageID, (uint)(FieldOffsets.NameRecords + (i * 12) + 4));
+                    newbuf.SetUshort(m_nameRecords[i].nameID, (uint)(FieldOffsets.NameRecords + (i * 12) + 6));
+                    newbuf.SetUshort((ushort)bString.Length, (uint)(FieldOffsets.NameRecords + (i * 12) + 8));
+                    newbuf.SetUshort(stringOffset, (uint)(FieldOffsets.NameRecords + (i * 12) + 10));
+                }
+                
+                // Write unique strings to storage
+                ushort writeOffset = 0;
+                foreach (var bString in uniqueStrings)
+                {
+                    for (int ii = 0; ii < bString.Length; ii++)
                     {
-                        newbuf.SetByte( bString[ii], (uint)(nStartOfStringStorage + nOffset + ii));
+                        newbuf.SetByte(bString[ii], (uint)(nStartOfStringStorage + writeOffset + ii));
                     }
-
-                    nOffset += (ushort)bString.Length;
+                    writeOffset += (ushort)bString.Length;
                 }
 
                 // put the buffer into a Table_name object and return it
