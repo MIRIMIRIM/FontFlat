@@ -554,7 +554,11 @@ public class Subsetter
                     var plan = new OTFontFile.Subsetting.Layout.SubsetPlan(
                         _retainedGlyphs, 
                         _glyphIdMap
-                    );
+                    )
+                    {
+                        FeatureFilter = _options.LayoutFeatures ?? SubsetOptions.DefaultLayoutFeatures,
+                        ScriptFilter = _options.LayoutScripts
+                    };
                     
                     var layoutSubsetter = new OTFontFile.Subsetting.Layout.LayoutSubsetter();
                     var subsetGsub = layoutSubsetter.SubsetGsub(gsub, plan);
@@ -577,7 +581,11 @@ public class Subsetter
                     var plan = new OTFontFile.Subsetting.Layout.SubsetPlan(
                         _retainedGlyphs, 
                         _glyphIdMap
-                    );
+                    )
+                    {
+                        FeatureFilter = _options.LayoutFeatures ?? SubsetOptions.DefaultLayoutFeatures,
+                        ScriptFilter = _options.LayoutScripts
+                    };
                     
                     var layoutSubsetter = new OTFontFile.Subsetting.Layout.LayoutSubsetter();
                     var subsetGpos = layoutSubsetter.SubsetGpos(gpos, plan);

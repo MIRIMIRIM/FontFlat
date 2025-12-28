@@ -41,6 +41,30 @@ public class SubsetOptions
     /// </summary>
     public bool LayoutClosure { get; set; } = false;
 
+    /// <summary>
+    /// Layout feature tags to retain.
+    /// null = use DefaultLayoutFeatures, empty = drop all, contains "*" = keep all.
+    /// Example: new() { "kern", "liga" } to keep only kerning and ligatures.
+    /// </summary>
+    public HashSet<string>? LayoutFeatures { get; set; } = null;
+
+    /// <summary>
+    /// Layout script tags to retain.
+    /// null or contains "*" = keep all scripts.
+    /// Example: new() { "latn", "cyrl" } to keep only Latin and Cyrillic.
+    /// </summary>
+    public HashSet<string>? LayoutScripts { get; set; } = null;
+
+    /// <summary>
+    /// Default layout features to retain (matches pyftsubset defaults).
+    /// </summary>
+    public static readonly HashSet<string> DefaultLayoutFeatures = new()
+    {
+        "calt", "ccmp", "clig", "curs", "dnom", "frac",
+        "kern", "liga", "locl", "mark", "mkmk", "numr",
+        "rclt", "rlig", "rvrn"
+    };
+
     // ================== Table Handling ==================
 
     /// <summary>

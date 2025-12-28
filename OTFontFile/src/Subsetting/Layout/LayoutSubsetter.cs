@@ -134,6 +134,11 @@ namespace OTFontFile.Subsetting.Layout
                 for (int i = 0; i < layout.FeatureList.Features.Count; i++)
                 {
                     var featRec = layout.FeatureList.Features[i];
+                    
+                    // Check if this feature tag should be kept based on filter
+                    if (!plan.ShouldKeepFeature(featRec.Tag))
+                        continue;
+                    
                     var newIndices = new List<ushort>();
                     bool keepFeature = false;
 
@@ -172,6 +177,10 @@ namespace OTFontFile.Subsetting.Layout
             {
                 foreach (var scriptPair in layout.ScriptList.Scripts)
                 {
+                    // Check if this script should be kept based on filter
+                    if (!plan.ShouldKeepScript(scriptPair.Key))
+                        continue;
+                    
                     var script = scriptPair.Value;
                     var newLangSysRecs = new Dictionary<string, LangSys>();
                     bool hasFeatures = false;

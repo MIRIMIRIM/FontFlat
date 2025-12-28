@@ -47,6 +47,36 @@ namespace OTFontFile.Subsetting.Layout
         /// </summary>
         public Dictionary<int, int>? FeatureIndexMap { get; set; }
 
+        /// <summary>
+        /// Feature tags to retain. null = all, empty = none, {"*"} = all.
+        /// </summary>
+        public HashSet<string>? FeatureFilter { get; set; }
+
+        /// <summary>
+        /// Script tags to retain. null or {"*"} = all.
+        /// </summary>
+        public HashSet<string>? ScriptFilter { get; set; }
+
+        /// <summary>
+        /// Check if a feature tag should be kept.
+        /// </summary>
+        public bool ShouldKeepFeature(string tag)
+        {
+            if (FeatureFilter == null) return true;
+            if (FeatureFilter.Contains("*")) return true;
+            return FeatureFilter.Contains(tag);
+        }
+
+        /// <summary>
+        /// Check if a script tag should be kept.
+        /// </summary>
+        public bool ShouldKeepScript(string tag)
+        {
+            if (ScriptFilter == null) return true;
+            if (ScriptFilter.Contains("*")) return true;
+            return ScriptFilter.Contains(tag);
+        }
+
         public SubsetPlan(HashSet<ushort> retainedGlyphs, Dictionary<int, int> oldToNewGid)
         {
             // Convert to consistent types
