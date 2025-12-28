@@ -229,12 +229,18 @@ public class CFFBuilder
         var topDictIndexBytes = BuildIndex(new[] { newTopDict });
         result.AddRange(topDictIndexBytes);
 
-        // 4. String INDEX (simplified - keep minimal)
+        // 4. String INDEX - keep only essential strings (fonttools keeps ~7)
+        // SIDs 0-390 are standard strings, custom strings start at 391
+        // Only keep strings that are needed for the minimal TopDict
         var subsetStringIndex = new List<byte[]>();
-        // Always include at least one string for CID-keyed fonts
         if (stringIndex.Count > 0)
         {
-            subsetStringIndex = stringIndex.Take(Math.Min(stringIndex.Count, 10)).ToList();
+            // Keep first 7 strings max (typically: FontName variants needed by TopDict)
+            int keepCount = Math.Min(stringIndex.Count, 7);
+            for (int i = 0; i < keepCount; i++)
+            {
+                subsetStringIndex.Add(stringIndex[i]);
+            }
         }
         result.AddRange(BuildIndex(subsetStringIndex));
 
