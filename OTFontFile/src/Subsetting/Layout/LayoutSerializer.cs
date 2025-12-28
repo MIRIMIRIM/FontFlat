@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using OTFontFile;
 
@@ -62,88 +63,12 @@ namespace OTFontFile.Subsetting.Layout
             int lookupListOffsetPos = builder.CurrentPosition;
             builder.WriteUshort(0);
 
-            // ================= SCRIPT LIST =================
-            if (layout.ScriptList != null && layout.ScriptList.Scripts.Count > 0)
-            {
-                int scriptListStart = builder.CurrentPosition;
-                builder.PatchUshort(scriptListOffsetPos, (ushort)(scriptListStart - headerStart));
-                
-                var scriptList = layout.ScriptList;
-                var scripts = new List<(string Tag, Script Script)>(scriptList.Scripts.Count);
-                foreach (var kvp in scriptList.Scripts) scripts.Add((kvp.Key, kvp.Value));
-                scripts.Sort((a, b) => string.Compare(a.Tag, b.Tag, StringComparison.Ordinal)); // Must be tag sorted
-
-                builder.WriteUshort((ushort)scripts.Count);
-                
-                // ScriptRecords
-                var scriptOffsetsToFill = new List<(int Pos, Script Script)>();
-                foreach (var s in scripts)
-                {
-                    builder.WriteTag(s.Tag);
-                    int offsetPos = builder.CurrentPosition;
-                    builder.WriteUshort(0); // Placeholder
-                    scriptOffsetsToFill.Add((offsetPos, s.Script));
-                }
-
-                // Script Tables
-                foreach (var item in scriptOffsetsToFill)
-                {
-                    int scriptStart = builder.CurrentPosition;
-                    builder.PatchUshort(item.Pos, (ushort)(scriptStart - scriptListStart));
-                    
-                    var script = item.Script;
-                    // DefaultLangSys
-                    int defLangSysOffsetPos = builder.CurrentPosition;
-                    builder.WriteUshort(0);
-                    
-                    // LangSysRecords
-                    builder.WriteUshort((ushort)script.LangSysRecords.Count);
-                    var langSysOffsetsToFill = new List<(int Pos, LangSys LangSys)>();
-                    
-                    // Sorted LangSys
-                    var langs = new List<(string Tag, LangSys LangSys)>();
-                    foreach(var kvp in script.LangSysRecords) langs.Add((kvp.Key, kvp.Value));
-                    langs.Sort((a, b) => string.Compare(a.Tag, b.Tag, StringComparison.Ordinal));
-
-                    foreach (var l in langs)
-                    {
-                        builder.WriteTag(l.Tag);
-                        int offsetPos = builder.CurrentPosition;
-                        builder.WriteUshort(0);
-                        langSysOffsetsToFill.Add((offsetPos, l.LangSys));
-                    }
-
-                    // Write DefaultLangSys
-                    if (script.DefaultLangSys != null)
-                    {
-                        int defPos = builder.CurrentPosition;
-                        builder.PatchUshort(defLangSysOffsetPos, (ushort)(defPos - scriptStart));
-                        SerializeLangSys(builder, script.DefaultLangSys);
-                    }
-
-                    // Write LangSys Tables
-                    foreach (var lItem in langSysOffsetsToFill)
-                    {
-                        int lPos = builder.CurrentPosition;
-                        builder.PatchUshort(lItem.Pos, (ushort)(lPos - scriptStart));
-                        SerializeLangSys(builder, lItem.LangSys);
-                    }
-                }
-            }
-
-            // ================= FEATURE LIST =================
+            // ================= FEATURE LIST (write early, even if empty, per fonttools) =================
+            int featureListStart = builder.CurrentPosition;
+            builder.PatchUshort(featureListOffsetPos, (ushort)(featureListStart - headerStart));
             if (layout.FeatureList != null && layout.FeatureList.Features.Count > 0)
             {
-                int featureListStart = builder.CurrentPosition;
-                builder.PatchUshort(featureListOffsetPos, (ushort)(featureListStart - headerStart));
-
-                var features = layout.FeatureList.Features; // Already sorted by Tag usually? Fonttools re-sorts? 
-                // Spec says: "Alphabetical order by FeatureTag"
-                // But FeatureIndex is referenced by LangSys. 
-                // If we reorder features, we must have updated indices in LangSys!
-                // LayoutSubsetter MUST ensure FeatureIndices are mapped to the FINAL sorted order.
-                // Assuming `layout.FeatureList` is already in correct Final Order.
-                
+                var features = layout.FeatureList.Features;
                 builder.WriteUshort((ushort)features.Count);
                 
                 var featureOffsetsToFill = new List<(int Pos, Feature Feature)>();
@@ -157,11 +82,11 @@ namespace OTFontFile.Subsetting.Layout
 
                 foreach (var item in featureOffsetsToFill)
                 {
-                    int featureStart = builder.CurrentPosition;
-                    builder.PatchUshort(item.Pos, (ushort)(featureStart - featureListStart));
+                    int fStart = builder.CurrentPosition;
+                    builder.PatchUshort(item.Pos, (ushort)(fStart - featureListStart));
                     
                     var feat = item.Feature;
-                    builder.WriteUshort(feat.FeatureParamsOffset); // Usually 0
+                    builder.WriteUshort(feat.FeatureParamsOffset);
                     builder.WriteUshort((ushort)feat.LookupIndices.Count);
                     foreach (var li in feat.LookupIndices)
                     {
@@ -169,13 +94,17 @@ namespace OTFontFile.Subsetting.Layout
                     }
                 }
             }
-
-            // ================= LOOKUP LIST =================
+            else
+            {
+                // Write empty FeatureList (just count=0)
+                builder.WriteUshort(0);
+            }
+            
+            // ================= LOOKUP LIST (write early, even if empty) =================
+            int lookupListStart = builder.CurrentPosition;
+            builder.PatchUshort(lookupListOffsetPos, (ushort)(lookupListStart - headerStart));
             if (newLookupsModel.Count > 0)
             {
-                int lookupListStart = builder.CurrentPosition;
-                builder.PatchUshort(lookupListOffsetPos, (ushort)(lookupListStart - headerStart));
-
                 builder.WriteUshort((ushort)newLookupsModel.Count);
                 
                 var lookupOffsetsToFill = new List<int>();
@@ -186,11 +115,10 @@ namespace OTFontFile.Subsetting.Layout
                     lookupOffsetsToFill.Add(offsetPos);
                 }
 
-                // Write Lookups and Subtables
                 for (int i = 0; i < newLookupsModel.Count; i++)
                 {
-                    int lookupStart = builder.CurrentPosition;
-                    builder.PatchUshort(lookupOffsetsToFill[i], (ushort)(lookupStart - lookupListStart));
+                    int lkStart = builder.CurrentPosition;
+                    builder.PatchUshort(lookupOffsetsToFill[i], (ushort)(lkStart - lookupListStart));
                     
                     var lookupModel = newLookupsModel[i];
                     var subtablesRaw = newLookupSubtables[i];
@@ -202,34 +130,150 @@ namespace OTFontFile.Subsetting.Layout
                     var subtableOffsetsToFill = new List<int>();
                     for (int s = 0; s < subtablesRaw.Count; s++)
                     {
-                        int offsetPos = builder.CurrentPosition;
+                        int sPos = builder.CurrentPosition;
                         builder.WriteUshort(0);
-                        subtableOffsetsToFill.Add(offsetPos);
+                        subtableOffsetsToFill.Add(sPos);
                     }
-                    
-                    // Filtering mark sets (LookupFlag & 0x0010) ? Not doing complex GDEF/MarkSet handling yet.
 
-                    // Write Subtable Data
                     for (int s = 0; s < subtablesRaw.Count; s++)
                     {
                         int subtableStart = builder.CurrentPosition;
-                        
-                        // Check Offset 16-bit Overflow
-                        int offset = subtableStart - lookupStart;
+                        int offset = subtableStart - lkStart;
                         if (offset > 65535)
+                            throw new Exception("Lookup Subtable Offset Overflow > 65535.");
+                        builder.PatchUshort(subtableOffsetsToFill[s], (ushort)offset);
+                        builder.WriteBytes(subtablesRaw[s]);
+                    }
+                }
+            }
+            else
+            {
+                // Write empty LookupList (just count=0)
+                builder.WriteUshort(0);
+            }
+
+            // ================= SCRIPT LIST =================
+            if (layout.ScriptList != null && layout.ScriptList.Scripts.Count > 0)
+            {
+                int scriptListStart = builder.CurrentPosition;
+                builder.PatchUshort(scriptListOffsetPos, (ushort)(scriptListStart - headerStart));
+                
+                var scriptList = layout.ScriptList;
+                var scripts = new List<(string Tag, Script Script)>(scriptList.Scripts.Count);
+                foreach (var kvp in scriptList.Scripts) scripts.Add((kvp.Key, kvp.Value));
+                scripts.Sort((a, b) => string.Compare(a.Tag, b.Tag, StringComparison.Ordinal));
+
+                builder.WriteUshort((ushort)scripts.Count);
+                
+                // ScriptRecords (tag + offset placeholder)
+                var scriptOffsetsToFill = new List<(int Pos, Script Script, string Tag)>();
+                foreach (var s in scripts)
+                {
+                    builder.WriteTag(s.Tag);
+                    int offsetPos = builder.CurrentPosition;
+                    builder.WriteUshort(0);
+                    scriptOffsetsToFill.Add((offsetPos, s.Script, s.Tag));
+                }
+
+                // Serialize Script tables with deduplication
+                // fonttools reuses the same empty Script table for all non-DFLT scripts
+                var scriptTableCache = new Dictionary<string, int>(); // hash -> offset
+                
+                foreach (var item in scriptOffsetsToFill)
+                {
+                    var script = item.Script;
+                    
+                    // Create a unique key for this Script structure
+                    string scriptKey = GetScriptKey(script);
+                    
+                    if (scriptTableCache.TryGetValue(scriptKey, out int existingOffset))
+                    {
+                        // Reuse existing Script table
+                        builder.PatchUshort(item.Pos, (ushort)existingOffset);
+                    }
+                    else
+                    {
+                        // Write new Script table
+                        int scriptStart = builder.CurrentPosition;
+                        int relativeOffset = scriptStart - scriptListStart;
+                        builder.PatchUshort(item.Pos, (ushort)relativeOffset);
+                        scriptTableCache[scriptKey] = relativeOffset;
+                        
+                        // DefaultLangSys offset placeholder
+                        int defLangSysOffsetPos = builder.CurrentPosition;
+                        builder.WriteUshort(0);
+                        
+                        // LangSysRecords
+                        builder.WriteUshort((ushort)script.LangSysRecords.Count);
+                        var langSysOffsetsToFill = new List<(int Pos, LangSys LangSys)>();
+                        
+                        var langs = new List<(string Tag, LangSys LangSys)>();
+                        foreach(var kvp in script.LangSysRecords) langs.Add((kvp.Key, kvp.Value));
+                        langs.Sort((a, b) => string.Compare(a.Tag, b.Tag, StringComparison.Ordinal));
+
+                        foreach (var l in langs)
                         {
-                            throw new Exception("Lookup Subtable Offset Overflow > 65535. Extension not supported yet.");
+                            builder.WriteTag(l.Tag);
+                            int offsetPos = builder.CurrentPosition;
+                            builder.WriteUshort(0);
+                            langSysOffsetsToFill.Add((offsetPos, l.LangSys));
                         }
 
-                        builder.PatchUshort(subtableOffsetsToFill[s], (ushort)offset);
-                        
-                        // Write bytes
-                        builder.WriteBytes(subtablesRaw[s]);
+                        // Write DefaultLangSys
+                        if (script.DefaultLangSys != null)
+                        {
+                            int defPos = builder.CurrentPosition;
+                            builder.PatchUshort(defLangSysOffsetPos, (ushort)(defPos - scriptStart));
+                            SerializeLangSys(builder, script.DefaultLangSys);
+                        }
+
+                        // Write LangSys Tables
+                        foreach (var lItem in langSysOffsetsToFill)
+                        {
+                            int lPos = builder.CurrentPosition;
+                            builder.PatchUshort(lItem.Pos, (ushort)(lPos - scriptStart));
+                            SerializeLangSys(builder, lItem.LangSys);
+                        }
                     }
                 }
             }
 
             return builder.ToArray();
+        }
+        
+        /// <summary>
+        /// Creates a unique key for a Script structure for deduplication.
+        /// Scripts with the same structure can share the same table data.
+        /// </summary>
+        private static string GetScriptKey(Script script)
+        {
+            // Build a key based on DefaultLangSys and LangSysRecords
+            var sb = new StringBuilder();
+            
+            // DefaultLangSys 
+            if (script.DefaultLangSys != null)
+            {
+                sb.Append($"D:{GetLangSysKey(script.DefaultLangSys)};");
+            }
+            else
+            {
+                sb.Append("D:null;");
+            }
+            
+            // LangSysRecords (sorted)
+            var langs = script.LangSysRecords.OrderBy(kv => kv.Key);
+            foreach (var (tag, langSys) in langs)
+            {
+                sb.Append($"L:{tag}:{GetLangSysKey(langSys)};");
+            }
+            
+            return sb.ToString();
+        }
+        
+        private static string GetLangSysKey(LangSys langSys)
+        {
+            var features = string.Join(",", langSys.FeatureIndices.OrderBy(x => x));
+            return $"{langSys.RequiredFeatureIndex}|{features}";
         }
 
         private static void SerializeLangSys(LayoutBinaryBuilder builder, LangSys langSys)
