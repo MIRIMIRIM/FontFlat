@@ -384,8 +384,19 @@ namespace OTFontFile
         {
             bool bRet = true;
 
-
-            OTFixed sfntVersion = new OTFixed(1,0);
+            // Use correct sfntVersion based on font type
+            OTFixed sfntVersion;
+            if (font.ContainsPostScriptOutlines())
+            {
+                // CFF fonts use 'OTTO' signature
+                sfntVersion = new OTFixed(OTTagConstants.SFNT_OTTO);
+            }
+            else
+            {
+                // TrueType fonts use 0x00010000
+                sfntVersion = new OTFixed(1, 0);
+            }
+            
             ushort numTables = font.GetNumTables();
             OffsetTable ot = new OffsetTable(sfntVersion, numTables);
 

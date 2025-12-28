@@ -79,6 +79,15 @@ namespace OTFontFile
             mantissa = (short)Math.Round(fixValue, 0);
             fraction = (ushort)Math.Round((fixValue - mantissa) * 65536, 0);
         }
+        
+        /// <summary>
+        /// Construct from raw 32-bit value (e.g., for OTTO signature 0x4F54544F)
+        /// </summary>
+        public OTFixed(uint rawValue)
+        {
+            mantissa = (short)(rawValue >> 16);
+            fraction = (ushort)(rawValue & 0xFFFF);
+        }
 
         public uint GetUint()
         {
