@@ -119,6 +119,14 @@ public class SubsetOptions
     public bool PreserveCodePageRanges { get; set; } = true;
 
     /// <summary>
+    /// Preserve OS/2 ulUnicodeRange bits even when subsetting.
+    /// This is equivalent to hb-subset --no-prune-unicode-ranges option.
+    /// Default: false (prune ranges to match retained unicodes).
+    /// </summary>
+    public bool PreserveUnicodeRanges { get; set; } = false;
+
+
+    /// <summary>
     /// Subset name table to only essential records (name IDs 1, 2).
     /// This matches fonttools/pyftsubset default behavior.
     /// Set to false to keep all name records.

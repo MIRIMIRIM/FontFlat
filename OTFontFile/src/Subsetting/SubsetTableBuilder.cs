@@ -620,7 +620,7 @@ internal class SubsetTableBuilder
     /// <summary>
     /// Build subset OS/2 table with updated Unicode ranges and char indices.
     /// </summary>
-    public Table_OS2? BuildOS2(IEnumerable<int> retainedUnicodes)
+    public Table_OS2? BuildOS2(IEnumerable<int> retainedUnicodes, bool preserveUnicodeRanges = false)
     {
         var sourceOS2 = _sourceFont.GetTable("OS/2") as Table_OS2;
         if (sourceOS2 == null)
@@ -628,14 +628,19 @@ internal class SubsetTableBuilder
 
         var cache = (Table_OS2.OS2_cache)sourceOS2.GetCache();
         
-        // Calculate Unicode ranges from retained unicodes
-        var (range1, range2, range3, range4) = CalculateUnicodeRanges(retainedUnicodes);
-        
-        // Prune - only keep bits that were originally set AND are still needed
-        cache.ulUnicodeRange1 = sourceOS2.ulUnicodeRange1 & range1;
-        cache.ulUnicodeRange2 = sourceOS2.ulUnicodeRange2 & range2;
-        cache.ulUnicodeRange3 = sourceOS2.ulUnicodeRange3 & range3;
-        cache.ulUnicodeRange4 = sourceOS2.ulUnicodeRange4 & range4;
+        if (!preserveUnicodeRanges)
+        {
+            // Calculate Unicode ranges from retained unicodes
+            var (range1, range2, range3, range4) = CalculateUnicodeRanges(retainedUnicodes);
+            
+            // Prune - only keep bits that were originally set AND are still needed
+            cache.ulUnicodeRange1 = sourceOS2.ulUnicodeRange1 & range1;
+            cache.ulUnicodeRange2 = sourceOS2.ulUnicodeRange2 & range2;
+            cache.ulUnicodeRange3 = sourceOS2.ulUnicodeRange3 & range3;
+            cache.ulUnicodeRange4 = sourceOS2.ulUnicodeRange4 & range4;
+        }
+        // else: keep original ulUnicodeRange bits
+
 
         // Update usFirstCharIndex and usLastCharIndex
         ushort minChar = 0xFFFF;

@@ -462,7 +462,7 @@ public class Subsetter
             subsetFont.AddTable(newPost);
 
         // Build OS/2 table with updated Unicode ranges
-        var newOS2 = builder.BuildOS2(_options.Unicodes);
+        var newOS2 = builder.BuildOS2(_options.Unicodes, _options.PreserveUnicodeRanges);
         if (newOS2 != null)
             subsetFont.AddTable(newOS2);
 
