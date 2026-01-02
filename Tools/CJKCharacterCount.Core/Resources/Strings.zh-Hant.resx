@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  
+  <data name="AppTitle" xml:space="preserve"><value>字型計數軟體</value></data>
+  
+  <data name="Menu_File" xml:space="preserve"><value>文檔</value></data>
+  <data name="Menu_Open" xml:space="preserve"><value>打開</value></data>
+  <data name="Menu_Save" xml:space="preserve"><value>保存報告</value></data>
+  <data name="Menu_Language" xml:space="preserve"><value>語言</value></data>
+  <data name="Menu_Theme" xml:space="preserve"><value>主題</value></data>
+  <data name="Menu_About" xml:space="preserve"><value>關於</value></data>
+  
+  <data name="Label_Missing" xml:space="preserve"><value>缺失字符</value></data>
+  <data name="Label_Present" xml:space="preserve"><value>存在字符</value></data>
+  
+  <data name="Msg_NoFile" xml:space="preserve"><value>未選擇字型檔。</value></data>
+  <data name="Msg_InvalidFont" xml:space="preserve"><value>這不是有效的字型檔。</value></data>
+  <data name="Msg_ReportSaved" xml:space="preserve"><value>報告已保存至: {0}</value></data>
+
+  <data name="Header_CJKTables" xml:space="preserve"><value>CJK 字表</value></data>
+  <data name="Header_UnicodeBlocks" xml:space="preserve"><value>Unicode 區塊</value></data>
+
+  <data name="Section_Simplified" xml:space="preserve"><value>簡體中文編碼</value></data>
+  <data name="Section_Mixed" xml:space="preserve"><value>簡繁中文編碼</value></data>
+  <data name="Section_Traditional" xml:space="preserve"><value>繁體中文編碼</value></data>
+
+  <data name="Block_CJKUnifiedIdeographs" xml:space="preserve"><value>CJK 統一表意文字</value></data>
+  <data name="Block_CJKUnifiedIdeographsExtensionA" xml:space="preserve"><value>CJK 統一表意文字擴展 A</value></data>
+  <data name="Block_CJKUnifiedIdeographsExtensionB" xml:space="preserve"><value>CJK 統一表意文字擴展 B</value></data>
+  <data name="Block_CJKUnifiedIdeographsExtensionC" xml:space="preserve"><value>CJK 統一表意文字擴展 C</value></data>
+  <data name="Block_CJKUnifiedIdeographsExtensionD" xml:space="preserve"><value>CJK 統一表意文字擴展 D</value></data>
+  <data name="Block_CJKUnifiedIdeographsExtensionE" xml:space="preserve"><value>CJK 統一表意文字擴展 E</value></data>
+  <data name="Block_CJKUnifiedIdeographsExtensionF" xml:space="preserve"><value>CJK 統一表意文字擴展 F</value></data>
+  <data name="Block_CJKUnifiedIdeographsExtensionG" xml:space="preserve"><value>CJK 統一表意文字擴展 G</value></data>
+  <data name="Block_CJKUnifiedIdeographsExtensionH" xml:space="preserve"><value>CJK 統一表意文字擴展 H</value></data>
+  <data name="Block_CJKUnifiedIdeographsExtensionI" xml:space="preserve"><value>CJK 統一表意文字擴展 I</value></data>
+  <data name="Block_CJKCompatibilityIdeographs" xml:space="preserve"><value>CJK 兼容表意文字</value></data>
+  <data name="Block_CJKCompatibilityIdeographsSupplement" xml:space="preserve"><value>CJK 兼容表意文字補充</value></data>
+  <data name="Block_KangxiRadicals" xml:space="preserve"><value>康熙部首</value></data>
+  <data name="Block_CJKRadicalsSupplement" xml:space="preserve"><value>CJK 部首補充</value></data>
+  <data name="Block_IdeographicDescriptionCharacters" xml:space="preserve"><value>表意文字描述符</value></data>
+  <data name="Block_CJKSymbolsandPunctuation" xml:space="preserve"><value>CJK 符號和標點</value></data>
+  <data name="Block_Hiragana" xml:space="preserve"><value>平假名</value></data>
+  <data name="Block_Katakana" xml:space="preserve"><value>片假名</value></data>
+  <data name="Block_Bopomofo" xml:space="preserve"><value>注音符號</value></data>
+  <data name="Block_PrivateUseArea" xml:space="preserve"><value>私用區</value></data>
+  <data name="Block_BasicLatin" xml:space="preserve"><value>基本拉丁文</value></data>
+</root>
