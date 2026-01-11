@@ -193,9 +193,40 @@ namespace OTFontFile.Benchmarks.Benchmarks
 
         #region 4. 实际字体加载集成测试
 
-        // 字体文件路径
-        private const string TestResourcesPath = "../OTFontFile.Performance.Tests/TestResources/SampleFonts";
-        private static readonly string s_testFontPath = Path.Combine(TestResourcesPath, "SourceHanSansCN-Regular.otf");
+        private const string TestFontFileName = "SourceHanSansCN-Regular.otf";
+        private string? _testFontPath;
+
+        [GlobalSetup]
+        public void Setup()
+        {
+            var performancePath = BenchmarkPathHelper.ResolvePerformanceTestFontsPath();
+            var candidatePath = Path.Combine(performancePath, TestFontFileName);
+            if (File.Exists(candidatePath))
+            {
+                _testFontPath = candidatePath;
+                return;
+            }
+
+            _testFontPath = BenchmarkPathHelper.FindLargestTtf(performancePath);
+            if (!string.IsNullOrEmpty(_testFontPath) && File.Exists(_testFontPath))
+            {
+                return;
+            }
+
+            var samplePath = BenchmarkPathHelper.ResolveSampleFontsPath();
+            candidatePath = Path.Combine(samplePath, TestFontFileName);
+            if (File.Exists(candidatePath))
+            {
+                _testFontPath = candidatePath;
+                return;
+            }
+
+            _testFontPath = BenchmarkPathHelper.FindLargestTtf(samplePath);
+            if (string.IsNullOrEmpty(_testFontPath) || !File.Exists(_testFontPath))
+            {
+                _testFontPath = null;
+            }
+        }
 
         /// <summary>
         /// 加载字体中的多个表 - 模拟实际使用场景
@@ -205,14 +236,14 @@ namespace OTFontFile.Benchmarks.Benchmarks
         [BenchmarkCategory("FontLoading", "MultipleTables")]
         public void LoadAllTablesFromFont()
         {
-            if (!File.Exists(s_testFontPath))
+            if (string.IsNullOrEmpty(_testFontPath))
             {
-                Console.WriteLine($"Warning: Test font not found: {s_testFontPath}");
+                Console.WriteLine("Warning: Test font not found for LoadAllTablesFromFont benchmark.");
                 return;
             }
 
             var file = new OTFile();
-            file.open(s_testFontPath);
+            file.open(_testFontPath);
 
             // 加载所有表
             var tableManager = file.GetTableManager();
