@@ -19,15 +19,20 @@ namespace OTFontFile.Benchmarks.Benchmarks
         [GlobalSetup]
         public void Setup()
         {
-            var resourcesPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "BenchmarkResources", "SampleFonts");
+            var resourcesPath = BenchmarkPathHelper.ResolveSampleFontsPath();
             _fontPath = FontType switch
             {
-                "Small" => Directory.GetFiles(resourcesPath, "*[Ss]mall*.ttf").FirstOrDefault(),
-                "Medium" => Directory.GetFiles(resourcesPath, "*[Mm]edium*.ttf").FirstOrDefault(),
-                "Large" => Directory.GetFiles(resourcesPath, "*[Ll]arge*.ttf").FirstOrDefault(),
+                "Small" => Directory.GetFiles(resourcesPath, "*small*.ttf").FirstOrDefault(),
+                "Medium" => Directory.GetFiles(resourcesPath, "*medium*.ttf").FirstOrDefault(),
+                "Large" => Directory.GetFiles(resourcesPath, "*large*.ttf").FirstOrDefault(),
                 "Collection" => Directory.GetFiles(resourcesPath, "*.ttc").FirstOrDefault(),
                 _ => null
             };
+
+            if ((string.IsNullOrEmpty(_fontPath) || !File.Exists(_fontPath)) && FontType == "Large")
+            {
+                _fontPath = BenchmarkPathHelper.FindLargestTtf(resourcesPath);
+            }
 
             if (string.IsNullOrEmpty(_fontPath) || !File.Exists(_fontPath))
             {

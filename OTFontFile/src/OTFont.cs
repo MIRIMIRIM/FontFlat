@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Collections.Generic;
+using System.Threading;
 
 
 
@@ -116,25 +117,39 @@ namespace OTFontFile
             
             if (m_OffsetTable != null)
             {
-                object lockObj = new object();
-                
-                // Use Parallel.ForEach to calculate checksums of tables concurrently
-                System.Threading.Tasks.Parallel.ForEach(m_OffsetTable.DirectoryEntries, () => 0u, (de, loop, localSum) =>
+                int tableCount = m_OffsetTable.DirectoryEntries.Count;
+                if (tableCount < 4 || Environment.ProcessorCount == 1)
                 {
-                    var table = GetTable(de);
-                    if (table != null)
+                    for (int i = 0; i < tableCount; i++)
                     {
-                        localSum += table.CalcChecksum();
+                        var table = GetTable(m_OffsetTable.DirectoryEntries[i]);
+                        if (table != null)
+                        {
+                            sum += table.CalcChecksum();
+                        }
                     }
-                    return localSum;
-                },
-                (localSum) =>
+                }
+                else
                 {
-                    lock (lockObj)
+                    long sumLong = sum;
+
+                    // Use Parallel.ForEach to calculate checksums of tables concurrently
+                    System.Threading.Tasks.Parallel.ForEach(m_OffsetTable.DirectoryEntries, () => 0u, (de, loop, localSum) =>
                     {
-                        sum += localSum;
-                    }
-                });
+                        var table = GetTable(de);
+                        if (table != null)
+                        {
+                            localSum += table.CalcChecksum();
+                        }
+                        return localSum;
+                    },
+                    localSum =>
+                    {
+                        Interlocked.Add(ref sumLong, localSum);
+                    });
+
+                    sum = (uint)sumLong;
+                }
             }
 
             return sum;
@@ -734,22 +749,32 @@ namespace OTFontFile
             if (ot != null)
             {
                 const int SIZEOF_DIRECTORYENTRY = 16;
+                uint numTables = ot.numTables;
 
-
-                for (int i=0; i<ot.numTables; i++)
+                if (numTables != 0)
                 {
-                    uint dirFilePos = (uint)(filepos+SIZEOF_OFFSETTABLE+i*SIZEOF_DIRECTORYENTRY);
-                    MBOBuffer DirEntBuf = file.ReadPaddedBuffer(dirFilePos, SIZEOF_DIRECTORYENTRY)!;
+                    uint dirBytes = (uint)(numTables * SIZEOF_DIRECTORYENTRY);
+                    uint dirFilePos = filepos + SIZEOF_OFFSETTABLE;
+                    MBOBuffer dirBuf = file.ReadPaddedBuffer(dirFilePos, dirBytes)!;
 
-                    if (DirEntBuf != null)
+                    if (dirBuf != null)
                     {
-                        var de = new DirectoryEntry(DirEntBuf);
-                        ot.DirectoryEntries.Add(de);                        
+                        for (uint i = 0; i < numTables; i++)
+                        {
+                            uint entryOffset = i * SIZEOF_DIRECTORYENTRY;
+                            var de = new DirectoryEntry
+                            {
+                                tag = new OTTag(dirBuf.GetUint(entryOffset)),
+                                checkSum = dirBuf.GetUint(entryOffset + 4),
+                                offset = dirBuf.GetUint(entryOffset + 8),
+                                length = dirBuf.GetUint(entryOffset + 12)
+                            };
+                            ot.DirectoryEntries.Add(de);
+                        }
                     }
                     else
                     {
                         Debug.Assert(false);
-                        break;
                     }
                 }
             }

@@ -101,7 +101,8 @@ namespace OTFontFile
                             }
                             else
                             {
-                                CachedTables.Add(table);
+                                m_cachedTables.Add(table);
+                                m_cacheByOffsetLength[GetCacheKey(de)] = table;
                             }
                         }
                     }
@@ -284,19 +285,12 @@ namespace OTFontFile
 
         protected OTTable? GetTableFromCache(DirectoryEntry de)
         {
-            OTTable? ot = null;
-
-            for (int i=0; i<CachedTables.Count; i++)
+            if (m_cacheByOffsetLength.TryGetValue(GetCacheKey(de), out var ot))
             {
-                OTTable temp = CachedTables[i];
-                if (temp.MatchFileOffsetLength(de.offset, de.length))
-                {
-                    ot = temp;
-                    break;
-                }
+                return ot;
             }
 
-            return ot;
+            return null;
         }
 
         /************************
@@ -305,8 +299,14 @@ namespace OTFontFile
         
         OTFile m_file = file;
         private readonly object m_cacheLock = new object();
+        private readonly Dictionary<ulong, OTTable> m_cacheByOffsetLength = new();
 
         //System.Collections.ArrayList CachedTables;
-        List<OTTable> CachedTables = [];
+        List<OTTable> m_cachedTables = [];
+
+        private static ulong GetCacheKey(DirectoryEntry de)
+        {
+            return ((ulong)de.offset << 32) | de.length;
+        }
     }
 }

@@ -23,24 +23,24 @@ namespace OTFontFile.Benchmarks.Benchmarks
             try 
             {
                 // Use a large TTC font to see the benefit of parallelism
-                _fontPath = Path.Combine("BenchmarkResources", "SampleFonts", "SourceHanSans.ttc");
-                
-                // Fallback if not found 
+                var perfFontsPath = BenchmarkPathHelper.ResolvePerformanceTestFontsPath();
+                _fontPath = Path.Combine(perfFontsPath, "SourceHanSans.ttc");
+
                 if (!File.Exists(_fontPath))
                 {
-                    _fontPath = Path.Combine("..", "OTFontFile.Performance.Tests", "TestResources", "SampleFonts", "SourceHanSans.ttc");
+                    _fontPath = BenchmarkPathHelper.FindLargestTtc(perfFontsPath);
                 }
-                
-                if (!File.Exists(_fontPath))
+
+                if (string.IsNullOrEmpty(_fontPath) || !File.Exists(_fontPath))
                 {
-                    // Try one more relative path for direct exe run
-                    _fontPath = Path.Combine("..", "..", "..", "..", "OTFontFile.Performance.Tests", "TestResources", "SampleFonts", "SourceHanSans.ttc");
+                    var sampleFontsPath = BenchmarkPathHelper.ResolveSampleFontsPath();
+                    _fontPath = BenchmarkPathHelper.FindLargestTtc(sampleFontsPath);
                 }
-                
+
                 Console.WriteLine($"[Setup] Looking for font at: {_fontPath}"); // DEBUG
-                if (!File.Exists(_fontPath))
+                if (string.IsNullOrEmpty(_fontPath) || !File.Exists(_fontPath))
                 {
-                     throw new FileNotFoundException($"Test font not found at {_fontPath}");
+                     throw new FileNotFoundException("Test font not found for concurrency benchmarks");
                 }
             }
             catch (Exception ex)

@@ -113,9 +113,9 @@ namespace OTFontFile.Benchmarks.Benchmarks
             for (uint cp = 0x10000; cp < 0x10050; cp++)
             {
                 // 将码点转换为代理对
-                cp -= 0x10000;
-                char high = (char)((cp >> 10) + 0xd800);
-                char low = (char)((cp & 0x3ff) + 0xdc00);
+                uint surrogateOffset = cp - 0x10000;
+                char high = (char)((surrogateOffset >> 10) + 0xd800);
+                char low = (char)((surrogateOffset & 0x3ff) + 0xdc00);
                 surrogatePairs.Add((high, low));
             }
 

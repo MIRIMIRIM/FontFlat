@@ -11,7 +11,6 @@ namespace OTFontFile.Benchmarks.Benchmarks
     /// </summary>
     [MarkdownExporter, AsciiDocExporter, HtmlExporter, RPlotExporter]
     [MemoryDiagnoser]
-    [ThreadingDiagnoser]
     [SimpleJob(warmupCount: 3, iterationCount: 10)]
     public class ChecksumBenchmarks
     {
