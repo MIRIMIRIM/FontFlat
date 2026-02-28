@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OTFontFile\OTFontFile.csproj" />
+    <ProjectReference Include="..\OTFontFile2\OTFontFile2.csproj" />
     <ProjectReference Include="..\OTFontFile.Baseline\OTFontFile.Baseline.csproj" />
   </ItemGroup>
 

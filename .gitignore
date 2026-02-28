@@ -489,3 +489,7 @@ $RECYCLE.BIN/
 Ref/
 */TestResources/*
 BenchmarkResources/
+/docs
+/docs_otff2
+AGENTS.md
+/Tools

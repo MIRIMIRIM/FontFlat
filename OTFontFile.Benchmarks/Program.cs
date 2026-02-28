@@ -72,6 +72,18 @@ namespace OTFontFile.Benchmarks
                         BenchmarkRunner.Run<BigUnRuneBenchmarks>();
                         break;
 
+                    case "v2":
+                    case "compare2":
+                        Console.WriteLine("Running OTFontFile vs OTFontFile2 benchmarks...\n");
+                        BenchmarkRunner.Run<OTFontFileVsOTFontFile2Benchmarks>();
+                        break;
+
+                    case "realworld":
+                    case "rw":
+                        Console.WriteLine("Running real-world parsing benchmarks (name/cmap/glyf)...\n");
+                        BenchmarkRunner.Run<RealWorldParsingBenchmarks>();
+                        break;
+
                     case "testchecksum":
                     case "testChecksum":
                         Console.WriteLine("Running Manual Checksum Performance Test...\n");
@@ -100,6 +112,8 @@ namespace OTFontFile.Benchmarks
                         Console.WriteLine("  pool       - Object Pooling benchmarks");
                         Console.WriteLine("  concurrency- Concurrency benchmarks");
                         Console.WriteLine("  rune       - BigUn vs Rune comparison benchmarks");
+                        Console.WriteLine("  v2         - OTFontFile vs OTFontFile2 parsing benchmarks");
+                        Console.WriteLine("  realworld  - Real-world parsing benchmarks (name/cmap/glyf)");
                         Console.WriteLine("  all        - Run all benchmarks");
                         break;
                 }
