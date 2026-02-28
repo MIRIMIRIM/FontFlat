@@ -1,6 +1,6 @@
 using System;
 using System.Diagnostics;
-
+using System.Runtime.CompilerServices;
 
 
 namespace OTFontFile
@@ -8,15 +8,39 @@ namespace OTFontFile
     /// <summary>
     /// Summary description for Table_EBDT.
     /// </summary>
-    public class Table_EBDT : OTTable
+    public class Table_EBDT : LazyTable
     {
         /************************
          * constructors
          */
         
-        
-        public Table_EBDT(OTTag tag, MBOBuffer buf) : base(tag, buf)
+        /// <summary>
+        /// 常规构造函数：立即加载表数据
+        /// </summary>
+        public Table_EBDT(OTTag tag, MBOBuffer buf) : base(tag, buf, null, null)
         {
+            // 立即加载，已通过 buf 获取数据
+        }
+
+        /// <summary>
+        /// 延迟加载构造函数：不立即加载表数据，按需加载
+        /// </summary>
+        public Table_EBDT(DirectoryEntry de, OTFile file) : base(de, file)
+        {
+            // 不立即加载，在首次访问时调用 EnsureContentLoadedPooled()
+        }
+
+        /// <summary>
+        /// 确保表数据已加载（在所有访问方法前调用）
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void EnsureDataLoaded()
+        {
+            if (!_contentLoaded)
+            {
+                // EBDT 通常是大表（包含位图数据），使用池化缓冲区
+                EnsureContentLoadedPooled();
+            }
         }
 
         /************************
@@ -141,11 +165,17 @@ namespace OTFontFile
         
         public OTFixed version
         {
-            get {return m_bufTable.GetFixed((uint)FieldOffsets.version);}
+            get 
+            {
+                EnsureDataLoaded();
+                return m_bufTable.GetFixed((uint)FieldOffsets.version); 
+            }
         }
 
         public smallGlyphMetrics? GetSmallMetrics( Table_EBLC.indexSubTable cIndexSubTable, uint nGlyphIndex, uint nStartGlyphIndex )
         {
+            EnsureDataLoaded();
+
             smallGlyphMetrics? sgm = null;
             int nIndexFormat = cIndexSubTable.header.indexFormat;
             int nImageFormat = cIndexSubTable.header.imageFormat;
@@ -450,12 +480,12 @@ namespace OTFontFile
         {
             byte [,]? bits = null;
 
-            Table_EBLC.indexSubTableArray ista = bst.FindIndexSubTableArray(glyphID);
+            Table_EBLC.indexSubTableArray? ista = bst.FindIndexSubTableArray(glyphID);
             if (ista != null)
             {
-                Table_EBLC.indexSubTable ist = bst.GetIndexSubTable(ista);
+                Table_EBLC.indexSubTable? ist = bst.GetIndexSubTable(ista);
             
-                if (ist.header.imageFormat < 8)
+                if (ist != null && ist.header.imageFormat < 8)
                 {
                     // simple bitmap
                     byte [] encodedDataBuf = GetImageData(ist, glyphID, ista.firstGlyphIndex);
@@ -481,14 +511,20 @@ namespace OTFontFile
                         switch (ist.header.indexFormat)
                         {
                             case 2:
-                                Table_EBLC.indexSubTable2 ist2 = (Table_EBLC.indexSubTable2)ist;
-                                width = ist2.bigMetrics.width;
-                                height = ist2.bigMetrics.height;
+                                Table_EBLC.indexSubTable2? ist2 = ist as Table_EBLC.indexSubTable2;
+                                if (ist2 != null && ist2.bigMetrics != null)
+                                {
+                                    width = ist2.bigMetrics.width;
+                                    height = ist2.bigMetrics.height;
+                                }
                                 break;
                             case 5:
-                                Table_EBLC.indexSubTable5 ist5 = (Table_EBLC.indexSubTable5)ist;
-                                width = ist5.bigMetrics.width;
-                                height = ist5.bigMetrics.height;
+                                Table_EBLC.indexSubTable5? ist5 = ist as Table_EBLC.indexSubTable5;
+                                if (ist5 != null && ist5.bigMetrics != null)
+                                {
+                                    width = ist5.bigMetrics.width;
+                                    height = ist5.bigMetrics.height;
+                                }
                                 break;
 
                         }
@@ -503,14 +539,14 @@ namespace OTFontFile
 
                     if (encodedDataBuf != null)
                     {
-                        bits = DecodeImageData(ist, width, height, bst.bitDepth, encodedDataBuf);
+                        bits = DecodeImageData(ist!, width, height, bst.bitDepth, encodedDataBuf);
                     }
                     else
                     {
                         //Debug.Assert(false);
                     }
                 }
-                else if (ist.header.imageFormat <10)
+                else if (ist != null && ist.header.imageFormat <10)
                 {
                     // composite bitmap
                     throw new ApplicationException("TODO: impelement bitmap composites");

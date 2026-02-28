@@ -1,0 +1,64 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="MSTest.TestAdapter" Version="3.7.0" />
+    <PackageReference Include="MSTest.TestFramework" Version="3.7.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OTFontFile2\OTFontFile2.csproj" />
+    <ProjectReference Include="..\OTFontFile\OTFontFile.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\small.ttf" Link="TestResources\SampleFonts\small.ttf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\medium.ttf" Link="TestResources\SampleFonts\medium.ttf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\msyhbd.ttc" Link="TestResources\SampleFonts\msyhbd.ttc">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\SourceHanSansCN-Regular.otf" Link="TestResources\SampleFonts\SourceHanSansCN-Regular.otf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\AvenirNextW1G-Regular.OTF" Link="TestResources\SampleFonts\AvenirNextW1G-Regular.OTF">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\cmap0_font1.otf" Link="TestResources\SampleFonts\cmap0_font1.otf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\cmap2_font1.otf" Link="TestResources\SampleFonts\cmap2_font1.otf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\cmap4_font1.otf" Link="TestResources\SampleFonts\cmap4_font1.otf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\cmap6_font1.otf" Link="TestResources\SampleFonts\cmap6_font1.otf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\cmap8_font1.otf" Link="TestResources\SampleFonts\cmap8_font1.otf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\cmap10_font1.otf" Link="TestResources\SampleFonts\cmap10_font1.otf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\cmap12_font1.otf" Link="TestResources\SampleFonts\cmap12_font1.otf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\OTFontFile.Performance.Tests\TestResources\SampleFonts\cmap14_font1.otf" Link="TestResources\SampleFonts\cmap14_font1.otf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

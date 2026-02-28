@@ -12,7 +12,7 @@ namespace OTFontFile
     public class Table_hmtx : OTTable
     {
 
-        protected Table_hhea m_hheaTable;
+        protected Table_hhea? m_hheaTable;
         protected ushort m_nGlyphsInTheFont;
         protected ushort m_nNumberOfHMetrics;
 
@@ -55,14 +55,14 @@ namespace OTFontFile
             public short lsb;
         }
 
-        public longHorMetric GetHMetric(uint i, OTFont fontOwner)
+        public longHorMetric? GetHMetric(uint i, OTFont fontOwner)
         {
             if (i >= GetNumberOfHMetrics(fontOwner))
             {
                 throw new ArgumentOutOfRangeException("i");
             }
 
-            longHorMetric hm = new longHorMetric();
+            longHorMetric? hm = new longHorMetric();
             hm.advanceWidth = m_bufTable.GetUshort(i*4);
             hm.lsb          = m_bufTable.GetShort(i*4+2);
 
@@ -71,7 +71,7 @@ namespace OTFontFile
 
         public longHorMetric GetOrMakeHMetric(uint i, OTFont fontOwner)
         {
-            longHorMetric hm = null;
+            longHorMetric? hm = null;
             m_nGlyphsInTheFont = fontOwner.GetMaxpNumGlyphs();            
             m_nNumberOfHMetrics = GetNumberOfHMetrics(fontOwner);
             uint nlsb = GetNumLeftSideBearingEntries(fontOwner);
@@ -88,12 +88,12 @@ namespace OTFontFile
                 hm = GetOrMakeHMetric( i );                
             }
 
-            return hm;
+            return hm!;
         }
 
-        // This method is for the data cache but should be used later once the 
+        // This method is for the data cache but should be used later once the
         // the constructor that sets the number of glyphs is used
-        public longHorMetric GetOrMakeHMetric( uint i )
+        public longHorMetric? GetOrMakeHMetric( uint i )
         {
             if( m_nGlyphsInTheFont == 0 )
             {
@@ -150,11 +150,15 @@ namespace OTFontFile
                 uint nFirstWidthPos = 1;
                 for (uint i=nFirstWidthPos; i<numberOfHMetrics; i++)
                 {
-                    nFirstWidth = GetHMetric(i, fontOwner).advanceWidth;
-                    if (nFirstWidth != 0)
+                    longHorMetric? hm = GetHMetric(i, fontOwner);
+                    if (hm != null)
                     {
-                        nFirstWidthPos = i;
-                        break;
+                        nFirstWidth = hm.advanceWidth;
+                        if (nFirstWidth != 0)
+                        {
+                            nFirstWidthPos = i;
+                            break;
+                        }
                     }
                 }
 
@@ -162,7 +166,8 @@ namespace OTFontFile
                 {
                     for (uint i=(uint)nFirstWidthPos+1; i<numberOfHMetrics; i++)
                     {
-                        ushort nWidth = GetHMetric(i, fontOwner).advanceWidth;
+                        longHorMetric? hm = GetHMetric(i, fontOwner);
+                        ushort nWidth = hm != null ? hm.advanceWidth : (ushort)0;
                         if (nWidth != 0 && nWidth != nFirstWidth)
                         {
                             bHmtxMono = false;
@@ -193,11 +198,14 @@ namespace OTFontFile
         // NOTE: This set method should be removed later
         public Table_hhea hheaTable
         {
-            get {return m_hheaTable;}
+            get {return m_hheaTable!;}
             set
             {
                 m_hheaTable = value;
-                m_nNumberOfHMetrics = m_hheaTable.numberOfHMetrics;
+                if (value != null)
+                {
+                    m_nNumberOfHMetrics = value.numberOfHMetrics;
+                }
             }
         }
 
@@ -209,7 +217,7 @@ namespace OTFontFile
         protected ushort GetNumberOfHMetrics(OTFont fontOwner)
         {
 
-            Table_hhea hheaTable = (Table_hhea)fontOwner.GetTable("hhea");
+            Table_hhea? hheaTable = fontOwner.GetTable("hhea") as Table_hhea;
             if (hheaTable != null)
             {
                 m_nNumberOfHMetrics = hheaTable.numberOfHMetrics;
@@ -237,7 +245,7 @@ namespace OTFontFile
         public class hmtx_cache : DataCache
         {
             protected  ArrayList m_longHorMetric; // longHorMetric[]
-            protected Table_hhea m_hheaTable;
+            protected Table_hhea? m_hheaTable;
             protected ushort m_nGlyphsInTheFont;
             protected ushort m_nNumberOfHMetrics;
             
@@ -271,13 +279,21 @@ namespace OTFontFile
                 }
                 else if( nIndex >= m_nNumberOfHMetrics )
                 {
-                    lm.advanceWidth = ((longHorMetric)m_longHorMetric[m_nNumberOfHMetrics - 1]).advanceWidth;
-                    lm.lsb = ((longHorMetric)m_longHorMetric[m_nNumberOfHMetrics - 1]).lsb;
+                    var hm = (longHorMetric?)m_longHorMetric[m_nNumberOfHMetrics - 1];
+                    if (hm != null)
+                    {
+                        lm.advanceWidth = hm.advanceWidth;
+                        lm.lsb = hm.lsb;
+                    }
                 }
                 else
-                {                    
-                    lm.advanceWidth = ((longHorMetric)m_longHorMetric[nIndex]).advanceWidth;
-                    lm.lsb = ((longHorMetric)m_longHorMetric[nIndex]).lsb;
+                {
+                    var hm = (longHorMetric?)m_longHorMetric[nIndex];
+                    if (hm != null)
+                    {
+                        lm.advanceWidth = hm.advanceWidth;
+                        lm.lsb = hm.lsb;
+                    }
                 }
 
                 return lm;
@@ -300,8 +316,12 @@ namespace OTFontFile
                 }                
                 else
                 {
-                    ((longHorMetric)m_longHorMetric[nIndex]).lsb = nLeftSideBearing;
-                    m_bDirty = true;                        
+                    var lhm = (longHorMetric?)m_longHorMetric[nIndex];
+                    if (lhm != null)
+                    {
+                        lhm.lsb = nLeftSideBearing;
+                    }
+                    m_bDirty = true;
                 }
 
                 return bResult;                
@@ -325,8 +345,12 @@ namespace OTFontFile
                 }                
                 else
                 {
-                    ((longHorMetric)m_longHorMetric[nIndex]).advanceWidth = nAdvanceWidth;
-                    ((longHorMetric)m_longHorMetric[nIndex]).lsb = nLeftSideBearing;
+                    var lhm = (longHorMetric?)m_longHorMetric[nIndex];
+                    if (lhm != null)
+                    {
+                        lhm.advanceWidth = nAdvanceWidth;
+                        lhm.lsb = nLeftSideBearing;
+                    }
                     m_bDirty = true;
                 }
 
@@ -388,8 +412,14 @@ namespace OTFontFile
                     if( nIndex < m_nNumberOfHMetrics || (nIndex == m_nNumberOfHMetrics && nAdvanceWidth != 0))
                     {
                         m_nNumberOfHMetrics++;
-                        Table_hhea.hhea_cache hheaCache = (Table_hhea.hhea_cache)m_hheaTable.GetCache();
-                        hheaCache.numberOfHMetrics++;
+                        if (m_hheaTable != null)
+                        {
+                            Table_hhea.hhea_cache? hheaCache = m_hheaTable.GetCache() as Table_hhea.hhea_cache;
+                            if (hheaCache != null)
+                            {
+                                hheaCache.numberOfHMetrics++;
+                            }
+                        }
                     }                    
 
                     // NOTE: Table maxp and ltsh numGlyphs isn't being dynamically updated
@@ -423,8 +453,14 @@ namespace OTFontFile
                     if( nIndex < m_nNumberOfHMetrics )
                     {
                         m_nNumberOfHMetrics--;
-                        Table_hhea.hhea_cache hheaCache = (Table_hhea.hhea_cache)m_hheaTable.GetCache();
-                        hheaCache.numberOfHMetrics--;
+                        if (m_hheaTable != null)
+                        {
+                            Table_hhea.hhea_cache? hheaCache = m_hheaTable.GetCache() as Table_hhea.hhea_cache;
+                            if (hheaCache != null)
+                            {
+                                hheaCache.numberOfHMetrics--;
+                            }
+                        }
                     }
 
                     // NOTE: Table maxp and ltsh numGlyphs isn't being dynamically updated
@@ -447,12 +483,20 @@ namespace OTFontFile
                 {
                     if( i < m_nNumberOfHMetrics )
                     {
-                        newbuf.SetUshort( ((longHorMetric)m_longHorMetric[i]).advanceWidth,    (uint)(i * 4 ));
-                        newbuf.SetShort ( ((longHorMetric)m_longHorMetric[i]).lsb,    (uint)((i * 4) + 2));
+                        var lhm = (longHorMetric?)m_longHorMetric[i];
+                        if (lhm != null)
+                        {
+                            newbuf.SetUshort( lhm.advanceWidth,    (uint)(i * 4 ));
+                            newbuf.SetShort ( lhm.lsb,    (uint)((i * 4) + 2));
+                        }
                     }
                     else
                     {
-                        newbuf.SetShort ( ((longHorMetric)m_longHorMetric[i]).lsb,    (uint)(((m_nNumberOfHMetrics - 1)* 4) + (i * 2)));    
+                        var lhm = (longHorMetric?)m_longHorMetric[i];
+                        if (lhm != null)
+                        {
+                            newbuf.SetShort ( lhm.lsb,    (uint)(((m_nNumberOfHMetrics - 1)* 4) + (i * 2)));
+                        }
                     }
                 }
 

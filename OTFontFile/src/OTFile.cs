@@ -9,7 +9,7 @@ namespace OTFontFile
     /// <summary>
     /// A font read in from a disk file. May be a single OTF or a TT collection.
     /// </summary>
-    public class OTFile
+    public class OTFile : IDisposable
     {
         /***************
          * constructors
@@ -26,11 +26,15 @@ namespace OTFontFile
             m_nFonts = 0;
             m_ttch = null;
             m_fs = null;
+            m_fileHandle = null;
+            _disposed = false;
         }
 
         /*****************
         * private methods
         */
+
+        private SafeFileHandle? m_fileHandle;
 
         private bool TestFileType()
         {
@@ -39,7 +43,7 @@ namespace OTFontFile
             switch (m_FontFileType)
             {
                 case FontFileType.INVALID:
-                    close();
+                    Dispose();
                     return false;
 
                 case FontFileType.SINGLE:
@@ -59,7 +63,7 @@ namespace OTFontFile
                     }
                     return true;
                 default:
-                    close();
+                    Dispose();
                     return false;
             }
 
@@ -76,7 +80,10 @@ namespace OTFontFile
         {
             // NOTE: creating a filestream can throw exceptions
             // Should they be handled here, or let the caller worry about it?
-            m_fs = new FileStream(sFilename, FileMode.Open, FileAccess.Read, FileShare.Read);
+            // Use RandomAccess for thread-safe reads
+            m_fs = new FileStream(sFilename, FileMode.Open, FileAccess.Read, FileShare.Read,
+                                 bufferSize: 4096, options: FileOptions.RandomAccess);
+            m_fileHandle = m_fs.SafeFileHandle;
 
             return TestFileType();
 
@@ -87,23 +94,56 @@ namespace OTFontFile
         public bool open(SafeFileHandle handle)
         {
             m_fs = new FileStream(handle,FileAccess.Read);
+            m_fileHandle = handle;
 
             return TestFileType();
         }
 
         /// <summary>Close filestream and set type to file type to 
         /// invalid.</summary>
+        /// <remarks>This method is kept for backward compatibility. 
+        /// Prefer using Dispose() or the using statement.</remarks>
+        [Obsolete("Use Dispose() instead for proper resource management.")]
         public void close()
         {
-            if (m_fs != null)
+            Dispose();
+        }
+
+        /// <summary>
+        /// Releases all resources used by the OTFile.
+        /// </summary>
+        public void Dispose()
+        {
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and optionally releases the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; 
+        /// false to release only unmanaged resources.</param>
+        protected virtual void Dispose(bool disposing)
+        {
+            if (_disposed) return;
+
+            if (disposing)
             {
-                m_fs.Close();
-                m_fs = null;
+                // Dispose managed resources
+                if (m_fs != null)
+                {
+                    m_fs.Dispose();
+                    m_fs = null;
+                    m_fileHandle = null;
+                }
             }
-            m_TableManager = new TableManager(this); // JJF: Why?
+
+            // Reset state
+            m_TableManager = new TableManager(this);
             m_FontFileType = FontFileType.INVALID;
             m_ttch = null;
             m_nFonts = 0;
+            _disposed = true;
         }
 
         /// <summary>Accessor for filestream length.</summary>
@@ -172,19 +212,12 @@ namespace OTFontFile
         /// <summary>Check magic bytes at beginning of file</summary>
         public static bool IsValidSfntVersion(uint sfnt)
         {
-            bool bRet = false;
-
             OTTag tag = sfnt;
 
-            if (tag == 0x00010000 || // from MS OpenType spec
-                "OTTO"u8.SequenceEqual((byte[])tag) ||   // from MS OpenType spec
-                "true"u8.SequenceEqual((byte[])tag) ||   // from Apple TrueType Reference
-                "typ1"u8.SequenceEqual((byte[])tag))     // from Apple TrueType Reference
-            {
-                bRet = true;
-            }
-
-            return bRet;
+            return tag == OTTagConstants.SFNT_VERSION_TRUETYPE ||
+                   tag == OTTagConstants.SFNT_OTTO ||
+                   tag == OTTagConstants.SFNT_TRUE ||
+                   tag == OTTagConstants.SFNT_TYP1;
         }
 
         public uint GetNumPadBytesAfterTable(OTTable t)
@@ -237,13 +270,13 @@ namespace OTFontFile
             // allocate a buffer to hold the table
             MBOBuffer? buf = new MBOBuffer(filepos, length);
 
-            // read the table
-            m_fs!.Seek(filepos, SeekOrigin.Begin);
-            int nBytes = m_fs.Read(buf.GetBuffer(), 0, (int)length);
+            // read the table thread-safely
+            int nBytes = RandomAccess.Read(m_fileHandle!, buf.GetBuffer().AsSpan(0, (int)length), filepos);
+            
             if (nBytes != length)
             {
                 // check for premature EOF
-                if (m_fs.Position == m_fs.Length)
+                if (filepos + nBytes == m_fs!.Length)
                 {
                     // EOF
                 }
@@ -258,20 +291,48 @@ namespace OTFontFile
             return buf;
         }
 
+
+        /// <summary>Read part of filestream into MBOBuffer (使用对象池)</summary>
+        /// <remarks>
+        /// 使用 BufferPool 来减少 GC 压力。大表（如 glyf、CFF2）应该使用此方法。
+        /// 返回的 MBOBuffer 使用完后应该调用 Dispose() 将缓冲区返回到池中。
+        /// </remarks>
+        public MBOBuffer? ReadPooledBuffer(uint filepos, uint length)
+        {
+            // allocate a buffer from the pool to hold the table
+            MBOBuffer? buf = BufferPool.Rent((int)length, filepos);
+
+            // read the table thread-safely
+            int nBytes = RandomAccess.Read(m_fileHandle!, buf.GetBuffer().AsSpan(0, (int)length), filepos);
+
+            if (nBytes != length)
+            {
+                // check for premature EOF
+                if (filepos + nBytes == m_fs!.Length)
+                {
+                    // EOF
+                }
+                else
+                {
+                    // Read Error
+                }
+
+                BufferPool.Return(buf.GetBuffer());
+                buf = null;
+            }
+
+            return buf;
+        }
+
         /// <summary>Random access to file stream</summary>
         public byte[] ReadBytes(long filepos, uint length)
         {
             byte[] buf = new byte[length];
-            m_fs!.Seek(filepos, SeekOrigin.Begin);
-            m_fs.Read(buf, 0, (int)length);
+            RandomAccess.Read(m_fileHandle!, buf, filepos);
             return buf;
         }
 
-        /// <summary>Accessor for filestream field.</summary>
-        public FileStream GetFileStream()
-        {
-            return m_fs!;
-        }
+
 
         /// <summary>Accessor for TTC header field.</summary>
         public TTCHeader? GetTTCHeader()
@@ -323,8 +384,19 @@ namespace OTFontFile
         {
             bool bRet = true;
 
-
-            OTFixed sfntVersion = new OTFixed(1,0);
+            // Use correct sfntVersion based on font type
+            OTFixed sfntVersion;
+            if (font.ContainsPostScriptOutlines())
+            {
+                // CFF fonts use 'OTTO' signature
+                sfntVersion = new OTFixed(OTTagConstants.SFNT_OTTO);
+            }
+            else
+            {
+                // TrueType fonts use 0x00010000
+                sfntVersion = new OTFixed(1, 0);
+            }
+            
             ushort numTables = font.GetNumTables();
             OffsetTable ot = new OffsetTable(sfntVersion, numTables);
 
@@ -821,5 +893,6 @@ namespace OTFontFile
         protected FileStream? m_fs;
         protected uint m_nFonts;
         protected TTCHeader? m_ttch;
+        private bool _disposed;
     }
 }

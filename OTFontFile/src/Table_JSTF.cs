@@ -95,9 +95,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfScript + (uint)FieldOffsets.ExtenderGlyphOffset);}
             }
 
-            public ExtenderGlyph GetExtenderGlyphTable()
+            public ExtenderGlyph? GetExtenderGlyphTable()
             {
-                ExtenderGlyph eg = null;
+                ExtenderGlyph? eg = null;
 
                 if (ExtenderGlyphOffset != 0)
                 {
@@ -113,9 +113,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfScript + (uint)FieldOffsets.DefJstfLangSysOffset);}
             }
 
-            public JstfLangSys GetDefJstfLangSysTable()
+            public JstfLangSys? GetDefJstfLangSysTable()
             {
-                JstfLangSys djls = null;
+                JstfLangSys? djls = null;
 
                 if (DefJstfLangSysOffset != 0)
                 {
@@ -159,9 +159,9 @@ namespace OTFontFile
                 protected MBOBuffer m_bufTable;
             }
 
-            public JstfLangSysRecord GetJstfLangSysRecord(uint i)
+            public JstfLangSysRecord? GetJstfLangSysRecord(uint i)
             {
-                JstfLangSysRecord jlsr = null;
+                JstfLangSysRecord? jlsr = null;
 
                 if (i < JstfLangSysCount)
                 {
@@ -169,12 +169,13 @@ namespace OTFontFile
                     jlsr = new JstfLangSysRecord((ushort)offset, m_bufTable);
                 }
 
-                return jlsr;
+                return jlsr!;
             }
 
-            public JstfLangSys GetJstfLangSysTable(JstfLangSysRecord jlsr)
+            public JstfLangSys? GetJstfLangSysTable(JstfLangSysRecord? jlsr)
             {
-                uint offset = m_offsetJstfScript + (uint)jlsr.JstfLangSysOffset;
+                if (jlsr == null) return null;
+                uint offset = m_offsetJstfScript + (uint)jlsr!.JstfLangSysOffset;
                 return new JstfLangSys((ushort)offset, m_bufTable);
             }
 
@@ -253,9 +254,9 @@ namespace OTFontFile
                 return m_bufTable.GetUshort(m_offsetJstfLangSys + (uint)FieldOffsets.JstfPriorityOffsets + i*2);
             }
 
-            public JstfPriority GetJstfPriorityTable(uint i)
+            public JstfPriority? GetJstfPriorityTable(uint i)
             {
-                JstfPriority jp = null;
+                JstfPriority? jp = null;
 
                 if (i < JstfPriorityCount)
                 {
@@ -302,9 +303,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfPriority + (uint)FieldOffsets.ShrinkageEnableGSUBOffset);}
             }
 
-            public JstfGSUBModList GetShrinkageEnableGSUBTable()
+            public JstfGSUBModList? GetShrinkageEnableGSUBTable()
             {
-                JstfGSUBModList jgml = null;
+                JstfGSUBModList? jgml = null;
 
                 if (ShrinkageEnableGSUBOffset != 0)
                 {
@@ -320,9 +321,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfPriority + (uint)FieldOffsets.ShrinkageDisableGSUBOffset);}
             }
 
-            public JstfGSUBModList GetShrinkageDisableGSUBTable()
+            public JstfGSUBModList? GetShrinkageDisableGSUBTable()
             {
-                JstfGSUBModList jgml = null;
+                JstfGSUBModList? jgml = null;
 
                 if (ShrinkageDisableGSUBOffset != 0)
                 {
@@ -338,9 +339,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfPriority + (uint)FieldOffsets.ShrinkageEnableGPOSOffset);}
             }
 
-            public JstfGPOSModList GetShrinkageEnableGPOSTable()
+            public JstfGPOSModList? GetShrinkageEnableGPOSTable()
             {
-                JstfGPOSModList jgml = null;
+                JstfGPOSModList? jgml = null;
 
                 if (ShrinkageEnableGPOSOffset != 0)
                 {
@@ -356,9 +357,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfPriority + (uint)FieldOffsets.ShrinkageDisableGPOSOffset);}
             }
 
-            public JstfGPOSModList GetShrinkageDisableGPOSTable()
+            public JstfGPOSModList? GetShrinkageDisableGPOSTable()
             {
-                JstfGPOSModList jgml = null;
+                JstfGPOSModList? jgml = null;
 
                 if (ShrinkageDisableGPOSOffset != 0)
                 {
@@ -374,9 +375,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfPriority + (uint)FieldOffsets.ShrinkageJstfMaxOffset);}
             }
 
-            public JstfMax GetShrinkageJstfMaxTable()
+            public JstfMax? GetShrinkageJstfMaxTable()
             {
-                JstfMax jm = null;
+                JstfMax? jm = null;
 
                 if (ShrinkageJstfMaxOffset != 0)
                 {
@@ -392,9 +393,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfPriority + (uint)FieldOffsets.ExtensionEnableGSUBOffset);}
             }
 
-            public JstfGSUBModList GetExtensionEnableGSUBTable()
+            public JstfGSUBModList? GetExtensionEnableGSUBTable()
             {
-                JstfGSUBModList jgml = null;
+                JstfGSUBModList? jgml = null;
 
                 if (ExtensionEnableGSUBOffset != 0)
                 {
@@ -410,9 +411,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfPriority + (uint)FieldOffsets.ExtensionDisableGSUBOffset);}
             }
 
-            public JstfGSUBModList GetExtensionDisableGSUBTable()
+            public JstfGSUBModList? GetExtensionDisableGSUBTable()
             {
-                JstfGSUBModList jgml = null;
+                JstfGSUBModList? jgml = null;
 
                 if (ExtensionDisableGSUBOffset != 0)
                 {
@@ -428,9 +429,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfPriority + (uint)FieldOffsets.ExtensionEnableGPOSOffset);}
             }
 
-            public JstfGPOSModList GetExtensionEnableGPOSTable()
+            public JstfGPOSModList? GetExtensionEnableGPOSTable()
             {
-                JstfGPOSModList jgml = null;
+                JstfGPOSModList? jgml = null;
 
                 if (ExtensionEnableGPOSOffset != 0)
                 {
@@ -446,9 +447,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfPriority + (uint)FieldOffsets.ExtensionDisableGPOSOffset);}
             }
 
-            public JstfGPOSModList GetExtensionDisableGPOSTable()
+            public JstfGPOSModList? GetExtensionDisableGPOSTable()
             {
-                JstfGPOSModList jgml = null;
+                JstfGPOSModList? jgml = null;
 
                 if (ExtensionDisableGPOSOffset != 0)
                 {
@@ -464,9 +465,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetJstfPriority + (uint)FieldOffsets.ExtensionJstfMaxOffset);}
             }
 
-            public JstfMax GetExtensionJstfMaxTable()
+            public JstfMax? GetExtensionJstfMaxTable()
             {
-                JstfMax jm = null;
+                JstfMax? jm = null;
 
                 if (ExtensionJstfMaxOffset != 0)
                 {
@@ -615,9 +616,9 @@ namespace OTFontFile
             get {return m_bufTable.GetUshort((uint)FieldOffsets.JstfScriptCount);}
         }
 
-        public JstfScriptRecord GetJstfScriptRecord(uint i)
+        public JstfScriptRecord? GetJstfScriptRecord(uint i)
         {
-            JstfScriptRecord jsr = null;
+            JstfScriptRecord? jsr = null;
 
             if (i < JstfScriptCount)
             {
@@ -645,7 +646,7 @@ namespace OTFontFile
         
         public class JSTF_cache : DataCache
         {
-            public override OTTable GenerateTable()
+            public override OTTable? GenerateTable()
             {
                 // not yet implemented!
                 return null;
@@ -655,3 +656,5 @@ namespace OTFontFile
 
     }
 }
+
+

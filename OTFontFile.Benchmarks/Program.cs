@@ -1,0 +1,123 @@
+using BenchmarkDotNet.Running;
+using OTFontFile.Benchmarks.Benchmarks;
+using System;
+
+namespace OTFontFile.Benchmarks
+{
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            Console.WriteLine("OTFontFile Performance Benchmarks");
+            Console.WriteLine("====================================\n");
+
+            if (args.Length == 0)
+            {
+                Console.WriteLine("Running all benchmarks...\n");
+                BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
+            }
+            else
+            {
+                var command = args[0].ToLower();
+
+                switch (command)
+                {
+                    case "file":
+                        Console.WriteLine("Running File Loading benchmarks...\n");
+                        BenchmarkRunner.Run<FileLoadingBenchmarks>();
+                        break;
+
+                    case "checksum":
+                        Console.WriteLine("Running Checksum benchmarks...\n");
+                        BenchmarkRunner.Run<ChecksumBenchmarks>();
+                        break;
+
+                    case "buffer":
+                        Console.WriteLine("Running MBOBuffer benchmarks...\n");
+                        BenchmarkRunner.Run<MBOBufferBenchmarks>();
+                        break;
+
+                    case "pool":
+                        Console.WriteLine("Running Object Pooling benchmarks...\n");
+                        BenchmarkRunner.Run<ObjectPoolingBenchmarks>();
+                        break;
+
+                    case "primitives":
+                        Console.WriteLine("Running MBOBuffer BinaryPrimitives comparison benchmarks...\n");
+                        BenchmarkRunner.Run<MBOBufferBinaryPrimitivesComparison>();
+                        break;
+
+                    case "shortlong":
+                        Console.WriteLine("Running MBOBuffer Short/Long comparison benchmarks...\n");
+                        BenchmarkRunner.Run<MBOBufferShortLongComparison>();
+                        break;
+
+                    case "simd":
+                        Console.WriteLine("Running SIMD Optimization benchmarks...\n");
+                        BenchmarkRunner.Run<SimdOptimizationsBenchmarks>();
+                        break;
+
+                    case "quickwins":
+                        Console.WriteLine("Running Quick Wins (FileOptions + uint comparison) benchmarks...\n");
+                        BenchmarkRunner.Run<QuickWinsBenchmarks>();
+                        break;
+
+                    case "concurrency":
+                        Console.WriteLine("Running Concurrency benchmarks...\n");
+                        BenchmarkRunner.Run<ConcurrencyBenchmarks>();
+                        break;
+
+                    case "rune":
+                        Console.WriteLine("Running BigUn vs Rune comparison benchmarks...\n");
+                        BenchmarkRunner.Run<BigUnRuneBenchmarks>();
+                        break;
+
+                    case "v2":
+                    case "compare2":
+                        Console.WriteLine("Running OTFontFile vs OTFontFile2 benchmarks...\n");
+                        BenchmarkRunner.Run<OTFontFileVsOTFontFile2Benchmarks>();
+                        break;
+
+                    case "realworld":
+                    case "rw":
+                        Console.WriteLine("Running real-world parsing benchmarks (name/cmap/glyf)...\n");
+                        BenchmarkRunner.Run<RealWorldParsingBenchmarks>();
+                        break;
+
+                    case "testchecksum":
+                    case "testChecksum":
+                        Console.WriteLine("Running Manual Checksum Performance Test...\n");
+                        TestChecksumPerformance.Run();
+                        break;
+
+                    case "all":
+                        Console.WriteLine("Running all benchmarks...\n");
+                        BenchmarkRunner.Run<FileLoadingBenchmarks>();
+                        BenchmarkRunner.Run<ChecksumBenchmarks>();
+                        BenchmarkRunner.Run<MBOBufferBenchmarks>();
+                        BenchmarkRunner.Run<MBOBufferBinaryPrimitivesComparison>();
+                        BenchmarkRunner.Run<SimdOptimizationsBenchmarks>();
+                        BenchmarkRunner.Run<ConcurrencyBenchmarks>(); 
+                        break;
+
+                    default:
+                        Console.WriteLine($"Unknown benchmark type: {command}");
+                        Console.WriteLine("Available options:");
+                        Console.WriteLine("  file       - File loading benchmarks");
+                        Console.WriteLine("  checksum   - Checksum calculation benchmarks");
+                        Console.WriteLine("  buffer     - MBOBuffer operation benchmarks");
+                        Console.WriteLine("  primitives - BinaryPrimitives comparison benchmarks (Int/Uint)");
+                        Console.WriteLine("  shortlong  - BinaryPrimitives comparison benchmarks (Short/Long)");
+                        Console.WriteLine("  simd       - SIMD Optimizations benchmarks");
+                        Console.WriteLine("  pool       - Object Pooling benchmarks");
+                        Console.WriteLine("  concurrency- Concurrency benchmarks");
+                        Console.WriteLine("  rune       - BigUn vs Rune comparison benchmarks");
+                        Console.WriteLine("  v2         - OTFontFile vs OTFontFile2 parsing benchmarks");
+                        Console.WriteLine("  realworld  - Real-world parsing benchmarks (name/cmap/glyf)");
+                        Console.WriteLine("  all        - Run all benchmarks");
+                        break;
+                }
+            }
+        }
+    }
+}

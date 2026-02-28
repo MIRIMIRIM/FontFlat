@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace OTFontFile
@@ -24,28 +25,86 @@ namespace OTFontFile
          */
         
         
+        private static readonly HashSet<uint> s_largeTableTags = new()
+        {
+            OTTagConstants.TAG_GLYF,
+            OTTagConstants.TAG_CFF,
+            OTTagConstants.TAG_CFF2,
+            OTTagConstants.TAG_CBDT,
+            OTTagConstants.TAG_EBDT,
+            OTTagConstants.TAG_SVG
+        };
+
+        private static bool ShouldUsePooledBuffer(DirectoryEntry de)
+        {
+            uint tag = de.tag;
+            if (s_largeTableTags.Contains(tag))
+                return true;
+            if (de.length > 64 * 1024)
+                return true;
+            return false;
+        }
+
+        private static bool ShouldUseLazyLoad(DirectoryEntry de)
+        {
+            uint tag = de.tag;
+            if (s_largeTableTags.Contains(tag))
+                return true;
+            return false;
+        }
+
         public OTTable? GetTable(DirectoryEntry de)
         {
-            // first try getting it from the table cache
-            OTTable? table = GetTableFromCache(de);
+            OTTable? table;
+            lock (m_cacheLock)
+            {
+                table = GetTableFromCache(de);
+            }
 
             if (table == null)
             {
-                if (   de.length != 0 
-                    && de.offset != 0 
+                if (de.length != 0
+                    && de.offset != 0
                     && de.offset < m_file.GetFileLength()
                     && de.offset + de.length <= m_file.GetFileLength())
                 {
-                    // read the table from the file
-                    var buf = m_file.ReadPaddedBuffer(de.offset, de.length);
-
-                    if (buf != null)
+                    // Load table outside lock for concurrency
+                    if (ShouldUseLazyLoad(de))
                     {
-                        // put the buffer into a table object
-                        table = CreateTableObject(de.tag, buf);
+                        table = CreateTableObjectLazy(de.tag, de);
+                    }
+                    else
+                    {
+                        var buf = ShouldUsePooledBuffer(de)
+                            ? m_file.ReadPooledBuffer(de.offset, de.length)
+                            : m_file.ReadPaddedBuffer(de.offset, de.length);
 
-                        // add the table to the cache
-                        CachedTables.Add(table);
+                        if (buf != null)
+                        {
+                            table = CreateTableObject(de.tag, buf);
+                        }
+                    }
+
+                    if (table != null)
+                    {
+                        lock (m_cacheLock)
+                        {
+                            // Double-check locking
+                            var existing = GetTableFromCache(de);
+                            if (existing != null)
+                            {
+                                // Another thread beat us to it
+                                table = existing;
+                                // Note: we might have allocated 'table' unnecessarily, 
+                                // but for 'LazyTable' it's cheap. Only for full tables it's a bit wasteful.
+                                // Given collision is rare for unique tables, it's acceptable for perf gain.
+                            }
+                            else
+                            {
+                                m_cachedTables.Add(table);
+                                m_cacheByOffsetLength[GetCacheKey(de)] = table;
+                            }
+                        }
                     }
                 }
             }
@@ -53,21 +112,19 @@ namespace OTFontFile
             return table;
         }
 
-        public static string GetUnaliasedTableName(OTTag? tag)
+        public static string GetUnaliasedTableName(OTTag tag)
         {
-            if (tag is null) return "";
-
-            string sName = tag;
-            if (sName == "bloc" || sName == "CBLC" )
+            uint val = tag;
+            if (val == OTTagConstants.TAG_BLOC || val == OTTagConstants.TAG_CBLC)
             {
-                sName = "EBLC";
+                return "EBLC";
             }
-            else if (sName == "bdat" || sName == "CBDT" )
+            if (val == OTTagConstants.TAG_BDAT || val == OTTagConstants.TAG_CBDT)
             {
-                sName = "EBDT";
+                return "EBDT";
             }
             
-            return sName;
+            return tag;
         }
 
         static public string [] GetKnownOTTableTypes()
@@ -131,19 +188,17 @@ namespace OTFontFile
 
         static public bool IsKnownOTTableType(OTTag tag)
         {
-            bool bFound = false;
-
             string [] sTables = GetKnownOTTableTypes();
             for (uint i=0; i<sTables.Length; i++)
             {
-                if (sTables[i] == (string)tag)
+                // Comparing OTTag (struct) with string literal
+                if (tag == sTables[i])
                 {
-                    bFound = true;
-                    break;
+                    return true;
                 }
             }
 
-            return bFound;
+            return false;
         }
 
         public virtual OTTable CreateTableObject(OTTag tag, MBOBuffer buf)
@@ -208,25 +263,34 @@ namespace OTFontFile
             return table;
         }
 
+        public virtual OTTable CreateTableObjectLazy(OTTag tag, DirectoryEntry de)
+        {
+            string sName = GetUnaliasedTableName(tag);
+
+            return sName switch
+            {
+                "glyf" => new Table_glyf(de, m_file),
+                "CFF " => new Table_CFF(de, m_file),
+                // CFF2 暂未实现，跳过
+                "SVG " => new Table_SVG(de, m_file),
+                "EBDT" => new Table_EBDT(de, m_file),
+                // CBDT 别名为 EBDT，已在 GetUnaliasedTableName 中处理
+                _ => throw new NotSupportedException($"Lazy loading not supported for table: {sName}"),
+            };
+        }
+
         /************************
          * protected methods
          */
 
         protected OTTable? GetTableFromCache(DirectoryEntry de)
         {
-            OTTable? ot = null;
-
-            for (int i=0; i<CachedTables.Count; i++)
+            if (m_cacheByOffsetLength.TryGetValue(GetCacheKey(de), out var ot))
             {
-                OTTable temp = CachedTables[i];
-                if (temp.MatchFileOffsetLength(de.offset, de.length))
-                {
-                    ot = temp;
-                    break;
-                }
+                return ot;
             }
 
-            return ot;
+            return null;
         }
 
         /************************
@@ -234,8 +298,15 @@ namespace OTFontFile
          */
         
         OTFile m_file = file;
+        private readonly object m_cacheLock = new object();
+        private readonly Dictionary<ulong, OTTable> m_cacheByOffsetLength = new();
 
         //System.Collections.ArrayList CachedTables;
-        List<OTTable> CachedTables = [];
+        List<OTTable> m_cachedTables = [];
+
+        private static ulong GetCacheKey(DirectoryEntry de)
+        {
+            return ((ulong)de.offset << 32) | de.length;
+        }
     }
 }

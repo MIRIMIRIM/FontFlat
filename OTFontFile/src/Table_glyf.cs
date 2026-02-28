@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 
 
 namespace OTFontFile
@@ -8,10 +9,36 @@ namespace OTFontFile
     /// <summary>
     /// Summary description for Table_glyf.
     /// </summary>
-    public class Table_glyf : OTTable
+    public class Table_glyf : LazyTable
     {
-        public Table_glyf(OTTag tag, MBOBuffer buf) : base(tag, buf)
+        /// <summary>
+        /// 常规构造函数：立即加载表数据
+        /// </summary>
+        public Table_glyf(OTTag tag, MBOBuffer buf) : base(tag, buf, null, null)
         {
+            // 立即加载，已通过 buf 获取数据
+            _contentLoaded = true;  // 数据已加载
+        }
+
+        /// <summary>
+        /// 延迟加载构造函数：不立即加载表数据，按需加载
+        /// </summary>
+        public Table_glyf(DirectoryEntry de, OTFile file) : base(de, file)
+        {
+            // 不立即加载，在首次访问时调用 EnsureContentLoadedPooled()
+        }
+
+        /// <summary>
+        /// 确保表数据已加载（在所有访问方法前调用）
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void EnsureDataLoaded()
+        {
+            if (!_contentLoaded)
+            {
+                // 使用池化缓冲区加载数据（glyf 通常是大表）
+                EnsureContentLoadedPooled();
+            }
         }
 
         /*
@@ -805,11 +832,17 @@ namespace OTFontFile
 
         public MBOBuffer Buffer
         {
-            get { return this.m_bufTable; }
+            get
+            {
+                EnsureDataLoaded();
+                return this.m_bufTable;
+            }
         }
 
         public Header? GetGlyphHeader(uint iGlyph, OTFont fontOwner)
         {
+            EnsureDataLoaded();
+
             if (iGlyph >= fontOwner.GetMaxpNumGlyphs())
             {
                 throw new ArgumentOutOfRangeException("iGlyph");
@@ -840,7 +873,11 @@ namespace OTFontFile
 
         public override DataCache GetCache()
         {
-            return m_cache;
+            if (m_cache == null)
+            {
+                m_cache = new glyf_cache(this, null!);
+            }
+            return m_cache!;
         }
 
         public void BuildCache(OTFont fontOwner)

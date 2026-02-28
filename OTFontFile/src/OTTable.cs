@@ -10,7 +10,7 @@ namespace OTFontFile
         /// <summary>Construct abstract base class tag and buffer</summary>
         public OTTable(OTTag tag, MBOBuffer buf)
         {
-            m_tag = new OTTag(tag);
+            m_tag = tag;
             m_bufTable = buf;
         }
 
@@ -124,7 +124,7 @@ namespace OTFontFile
                 return m_bDirty;
             }
 
-            public abstract OTTable GenerateTable();
+            public abstract OTTable? GenerateTable();
             protected bool m_bDirty;
         }
 

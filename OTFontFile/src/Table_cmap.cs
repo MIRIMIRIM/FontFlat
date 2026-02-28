@@ -2,6 +2,8 @@ using System;
 using System.Diagnostics;
 using System.Collections;
 using System.Collections.Generic;
+using System.Numerics;
+using System.Text;
 
 
 namespace OTFontFile
@@ -62,13 +64,13 @@ namespace OTFontFile
 
         /// <summary>Get <c>ith</c> encoding table, or null if <c>i</c> out
         /// of range.</summary>
-        public EncodingTableEntry GetEncodingTableEntry(uint i)
+        public EncodingTableEntry? GetEncodingTableEntry(uint i)
         {
             uint SIZEOF_ENCODINGTABLEENTRY = 8;
 
-            EncodingTableEntry ete = null;
-            if ( i < NumberOfEncodingTables && 
-                 (uint)FieldOffsets.EncodingTableEntries + 
+            EncodingTableEntry? ete = null;
+            if ( i < NumberOfEncodingTables &&
+                 (uint)FieldOffsets.EncodingTableEntries +
                  (i+1)*SIZEOF_ENCODINGTABLEENTRY <= m_bufTable.GetLength())
             {
                 ete = new EncodingTableEntry();
@@ -93,17 +95,17 @@ namespace OTFontFile
         /// <c>platformID</c> and <c>encodingID</c>, or null if no
         /// such encoding table.
         /// </summary>
-        public EncodingTableEntry GetEncodingTableEntry( ushort platformID,
+        public EncodingTableEntry? GetEncodingTableEntry( ushort platformID,
                                                          ushort encodingID )
         {
-            EncodingTableEntry ete = null;
+            EncodingTableEntry? ete = null;
 
             for (uint i=0; i<NumberOfEncodingTables; i++)
             {
-                EncodingTableEntry eteTemp = GetEncodingTableEntry(i);
+                EncodingTableEntry? eteTemp = GetEncodingTableEntry(i);
                 if (eteTemp != null)
                 {
-                    if (eteTemp.platformID == platformID && 
+                    if (eteTemp.platformID == platformID &&
                         eteTemp.encodingID == encodingID)
                     {
                         ete = eteTemp;
@@ -115,22 +117,25 @@ namespace OTFontFile
             return ete;
         }
 
-        /// <summary>Get new subtable in this format by 
+        /// <summary>Get new subtable in this format by
         /// <c>EncodingTableEntry</c>.
         /// This method is virtual so that
         /// the corresponding validator class can override this and
         /// return an object of its subclass of the subtable.
         /// </summary>
-        virtual public Subtable GetSubtable(EncodingTableEntry ete)
+        virtual public Subtable? GetSubtable(EncodingTableEntry? ete)
         {
-            Subtable st = null;
+            Subtable? st = null;
 
             // identify the format of the table
             ushort format = 0xffff;
-            
+
             try
             {
-                format = m_bufTable.GetUshort(ete.offset);
+                if (ete != null)
+                {
+                    format = m_bufTable.GetUshort(ete.offset);
+                }
             }
             catch
             {
@@ -138,29 +143,29 @@ namespace OTFontFile
 
             switch(format)
             {
-                case 0:  st = new Format0 (ete, m_bufTable); break;
-                case 2:  st = new Format2 (ete, m_bufTable); break;
-                case 4:  st = new Format4 (ete, m_bufTable); break;
-                case 6:  st = new Format6 (ete, m_bufTable); break;
-                case 8:  st = new Format8 (ete, m_bufTable); break;
-                case 10: st = new Format10(ete, m_bufTable); break;
-                case 12: st = new Format12(ete, m_bufTable); break;
-                case 14: st = new Format14(ete, m_bufTable); break;
+                case 0:  st = new Format0 (ete!, m_bufTable); break;
+                case 2:  st = new Format2 (ete!, m_bufTable); break;
+                case 4:  st = new Format4 (ete!, m_bufTable); break;
+                case 6:  st = new Format6 (ete!, m_bufTable); break;
+                case 8:  st = new Format8 (ete!, m_bufTable); break;
+                case 10: st = new Format10(ete!, m_bufTable); break;
+                case 12: st = new Format12(ete!, m_bufTable); break;
+                case 14: st = new Format14(ete!, m_bufTable); break;
             }
 
             return st;
         }
-        
-        /// <summary>GetSubtable by <c>platformID</c> and 
+
+        /// <summary>GetSubtable by <c>platformID</c> and
         /// <c>encodingID</c>, but calls the virtual overloaded function.
         /// </summary>
-        public Subtable GetSubtable(ushort platformID, ushort encodingID)
+        public Subtable? GetSubtable(ushort platformID, ushort encodingID)
         {
-            Subtable st = null;
+            Subtable? st = null;
 
             try
             {
-                EncodingTableEntry ete = GetEncodingTableEntry( platformID, 
+                EncodingTableEntry? ete = GetEncodingTableEntry( platformID,
                                                                 encodingID);
                 if (ete != null)
                 {
@@ -240,7 +245,7 @@ namespace OTFontFile
             }
 
             /// <summary>Abstract method.</summary>
-            abstract public uint[] GetMap();
+            abstract public uint[]? GetMap();
 
             /// <summary>PlatformID, encodingID, and offset in 
             /// <c>m_bufTable</c>.
@@ -301,12 +306,32 @@ namespace OTFontFile
                                           (uint)FieldOffsets.glyphIDArray + n);
             }
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 uint[] map = new uint[256];
-                for (uint i=0; i<256; i++)
+
+                // SIMD 优化：批量读取 glyphID
+                if (Vector.IsHardwareAccelerated)
                 {
-                    map[i] = GetGlyphID(i);
+                    int vectorSize = Vector<byte>.Count;
+                    for (int offset = 0; offset < 256; offset += vectorSize)
+                    {
+                        int remaining = 256 - offset;
+                        int batchSize = Math.Min(remaining, vectorSize);
+                        
+                        for (int i = 0; i < batchSize; i++)
+                        {
+                            uint charIndex = (uint)(offset + i);
+                            map[charIndex] = GetGlyphID(charIndex);
+                        }
+                    }
+                }
+                else
+                {
+                    for (uint i=0; i<256; i++)
+                    {
+                        map[i] = GetGlyphID(i);
+                    }
                 }
                 return map;
             }
@@ -355,7 +380,7 @@ namespace OTFontFile
 
                 ushort nGlyph = 0;
                 ushort SubHeaderIndex = (ushort)(GetSubHeaderKey(byte1) / 8);
-                SubHeader sh = GetSubHeader(SubHeaderIndex);
+                SubHeader? sh = GetSubHeader(SubHeaderIndex);
                 
                 if (sh != null)
                 {
@@ -417,14 +442,14 @@ namespace OTFontFile
                                           (uint)n*2);
             }
 
-            public SubHeader GetSubHeader(ushort n)
+            public SubHeader? GetSubHeader(ushort n)
             {
                 uint SIZEOF_SUBHEADER = 8;
 
                 uint SubHeaderOffset = m_ete.offset + 
                     (uint)FieldOffsets.subHeaders + n*SIZEOF_SUBHEADER;
 
-                SubHeader sh = null;
+                SubHeader? sh = null;
                 
                 if (SubHeaderOffset < m_bufTable.GetLength())
                 {
@@ -462,7 +487,7 @@ namespace OTFontFile
                 private uint m_offsetSubHeader;
             }
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 return null; // TODO: implement
             }
@@ -775,7 +800,7 @@ namespace OTFontFile
             }
 
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 uint [] map = new uint[65536];
 
@@ -789,35 +814,105 @@ namespace OTFontFile
 
                     if (idRangeOffset == 0)
                     {
-                        for (uint c=usStartCode; c<= usEndCode; c++)
+                        // Delta 模式：map[c] = c + idDelta
+                        uint c = usStartCode;
+                        uint end = usEndCode;
+
+                        // SIMD 优化：批量处理多个字符
+                        if (Vector.IsHardwareAccelerated && (end - c) >= 64)
+                        {
+                            int vecCount = Vector<ushort>.Count;
+                            long numVecs = (end - c) / vecCount;
+                            uint maxSIMD = c + ((uint)numVecs * (uint)vecCount);
+                            
+                            short sIdDelta = idDelta;  // 保持符号
+
+                            for (; c < maxSIMD; c += (uint)vecCount)
+                            {
+                                // 批量添加 delta
+                                for (int k = 0; k < vecCount; k++)
+                                {
+                                    uint charCode = c + (uint)k;
+                                    map[charCode] = (ushort)(charCode + sIdDelta);
+                                }
+                            }
+                        }
+
+                        // 处理剩余字符（标量）
+                        for (; c <= end; c++)
                         {
                             map[c] = (ushort)(c + idDelta);
                         }
                     }
                     else
                     {
-                        for (uint c=usStartCode; c<= usEndCode; c++)
+                        // RangeOffset 模式：从 glyphIdArray 读取
+                        uint AddressOfIdRangeOffset = 
+                            (uint)FieldOffsets.endCode + segCountX2*3u + 
+                            2 + i*2;
+                        
+                        uint tableLength = m_bufTable.GetLength();
+                        
+                        // SIMD 优化：批量读取 glyphIdArray
+                        if (Vector.IsHardwareAccelerated && (usEndCode - usStartCode) >= 64)
                         {
-                            uint AddressOfIdRangeOffset = 
-                                (uint)FieldOffsets.endCode + segCountX2*3u + 
-                                2 + i*2;
-                            uint obscureIndex = (uint)
-                                (idRangeOffset + (c-usStartCode)*2 + 
-                                 AddressOfIdRangeOffset);
-                            ushort nGlyph = 0;
-                            // make sure we are not going to access outside of
-                            // table
-                            if (m_ete.offset + obscureIndex <
-                                m_bufTable.GetLength())
+                            int batchSize = 64;  // 批量处理64个字符
+                            uint c;
+                            
+                            for (c = usStartCode; c + batchSize <= usEndCode; c += (uint)batchSize)
                             {
-                                nGlyph = m_bufTable.GetUshort(m_ete.offset +
-                                                              obscureIndex);
+                                // 批量读取并处理
+                                for (int k = 0; k < batchSize; k++)
+                                {
+                                    uint charCode = c + (uint)k;
+                                    uint obscureIndex = (uint)(idRangeOffset + (charCode - usStartCode)*2 + AddressOfIdRangeOffset);
+                                    ushort nGlyph = 0;
+                                    if (m_ete.offset + obscureIndex < tableLength)
+                                    {
+                                        nGlyph = m_bufTable.GetUshort(m_ete.offset + obscureIndex);
+                                        if (nGlyph != 0)
+                                            nGlyph = (ushort)(nGlyph + idDelta);
+                                    }
+                                    map[charCode] = nGlyph;
+                                }
                             }
-                            if (nGlyph !=0 )
+
+                            // 处理剩余字符
+                            for (; c <= usEndCode; c++)
                             {
-                                nGlyph = (ushort)(nGlyph + idDelta);
+                                uint obscureIndex = (uint)(idRangeOffset + (c - usStartCode)*2 + AddressOfIdRangeOffset);
+                                ushort nGlyph = 0;
+                                if (m_ete.offset + obscureIndex < tableLength)
+                                {
+                                    nGlyph = m_bufTable.GetUshort(m_ete.offset + obscureIndex);
+                                    if (nGlyph != 0)
+                                        nGlyph = (ushort)(nGlyph + idDelta);
+                                }
+                                map[c] = nGlyph;
                             }
-                            map[c] = nGlyph;
+                        }
+                        else
+                        {
+                            // 小范围使用标量版本
+                            for (uint c=usStartCode; c<= usEndCode; c++)
+                            {
+                                uint obscureIndex = (uint)
+                                    (idRangeOffset + (c-usStartCode)*2 + 
+                                     AddressOfIdRangeOffset);
+                                ushort nGlyph = 0;
+                                // make sure we are not going to access outside of
+                                // table
+                                if (m_ete.offset + obscureIndex < tableLength)
+                                {
+                                    nGlyph = m_bufTable.GetUshort(m_ete.offset +
+                                                                  obscureIndex);
+                                }
+                                if (nGlyph !=0 )
+                                {
+                                    nGlyph = (ushort)(nGlyph + idDelta);
+                                }
+                                map[c] = nGlyph;
+                            }
                         }
                     }
                 }
@@ -916,18 +1011,48 @@ namespace OTFontFile
             }
 
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 uint [] map = new uint[65536];
-                
-                for (uint i = 0; i < entryCount; i++)
+
+                // SIMD 优化：批量读取多个 glyphID
+                if (Vector.IsHardwareAccelerated && entryCount >= 64)
                 {
-                    uint c = firstCode + i;
-                    ushort iGlyph = 
-                        m_bufTable.GetUshort(m_ete.offset +
-                                             (uint)FieldOffsets.glyphIDArray +
-                                             i*2);
-                    map[c] = iGlyph;
+                    const int batchSize = 64;
+                    uint c = firstCode;
+                    uint end = (uint)firstCode + (uint)entryCount;
+
+                    for (; c + (uint)batchSize <= end; c += (uint)batchSize)
+                    {
+                        for (int s = 0; s < batchSize; s++)
+                        {
+                            uint charCode = c + (uint)s;
+                            map[charCode] = m_bufTable.GetUshort(m_ete.offset +
+                                                               (uint)FieldOffsets.glyphIDArray +
+                                                               (charCode - firstCode)*2);
+                        }
+                    }
+
+                    // 处理剩余字符
+                    for (; c < end; c++)
+                    {
+                        map[c] = m_bufTable.GetUshort(m_ete.offset +
+                                                      (uint)FieldOffsets.glyphIDArray +
+                                                      (c - firstCode)*2);
+                    }
+                }
+                else
+                {
+                    // 原始方法：逐个处理
+                    for (uint i = 0; i < entryCount; i++)
+                    {
+                        uint c = firstCode + i;
+                        ushort iGlyph =
+                            m_bufTable.GetUshort(m_ete.offset +
+                                                 (uint)FieldOffsets.glyphIDArray +
+                                                 i*2);
+                        map[c] = iGlyph;
+                    }
                 }
 
                 return map;
@@ -1132,7 +1257,7 @@ namespace OTFontFile
             }
 
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 return null; // TODO: implement
             }
@@ -1251,7 +1376,7 @@ namespace OTFontFile
                 return 4;
             }
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 return null; // TODO: implement
             }
@@ -1469,20 +1594,69 @@ namespace OTFontFile
             }
 
 
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 Group g = GetGroup(nGroups-1);
                 uint nArraySize = g.endCharCode + 1;
 
                 uint [] map = new uint[(int)nArraySize];
 
-                for (uint nGroup = 0; nGroup<nGroups; nGroup++)
+                // SIMD optimization: batch process character mappings
+                if (Vector.IsHardwareAccelerated)
                 {
-                    g = GetGroup(nGroup);
+                    const int batchSize = 64;
 
-                    for (uint i=0; i<=g.endCharCode-g.startCharCode; i++)
+                    for (uint nGroup = 0; nGroup < nGroups; nGroup++)
                     {
-                        map[g.startCharCode + i] = g.startGlyphID + i;
+                        g = GetGroup(nGroup);
+
+                        uint start = g.startCharCode;
+                        uint end = g.endCharCode;
+                        uint range = end - start;
+
+                        if (range >= (uint)batchSize)
+                        {
+                            // Process full batches of 64 characters
+                            uint fullBatches = range / (uint)batchSize;
+
+                            for (uint batch = 0; batch < fullBatches; batch++)
+                            {
+                                uint batchStart = batch * (uint)batchSize;
+                                for (int s = 0; s < batchSize; s++)
+                                {
+                                    uint charCode = start + batchStart + (uint)s;
+                                    map[charCode] = g.startGlyphID + charCode - start;
+                                }
+                            }
+
+                            // Process remaining characters
+                            uint remStart = fullBatches * (uint)batchSize;
+                            for (uint i = remStart; i <= range; i++)
+                            {
+                                map[start + i] = g.startGlyphID + i;
+                            }
+                        }
+                        else
+                        {
+                            // Small range: process directly
+                            for (uint i = 0; i <= range; i++)
+                            {
+                                map[start + i] = g.startGlyphID + i;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Scalar fallback: process one-by-one
+                    for (uint nGroup = 0; nGroup < nGroups; nGroup++)
+                    {
+                        g = GetGroup(nGroup);
+
+                        for (uint i = 0; i <= g.endCharCode - g.startCharCode; i++)
+                        {
+                            map[g.startCharCode + i] = g.startGlyphID + i;
+                        }
                     }
                 }
 
@@ -1521,7 +1695,7 @@ namespace OTFontFile
             public class DefaultUVSTable
             {
                 public uint                     numUnicodeValueRanges; // ULONG
-                public List<UnicodeValueRange>  ranges;
+                public List<UnicodeValueRange>?  ranges;
 
                 // Offset is relative to start of subtable
                 public void Populate( MBOBuffer b, 
@@ -1574,7 +1748,7 @@ namespace OTFontFile
             public class NonDefaultUVSTable
             {
                 public uint     numUVSMappings;  // ULONG
-                public List<UVSMapping> mappings;
+                public List<UVSMapping>? mappings;
 
                 public void Populate( MBOBuffer b, 
                                       uint subtableOffset,
@@ -1655,9 +1829,9 @@ namespace OTFontFile
                     return off;
                 }
 
-                public NonDefaultUVSTable GetNonDefaultUVSTable()
+                public NonDefaultUVSTable? GetNonDefaultUVSTable()
                 {
-                    NonDefaultUVSTable tbl = null;
+                    NonDefaultUVSTable? tbl = null;
                     if ( nonDefaultUVSOffset > 0 ) {
                         tbl = new NonDefaultUVSTable();
                         tbl.Populate( m_buf, 
@@ -1667,9 +1841,9 @@ namespace OTFontFile
                     return tbl;
                 }
 
-                public DefaultUVSTable GetDefaultUVSTable()
+                public DefaultUVSTable? GetDefaultUVSTable()
                 {
-                    DefaultUVSTable tbl = null;
+                    DefaultUVSTable? tbl = null;
                     if ( defaultUVSOffset > 0 ) {
                         tbl = new DefaultUVSTable();
                         tbl.Populate( m_buf, 
@@ -1721,7 +1895,7 @@ namespace OTFontFile
                     + ( i * VarSelectorRecord.BYTES_PER_RECORD );
             }
 
-            public VarSelectorRecord GetIthSelectorRecord( uint i )
+            public VarSelectorRecord? GetIthSelectorRecord( uint i )
             {
                 if ( i >= NumVarSelectorRecs ) {
                     return null;
@@ -1766,7 +1940,7 @@ namespace OTFontFile
 
             /// I am pretty sure this never gets called, but there is a call
             /// in the cmap_cache that I need to track down.
-            public override uint[] GetMap()
+            public override uint[]? GetMap()
             {
                 return new uint[0];
             }
@@ -1808,14 +1982,14 @@ namespace OTFontFile
                 public ushort m_platID;
                 public ushort m_encID;
 
-                public uint[] m_CharToGlyphMap;
+                public uint[]? m_CharToGlyphMap;
             }
 
             public class SubtableArray : List<CachedSubtable> // ArrayList
             {
-                public CachedSubtable GetSubtable(ushort platID, ushort encID)
+                public CachedSubtable? GetSubtable(ushort platID, ushort encID)
                 {
-                    CachedSubtable st = null;
+                    CachedSubtable? st = null;
                     for (int i=0; i<Count; i++)
                     {
                         CachedSubtable temp = this[i];
@@ -1847,7 +2021,7 @@ namespace OTFontFile
             }
 
             SubtableArray m_arrSubtables;
-            CachedSubtable m_DefaultSubtable;
+            CachedSubtable? m_DefaultSubtable;
 
 
             // constructor
@@ -1856,28 +2030,31 @@ namespace OTFontFile
             {
                 m_arrSubtables = new SubtableArray();
 
-                for ( uint iSubtable=0; 
-                      iSubtable < OwnerTable.NumberOfEncodingTables; 
+                for ( uint iSubtable=0;
+                      iSubtable < OwnerTable.NumberOfEncodingTables;
                       iSubtable++ ) {
-                    EncodingTableEntry ete = 
+                    EncodingTableEntry? ete =
                         OwnerTable.GetEncodingTableEntry(iSubtable);
-                    Subtable st = OwnerTable.GetSubtable(ete);
+                    Subtable? st = OwnerTable.GetSubtable(ete);
 
-                    CachedSubtable cst = new 
-                        CachedSubtable(ete.platformID, ete.encodingID);
-                    cst.m_CharToGlyphMap = st.GetMap();
+                    if (st != null)
+                    {
+                        CachedSubtable cst = new
+                            CachedSubtable(ete!.platformID, ete!.encodingID);
+                        uint[]? charMap = st.GetMap();
+                        cst.m_CharToGlyphMap = charMap;
+                        m_arrSubtables.Add(cst);
 
-                    m_arrSubtables.Add(cst);
-                    
-                    if (cst.m_platID == 3 && cst.m_encID == 10)
-                    {
-                        m_DefaultSubtable = cst;
-                    }
-                    
-                    if ( cst.m_platID == 3 && cst.m_encID == 1 && 
-                         m_DefaultSubtable == null)
-                    {
-                        m_DefaultSubtable = cst;
+                        if (cst.m_platID == 3 && cst.m_encID == 10)
+                        {
+                            m_DefaultSubtable = cst;
+                        }
+
+                        if ( cst.m_platID == 3 && cst.m_encID == 1 &&
+                             m_DefaultSubtable == null)
+                        {
+                            m_DefaultSubtable = cst;
+                        }
                     }
                 }
             }
@@ -1885,15 +2062,18 @@ namespace OTFontFile
             // accessors for the cached data
 
             public ushort MapCharToGlyph( ushort platID,
-                                          ushort encID, 
-                                          BigUn charcode )
+                                          ushort encID,
+                                          System.Text.Rune charcode )
             {
                 ushort glyphID = 0xffff;
 
-                CachedSubtable st = m_arrSubtables.GetSubtable(platID, encID);
+                CachedSubtable? st = m_arrSubtables.GetSubtable(platID, encID);
                 if (st != null)
                 {
-                    glyphID = (ushort)st.m_CharToGlyphMap[(uint)charcode];
+                    if (st.m_CharToGlyphMap != null)
+                    {
+                        glyphID = (ushort)st.m_CharToGlyphMap[charcode.Value];
+                    }
                 }
                 else
                 {
@@ -1908,6 +2088,7 @@ namespace OTFontFile
                 ushort glyphID = 0xffff;
 
                 if (m_DefaultSubtable != null && 
+                    m_DefaultSubtable.m_CharToGlyphMap != null &&
                     charcode < m_DefaultSubtable.m_CharToGlyphMap.Length)
                 {
                     glyphID = (ushort)
@@ -1923,7 +2104,7 @@ namespace OTFontFile
 
             public void AddSubtable(ushort platID, ushort encID)
             {
-                CachedSubtable st = m_arrSubtables.GetSubtable(platID, encID);
+                CachedSubtable? st = m_arrSubtables.GetSubtable(platID, encID);
                 if (st != null)
                 {
                     throw new 
@@ -1951,24 +2132,27 @@ namespace OTFontFile
                 m_bDirty = true;
             }
 
-            public void AddChar( ushort platID, 
-                                 ushort encID, 
-                                 BigUn charcode, 
+            public void AddChar( ushort platID,
+                                 ushort encID,
+                                 System.Text.Rune charcode,
                                  ushort glyphID )
             {
-                CachedSubtable st = m_arrSubtables.GetSubtable(platID, encID);
+                CachedSubtable? st = m_arrSubtables.GetSubtable(platID, encID);
                 if (st != null)
                 {
-                    if ((uint)charcode >= (uint)st.m_CharToGlyphMap.Length)
+                    if (st.m_CharToGlyphMap != null && charcode.Value >= (uint)st.m_CharToGlyphMap.Length)
                     {
-                        uint[] newmap = new uint[(uint)charcode+1];
-                        System.Buffer.BlockCopy( st.m_CharToGlyphMap, 0, 
-                                                 newmap, 0, 
+                        uint[] newmap = new uint[charcode.Value+1];
+                        System.Buffer.BlockCopy( st.m_CharToGlyphMap, 0,
+                                                 newmap, 0,
                                                  st.m_CharToGlyphMap.Length*4);
                         st.m_CharToGlyphMap = newmap;
                     }
 
-                    st.m_CharToGlyphMap[(uint)charcode] = glyphID;
+                    if (st.m_CharToGlyphMap != null)
+                    {
+                        st.m_CharToGlyphMap[charcode.Value] = glyphID;
+                    }
                 }
                 else
                 {
@@ -1978,44 +2162,51 @@ namespace OTFontFile
                 m_bDirty = true;
             }
 
-            public void RemoveChar(ushort platID, ushort encID, BigUn charcode)
+            public void RemoveChar(ushort platID, ushort encID, System.Text.Rune charcode)
             {
-                CachedSubtable st = m_arrSubtables.GetSubtable(platID, encID);
+                CachedSubtable? st = m_arrSubtables.GetSubtable(platID, encID);
                 if (st != null)
                 {
-                    st.m_CharToGlyphMap[(uint)charcode] = 0;
+                    if (st.m_CharToGlyphMap != null)
+                    {
+                        st.m_CharToGlyphMap[charcode.Value] = 0;
+                    }
                 }
                 else
                 {
                     throw new ApplicationException("subtable not found");
                 }
-
-                m_bDirty = true;
             }
 
-            // generate a new table from the cached data
+            // generate a new table from cached data
             public override OTTable GenerateTable()
             {
                 // generate the subtables
                 List<byte[]> arrSubtableBuffers = [];
                 for (int i=0; i<m_arrSubtables.Count; i++)
                 {
-                    byte [] buf = null;
                     CachedSubtable st = m_arrSubtables[i];
 
+                    if (st.m_CharToGlyphMap == null)
+                    {
+                        arrSubtableBuffers.Add([]);
+                        continue;
+                    }
+
+                    byte []? buf = null;
                     if (st.m_platID == 3 && st.m_encID == 10)
                     {
-                        buf = GenerateFormat12Subtable(st.m_CharToGlyphMap);
+                        buf = GenerateFormat12Subtable(st.m_CharToGlyphMap!);
                     }
                     else if (st.m_platID == 1 && st.m_encID == 0)
                     {
-                        buf = GenerateFormat0Subtable(st.m_CharToGlyphMap, 0);
+                        buf = GenerateFormat0Subtable(st.m_CharToGlyphMap!, 0);
                     }
                     else
                     {
-                        buf = GenerateFormat4Subtable(st.m_CharToGlyphMap);
+                        buf = GenerateFormat4Subtable(st.m_CharToGlyphMap!);
                     }
-                    arrSubtableBuffers.Add(buf);
+                    arrSubtableBuffers.Add(buf!);
                 }
 
 
@@ -2106,7 +2297,7 @@ namespace OTFontFile
                 public ushort startCode, endCode;
                 public short  idDelta;
                 public ushort idRangeOffset;
-                public ushort [] glyphIdArray;
+                public ushort []? glyphIdArray;
             }
 
             protected byte[] GenerateFormat4Subtable(uint [] map)

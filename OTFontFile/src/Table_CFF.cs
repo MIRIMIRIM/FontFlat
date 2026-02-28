@@ -25,6 +25,8 @@
 using System;
 using System.Text;
 using System.Collections;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 
 using Compat;
 
@@ -33,14 +35,39 @@ namespace OTFontFile
     /// <summary>
     /// Summary description for Table_CFF.
     /// </summary>
-    public class Table_CFF : OTTable
+    public class Table_CFF : LazyTable
     {
         /************************
          * constructors
          */
         
-        public Table_CFF(OTTag tag, MBOBuffer buf) : base(tag, buf)
+        /// <summary>
+        /// 常规构造函数：立即加载表数据
+        /// </summary>
+        public Table_CFF(OTTag tag, MBOBuffer buf) : base(tag, buf, null, null)
         {
+            // 立即加载，已通过 buf 获取数据
+        }
+
+        /// <summary>
+        /// 延迟加载构造函数：不立即加载表数据，按需加载
+        /// </summary>
+        public Table_CFF(DirectoryEntry de, OTFile file) : base(de, file)
+        {
+            // 不立即加载，在首次访问时调用 EnsureContentLoadedPooled()
+        }
+
+        /// <summary>
+        /// 确保表数据已加载（在所有访问方法前调用）
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void EnsureDataLoaded()
+        {
+            if (!_contentLoaded)
+            {
+                // CFF 通常是大表，使用池化缓冲区
+                EnsureContentLoadedPooled();
+            }
         }
 
         /************************
@@ -61,27 +88,45 @@ namespace OTFontFile
 
         public byte major
         {
-            get {return m_bufTable.GetByte((uint)FieldOffsets.major);}
+            get 
+            {
+                EnsureDataLoaded();
+                return m_bufTable.GetByte((uint)FieldOffsets.major);
+            }
         }
 
         public byte minor
         {
-            get {return m_bufTable.GetByte((uint)FieldOffsets.minor);}
+            get 
+            {
+                EnsureDataLoaded();
+                return m_bufTable.GetByte((uint)FieldOffsets.minor);
+            }
         }
         
         public byte hdrSize
         {
-            get {return m_bufTable.GetByte((uint)FieldOffsets.hdrSize);}
+            get 
+            {
+                EnsureDataLoaded();
+                return m_bufTable.GetByte((uint)FieldOffsets.hdrSize);
+            }
         }
 
         public byte offSize
         {
-            get {return m_bufTable.GetByte((uint)FieldOffsets.offSize);}
+            get 
+            {
+                EnsureDataLoaded();
+                return m_bufTable.GetByte((uint)FieldOffsets.offSize);
+            }
         }
 
         public INDEXData Name
         {
-            get {
+            get 
+            {
+                EnsureDataLoaded();
                 if (m_Name == null)
                     m_Name = new INDEXData(hdrSize, m_bufTable);
                 return m_Name;
@@ -90,7 +135,9 @@ namespace OTFontFile
 
         public INDEXData TopDICT
         {
-            get {
+            get 
+            {
+                EnsureDataLoaded();
                 if (m_TopDICT == null)
                     m_TopDICT = new INDEXData(hdrSize + Name.size, m_bufTable);
                 return m_TopDICT;
@@ -99,7 +146,9 @@ namespace OTFontFile
 
         public INDEXData String
         {
-            get {
+            get 
+            {
+                EnsureDataLoaded();
                 if (m_String == null)
                     m_String = new INDEXData(hdrSize + Name.size + TopDICT.size, m_bufTable);
                 return m_String;
@@ -108,7 +157,9 @@ namespace OTFontFile
 
         public INDEXData GlobalSubr
         {
-            get {
+            get 
+            {
+                EnsureDataLoaded();
                 if (m_GlobalSubr == null)
                     m_GlobalSubr = new INDEXData(hdrSize + Name.size + TopDICT.size + String.size, m_bufTable);
                 return m_GlobalSubr;
@@ -117,18 +168,27 @@ namespace OTFontFile
 
         public INDEXData GetINDEX(int offset)
         {
+            EnsureDataLoaded();
             return new INDEXData((uint) offset, m_bufTable);
         }
 
-        public DICTData GetTopDICT( uint i )
+        public DICTData? GetTopDICT( uint i )
         {
-            return new DICTData( TopDICT.GetData(i), String );
+            EnsureDataLoaded();
+            byte[]? data = TopDICT.GetData(i);
+            if (data == null)
+            {
+                return null;
+            }
+            return new DICTData( data, String );
         }
 
-        public DICTData GetPrivate( DICTData thisTopDICT )
+        public DICTData? GetPrivate( DICTData thisTopDICT )
         {
             if (thisTopDICT.sizePrivate == 0)
                 return null;
+            
+            EnsureDataLoaded();
 
             byte [] buf = new byte[thisTopDICT.sizePrivate];
             System.Buffer.BlockCopy(m_bufTable.GetBuffer(), thisTopDICT.offsetPrivate, buf, 0, thisTopDICT.sizePrivate);
@@ -137,6 +197,7 @@ namespace OTFontFile
 
         public DICTData GetDICT( byte[] data )
         {
+            EnsureDataLoaded();
             return new DICTData( data, String );
         }
 
@@ -197,7 +258,7 @@ namespace OTFontFile
                 return val;
             }
 
-            public byte[] GetData(uint i)
+            public byte[]? GetData(uint i)
             {
                 if (i >= count)
                     return null;
@@ -211,12 +272,14 @@ namespace OTFontFile
 
             public string GetString(uint i)
             {
-                return encoding.GetString(GetData(i));
+                byte[]? data = GetData(i);
+                return encoding.GetString(data ?? Array.Empty<byte>());
             }
 
             public string GetUTFString(uint i)
             {
-                return UTF8Encoding.UTF8.GetString(GetData(i));
+                byte[]? data = GetData(i);
+                return UTF8Encoding.UTF8.GetString(data ?? Array.Empty<byte>());
             }
 
             public string StringForID(ushort sid)
@@ -279,7 +342,7 @@ namespace OTFontFile
             public int offsetCharset;
             public int offsetEncoding;
 
-            public string ROS;
+            public string? ROS;
             public int offsetFDSelect;
 
             public int Subrs;
@@ -294,7 +357,7 @@ namespace OTFontFile
             public DICTData( byte[] data, INDEXData String, bool isPrivate )
             {
                 uint cursor = 0;
-                Stack operandStack = new Stack();
+                Stack<object?> operandStack = new Stack<object?>();
                 m_String = String;
                 ROS = null;
 
@@ -395,23 +458,23 @@ namespace OTFontFile
                         switch(data[cursor])
                         {
                             case 0x00:
-                                int sidversion = (int) operandStack.Pop();
+                                int sidversion = (int) operandStack.Pop()!;
                                 op = "version";
                                 break;
                             case 0x01:
-                                int sidNotice = (int) operandStack.Pop();
+                                int sidNotice = (int) operandStack.Pop()!;
                                 op = "Notice";
                                 break;
                             case 0x02:
-                                sidFullName = (int) operandStack.Pop();
+                                sidFullName = (int) operandStack.Pop()!;
                                 op = "FullName";
                                 break;
                             case 0x03:
-                                int sidFamilyName = (int) operandStack.Pop();
+                                int sidFamilyName = (int) operandStack.Pop()!;
                                 op = "FamilyName";
                                 break;
                             case 0x04:
-                                int sidWeight = (int) operandStack.Pop();
+                                int sidWeight = (int) operandStack.Pop()!;
                                 op = "Weight";
                                 break;
                             case 0x05:
@@ -430,27 +493,27 @@ namespace OTFontFile
                                 op = "XUID";
                                 break;
                             case 0x0f:
-                                offsetCharset = (int) operandStack.Pop();
+                                offsetCharset = (int) operandStack.Pop()!;
                                 op = "charset";
                                 break;
                             case 0x10:
-                                offsetEncoding = (int) operandStack.Pop();
+                                offsetEncoding = (int) operandStack.Pop()!;
                                 op = "Encoding";
                                 break;
                             case 0x11:
-                                offsetCharStrings = (int) operandStack.Pop();
+                                offsetCharStrings = (int) operandStack.Pop()!;
                                 op = "CharStrings";
                                 break;
                             case 0x12:
-                                offsetPrivate = (int) operandStack.Pop();
-                                sizePrivate   = (int) operandStack.Pop();
+                                offsetPrivate = (int) operandStack.Pop()!;
+                                sizePrivate   = (int) operandStack.Pop()!;
                                 op = "Private";
                                 break;
                             case 0x0c:
                                 switch(data[cursor+1])
                                 {
                                     case 0x00:
-                                        int sidCopyright = (int) operandStack.Pop();
+                                        int sidCopyright = (int) operandStack.Pop()!;
                                         op = "Copyright";
                                         break;
                                     case 0x01:
@@ -474,7 +537,7 @@ namespace OTFontFile
                                         op = "PaintType";
                                         break;
                                     case 0x06:
-                                        int CharstringType = (int) operandStack.Pop();
+                                        int CharstringType = (int) operandStack.Pop()!;
                                         if ( CharstringType != 2 )
                                             throw new ArgumentOutOfRangeException("Invalid CharstringType:" + CharstringType );
                                         op = "CharstringType";
@@ -505,13 +568,13 @@ namespace OTFontFile
                                         break;
                                     case 0x1e:
                                         op = "ROS";
-                                        int supplement  = (int) operandStack.Pop();
-                                        int sidOrdering = (int) operandStack.Pop();
-                                        int sidRegistry = (int) operandStack.Pop();
+                                        int supplement  = (int) operandStack.Pop()!;
+                                        int sidOrdering = (int) operandStack.Pop()!;
+                                        int sidRegistry = (int) operandStack.Pop()!;
                                         ROS = m_String.StringForID(sidRegistry) + " " + m_String.StringForID(sidOrdering) + " " + supplement;
                                         break;
                                     case 0x1f:
-                                        object oCIDFontVersion = operandStack.Pop();
+                                        object oCIDFontVersion = operandStack.Pop()!;
                                         op = "CIDFontVersion";
                                         break;
                                     case 0x20:
@@ -531,15 +594,15 @@ namespace OTFontFile
                                         op = "UIDBase";
                                         break;
                                     case 0x24:
-                                        offsetFDArray  = (int) operandStack.Pop();
+                                        offsetFDArray  = (int) operandStack.Pop()!;
                                         op = "FDArray";
                                         break;
                                     case 0x25:
-                                        offsetFDSelect = (int) operandStack.Pop();
+                                        offsetFDSelect = (int) operandStack.Pop()!;
                                         op = "FDSelect";
                                         break;
                                     case 0x26:
-                                        sidFontName = (int) operandStack.Pop();
+                                        sidFontName = (int) operandStack.Pop()!;
                                         op = "FontName";
                                         break;
                                     default:
@@ -588,7 +651,7 @@ namespace OTFontFile
                                 op = "StdVW";
                                 break;
                             case 0x13:
-                                Subrs = (int) operandStack.Pop();
+                                Subrs = (int) operandStack.Pop()!;
                                 op = "Subrs";
                                 break;
                             case 0x14:
@@ -699,16 +762,16 @@ namespace OTFontFile
         
         public class CFF_cache : DataCache
         {
-            public override OTTable GenerateTable()
+            public override OTTable? GenerateTable()
             {
                 // not yet implemented!
                 return null;
             }
         }
 
-        private INDEXData m_Name;
-        private INDEXData m_TopDICT;
-        private INDEXData m_String;
-        private INDEXData m_GlobalSubr;
+        private INDEXData? m_Name;
+        private INDEXData? m_TopDICT;
+        private INDEXData? m_String;
+        private INDEXData? m_GlobalSubr;
     }
 }

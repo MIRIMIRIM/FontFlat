@@ -201,9 +201,9 @@ namespace OTFontFile
                 }
             }
 
-            public OTL.DeviceTable GetXPlaDeviceTable()
+            public OTL.DeviceTable? GetXPlaDeviceTable()
             {
-                OTL.DeviceTable dt = null;
+                OTL.DeviceTable? dt = null;
 
                 if (XPlaDevicePresent)
                 {
@@ -216,9 +216,9 @@ namespace OTFontFile
                 return dt;
             }
 
-            public OTL.DeviceTable GetYPlaDeviceTable()
+            public OTL.DeviceTable? GetYPlaDeviceTable()
             {
-                OTL.DeviceTable dt = null;
+                OTL.DeviceTable? dt = null;
 
                 if (YPlaDevicePresent)
                 {
@@ -231,9 +231,9 @@ namespace OTFontFile
                 return dt;
             }
 
-            public OTL.DeviceTable GetXAdvDeviceTable()
+            public OTL.DeviceTable? GetXAdvDeviceTable()
             {
-                OTL.DeviceTable dt = null;
+                OTL.DeviceTable? dt = null;
 
                 if (XAdvDevicePresent)
                 {
@@ -246,9 +246,9 @@ namespace OTFontFile
                 return dt;
             }
 
-            public OTL.DeviceTable GetYAdvDeviceTable()
+            public OTL.DeviceTable? GetYAdvDeviceTable()
             {
-                OTL.DeviceTable dt = null;
+                OTL.DeviceTable? dt = null;
 
                 if (YAdvDevicePresent)
                 {
@@ -472,9 +472,9 @@ namespace OTFontFile
                     get {return m_bufTable.GetUshort(m_offsetAnchorTable + (uint)FieldOffsets.YDeviceTableOffset);}
                 }
 
-                public OTL.DeviceTable GetXDeviceTable()
+                public OTL.DeviceTable? GetXDeviceTable()
                 {
-                    OTL.DeviceTable dt = null;
+                    OTL.DeviceTable? dt = null;
                     if (XDeviceTableOffset != 0)
                     {
                         dt = new OTL.DeviceTable(m_offsetAnchorTable + XDeviceTableOffset, m_bufTable);
@@ -482,9 +482,9 @@ namespace OTFontFile
                     return dt;
                 }
 
-                public OTL.DeviceTable GetYDeviceTable()
+                public OTL.DeviceTable? GetYDeviceTable()
                 {
-                    OTL.DeviceTable dt = null;
+                    OTL.DeviceTable? dt = null;
                     if (YDeviceTableOffset != 0)
                     {
                         dt = new OTL.DeviceTable(m_offsetAnchorTable + YDeviceTableOffset, m_bufTable);
@@ -565,9 +565,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetMarkArray + (uint)FieldOffsets.MarkCount);}
             }
 
-            public MarkRecord GetMarkRecord(uint i)
+            public MarkRecord? GetMarkRecord(uint i)
             {
-                MarkRecord mr = null;
+                MarkRecord? mr = null;
 
                 if (i < MarkCount)
                 {
@@ -710,9 +710,9 @@ namespace OTFontFile
                     }
                 }
 
-                public ValueRecord GetValue(uint i)
+                public ValueRecord? GetValue(uint i)
                 {
-                    ValueRecord vr = null;
+                    ValueRecord? vr = null;
                     if (i < ValueCount)
                     {
                         uint sizeofValueRecord = ValueRecord.SizeOfValueRecord(ValueFormat);
@@ -844,9 +844,9 @@ namespace OTFontFile
                         get {return m_bufTable.GetUshort(m_offsetPairSetTable);}
                     }
 
-                    public PairValueRecord GetPairValueRecord(uint i)
+                    public PairValueRecord? GetPairValueRecord(uint i)
                     {
-                        PairValueRecord pvr = null;
+                        PairValueRecord? pvr = null;
 
                         if (i < PairValueCount)
                         {
@@ -960,14 +960,14 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(offset);
                 }
 
-                public PairSetTable GetPairSetTable(uint i)
+                public PairSetTable? GetPairSetTable(uint i)
                 {
                     if (PosFormat != 1)
                     {
                         throw new System.InvalidOperationException();
                     }
 
-                    PairSetTable pst = null;
+                    PairSetTable? pst = null;
 
                     if (i < PairSetCount)
                     {
@@ -1029,9 +1029,9 @@ namespace OTFontFile
                         m_ValueFormat2 = ValueFormat2;
                     }
 
-                    public Class2Record GetClass2Record(uint i)
+                    public Class2Record? GetClass2Record(uint i)
                     {
-                        Class2Record c2r = null;
+                        Class2Record? c2r = null;
 
                         if (i < m_Class2Count)
                         {
@@ -1164,14 +1164,14 @@ namespace OTFontFile
                     }
                 }
 
-                public Class1Record GetClass1Record(uint i)
+                public Class1Record? GetClass1Record(uint i)
                 {
                     if (PosFormat != 2)
                     {
                         throw new System.InvalidOperationException();
                     }
 
-                    Class1Record c1r = null;
+                    Class1Record? c1r = null;
 
                     if (i < Class1Count)
                     {
@@ -1296,9 +1296,9 @@ namespace OTFontFile
                     get {return m_bufTable.GetUshort(m_offsetEntryExitRecord + (uint)FieldOffsets.ExitAnchorOffset);}
                 }
 
-                public AnchorTable GetEntryAnchorTable()
+                public AnchorTable? GetEntryAnchorTable()
                 {
-                    AnchorTable at = null;
+                    AnchorTable? at = null;
 
                     if (EntryAnchorOffset != 0)
                     {
@@ -1309,9 +1309,9 @@ namespace OTFontFile
                     return at;
                 }
 
-                public AnchorTable GetExitAnchorTable()
+                public AnchorTable? GetExitAnchorTable()
                 {
-                    AnchorTable at = null;
+                    AnchorTable? at = null;
 
                     if (ExitAnchorOffset != 0)
                     {
@@ -1345,9 +1345,9 @@ namespace OTFontFile
                 get {return m_bufTable.GetUshort(m_offsetCursivePos + (uint)FieldOffsets.EntryExitCount);}
             }
 
-            public EntryExitRecord GetEntryExitRecord(uint i)
+            public EntryExitRecord? GetEntryExitRecord(uint i)
             {
-                EntryExitRecord eer = null;
+                EntryExitRecord? eer = null;
 
                 if (i < EntryExitCount)
                 {
@@ -1432,9 +1432,9 @@ namespace OTFontFile
                     get {return m_bufTable.GetUshort(m_offsetBaseArrayTable + (uint)FieldOffsets.BaseCount);}
                 }
 
-                public BaseRecord GetBaseRecord(uint i)
+                public BaseRecord? GetBaseRecord(uint i)
                 {
-                    BaseRecord br = null;
+                    BaseRecord? br = null;
 
                     if (i < BaseCount)
                     {
@@ -1575,9 +1575,8 @@ namespace OTFontFile
                 LigatureArray LigArr = GetLigatureArrayTable();
                 for (uint i=0; i<LigArr.LigatureCount; i++)
                 {
-                    LigatureAttach la = LigArr.GetLigatureAttachTable(i);
-                    
-                    if (la.ComponentCount > nLength)
+                    LigatureAttach? la = LigArr.GetLigatureAttachTable(i);
+                    if (la != null && la.ComponentCount > nLength)
                     {
                         nLength = la.ComponentCount;
                     }
@@ -1621,9 +1620,9 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(offset);
                 }
 
-                public LigatureAttach GetLigatureAttachTable(uint i)
+                public LigatureAttach? GetLigatureAttachTable(uint i)
                 {
-                    LigatureAttach la = null;
+                    LigatureAttach? la = null;
 
                     if (i < LigatureCount)
                     {
@@ -1665,9 +1664,9 @@ namespace OTFontFile
                     get{return m_bufTable.GetUshort(m_offsetLigatureAttach + (uint)FieldOffsets.ComponentCount);}
                 }
 
-                public ComponentRecord GetComponentRecord(uint i)
+                public ComponentRecord? GetComponentRecord(uint i)
                 {
-                    ComponentRecord cr = null;
+                    ComponentRecord? cr = null;
 
                     if (i < ComponentCount)
                     {
@@ -1699,9 +1698,9 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(m_offsetComponentRecord + i*2);
                 }
 
-                public AnchorTable GetLigatureAnchorTable(uint i)
+                public AnchorTable? GetLigatureAnchorTable(uint i)
                 {
-                    AnchorTable at = null;
+                    AnchorTable? at = null;
                     uint offset = GetLigatureAnchorOffset(i);
                     if (offset != 0)
                     {
@@ -1839,9 +1838,9 @@ namespace OTFontFile
                     get {return m_bufTable.GetUshort(m_offsetMark2Array + (uint)FieldOffsets.Mark2Count);}
                 }
 
-                public Mark2Record GetMark2Record(uint i)
+                public Mark2Record? GetMark2Record(uint i)
                 {
-                    Mark2Record m2r = null;
+                    Mark2Record? m2r = null;
 
                     if (i < Mark2Count)
                     {
@@ -1967,13 +1966,16 @@ namespace OTFontFile
                     ContextPosFormat1 cpf1 = GetContextPosFormat1();
                     for (uint iPosRuleSet=0; iPosRuleSet<cpf1.PosRuleSetCount; iPosRuleSet++)
                     {
-                        ContextPosFormat1.PosRuleSet prs = cpf1.GetPosRuleSet(iPosRuleSet);
-                        for (uint iPosRule = 0; iPosRule < prs.PosRuleCount; iPosRule++)
+                        ContextPosFormat1.PosRuleSet? prs = cpf1.GetPosRuleSet(iPosRuleSet);
+                        if (prs != null)
                         {
-                            ContextPosFormat1.PosRule pr = prs.GetPosRuleTable(iPosRule);
-                            if (pr.GlyphCount > nLength)
+                            for (uint iPosRule = 0; iPosRule < prs.PosRuleCount; iPosRule++)
                             {
-                                nLength = pr.GlyphCount;
+                                ContextPosFormat1.PosRule? pr = prs.GetPosRuleTable(iPosRule);
+                                if (pr != null && pr.GlyphCount > nLength)
+                                {
+                                    nLength = pr.GlyphCount;
+                                }
                             }
                         }
                     }
@@ -1983,13 +1985,16 @@ namespace OTFontFile
                     ContextPosFormat2 cpf2 = GetContextPosFormat2();
                     for (uint iPosClassSet = 0; iPosClassSet < cpf2.PosClassSetCount; iPosClassSet++)
                     {
-                        ContextPosFormat2.PosClassSet pcs = cpf2.GetPosClassSetTable(iPosClassSet);
-                        for (uint iPosClassRule = 0; iPosClassRule < pcs.PosClassRuleCount; iPosClassRule++)
+                        ContextPosFormat2.PosClassSet? pcs = cpf2.GetPosClassSetTable(iPosClassSet);
+                        if (pcs != null)
                         {
-                            ContextPosFormat2.PosClassRule pcr = pcs.GetPosClassRuleTable(iPosClassRule);
-                            if (pcr.GlyphCount > nLength)
+                            for (uint iPosClassRule = 0; iPosClassRule < pcs.PosClassRuleCount; iPosClassRule++)
                             {
-                                nLength = pcr.GlyphCount;
+                                ContextPosFormat2.PosClassRule? pcr = pcs.GetPosClassRuleTable(iPosClassRule);
+                                if (pcr != null && pcr.GlyphCount > nLength)
+                                {
+                                    nLength = pcr.GlyphCount;
+                                }
                             }
                         }
                     }
@@ -2063,9 +2068,9 @@ namespace OTFontFile
                         return m_bufTable.GetUshort(offset);
                     }
 
-                    public PosRule GetPosRuleTable(uint i)
+                    public PosRule? GetPosRuleTable(uint i)
                     {
-                        PosRule pr = null;
+                        PosRule? pr = null;
 
                         if (i < PosRuleCount)
                         {
@@ -2116,9 +2121,9 @@ namespace OTFontFile
                         return m_bufTable.GetUshort(offset);
                     }
 
-                    public PosLookupRecord GetPosLookupRecord(uint i)
+                    public PosLookupRecord? GetPosLookupRecord(uint i)
                     {
-                        PosLookupRecord plr = null;
+                        PosLookupRecord? plr = null;
 
                         if (i < PosCount)
                         {
@@ -2156,10 +2161,10 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(m_offsetContextPos + (uint)FieldOffsets.PosRuleSetOffsets + i*2);
                 }
 
-                public PosRuleSet GetPosRuleSet(uint i)
+                public PosRuleSet? GetPosRuleSet(uint i)
                 {
 
-                    PosRuleSet prs = null;
+                    PosRuleSet? prs = null;
 
                     if (i < PosRuleSetCount)
                     {
@@ -2233,9 +2238,9 @@ namespace OTFontFile
                         return m_bufTable.GetUshort(offset);
                     }
 
-                    public PosClassRule GetPosClassRuleTable(uint i)
+                    public PosClassRule? GetPosClassRuleTable(uint i)
                     {
-                        PosClassRule pcr = null;
+                        PosClassRule? pcr = null;
 
                         if (i < PosClassRuleCount)
                         {
@@ -2328,10 +2333,10 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(m_offsetContextPos + (uint)FieldOffsets.PosClassSetOffsets + i*2);
                 }
 
-                public PosClassSet GetPosClassSetTable(uint i)
+                public PosClassSet? GetPosClassSetTable(uint i)
                 {
 
-                    PosClassSet pcs = null;
+                    PosClassSet? pcs = null;
 
                     if (i < PosClassSetCount)
                     {
@@ -2397,9 +2402,9 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(m_offsetContextPos + (uint)FieldOffsets.CoverageOffsets + i*2);
                 }
 
-                public PosLookupRecord GetPosLookupRecord(uint i)
+                public PosLookupRecord? GetPosLookupRecord(uint i)
                 {
-                    PosLookupRecord plr = null;
+                    PosLookupRecord? plr = null;
 
                     if (i < PosCount)
                     {
@@ -2519,14 +2524,20 @@ namespace OTFontFile
                     ChainContextPosFormat1 ccpf1 = GetChainContextPosFormat1();
                     for (uint iChainPosRuleSet = 0; iChainPosRuleSet < ccpf1.ChainPosRuleSetCount; iChainPosRuleSet++)
                     {
-                        ChainContextPosFormat1.ChainPosRuleSet cprs = ccpf1.GetChainPosRuleSetTable(iChainPosRuleSet);
-                        for (uint iChainPosRule = 0; iChainPosRule < cprs.ChainPosRuleCount; iChainPosRule++)
+                        ChainContextPosFormat1.ChainPosRuleSet? cprs = ccpf1.GetChainPosRuleSetTable(iChainPosRuleSet);
+                        if (cprs != null)
                         {
-                            ChainContextPosFormat1.ChainPosRule cpr = cprs.GetChainPosRuleTable(iChainPosRule);
-                            uint tempLength = (uint)(cpr.InputGlyphCount + cpr.LookaheadGlyphCount);
-                            if (tempLength > nLength)
+                            for (uint iChainPosRule = 0; iChainPosRule < cprs.ChainPosRuleCount; iChainPosRule++)
                             {
-                                nLength = tempLength;
+                                ChainContextPosFormat1.ChainPosRule? cpr = cprs.GetChainPosRuleTable(iChainPosRule);
+                                if (cpr != null)
+                                {
+                                    uint tempLength = (uint)(cpr.InputGlyphCount + cpr.LookaheadGlyphCount);
+                                    if (tempLength > nLength)
+                                    {
+                                        nLength = tempLength;
+                                    }
+                                }
                             }
                         }
                     }
@@ -2536,15 +2547,20 @@ namespace OTFontFile
                     ChainContextPosFormat2 ccpf2 = GetChainContextPosFormat2();
                     for (uint iChainPosClassSet = 0; iChainPosClassSet < ccpf2.ChainPosClassSetCount; iChainPosClassSet++)
                     {
-                        ChainContextPosFormat2.ChainPosClassSet cpcs = ccpf2.GetChainPosClassSetTable(iChainPosClassSet);
-                        if ( cpcs != null )
-                        for (uint iChainPosClassRule = 0; iChainPosClassRule < cpcs.ChainPosClassRuleCount; iChainPosClassRule++)
+                        ChainContextPosFormat2.ChainPosClassSet? cpcs = ccpf2.GetChainPosClassSetTable(iChainPosClassSet);
+                        if (cpcs != null)
                         {
-                            ChainContextPosFormat2.ChainPosClassRule cpcr = cpcs.GetChainPosClassRuleTable(iChainPosClassRule);
-                            uint tempLength = (uint)(cpcr.InputGlyphCount + cpcr.LookaheadGlyphCount);
-                            if (tempLength > nLength)
+                            for (uint iChainPosClassRule = 0; iChainPosClassRule < cpcs.ChainPosClassRuleCount; iChainPosClassRule++)
                             {
-                                nLength = tempLength;
+                                ChainContextPosFormat2.ChainPosClassRule? cpcr = cpcs.GetChainPosClassRuleTable(iChainPosClassRule);
+                                if (cpcr != null)
+                                {
+                                    uint tempLength = (uint)(cpcr.InputGlyphCount + cpcr.LookaheadGlyphCount);
+                                    if (tempLength > nLength)
+                                    {
+                                        nLength = tempLength;
+                                    }
+                                }
                             }
                         }
                     }
@@ -2620,9 +2636,9 @@ namespace OTFontFile
                         return m_bufTable.GetUshort(offset);
                     }
 
-                    public ChainPosRule GetChainPosRuleTable(uint i)
+                    public ChainPosRule? GetChainPosRuleTable(uint i)
                     {
-                        ChainPosRule pr = null;
+                        ChainPosRule? pr = null;
 
                         if (i < ChainPosRuleCount)
                         {
@@ -2715,9 +2731,9 @@ namespace OTFontFile
                         }
                     }
 
-                    public PosLookupRecord GetPosLookupRecord(uint i)
+                    public PosLookupRecord? GetPosLookupRecord(uint i)
                     {
-                        PosLookupRecord plr = null;
+                        PosLookupRecord? plr = null;
 
                         if (i < PosCount)
                         {
@@ -2758,9 +2774,9 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(m_offsetChainContextPos + (uint)FieldOffsets.ChainPosRuleSetOffsets + i*2);
                 }
 
-                public ChainPosRuleSet GetChainPosRuleSetTable(uint i)
+                public ChainPosRuleSet? GetChainPosRuleSetTable(uint i)
                 {
-                    ChainPosRuleSet cprs = null;
+                    ChainPosRuleSet? cprs = null;
 
                     if (i < ChainPosRuleSetCount)
                     {
@@ -2836,9 +2852,9 @@ namespace OTFontFile
                         return m_bufTable.GetUshort(offset);
                     }
 
-                    public ChainPosClassRule GetChainPosClassRuleTable(uint i)
+                    public ChainPosClassRule? GetChainPosClassRuleTable(uint i)
                     {
-                        ChainPosClassRule cpcr = null;
+                        ChainPosClassRule? cpcr = null;
 
                         if (i < ChainPosClassRuleCount)
                         {
@@ -2930,9 +2946,9 @@ namespace OTFontFile
                         }
                     }
 
-                    public PosLookupRecord GetPosLookupRecord(uint i)
+                    public PosLookupRecord? GetPosLookupRecord(uint i)
                     {
-                        PosLookupRecord plr = null;
+                        PosLookupRecord? plr = null;
 
                         if (i < PosCount)
                         {
@@ -3009,9 +3025,9 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(m_offsetChainContextPos + (uint)FieldOffsets.ChainPosClassSetOffsets + i*2);
                 }
 
-                public ChainPosClassSet GetChainPosClassSetTable(uint i)
+                public ChainPosClassSet? GetChainPosClassSetTable(uint i)
                 {
-                    ChainPosClassSet cpcs = null;
+                    ChainPosClassSet? cpcs = null;
 
                     if (i < ChainPosClassSetCount)
                     {
@@ -3071,9 +3087,9 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(offset);
                 }
 
-                public OTL.CoverageTable GetBacktrackCoverageTable(uint i)
+                public OTL.CoverageTable? GetBacktrackCoverageTable(uint i)
                 {
-                    OTL.CoverageTable ct = null;
+                    OTL.CoverageTable? ct = null;
                     if (i < BacktrackGlyphCount)
                     {
                         uint offset = m_offsetChainContextPos + GetBacktrackCoverageOffset(i);
@@ -3099,9 +3115,9 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(offset);
                 }
 
-                public OTL.CoverageTable GetInputCoverageTable(uint i)
+                public OTL.CoverageTable? GetInputCoverageTable(uint i)
                 {
-                    OTL.CoverageTable ct = null;
+                    OTL.CoverageTable? ct = null;
                     if (i < InputGlyphCount)
                     {
                         uint offset = m_offsetChainContextPos + GetInputCoverageOffset(i);
@@ -3127,9 +3143,9 @@ namespace OTFontFile
                     return m_bufTable.GetUshort(offset);
                 }
 
-                public OTL.CoverageTable GetLookaheadCoverageTable(uint i)
+                public OTL.CoverageTable? GetLookaheadCoverageTable(uint i)
                 {
-                    OTL.CoverageTable ct = null;
+                    OTL.CoverageTable? ct = null;
                     if (i < LookaheadGlyphCount)
                     {
                         uint offset = m_offsetChainContextPos + GetLookaheadCoverageOffset(i);
@@ -3149,9 +3165,9 @@ namespace OTFontFile
                     }
                 }
 
-                public PosLookupRecord GetPosLookupRecord(uint i)
+                public PosLookupRecord? GetPosLookupRecord(uint i)
                 {
-                    PosLookupRecord plr = null;
+                    PosLookupRecord? plr = null;
 
                     if (i < PosCount)
                     {
@@ -3263,7 +3279,7 @@ namespace OTFontFile
             {
                 uint nLength = 0;
 
-                OTL.SubTable st = null;
+                OTL.SubTable? st = null;
                 switch (ExtensionLookupType)
                 {
                     case 1: st = new Table_GPOS.SinglePos      (m_offsetExtensionPos + ExtensionOffset, m_bufTable); break;
@@ -3360,15 +3376,18 @@ namespace OTFontFile
             {
                 for (uint iFeature=0; iFeature<flt.FeatureCount; iFeature++)
                 {
-                    OTL.FeatureListTable.FeatureRecord fr = flt.GetFeatureRecord(iFeature);
-                    OTL.FeatureTable ft = flt.GetFeatureTable(fr);
-                    for (uint iLookup = 0; iLookup < ft.LookupCount; iLookup++)
+                    OTL.FeatureListTable.FeatureRecord? fr = flt.GetFeatureRecord(iFeature);
+                    if (fr != null)
                     {
-                        ushort LookupIndex = ft.GetLookupListIndex(iLookup);
-                        ushort length = GetMaxContextFromLookup(LookupIndex);
-                        if (length > usMaxLength)
+                        OTL.FeatureTable ft = flt.GetFeatureTable(fr);
+                        for (uint iLookup = 0; iLookup < ft.LookupCount; iLookup++)
                         {
-                            usMaxLength = length;
+                            ushort LookupIndex = ft.GetLookupListIndex(iLookup);
+                            ushort length = GetMaxContextFromLookup(LookupIndex);
+                            if (length > usMaxLength)
+                            {
+                                usMaxLength = length;
+                            }
                         }
                     }
                 }
@@ -3383,19 +3402,24 @@ namespace OTFontFile
 
             OTL.LookupListTable llt = GetLookupListTable();
             if (llt != null)
-            {                
-                OTL.LookupTable lt = llt.GetLookupTable(iLookup);
-                for (uint iSubTable = 0; iSubTable < lt.SubTableCount; iSubTable++)
+            {
+                OTL.LookupTable? lt = llt.GetLookupTable(iLookup);
+                if (lt != null)
                 {
-                    OTL.SubTable st = lt.GetSubTable(iSubTable);
-                    ushort tempLength = (ushort)st.GetMaxContextLength();
-                    if (length < tempLength)
+                    for (uint iSubTable = 0; iSubTable < lt.SubTableCount; iSubTable++)
                     {
-                        length = tempLength;
+                        OTL.SubTable? st = lt.GetSubTable(iSubTable);
+                        if (st != null)
+                        {
+                            ushort tempLength = (ushort)st.GetMaxContextLength();
+                            if (length < tempLength)
+                            {
+                                length = tempLength;
+                            }
+
+                        }
                     }
-                    
                 }
-                
             }
 
             return length;
@@ -3418,7 +3442,7 @@ namespace OTFontFile
         
         public class GPOS_cache : DataCache
         {
-            public override OTTable GenerateTable()
+            public override OTTable? GenerateTable()
             {
                 // not yet implemented!
                 return null;

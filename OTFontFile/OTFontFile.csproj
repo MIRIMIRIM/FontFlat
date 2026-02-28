@@ -2,13 +2,13 @@
   
   <PropertyGroup>
     <OutputType>Library</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <IsAotCompatible>True</IsAotCompatible>
     <!-- <PublishAot>False</PublishAot> -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DocumentationFile>bin\OTFontFile.XML</DocumentationFile>
-    <FileAlignment>4096</FileAlignment>
-    <Version>1.0.1-beta</Version>
+    <Version>1.1.0-beta</Version>
     <PackageDescription>Parse and write opentype fonts.</PackageDescription>
     <PackageTags>opentype;font</PackageTags>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -18,16 +18,22 @@
   </PropertyGroup>
   
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
-    <NoWarn>1701;1702;1591</NoWarn>
+    <NoWarn>0169;1591;8981</NoWarn>
   </PropertyGroup>
   
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
-    <NoWarn>1701;1702;1591</NoWarn>
+    <NoWarn>0169;1591;8981</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="README.md" Pack="true" PackagePath="\"/>
-    <None Include="LICENSE" Pack="true" PackagePath=""/>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="LICENSE" Pack="true" PackagePath="" />
 </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OTFontFile.Generators\OTFontFile.Generators.csproj" 
+                      OutputItemType="Analyzer" 
+                      ReferenceOutputAssembly="true" />
+  </ItemGroup>
 
 </Project>

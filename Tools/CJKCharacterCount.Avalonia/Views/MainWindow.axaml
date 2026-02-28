@@ -1,0 +1,132 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:CJKCharacterCount.Avalonia.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:conv="using:CJKCharacterCount.Avalonia.Converters"
+        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+        x:Class="CJKCharacterCount.Avalonia.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Title="{Binding StatusMessage, StringFormat='CJK Character Count - {0}'}"
+        Width="800" Height="600"
+        WindowStartupLocation="CenterScreen"
+        DragDrop.AllowDrop="True">
+
+    <Window.Resources>
+        <!-- Converter removed, using Service -->
+    </Window.Resources>
+
+    <Grid RowDefinitions="Auto, *, Auto">
+        
+        <!-- Toolbar -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="5" Spacing="10">
+            <Button Command="{Binding OpenFileCommand}" CommandParameter="{Binding $parent[TopLevel].StorageProvider}" Content="{Binding Loc[Menu_Open]}" />
+            <Button Command="{Binding SaveReportCommand}" CommandParameter="{Binding $parent[TopLevel].StorageProvider}" Content="{Binding Loc[Menu_Save]}" />
+            
+            <StackPanel Orientation="Horizontal" Spacing="5" Margin="20,0,0,0">
+                <ComboBox ItemsSource="{Binding FontList}" 
+                          SelectedIndex="{Binding SelectedFontIndex}"
+                          IsVisible="{Binding IsFontSelectorVisible}" 
+                          MinWidth="150" VerticalAlignment="Center" />
+                
+                <Button Command="{Binding ChangeLanguageCommand}" CommandParameter="en" Content="English" />
+                <Button Command="{Binding ChangeLanguageCommand}" CommandParameter="zh-Hans" Content="简体中文" />
+                <Button Command="{Binding ChangeLanguageCommand}" CommandParameter="zh-Hant" Content="繁體中文" />
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Main Content -->
+        <Grid Grid.Row="1" ColumnDefinitions="*, *" Margin="10">
+            
+            <!-- Left: CJK Tables -->
+            <Border Grid.Column="0" BorderBrush="Gray" BorderThickness="1" Margin="0,0,5,0" Padding="5">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding Loc[Header_CJKTables]}" FontWeight="Bold" Margin="0,0,0,5"/>
+                    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+                        <ItemsControl ItemsSource="{Binding CjkTables}" Grid.IsSharedSizeScope="True">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" /> <!-- Name fills space -->
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="CountCol"/>
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="PctCol"/>
+                                            <ColumnDefinition Width="25" /> <!-- Spacer for ScrollBar -->
+                                        </Grid.ColumnDefinitions>
+                                        
+                                        <!-- Header Row -->
+                                        <TextBlock Grid.Column="0" Grid.ColumnSpan="4" 
+                                                   Text="{Binding Name}" FontWeight="Bold" Foreground="Gray"
+                                                   Margin="0,5,0,2"
+                                                   IsVisible="{Binding IsHeader}"/>
+                                        
+                                        <!-- Normal Row -->
+                                        <TextBlock Grid.Column="0" Text="{Binding Name}" 
+                                                   VerticalAlignment="Center" 
+                                                   TextWrapping="Wrap" 
+                                                   ToolTip.Tip="{Binding Name}"
+                                                   IsVisible="{Binding !IsHeader}"/>
+                                        
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="5,0,0,0" IsVisible="{Binding !IsHeader}">
+                                            <TextBlock Text="{Binding Covered}" />
+                                            <TextBlock Text="/" />
+                                            <TextBlock Text="{Binding Total}" />
+                                        </StackPanel>
+                                        
+                                        <TextBlock Grid.Column="2" Text="{Binding Percentage, StringFormat='({0:F2}%)'}" VerticalAlignment="Center" Margin="5,0" IsVisible="{Binding !IsHeader}"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <!-- Right: Unicode Blocks -->
+            <Border Grid.Column="1" BorderBrush="Gray" BorderThickness="1" Margin="5,0,0,0" Padding="5">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding Loc[Header_UnicodeBlocks]}" FontWeight="Bold" Margin="0,0,0,5"/>
+                    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+                        <ItemsControl ItemsSource="{Binding UnicodeBlocks}" Grid.IsSharedSizeScope="True">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="CountCol"/>
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="PctCol"/>
+                                            <ColumnDefinition Width="25" /> <!-- Spacer -->
+                                        </Grid.ColumnDefinitions>
+                                        
+                                        <TextBlock Grid.Column="0" Text="{Binding Name}" 
+                                                   VerticalAlignment="Center"
+                                                   TextWrapping="Wrap"
+                                                   ToolTip.Tip="{Binding Name}"/>
+                                        
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="5,0,0,0">
+                                            <TextBlock Text="{Binding Covered}" />
+                                            <TextBlock Text="/" />
+                                            <TextBlock Text="{Binding Total}" />
+                                        </StackPanel>
+                                        
+                                        <TextBlock Grid.Column="2" Text="{Binding Percentage, StringFormat='({0:F2}%)'}" VerticalAlignment="Center" Margin="5,0"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <!-- Status Bar -->
+        <Border Grid.Row="2" BorderBrush="Gray" BorderThickness="0,1,0,0" Padding="5">
+             <Grid ColumnDefinitions="*, Auto">
+                 <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" />
+                 <ProgressBar Grid.Column="1" IsIndeterminate="True" IsVisible="{Binding IsLoading}" Width="100" Height="10" />
+             </Grid>
+        </Border>
+        
+    </Grid>
+
+</Window>
