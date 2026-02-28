@@ -15,3 +15,7 @@ Base [Font-Validator/OTFontFile](https://github.com/HinTak/Font-Validator/tree/m
 A Avalonia application to count CJK characters in a font.
 
 Port from [CJK-character-count](https://github.com/NightFurySL2001/CJK-character-count)
+
+## OTFontFile2
+
+[README](./OTFontFile2/README.md)
