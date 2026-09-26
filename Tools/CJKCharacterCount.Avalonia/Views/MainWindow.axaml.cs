@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Platform.Storage;
 using CJKCharacterCount.Avalonia.ViewModels;
+using System;
 
 namespace CJKCharacterCount.Avalonia.Views;
 
@@ -24,8 +25,7 @@ public partial class MainWindow : Window
             {
                 var path = item.TryGetLocalPath();
                 if (string.IsNullOrEmpty(path)) continue;
-                var ext = System.IO.Path.GetExtension(path).ToLower();
-                if (ext == ".ttf" || ext == ".otf" || ext == ".ttc" || ext == ".otc")
+                if (IsSupportedFontPath(path))
                 {
                     e.DragEffects = DragDropEffects.Copy;
                     return;
@@ -45,16 +45,31 @@ public partial class MainWindow : Window
             {
                 var path = item.TryGetLocalPath();
                 if (string.IsNullOrEmpty(path)) continue;
-                var ext = System.IO.Path.GetExtension(path).ToLower();
-                if (ext == ".ttf" || ext == ".otf" || ext == ".ttc" || ext == ".otc")
+                if (IsSupportedFontPath(path))
                 {
                     if (DataContext is MainViewModel vm)
                     {
-                        await vm.OpenFilePath(path);
+                        try
+                        {
+                            await vm.OpenFilePath(path);
+                        }
+                        catch (Exception ex)
+                        {
+                            vm.StatusMessage = $"Error opening dropped font: {ex.Message}";
+                        }
                     }
                     return;
                 }
             }
         }
+    }
+
+    private static bool IsSupportedFontPath(string path)
+    {
+        var ext = System.IO.Path.GetExtension(path);
+        return ext.Equals(".ttf", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".otf", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".ttc", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".otc", StringComparison.OrdinalIgnoreCase);
     }
 }

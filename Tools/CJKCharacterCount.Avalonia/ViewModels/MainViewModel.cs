@@ -8,6 +8,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CJKCharacterCount.Avalonia.ViewModels;
@@ -44,6 +45,7 @@ public partial class MainViewModel : ObservableObject
 
     // Store mapped indices for the current file
     private List<int> _currentFontIndices = [];
+    private int _analysisVersion;
 
     public MainViewModel()
     {
@@ -74,12 +76,17 @@ public partial class MainViewModel : ObservableObject
 
     public async Task OpenFilePath(string path)
     {
+        Interlocked.Increment(ref _analysisVersion);
         SelectedFontPath = path;
 
         // Get Fonts
         FontList.Clear();
         _currentFontIndices.Clear();
         IsFontSelectorVisible = false;
+        IsLoading = false;
+        AnalyzeResult = null;
+        FontName = null;
+        UpdateStatsDisplay();
 
         // Reset selection to ensure change notification later
         SelectedFontIndex = -1;
@@ -113,6 +120,7 @@ public partial class MainViewModel : ObservableObject
 
         var currentIdx = SelectedFontIndex;
         FontList.Clear();
+        _currentFontIndices.Clear();
 
         try
         {
@@ -120,6 +128,7 @@ public partial class MainViewModel : ObservableObject
             foreach (var f in fonts)
             {
                 FontList.Add(f.Name);
+                _currentFontIndices.Add(f.Index);
             }
 
             // Restore selection
@@ -128,22 +137,21 @@ public partial class MainViewModel : ObservableObject
                 SelectedFontIndex = currentIdx;
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error refreshing font list: {ex.Message}";
+        }
     }
 
     partial void OnSelectedFontIndexChanged(int value)
     {
         if (string.IsNullOrEmpty(SelectedFontPath) || value < 0 || value >= _currentFontIndices.Count) return;
 
-        // Trigger re-analysis
-        // Fire and forget but capture tasks?
-        // Since property setter is synchronous, we probably should use a command or async handler.
-        // But for ComboBox binding, this fires.
-        // Let's call async method carefully.
-        _ = AnalyzeFont(SelectedFontPath, _currentFontIndices[value]);
+        var version = Interlocked.Increment(ref _analysisVersion);
+        _ = AnalyzeFont(SelectedFontPath, _currentFontIndices[value], version);
     }
 
-    private async Task AnalyzeFont(string path, int index = -1)
+    private async Task AnalyzeFont(string path, int index, int version)
     {
         IsLoading = true;
         StatusMessage = $"Analyzing {Path.GetFileName(path)}...";
@@ -156,6 +164,11 @@ public partial class MainViewModel : ObservableObject
                 return (analyzer.FontName, analyzer.Analyze());
             });
 
+            if (version != Volatile.Read(ref _analysisVersion))
+            {
+                return;
+            }
+
             FontName = result.FontName;
             AnalyzeResult = result.Item2; // This calls UpdateStatsDisplay via OnAnalyzeResultChanged? No, OnAnalyzeResultChanged just updates CanSave.
                                           // Wait, OnAnalyzeResultChanged calls SaveReportCommand.NotifyCanExecuteChanged().
@@ -166,13 +179,21 @@ public partial class MainViewModel : ObservableObject
         }
         catch (Exception ex)
         {
+            if (version != Volatile.Read(ref _analysisVersion))
+            {
+                return;
+            }
+
             StatusMessage = $"Error: {ex.Message}";
             AnalyzeResult = null;
             UpdateStatsDisplay();
         }
         finally
         {
-            IsLoading = false;
+            if (version == Volatile.Read(ref _analysisVersion))
+            {
+                IsLoading = false;
+            }
         }
     }
 
@@ -194,8 +215,8 @@ public partial class MainViewModel : ObservableObject
         // "zh-Hant" or "zh-TW" -> "zht"
         // else "en"
         string nameKey = "en";
-        if (lang.StartsWith("zh-Hans") || lang.StartsWith("zh-CN")) nameKey = "zhs";
-        else if (lang.StartsWith("zh-Hant") || lang.StartsWith("zh-TW") || lang.StartsWith("zh-HK")) nameKey = "zht";
+        if (lang.StartsWith("zh-Hans", StringComparison.OrdinalIgnoreCase) || lang.StartsWith("zh-CN", StringComparison.OrdinalIgnoreCase)) nameKey = "zhs";
+        else if (lang.StartsWith("zh-Hant", StringComparison.OrdinalIgnoreCase) || lang.StartsWith("zh-TW", StringComparison.OrdinalIgnoreCase) || lang.StartsWith("zh-HK", StringComparison.OrdinalIgnoreCase)) nameKey = "zht";
 
         foreach (var group in groups)
         {

@@ -108,7 +108,7 @@ public sealed partial class CJKTable
         var groupMatch = GroupRegex().Match(yaml);
         if (groupMatch.Success)
         {
-            group = groupMatch.Groups[1].Value.ToLower() switch
+            group = groupMatch.Groups[1].Value.ToLowerInvariant() switch
             {
                 "jian" => CJKGroup.Simplified,
                 "fan" => CJKGroup.Traditional,

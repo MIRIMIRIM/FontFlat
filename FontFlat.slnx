@@ -9,4 +9,6 @@
   <Project Path="OTFontFile.Benchmarks/OTFontFile.Benchmarks.csproj" />
   <Project Path="Tools/CJKCharacterCount.Avalonia/CJKCharacterCount.Avalonia.csproj" />
   <Project Path="Tools/CJKCharacterCount.Core/CJKCharacterCount.Core.csproj" />
+  <Project Path="Tools/FontManager.Tests/FontManager.Tests.csproj" />
+  <Project Path="Tools/AvaloniaSmoke.Tests/AvaloniaSmoke.Tests.csproj" />
 </Solution>

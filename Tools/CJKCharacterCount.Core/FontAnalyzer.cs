@@ -148,11 +148,11 @@ public sealed class FontAnalyzer
         // Map Culture to LCID
         // Simple mapping for CJK + En
         ushort lcid = 0x0409; // Default en-US
-        if (culture.Name.StartsWith("zh-Hans") || culture.Name.StartsWith("zh-CN")) lcid = 0x0804;
-        else if (culture.Name.StartsWith("zh-Hant") || culture.Name.StartsWith("zh-TW")) lcid = 0x0404;
-        else if (culture.Name.StartsWith("zh-HK")) lcid = 0x0C04;
-        else if (culture.Name.StartsWith("ja")) lcid = 0x0411;
-        else if (culture.Name.StartsWith("ko")) lcid = 0x0412;
+        if (culture.Name.StartsWith("zh-Hans", StringComparison.OrdinalIgnoreCase) || culture.Name.StartsWith("zh-CN", StringComparison.OrdinalIgnoreCase)) lcid = 0x0804;
+        else if (culture.Name.StartsWith("zh-Hant", StringComparison.OrdinalIgnoreCase) || culture.Name.StartsWith("zh-TW", StringComparison.OrdinalIgnoreCase)) lcid = 0x0404;
+        else if (culture.Name.StartsWith("zh-HK", StringComparison.OrdinalIgnoreCase)) lcid = 0x0C04;
+        else if (culture.Name.StartsWith("ja", StringComparison.OrdinalIgnoreCase)) lcid = 0x0411;
+        else if (culture.Name.StartsWith("ko", StringComparison.OrdinalIgnoreCase)) lcid = 0x0412;
 
         // Try to get specific name
         // Helper to try FullName (4) then Family (1)
