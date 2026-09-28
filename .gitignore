@@ -491,5 +491,8 @@ Ref/
 BenchmarkResources/
 /docs
 /docs_otff2
+# Local Neo planning and acceptance workspace
+/docs_neo/
+/validation/
 AGENTS.md
 /Tools
