@@ -7,13 +7,14 @@ namespace FontWeave.Tables;
 /// <summary>Finite Apple mappings with exact sequence-aware reverse mapping and byte-unit grammar.</summary>
 internal sealed class NameLegacyCodec
 {
-    private enum Units { SingleByte, Japanese, ChineseTraditional, ChineseSimplified, Korean }
+    private enum Units { SingleByte, Japanese, ChineseTraditional, ChineseSimplified, Korean, Indic }
     private static readonly NameLegacyCodec[] Codecs = CreateCodecs();
     private readonly string?[] _forward;
     private readonly Dictionary<string, ushort> _reverse = new(StringComparer.Ordinal);
     private readonly int _maxSequenceLength;
     private readonly ushort[] _scripts;
     private readonly Units _units;
+    private readonly Dictionary<ushort, string>? _pairs;
 
     private NameLegacyCodec(string?[] forward, ushort[] scripts,
         params (int Byte, string? Text)[] changes) : this(forward, scripts, Units.SingleByte, changes) { }
@@ -38,6 +39,18 @@ internal sealed class NameLegacyCodec
                     throw new InvalidOperationException("Ambiguous generated Apple reverse mapping.");
                 _reverse[text] = 0x61;
             }
+        }
+    }
+
+    private NameLegacyCodec(string?[] forward, ushort[] scripts, (ushort Code, string Text)[] pairs)
+        : this(forward, scripts, Units.Indic)
+    {
+        _pairs = new Dictionary<ushort, string>(pairs.Length);
+        foreach ((ushort code, string text) in pairs)
+        {
+            if (code <= 255 || !_pairs.TryAdd(code, text) || !_reverse.TryAdd(text, code))
+                throw new InvalidOperationException("Ambiguous generated Apple Indic mapping.");
+            _maxSequenceLength = Math.Max(_maxSequenceLength, text.Length);
         }
     }
 
@@ -87,7 +100,13 @@ internal sealed class NameLegacyCodec
                     return ReadStatus.InvalidEncoding;
                 }
             }
-            string? text = _forward[code];
+            else if (_pairs is not null && bytes.Length - at >= 2 &&
+                _pairs.ContainsKey((ushort)(bytes[at] << 8 | bytes[at + 1])))
+            {
+                code = bytes[at] << 8 | bytes[at + 1];
+                length = 2;
+            }
+            string? text = Forward(code);
             if (text is null)
             {
                 if (problemOffset < 0) { problemOffset = at; problemCode = code; }
@@ -117,6 +136,7 @@ internal sealed class NameLegacyCodec
         Units.Japanese => value is >= 0x81 and <= 0x9F or >= 0xE0 and <= 0xFC,
         Units.ChineseTraditional or Units.ChineseSimplified => value is >= 0xA1 and <= 0xFC,
         Units.Korean => value is >= 0xA1 and <= 0xFE,
+        Units.Indic => value == 0xF0,
         _ => false
     };
 
@@ -127,6 +147,7 @@ internal sealed class NameLegacyCodec
         Units.ChineseSimplified => value is >= 0xA1 and <= 0xFE,
         Units.Korean => value is >= 0xA1 and <= 0xFE ||
             lead <= 0xAD && value is >= 0x41 and <= 0x7D or >= 0x81 and <= 0xA0,
+        Units.Indic => value is >= 0xA1 and <= 0xEE,
         _ => false
     };
 
@@ -140,8 +161,13 @@ internal sealed class NameLegacyCodec
     {
         int code = bytes[at++];
         if (IsLead((byte)code)) code = code << 8 | bytes[at++];
+        else if (_pairs is not null && at < bytes.Length &&
+            _pairs.ContainsKey((ushort)(code << 8 | bytes[at]))) code = code << 8 | bytes[at++];
         return code;
     }
+
+    private string? Forward(int code) => code < _forward.Length ? _forward[code] :
+        _pairs is not null && _pairs.TryGetValue((ushort)code, out string? text) ? text : null;
 
     internal ReadStatus TryDecode(ReadOnlySpan<byte> bytes, out string? text,
         out FontDiagnostic diagnostic, DataLocation at)
@@ -150,7 +176,7 @@ internal sealed class NameLegacyCodec
         ReadStatus status = Measure(bytes, out int chars, out int offset, out int code, out DiagnosticCode why);
         if (status != ReadStatus.Done) return FailUnit(status, why, at, offset, code, out diagnostic);
         var builder = new StringBuilder(chars);
-        for (int cursor = 0; cursor < bytes.Length;) builder.Append(_forward[UnitAt(bytes, ref cursor)]);
+        for (int cursor = 0; cursor < bytes.Length;) builder.Append(Forward(UnitAt(bytes, ref cursor)));
         text = builder.ToString();
         diagnostic = default;
         return ReadStatus.Done;
@@ -183,12 +209,37 @@ internal sealed class NameLegacyCodec
         if (result != ReadStatus.Done) return result;
         if (!budget.Output(length, request, out diagnostic) ||
             !budget.Buffer(length, request, out diagnostic)) return ReadStatus.ResourceLimit;
+        if (_units == Units.Indic && !budget.Work((long)length + text.Length, request, out diagnostic))
+            return ReadStatus.ResourceLimit;
         var output = new byte[length];
         result = EncodePass(text, choices, output, out _, out diagnostic);
         if (result != ReadStatus.Done) return result;
+        if (_units == Units.Indic && !MatchesText(output, text, out int mismatch))
+            return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidValue,
+                request.At(DataField.Payload, (ulong)mismatch), out diagnostic);
         bytes = output;
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    private bool MatchesText(ReadOnlySpan<byte> bytes, string text, out int mismatch)
+    {
+        int character = 0;
+        for (int at = 0; at < bytes.Length;)
+        {
+            // Published Indic pair precedence may merge individually encoded singleton
+            // characters (e.g. candrabindu+nukta becomes OM). Never publish altered text.
+            string? actual = Forward(UnitAt(bytes, ref at));
+            if (actual is null) { mismatch = character; return false; }
+            foreach (char value in actual)
+            {
+                if (character == text.Length || value != text[character])
+                { mismatch = character; return false; }
+                character++;
+            }
+        }
+        mismatch = character;
+        return character == text.Length;
     }
 
     private ReadStatus EncodePass(string text, ReadOnlySpan<NameLegacyByteChoice> choices,
@@ -279,6 +330,9 @@ internal sealed class NameLegacyCodec
         new(NameCjkData.JapaneseBasic(), [1], Units.Japanese),
         new(NameCjkData.Tables[1], [2], Units.ChineseTraditional),
         new(NameCjkData.Tables[2], [25], Units.ChineseSimplified),
-        new(NameCjkData.Tables[3], [3], Units.Korean)
+        new(NameCjkData.Tables[3], [3], Units.Korean),
+        new(NameIndicData.Devanagari, [9], NameIndicData.DevanagariPairs),
+        new(NameIndicData.Gujarati, [11], NameIndicData.GujaratiPairs),
+        new(NameIndicData.Gurmukhi, [10], NameIndicData.GurmukhiPairs)
     ];
 }

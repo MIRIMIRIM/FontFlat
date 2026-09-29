@@ -39,7 +39,10 @@ public enum NameLegacyEncoding
     MacJapaneseBasic,
     MacChineseTraditional,
     MacChineseSimplified,
-    MacKorean
+    MacKorean,
+    MacDevanagari,
+    MacGujarati,
+    MacGurmukhi
 }
 
 /// <summary>Assign a published mapping to one original name-record ordinal. Never inferred from locale.</summary>
