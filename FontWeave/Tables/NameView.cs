@@ -7,11 +7,16 @@ namespace FontWeave.Tables;
 public readonly ref partial struct NameView
 {
     /// <summary>
-    /// Checks the finite name profile, not BCP-47 syntax or whole-font consistency.
+    /// Checks structure, ordering, supported encodings and RFC 5646 tag well-formedness.
+    /// Does not consult external encoding/language registries or whole-font consistency.
     /// Repeated payload references count separately toward the scan budget.
     /// </summary>
     public ReadStatus Validate(out FontDiagnostic diagnostic,
-        int maxReferencedPayloadBytes = 8 * 1024 * 1024)
+        int maxReferencedPayloadBytes = 8 * 1024 * 1024) =>
+        ValidateCore(out diagnostic, maxReferencedPayloadBytes, requireSorted: true);
+
+    private ReadStatus ValidateCore(out FontDiagnostic diagnostic,
+        int maxReferencedPayloadBytes, bool requireSorted)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(maxReferencedPayloadBytes);
         if (!IsBound)
@@ -51,12 +56,13 @@ public readonly ref partial struct NameView
 
         ulong referencedPayloadBytes = 0;
         RecordData previous = default;
+        string? variationPrefix = null;
         for (int ordinal = 0; ordinal < count; ordinal++)
         {
             status = TryGetRecord(ordinal, out RecordData record, out diagnostic);
             if (status != ReadStatus.Done) return status;
             ulong rowOffset = 6UL + (ulong)ordinal * 12;
-            if (ordinal > 0 && CompareKeys(previous, record) > 0)
+            if (requireSorted && ordinal > 0 && CompareKeys(previous, record) > 0)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     Location.At(DataField.None, rowOffset, ordinal), out diagnostic);
             if (Format == 1 && record.LanguageId >= 0x8000 &&
@@ -78,11 +84,25 @@ public readonly ref partial struct NameView
                     referencedPayloadBytes, (ulong)maxReferencedPayloadBytes);
             status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            if (IsUtf16(record.PlatformId, record.EncodingId) &&
-                !IsValidUtf16BigEndian(payload))
-                return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidUtf16,
-                    Location.At(DataField.Payload, payloadOffset, ordinal), out diagnostic,
-                    record.Length);
+            DataLocation payloadLocation = Location.At(DataField.Payload, payloadOffset, ordinal);
+            status = NameTextCodec.ValidatePayload(record.PlatformId, record.EncodingId,
+                payload, payloadLocation, out diagnostic);
+            if (status != ReadStatus.Done)
+            {
+                diagnostic = diagnostic with { Detail = record.Length };
+                return status;
+            }
+            if (NameRecordSemantics.HasTextConstraint(record.NameId) &&
+                NameTextCodec.IsSupported(record.PlatformId, record.EncodingId))
+            {
+                _ = NameTextCodec.TryDecode(record.PlatformId, record.EncodingId, payload,
+                    out string? text, out _, payloadLocation);
+                if (!NameRecordSemantics.IsValid(record.NameId, text!) ||
+                    record.NameId == 25 && variationPrefix is not null && text != variationPrefix)
+                    return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                        payloadLocation, out diagnostic, record.NameId);
+                if (record.NameId == 25) variationPrefix = text;
+            }
             previous = record;
         }
 
@@ -106,33 +126,33 @@ public readonly ref partial struct NameView
                 return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidUtf16,
                     Location.At(DataField.Payload, payloadOffset, ordinal), out diagnostic,
                     (ulong)payload.Length);
+            if (!NameLanguageTagSyntax.IsWellFormed(Encoding.BigEndianUnicode.GetString(payload)))
+                return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidValue,
+                    Location.At(DataField.Payload, payloadOffset, ordinal), out diagnostic);
         }
 
         diagnostic = default;
         return ReadStatus.Done;
     }
 
-    /// <summary>Materialize text only for known Unicode encodings.</summary>
+    /// <summary>Materialize text only for explicitly supported strict encodings.</summary>
     public ReadStatus TryDecodeRecord(int ordinal, out string? text,
         out FontDiagnostic diagnostic)
     {
         text = null;
         ReadStatus status = TryGetRecord(ordinal, out RecordData record, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (!IsUtf16(record.PlatformId, record.EncodingId))
+        if (!NameTextCodec.IsSupported(record.PlatformId, record.EncodingId))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
                 Location.At(DataField.EncodingId, 6UL + (ulong)ordinal * 12 + 2, ordinal),
                 out diagnostic, record.EncodingId);
         status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (!IsValidUtf16BigEndian(payload))
-            return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidUtf16,
-                Location.At(DataField.Payload,
-                    (ulong)StorageOffset + record.StorageRelativeOffset, ordinal),
-                out diagnostic, record.Length);
-        text = Encoding.BigEndianUnicode.GetString(payload);
-        diagnostic = default;
-        return ReadStatus.Done;
+        status = NameTextCodec.TryDecode(record.PlatformId, record.EncodingId, payload,
+            out text, out diagnostic, Location.At(DataField.Payload,
+                (ulong)StorageOffset + record.StorageRelativeOffset, ordinal));
+        if (status != ReadStatus.Done) diagnostic = diagnostic with { Detail = record.Length };
+        return status;
     }
 
     /// <summary>Locally decode a record without treating an unknown encoding as damaged text.</summary>
@@ -145,18 +165,20 @@ public readonly ref partial struct NameView
         if (status != ReadStatus.Done) return status;
         status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (!IsUtf16(record.PlatformId, record.EncodingId))
+        if (!NameTextCodec.IsSupported(record.PlatformId, record.EncodingId))
         {
             diagnostic = default;
             return ReadStatus.Done;
         }
-        if (!IsValidUtf16BigEndian(payload))
-            return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidUtf16,
-                Location.At(DataField.Payload,
-                    (ulong)StorageOffset + record.StorageRelativeOffset, ordinal),
-                out diagnostic, record.Length);
+        status = NameTextCodec.TryDecode(record.PlatformId, record.EncodingId, payload,
+            out text, out diagnostic, Location.At(DataField.Payload,
+                (ulong)StorageOffset + record.StorageRelativeOffset, ordinal));
+        if (status != ReadStatus.Done)
+        {
+            diagnostic = diagnostic with { Detail = record.Length };
+            return status;
+        }
         state = NameDecodeState.Decoded;
-        text = Encoding.BigEndianUnicode.GetString(payload);
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -184,6 +206,8 @@ public readonly ref partial struct NameView
         if (status != ReadStatus.Done) return status;
 
         long referencedBytes = 0;
+        long tagBytes = 0;
+        long constrainedTextBytes = 0;
         for (int i = 0; i < DeclaredCount; i++)
         {
             ulong row = 6UL + (ulong)i * 12;
@@ -192,6 +216,9 @@ public readonly ref partial struct NameView
             status = TryGetRecord(i, out RecordData record, out diagnostic);
             if (status != ReadStatus.Done) return status;
             referencedBytes += record.Length;
+            if (NameRecordSemantics.HasTextConstraint(record.NameId) &&
+                NameTextCodec.IsSupported(record.PlatformId, record.EncodingId))
+                constrainedTextBytes += record.Length;
         }
         for (int i = 0; i < tagCount; i++)
         {
@@ -201,6 +228,7 @@ public readonly ref partial struct NameView
             status = TryGetLanguageTag(i, out LanguageTagData tag, out diagnostic);
             if (status != ReadStatus.Done) return status;
             referencedBytes += tag.Length;
+            tagBytes += tag.Length;
         }
         if (referencedBytes > int.MaxValue)
             return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
@@ -208,7 +236,13 @@ public readonly ref partial struct NameView
                 (ulong)referencedBytes, int.MaxValue);
         if (!budget.Work(referencedBytes, Location.At(DataField.Payload, StorageOffset), out diagnostic))
             return ReadStatus.ResourceLimit;
-        status = Validate(out diagnostic, (int)referencedBytes);
+        // Admission precedes the syntax parser's strings, split arrays and duplicate sets.
+        if (!budget.Buffer(tagBytes * 16 + constrainedTextBytes * 2,
+                Location.At(DataField.TemporaryBytes, StorageOffset), out diagnostic))
+            return ReadStatus.ResourceLimit;
+        // Unsorted records have unambiguous keys and ordinals. Preserve their source order;
+        // Validate reports the wire violation and the complete-content compiler sorts stably.
+        status = ValidateCore(out diagnostic, (int)referencedBytes, requireSorted: false);
         if (status != ReadStatus.Done) return status;
 
         long modelArrays = (long)DeclaredCount * IntPtr.Size + (long)tagCount * IntPtr.Size;
@@ -224,11 +258,14 @@ public readonly ref partial struct NameView
             _ = TryGetRecordPayload(i, out ReadOnlySpan<byte> payload, out _);
             ulong rowAt = 6UL + (ulong)i * 12;
             ulong payloadAt = (ulong)StorageOffset + row.StorageRelativeOffset;
-            bool decoded = IsUtf16(row.PlatformId, row.EncodingId);
+            bool decoded = NameTextCodec.IsSupported(row.PlatformId, row.EncodingId);
+            string? text = null;
+            if (decoded) _ = NameTextCodec.TryDecode(row.PlatformId, row.EncodingId,
+                payload, out text, out _);
             records[i] = new NameRecordModel(i, row.PlatformId, row.EncodingId,
                 row.LanguageId, row.NameId, row.Length, row.StorageRelativeOffset,
                 payload.ToArray(), decoded ? NameDecodeState.Decoded : NameDecodeState.UnsupportedEncoding,
-                decoded ? Encoding.BigEndianUnicode.GetString(payload) : null,
+                text,
                 Location.At(DataField.None, rowAt, i),
                 Location.At(DataField.Payload, payloadAt, i));
         }

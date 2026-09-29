@@ -15,7 +15,7 @@ public sealed record NameEditPlan
     public bool RemoveLastLanguageTag { get; init; }
 }
 
-public static class NameTableCompiler
+public static partial class NameTableCompiler
 {
     private const uint Tag = 0x6E616D65;
 
@@ -135,7 +135,9 @@ public static class NameTableCompiler
                     source.Records[ordinal].RowLocation.At(DataField.Count,
                         source.Records[ordinal].RowLocation.Offset, ordinal), out diagnostic);
             NameRecordModel record = source.Records[ordinal];
-            if (record.DecodeState != NameDecodeState.Decoded)
+            // This legacy patch API emits UTF-16BE. Complete content + NameTextCodec is
+            // the explicit path for code-page text editing, never UTF-16 into CP storage.
+            if (!NameView.IsUtf16(record.PlatformId, record.EncodingId))
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat,
                     rejectNoOp ? DiagnosticCode.UnsupportedOperation : DiagnosticCode.UnsupportedVersion,
                     rejectNoOp ? request.At(DataField.EncodingId, 0, ordinal) :
@@ -147,6 +149,8 @@ public static class NameTableCompiler
                     rejectNoOp ? request.At(DataField.Payload, 0, ordinal) :
                         record.RowLocation.At(DataField.Payload, record.RowLocation.Offset, ordinal),
                     out diagnostic);
+            if (!NameRecordSemantics.IsValid(record.NameId, text))
+                return Invalid(request.At(DataField.Payload, 0, ordinal), out diagnostic);
             if (!budget.Work(text.Length, request.At(DataField.Payload, 0, ordinal), out diagnostic))
                 return ReadStatus.ResourceLimit;
             if (text.Length > ushort.MaxValue / 2)
@@ -190,9 +194,17 @@ public static class NameTableCompiler
         if (rejectNoOp && !changed)
             return Invalid(request, out diagnostic);
         bool newTagReferenced = false;
+        string? variationPrefix = null;
         for (int i = 0; i < count; i++)
         {
             NameRecordModel record = source.Records[i];
+            string? finalText = texts[i] ?? record.Text;
+            if (record.NameId == 25 && finalText is not null)
+            {
+                if (variationPrefix is not null && variationPrefix != finalText)
+                    return Invalid(request.At(DataField.Payload, 0, i), out diagnostic);
+                variationPrefix = finalText;
+            }
             ushort languageId = languageEdited[i] ? languageIds[i] : record.LanguageId;
             if (source.Format == 1 && languageId >= 0x8000)
             {

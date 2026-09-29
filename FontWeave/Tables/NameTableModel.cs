@@ -65,7 +65,7 @@ public sealed class NameLanguageTagModel
     public DataLocation PayloadLocation { get; }
 }
 
-/// <summary>Strictly validated, source-independent format 0/1 name table.</summary>
+/// <summary>A safely read, source-independent format 0/1 name table. Source order is retained.</summary>
 public sealed class NameTableModel
 {
     internal NameTableModel(ushort format, ushort storageOffset, byte[] originalBytes,
@@ -85,4 +85,49 @@ public sealed class NameTableModel
     public IReadOnlyList<NameRecordModel> Records { get; }
     public IReadOnlyList<NameLanguageTagModel> LanguageTags { get; }
     public DataLocation Location { get; }
+
+    public NameLanguageIdentity GetLanguage(int ordinal)
+    {
+        NameRecordModel record = Records[ordinal];
+        if (Format == 1 && record.LanguageId >= 0x8000)
+            return new(NameLanguageKind.LanguageTag, record.PlatformId, record.LanguageId,
+                LanguageTags[record.LanguageId - 0x8000].Text);
+        if (record.PlatformId == 0 && record.LanguageId == 0)
+            return NameLanguageIdentity.Unspecified;
+        return NameLanguageIdentity.ForPlatform(record.PlatformId, record.LanguageId);
+    }
+
+    /// <summary>
+    /// Materialize a complete editable value, preserving unreferenced bytes. Tag array edits
+    /// never implicitly remap language IDs: the caller supplies the final references.
+    /// </summary>
+    public NameTableContent ToContent()
+    {
+        var records = new NameRecordValue[Records.Count];
+        var tags = new string[LanguageTags.Count];
+        int metadataEnd = 6 + Records.Count * 12 + (Format == 1 ? 2 + LanguageTags.Count * 4 : 0);
+        var referenced = new bool[OriginalBytes.Length - metadataEnd];
+        for (int i = 0; i < records.Length; i++)
+        {
+            NameRecordModel record = Records[i];
+            records[i] = new(record.PlatformId, record.EncodingId, record.LanguageId,
+                record.NameId, record.Payload);
+            referenced.AsSpan(StorageOffset + record.StorageRelativeOffset - metadataEnd,
+                record.Length).Fill(true);
+        }
+        for (int i = 0; i < tags.Length; i++)
+        {
+            NameLanguageTagModel tag = LanguageTags[i];
+            tags[i] = tag.Text;
+            referenced.AsSpan(StorageOffset + tag.StorageRelativeOffset - metadataEnd,
+                tag.Length).Fill(true);
+        }
+        int opaqueCount = 0;
+        foreach (bool value in referenced) if (!value) opaqueCount++;
+        var opaque = new byte[opaqueCount];
+        int at = 0;
+        for (int i = 0; i < referenced.Length; i++)
+            if (!referenced[i]) opaque[at++] = OriginalBytes.Span[metadataEnd + i];
+        return new() { Format = Format, Records = records, LanguageTags = tags, UnreferencedBytes = opaque };
+    }
 }
