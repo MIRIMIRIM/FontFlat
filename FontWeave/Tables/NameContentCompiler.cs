@@ -70,7 +70,8 @@ public static partial class NameTableCompiler
                     record.LegacyEncoding) == NameDecodeState.Decoded)
             {
                 if (!budget.Buffer(Math.Max(record.Payload.Length * 2L,
-                        NameTextCodec.LegacyDecodeBufferBytes(record.Payload.Length, record.LegacyEncoding)),
+                        NameTextCodec.AdditionalDecodeBufferBytes(record.PlatformId, record.EncodingId,
+                            record.Payload.Length, record.LegacyEncoding)),
                         request, out diagnostic))
                     return ReadStatus.ResourceLimit;
                 _ = NameTextCodec.TryDecodeSemantic(record.PlatformId, record.EncodingId, record.Payload.Span,

@@ -38,7 +38,9 @@ public sealed class NameRecordModel
     public ReadOnlyMemory<byte> Payload { get; }
     public NameDecodeState DecodeState { get; }
     /// <summary>Decoded characters and transcoding hints. Selected Apple RTL mappings include
-    /// canonical LRO/RLO ... PDF runs; this is not an undecorated name-ID validation value.</summary>
+    /// canonical LRO/RLO ... PDF runs; this is not an undecorated name-ID validation value.
+    /// Unicode 1.1/ISO 1993 records expose modern character identities, not raw code units.
+    /// Unsupported or unmapped historical positions leave Text null and preserve Payload.</summary>
     public string? Text { get; }
     public DataLocation RowLocation { get; }
     public DataLocation PayloadLocation { get; }

@@ -164,7 +164,9 @@ public readonly ref partial struct NameView
         status = NameTextCodec.TryDecode(record.PlatformId, record.EncodingId, payload,
             out text, out diagnostic, Location.At(DataField.Payload,
                 (ulong)StorageOffset + record.StorageRelativeOffset, ordinal));
-        if (status != ReadStatus.Done) diagnostic = diagnostic with { Detail = record.Length };
+        if (status != ReadStatus.Done &&
+            (!NameTextCodec.IsUnicode11(record.PlatformId, record.EncodingId) || status == ReadStatus.InvalidEncoding))
+            diagnostic = diagnostic with { Detail = record.Length };
         return status;
     }
 
@@ -194,7 +196,17 @@ public readonly ref partial struct NameView
         if (status != ReadStatus.Done) return status;
         status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (!NameTextCodec.IsSupported(record.PlatformId, record.EncodingId))
+        DataLocation payloadLocation = Location.At(DataField.Payload,
+            (ulong)StorageOffset + record.StorageRelativeOffset, ordinal);
+        status = NameTextCodec.ValidatePayload(record.PlatformId, record.EncodingId, payload,
+            payloadLocation, out diagnostic);
+        if (status != ReadStatus.Done)
+        {
+            diagnostic = diagnostic with { Detail = record.Length };
+            return status;
+        }
+        state = NameTextCodec.DecodeState(record.PlatformId, record.EncodingId, payload, null);
+        if (state != NameDecodeState.Decoded)
         {
             diagnostic = default;
             return ReadStatus.Done;
@@ -250,7 +262,7 @@ public readonly ref partial struct NameView
         long referencedBytes = 0;
         long tagBytes = 0;
         long constrainedTextBytes = 0;
-        long legacyDecodeBuffers = 0;
+        long extraDecodeBuffers = 0;
         for (int i = 0; i < DeclaredCount; i++)
         {
             ulong row = 6UL + (ulong)i * 12;
@@ -260,9 +272,11 @@ public readonly ref partial struct NameView
             if (status != ReadStatus.Done) return status;
             referencedBytes += record.Length;
             if (NameRecordSemantics.HasTextConstraint(record.NameId) &&
-                NameTextCodec.IsSupported(record.PlatformId, record.EncodingId))
+                NameTextCodec.IsSupported(record.PlatformId, record.EncodingId) &&
+                !NameTextCodec.IsUnicode11(record.PlatformId, record.EncodingId))
                 constrainedTextBytes += record.Length;
-            legacyDecodeBuffers += NameTextCodec.LegacyDecodeBufferBytes(record.Length, encodings?[i]) *
+            extraDecodeBuffers += NameTextCodec.AdditionalDecodeBufferBytes(record.PlatformId,
+                record.EncodingId, record.Length, encodings?[i]) *
                 (NameRecordSemantics.HasTextConstraint(record.NameId) ? 2 : 1);
         }
         for (int i = 0; i < tagCount; i++)
@@ -282,7 +296,7 @@ public readonly ref partial struct NameView
         if (!budget.Work(referencedBytes, Location.At(DataField.Payload, StorageOffset), out diagnostic))
             return ReadStatus.ResourceLimit;
         // Admission precedes the syntax parser's strings, split arrays and duplicate sets.
-        if (!budget.Buffer(tagBytes * 16 + constrainedTextBytes * 2 + legacyDecodeBuffers,
+        if (!budget.Buffer(tagBytes * 16 + constrainedTextBytes * 2 + extraDecodeBuffers,
                 Location.At(DataField.TemporaryBytes, StorageOffset), out diagnostic))
             return ReadStatus.ResourceLimit;
         // Unsorted records have unambiguous keys and ordinals. Preserve their source order;
