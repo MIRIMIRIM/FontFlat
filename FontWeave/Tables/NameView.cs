@@ -165,7 +165,7 @@ public readonly ref partial struct NameView
             out text, out diagnostic, Location.At(DataField.Payload,
                 (ulong)StorageOffset + record.StorageRelativeOffset, ordinal));
         if (status != ReadStatus.Done &&
-            (!NameTextCodec.IsUnicode11(record.PlatformId, record.EncodingId) || status == ReadStatus.InvalidEncoding))
+            (!NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId) || status == ReadStatus.InvalidEncoding))
             diagnostic = diagnostic with { Detail = record.Length };
         return status;
     }
@@ -273,7 +273,7 @@ public readonly ref partial struct NameView
             referencedBytes += record.Length;
             if (NameRecordSemantics.HasTextConstraint(record.NameId) &&
                 NameTextCodec.IsSupported(record.PlatformId, record.EncodingId) &&
-                !NameTextCodec.IsUnicode11(record.PlatformId, record.EncodingId))
+                !NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId))
                 constrainedTextBytes += record.Length;
             extraDecodeBuffers += NameTextCodec.AdditionalDecodeBufferBytes(record.PlatformId,
                 record.EncodingId, record.Length, encodings?[i]) *

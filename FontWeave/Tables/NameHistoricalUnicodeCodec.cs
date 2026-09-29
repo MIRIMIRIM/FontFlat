@@ -4,12 +4,13 @@ using FontWeave.Core;
 
 namespace FontWeave.Tables;
 
-/// <summary>Unicode 1.1 / ISO 10646-1:1993 character identities, not historical rendering.
-/// This historical-text profile leaves private-use, noncharacters and positions outside
-/// the published repertoire raw; it does not impose that policy on other Unicode codecs.</summary>
-internal static class NameUnicode11Codec
+/// <summary>Bounded historical character identities, not full historical Unicode behavior.
+/// Unicode 1.0 admits only its published 2350 Hangul mappings; Unicode 1.1 / ISO 1993 also
+/// admits the verified identity bitmap. Other positions remain raw, not necessarily unassigned.</summary>
+internal static class NameHistoricalUnicodeCodec
 {
     private const int OldFirst = 0x3400, OldCount = 6656;
+    private const int Unicode10HangulCount = 2350;
     private const int ModernFirst = 0xAC00, ModernCount = 11172;
     private const int BitmapAt = 8, HangulAt = BitmapAt + 8192;
     private static readonly byte[] Data = Load();
@@ -17,17 +18,23 @@ internal static class NameUnicode11Codec
 
     // Callers validate the complete UTF-16 wire first, so an earlier unmapped position
     // never hides later malformed input. A valid surrogate pair is outside this BMP repertoire.
-    internal static bool CanDecode(ReadOnlySpan<byte> payload) =>
-        FindUnmapped(payload, out _) < 0;
+    internal static bool CanDecode(ReadOnlySpan<byte> payload, bool unicode10HangulOnly) =>
+        FindUnmapped(payload, unicode10HangulOnly, out _) < 0;
 
-    internal static ReadStatus TryDecode(ReadOnlySpan<byte> payload, out string? text,
+    internal static ReadStatus TryDecode(ReadOnlySpan<byte> payload, bool unicode10HangulOnly, out string? text,
         out FontDiagnostic diagnostic, DataLocation location)
     {
         text = null;
+        if (payload.IsEmpty)
+        {
+            text = string.Empty;
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
         if (!NameView.IsValidUtf16BigEndian(payload))
             return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidUtf16,
                 location with { Field = DataField.Payload }, out diagnostic);
-        int offset = FindUnmapped(payload, out ushort code);
+        int offset = FindUnmapped(payload, unicode10HangulOnly, out ushort code);
         if (offset >= 0)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 location with { Field = DataField.Payload, Offset = location.Offset + (uint)offset },
@@ -35,7 +42,7 @@ internal static class NameUnicode11Codec
         var builder = new StringBuilder(payload.Length / 2);
         for (int at = 0; at < payload.Length; at += 2)
         {
-            _ = Forward(ReadWire.U16(payload, at), out char value);
+            _ = Forward(ReadWire.U16(payload, at), unicode10HangulOnly, out char value);
             builder.Append(value);
         }
         text = builder.ToString();
@@ -44,11 +51,11 @@ internal static class NameUnicode11Codec
     }
 
     // Input UTF-16 syntax is checked by the public codec or the legacy edit compiler.
-    internal static ReadStatus ValidateText(string text, DataLocation location,
+    internal static ReadStatus ValidateText(string text, bool unicode10HangulOnly, DataLocation location,
         out FontDiagnostic diagnostic)
     {
         for (int at = 0; at < text.Length; at++)
-            if (!Reverse(text[at], out _))
+            if (!Reverse(text[at], unicode10HangulOnly, out _))
                 return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidValue,
                     location with { Field = DataField.Payload, Offset = location.Offset + (uint)at },
                     out diagnostic, text[at]);
@@ -56,46 +63,47 @@ internal static class NameUnicode11Codec
         return ReadStatus.Done;
     }
 
-    internal static void Write(string text, Span<byte> destination)
+    internal static void Write(string text, Span<byte> destination, bool unicode10HangulOnly)
     {
         for (int i = 0; i < text.Length; i++)
         {
-            _ = Reverse(text[i], out ushort code);
+            _ = Reverse(text[i], unicode10HangulOnly, out ushort code);
             BinaryPrimitives.WriteUInt16BigEndian(destination.Slice(i * 2, 2), code);
         }
     }
 
-    private static int FindUnmapped(ReadOnlySpan<byte> payload, out ushort code)
+    private static int FindUnmapped(ReadOnlySpan<byte> payload, bool unicode10HangulOnly, out ushort code)
     {
         for (int at = 0; at < payload.Length; at += 2)
         {
             code = ReadWire.U16(payload, at);
-            if (!Forward(code, out _)) return at;
+            if (!Forward(code, unicode10HangulOnly, out _)) return at;
         }
         code = 0;
         return -1;
     }
 
-    private static bool Forward(ushort code, out char mapped)
+    private static bool Forward(ushort code, bool unicode10HangulOnly, out char mapped)
     {
-        if (code is >= OldFirst and < OldFirst + OldCount)
+        int count = unicode10HangulOnly ? Unicode10HangulCount : OldCount;
+        if (code >= OldFirst && code < OldFirst + count)
         {
             mapped = (char)ReadWire.U16(Data, HangulAt + (code - OldFirst) * 2);
             return true;
         }
         mapped = (char)code;
-        return IsIdentity(code);
+        return !unicode10HangulOnly && IsIdentity(code);
     }
 
-    private static bool Reverse(char value, out ushort code)
+    private static bool Reverse(char value, bool unicode10HangulOnly, out ushort code)
     {
         if (value is >= (char)ModernFirst and < (char)(ModernFirst + ModernCount))
         {
             code = ReverseHangul[value - ModernFirst];
-            return code != 0;
+            return code != 0 && (!unicode10HangulOnly || code < OldFirst + Unicode10HangulCount);
         }
         code = value;
-        return IsIdentity(value);
+        return !unicode10HangulOnly && IsIdentity(value);
     }
 
     private static bool IsIdentity(int code) =>
@@ -103,7 +111,9 @@ internal static class NameUnicode11Codec
 
     private static byte[] Load()
     {
-        using Stream stream = typeof(NameUnicode11Codec).Assembly.GetManifestResourceStream(
+        // The generator independently verifies every Unicode 1.0 row against the shared
+        // lower Hangul segment; its membership is never inferred just from a range label.
+        using Stream stream = typeof(NameHistoricalUnicodeCodec).Assembly.GetManifestResourceStream(
             "FontWeave.NameUnicode11Mappings") ??
             throw new InvalidOperationException("Missing Unicode 1.1 name mappings.");
         if (stream.Length != HangulAt + OldCount * 2)

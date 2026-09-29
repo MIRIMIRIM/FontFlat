@@ -135,11 +135,10 @@ public static partial class NameTableCompiler
                     source.Records[ordinal].RowLocation.At(DataField.Count,
                         source.Records[ordinal].RowLocation.Offset, ordinal), out diagnostic);
             NameRecordModel record = source.Records[ordinal];
-            // The wire remains UTF-16BE, but Unicode 1.1/ISO 1993 requires historical
-            // character positions. Unicode 1.0 text is not guessed. Other code pages
+            // The wire remains UTF-16BE, but historical Unicode requires explicitly
+            // supported character positions (only Hangul for Unicode 1.0). Other code pages
             // still use complete content + NameTextCodec rather than this patch API.
-            if (!NameView.IsUtf16(record.PlatformId, record.EncodingId) ||
-                !NameTextCodec.IsSupported(record.PlatformId, record.EncodingId))
+            if (!NameView.IsUtf16(record.PlatformId, record.EncodingId))
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat,
                     rejectNoOp ? DiagnosticCode.UnsupportedOperation : DiagnosticCode.UnsupportedVersion,
                     rejectNoOp ? request.At(DataField.EncodingId, 0, ordinal) :
@@ -151,12 +150,13 @@ public static partial class NameTableCompiler
                     rejectNoOp ? request.At(DataField.Payload, 0, ordinal) :
                         record.RowLocation.At(DataField.Payload, record.RowLocation.Offset, ordinal),
                     out diagnostic);
-            if (NameTextCodec.IsUnicode11(record.PlatformId, record.EncodingId))
+            if (NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId))
             {
                 DataLocation textLocation = rejectNoOp ? request.At(DataField.Payload, 0, ordinal) :
                     record.RowLocation.At(DataField.Payload, record.RowLocation.Offset, ordinal);
                 if (!budget.Work(text.Length, textLocation, out diagnostic)) return ReadStatus.ResourceLimit;
-                status = NameUnicode11Codec.ValidateText(text, textLocation, out diagnostic);
+                status = NameHistoricalUnicodeCodec.ValidateText(text, record.EncodingId == 0,
+                    textLocation, out diagnostic);
                 if (status != ReadStatus.Done) return status;
             }
             if (!NameRecordSemantics.IsValid(record.NameId, text))
@@ -310,8 +310,9 @@ public static partial class NameTableCompiler
                 length == 0 ? (ushort)0 : (ushort)(cursor - metadataEnd));
             if (replacement is null)
                 record.Payload.Span.CopyTo(compiled.AsSpan(cursor));
-            else if (NameTextCodec.IsUnicode11(record.PlatformId, record.EncodingId))
-                NameUnicode11Codec.Write(replacement, compiled.AsSpan(cursor, length));
+            else if (NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId))
+                NameHistoricalUnicodeCodec.Write(replacement, compiled.AsSpan(cursor, length),
+                    record.EncodingId == 0);
             else
                 WriteUtf16BigEndian(replacement, compiled.AsSpan(cursor, length));
             cursor += length;

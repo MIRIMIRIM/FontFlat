@@ -39,7 +39,8 @@ public sealed class NameRecordModel
     public NameDecodeState DecodeState { get; }
     /// <summary>Decoded characters and transcoding hints. Selected Apple RTL mappings include
     /// canonical LRO/RLO ... PDF runs; this is not an undecorated name-ID validation value.
-    /// Unicode 1.1/ISO 1993 records expose modern character identities, not raw code units.
+    /// Supported historical Unicode positions expose modern identities, not raw code units;
+    /// Unicode 1.0 currently covers only its 2350 Hangul positions.
     /// Unsupported or unmapped historical positions leave Text null and preserve Payload.</summary>
     public string? Text { get; }
     public DataLocation RowLocation { get; }

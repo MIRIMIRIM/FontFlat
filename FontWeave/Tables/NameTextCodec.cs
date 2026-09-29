@@ -6,8 +6,8 @@ namespace FontWeave.Tables;
 /// <summary>
 /// Strict codecs whose mapping is defined by the OpenType name chapter and the explicitly
 /// selected Apple catalogue. Unknown encodings are not approximated by an OS code page.
-/// Unicode 1.1 / ISO 10646:1993 IDs use their historical character identities. Unicode 1.0
-/// remains raw pending a complete migration profile; its wire still requires valid UTF-16BE.
+/// Historical Unicode IDs use explicit character-identity profiles. Unicode 1.0 currently
+/// supports only its 2350 Hangul mappings; other e0 positions remain raw, not "unassigned".
 /// </summary>
 public static class NameTextCodec
 {
@@ -67,9 +67,8 @@ public static class NameTextCodec
     {
         text = null;
         location = location == default ? DataLocation.Anonymous(Tag) : location;
-        if (platformId == 0 && encodingId == 0) return Unsupported(encodingId, location, out diagnostic);
-        if (IsUnicode11(platformId, encodingId))
-            return NameUnicode11Codec.TryDecode(payload, out text, out diagnostic, location);
+        if (IsHistoricalUnicode(platformId, encodingId))
+            return NameHistoricalUnicodeCodec.TryDecode(payload, encodingId == 0, out text, out diagnostic, location);
         Encoding? encoding = GetEncoding(platformId, encodingId);
         if (encoding is null) return Unsupported(encodingId, location, out diagnostic);
         try { text = encoding.GetString(payload); }
@@ -85,7 +84,6 @@ public static class NameTextCodec
         payload = null;
         DataLocation request = DataLocation.Anonymous(Tag);
         var budget = new BuildBudget(limits);
-        if (platformId == 0 && encodingId == 0) return Unsupported(encodingId, request, out diagnostic);
         Encoding? encoding = GetEncoding(platformId, encodingId);
         if (encoding is null) return Unsupported(encodingId, request, out diagnostic);
         if ((long)text.Length * 2 > int.MaxValue)
@@ -96,9 +94,9 @@ public static class NameTextCodec
         int length;
         try { length = encoding.GetByteCount(text); }
         catch (EncoderFallbackException) { return Invalid(platformId, encodingId, request, out diagnostic); }
-        if (IsUnicode11(platformId, encodingId))
+        if (IsHistoricalUnicode(platformId, encodingId))
         {
-            ReadStatus status = NameUnicode11Codec.ValidateText(text, request, out diagnostic);
+            ReadStatus status = NameHistoricalUnicodeCodec.ValidateText(text, encodingId == 0, request, out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
         if (length > ushort.MaxValue)
@@ -110,7 +108,8 @@ public static class NameTextCodec
         var result = new byte[length];
         try
         {
-            if (IsUnicode11(platformId, encodingId)) NameUnicode11Codec.Write(text, result);
+            if (IsHistoricalUnicode(platformId, encodingId))
+                NameHistoricalUnicodeCodec.Write(text, result, encodingId == 0);
             else _ = encoding.GetBytes(text.AsSpan(), result);
         }
         catch (EncoderFallbackException) { return Invalid(platformId, encodingId, request, out diagnostic); }
@@ -120,10 +119,10 @@ public static class NameTextCodec
     }
 
     internal static bool IsSupported(ushort platformId, ushort encodingId) =>
-        !(platformId == 0 && encodingId == 0) && GetEncoding(platformId, encodingId) is not null;
+        GetEncoding(platformId, encodingId) is not null;
 
-    internal static bool IsUnicode11(ushort platformId, ushort encodingId) =>
-        platformId == 0 && encodingId is 1 or 2;
+    internal static bool IsHistoricalUnicode(ushort platformId, ushort encodingId) =>
+        platformId == 0 && encodingId <= 2;
 
     internal static ReadStatus ValidateSelection(ushort platformId, ushort encodingId,
         NameLegacyEncoding encoding, DataLocation at, out FontDiagnostic diagnostic)
@@ -143,8 +142,9 @@ public static class NameTextCodec
         if (legacyEncoding is NameLegacyEncoding legacy)
             return NameLegacyCodec.Get(legacy)!.TryMeasure(payload, out _, out _)
                 ? NameDecodeState.Decoded : NameDecodeState.UnmappedCharacter;
-        if (IsUnicode11(platformId, encodingId))
-            return NameUnicode11Codec.CanDecode(payload) ? NameDecodeState.Decoded : NameDecodeState.UnmappedCharacter;
+        if (IsHistoricalUnicode(platformId, encodingId))
+            return NameHistoricalUnicodeCodec.CanDecode(payload, encodingId == 0)
+                ? NameDecodeState.Decoded : NameDecodeState.UnmappedCharacter;
         return IsSupported(platformId, encodingId) ? NameDecodeState.Decoded : NameDecodeState.UnsupportedEncoding;
     }
 
@@ -152,7 +152,7 @@ public static class NameTextCodec
         int length, NameLegacyEncoding? legacyEncoding) =>
         legacyEncoding is NameLegacyEncoding legacy
             ? (long)length * NameLegacyCodec.Get(legacy)!.MaxSequenceLength * 4
-            : IsUnicode11(platformId, encodingId) ? length * 2L : 0;
+            : IsHistoricalUnicode(platformId, encodingId) ? length * 2L : 0;
 
     internal static ReadStatus TryDecode(ushort platformId, ushort encodingId, ReadOnlySpan<byte> payload,
         NameLegacyEncoding? legacyEncoding, out string? text, out FontDiagnostic diagnostic,

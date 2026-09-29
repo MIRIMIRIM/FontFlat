@@ -46,12 +46,19 @@ for code in identity:
     bitmap[code >> 3] |= 1 << (code & 7)
 
 mapping = {}
+unicode10 = {}
 total_rows = 0
 for number, line in enumerate(HANGUL.read_text(encoding="ascii").splitlines(), 1):
     parts = line.split("\t")
     if len(parts) < 7 or not parts[0].isdigit():
         continue
     total_rows += 1
+    if parts[4] != "-":
+        old10 = int(parts[4], 16)
+        modern10 = int(parts[6], 16)
+        if old10 in unicode10:
+            raise ValueError(f"HANGUL row {number}: duplicate Unicode 1.0 code")
+        unicode10[old10] = modern10
     old, modern = parts[5], parts[6]
     if old == "-":
         continue
@@ -70,6 +77,9 @@ if len(set(mapping.values())) != 6656 or not all(0xAC00 <= value <= 0xD7A3
     raise ValueError("Ambiguous or out-of-range modern Hangul mapping")
 if mapping[0x3400] != 0xAC00 or mapping[0x3D2E] != 0xAC02:
     raise ValueError("Unexpected old Hangul witnesses")
+if (len(unicode10) != 2350 or set(unicode10) != set(range(0x3400, 0x3D2E)) or
+    any(mapping.get(old) != modern for old, modern in unicode10.items())):
+    raise ValueError("Unicode 1.0 Hangul is not the verified Unicode 1.1 prefix")
 
 resource = bytearray(struct.pack(">II", 0x4E553131, 1))
 resource.extend(bitmap)
@@ -79,5 +89,5 @@ if len(resource) != 21512:
     raise ValueError(f"Unexpected resource length: {len(resource)}")
 TARGET.write_bytes(resource)
 print(f"{TARGET}: Age1.1={len(assigned)}, excludedPrivateNoncharacter={len(assigned)-len(identity)}, "
-      f"identity={len(identity)}, oldHangul={len(mapping)}, semantic={len(identity)+len(mapping)}, "
+      f"identity={len(identity)}, oldHangul={len(mapping)}, oldHangul10={len(unicode10)}, semantic={len(identity)+len(mapping)}, "
       f"bytes={len(resource)}")
