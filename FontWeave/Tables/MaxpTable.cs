@@ -4,24 +4,26 @@ namespace FontWeave.Tables;
 
 public abstract class MaxpTable
 {
-    private protected MaxpTable(ushort numGlyphs, DataLocation location)
-    { NumGlyphs = numGlyphs; Location = location; }
+    private protected MaxpTable(ushort numGlyphs, DataLocation location, bool hasOriginalGlyphCount = true)
+    { NumGlyphs = numGlyphs; Location = location; HasOriginalGlyphCount = hasOriginalGlyphCount; }
 
     public abstract uint VersionRaw { get; }
     public ushort NumGlyphs { get; }
     public DataLocation Location { get; }
+    internal bool HasOriginalGlyphCount { get; }
 }
 
 /// <summary>CFF/CFF2 maxp 0.5; no TrueType maxima are present.</summary>
 public sealed class Maxp05Table : MaxpTable
 {
-    internal Maxp05Table(ushort numGlyphs, DataLocation location) : base(numGlyphs, location) { }
+    internal Maxp05Table(ushort numGlyphs, DataLocation location, bool hasOriginalGlyphCount = true)
+        : base(numGlyphs, location, hasOriginalGlyphCount) { }
     public override uint VersionRaw => MaxpLayout.Version05;
 
     public ReadStatus TryWith(ushort numGlyphs, out Maxp05Table? model,
         out FontDiagnostic diagnostic)
     {
-        model = new Maxp05Table(numGlyphs, Location);
+        model = new Maxp05Table(numGlyphs, Location, HasOriginalGlyphCount && numGlyphs == NumGlyphs);
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -38,8 +40,8 @@ public readonly record struct Maxp10Values(
 
 public sealed class Maxp10Table : MaxpTable
 {
-    internal Maxp10Table(Maxp10Values values, DataLocation location)
-        : base(values.NumGlyphs, location) { Values = values; }
+    internal Maxp10Table(Maxp10Values values, DataLocation location, bool hasOriginalGlyphCount = true)
+        : base(values.NumGlyphs, location, hasOriginalGlyphCount) { Values = values; }
     public override uint VersionRaw => MaxpLayout.Version10;
     public Maxp10Values Values { get; }
 
@@ -49,7 +51,7 @@ public sealed class Maxp10Table : MaxpTable
         model = null;
         ReadStatus status = MaxpView.ValidateValues(values, Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        model = new Maxp10Table(values, Location);
+        model = new Maxp10Table(values, Location, HasOriginalGlyphCount && values.NumGlyphs == NumGlyphs);
         return ReadStatus.Done;
     }
 }

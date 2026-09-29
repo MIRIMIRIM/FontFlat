@@ -72,9 +72,14 @@ internal static class ViewEmitter
             writer.Line();
             EmitArrayRecord(writer, array);
             writer.Line();
-            EmitArrayStart(writer, array);
-            writer.Line();
-            EmitArray(writer, model, array);
+            if (array.ExternallyPositioned)
+                EmitExternallyPositionedRecord(writer, array);
+            else
+            {
+                EmitArrayStart(writer, array);
+                writer.Line();
+                EmitArray(writer, model, array);
+            }
         }
 
         foreach (PayloadModel payload in model.Payloads)
@@ -295,6 +300,56 @@ internal static class ViewEmitter
         writer.Line($"public readonly record struct {array.Name}Data({parameters});");
     }
 
+    private static void EmitExternallyPositionedRecord(CodeWriter writer, ArrayModel array)
+    {
+        writer.Line($"private global::FontWeave.Core.ReadStatus TryRead{array.Name}At(ulong rowPosition, int ordinal,");
+        writer.Indent++;
+        writer.Line($"out {array.Name}Data record, out global::FontWeave.Core.FontDiagnostic diagnostic)");
+        writer.Indent--;
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("record = default;");
+        writer.Line("if (!IsBound)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Uninitialized,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
+        writer.Line("Location.At(global::FontWeave.Core.DataField.None, rowPosition, ordinal), out diagnostic);");
+        writer.Indent -= 2;
+        writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line($"if (!TrySlice(_data, rowPosition, {U(array.Stride)}, out global::System.ReadOnlySpan<byte> row))");
+        writer.Line("{");
+        writer.Indent++;
+        foreach (ScalarModel field in array.Fields.OrderBy(static field => field.Position.Constant))
+        {
+            ulong fieldEnd = field.Position.Constant + (ulong)field.Width;
+            writer.Line($"if (!TrySlice(_data, rowPosition, {U(fieldEnd)}, out _))");
+            writer.Line("{");
+            writer.Indent++;
+            writer.Line($"ulong fieldPosition = rowPosition > ulong.MaxValue - {U(field.Position.Constant)} ? ulong.MaxValue : rowPosition + {U(field.Position.Constant)};");
+            writer.Line($"ulong expectedEnd = rowPosition > ulong.MaxValue - {U(fieldEnd)} ? ulong.MaxValue : rowPosition + {U(fieldEnd)};");
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
+            writer.Line($"Location.At((global::FontWeave.Core.DataField){field.FieldId}, fieldPosition, ordinal),");
+            writer.Line("out diagnostic, (ulong)_data.Length, expectedEnd);");
+            writer.Indent--;
+            writer.Indent--;
+            writer.Line("}");
+        }
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
+        writer.Line("Location.At(global::FontWeave.Core.DataField.None, rowPosition, ordinal),");
+        writer.Line($"out diagnostic, (ulong)_data.Length, rowPosition > ulong.MaxValue - {U(array.Stride)} ? ulong.MaxValue : rowPosition + {U(array.Stride)});");
+        writer.Indent -= 2;
+        writer.Line("}");
+        EmitRecordFields(writer, array);
+        writer.Indent--;
+        writer.Line("}");
+    }
+
     private static void EmitArrayStart(CodeWriter writer, ArrayModel array)
     {
         writer.Line($"private global::FontWeave.Core.ReadStatus TryEvaluateArray{array.Name}Start(out ulong start,");
@@ -356,6 +411,13 @@ internal static class ViewEmitter
         writer.Line($"out diagnostic, (ulong)_data.Length, rowPosition + {U(array.Stride)});");
         writer.Indent -= 2;
 
+        EmitRecordFields(writer, array);
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    private static void EmitRecordFields(CodeWriter writer, ArrayModel array)
+    {
         foreach (ScalarModel field in array.Fields)
             writer.Line($"{field.CsType} value{field.Name} = {ReadExpression(field, "row", field.Position.Constant)};");
 
@@ -365,8 +427,6 @@ internal static class ViewEmitter
         writer.Line($"record = new {array.Name}Data({arguments});");
         writer.Line("diagnostic = default;");
         writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
-        writer.Indent--;
-        writer.Line("}");
     }
 
     private static void EmitPayload(CodeWriter writer, TableModel model, PayloadModel payload)

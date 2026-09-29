@@ -48,11 +48,13 @@ internal sealed class DerivedModel
 
 internal sealed class ArrayModel
 {
-    // Emits a nested <Name>Data value record and TryGet<Name>(ordinal,...).
+    // Emits a nested <Name>Data value record. Externally positioned records
+    // leave count and row position validation to the handwritten partial.
     public string Name { get; set; } = "";
     public string Count { get; set; } = "";
     public PositionModel Start { get; set; } = new();
     public int Stride { get; set; }
+    public bool ExternallyPositioned { get; set; }
     public ImmutableArray<ScalarModel> Fields { get; set; } = ImmutableArray<ScalarModel>.Empty;
 }
 

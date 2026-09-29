@@ -96,6 +96,10 @@ internal sealed class SchemaParser
                         Start = new PositionModel { Constant = Unsigned(Number(attribute, 2)), Base = Text(attribute, "Start") },
                         Stride = (int)Number(attribute, 3) });
                     break;
+                case "BinaryRecordAttribute":
+                    arrays.Add(new ArrayModel { Name = Text(attribute, 0), Stride = (int)Number(attribute, 1),
+                        ExternallyPositioned = true });
+                    break;
                 case "BinaryElementAttribute":
                     elements.Add((Text(attribute, 0), Scalar(attribute, 1)));
                     break;
@@ -170,7 +174,8 @@ internal sealed class SchemaParser
         {
             Unique(arrayNames, array.Name);
             if (array.Stride <= 0) Error(FontSchemaGenerator.Layout, "Array stride must be positive.");
-            if (!_scalars.TryGetValue(array.Count, out var count) || !count.IsUnsigned || count.Semantic != NumberSemantic.Count)
+            if (!array.ExternallyPositioned &&
+                (!_scalars.TryGetValue(array.Count, out var count) || !count.IsUnsigned || count.Semantic != NumberSemantic.Count))
                 Error(FontSchemaGenerator.Reference, "Array count must reference an unsigned Count scalar: " + array.Count);
             var fieldNames = new HashSet<string>(StringComparer.Ordinal)
                 { "Ordinal", "Equals", "ToString", "GetHashCode", "PrintMembers", "Deconstruct", array.Name + "Data" };
@@ -189,7 +194,8 @@ internal sealed class SchemaParser
         // Check dependencies even for scalar values: a positional dependency can itself cycle.
         foreach (var name in names) Bound(name);
         foreach (var array in _model.Arrays)
-            Add(PositionBound(array.Start), Multiply(Bound(array.Count), (ulong)Math.Max(0, array.Stride)));
+            if (!array.ExternallyPositioned)
+                Add(PositionBound(array.Start), Multiply(Bound(array.Count), (ulong)Math.Max(0, array.Stride)));
 
         var payloadNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var payload in _model.Payloads)
@@ -198,7 +204,7 @@ internal sealed class SchemaParser
             var array = _model.Arrays.FirstOrDefault(a => a.Name == payload.Array);
             var offset = array?.Fields.FirstOrDefault(f => f.Name == payload.Offset);
             var length = array?.Fields.FirstOrDefault(f => f.Name == payload.Length);
-            if (array is null || offset is null || length is null || !_scalars.TryGetValue(payload.Base, out var origin))
+            if (array is null || array.ExternallyPositioned || offset is null || length is null || !_scalars.TryGetValue(payload.Base, out var origin))
             {
                 Error(FontSchemaGenerator.Reference, "Payload requires an existing array, offset, length and origin scalar: " + payload.Array);
                 continue;
@@ -224,7 +230,11 @@ internal sealed class SchemaParser
         }
         foreach (var value in _model.Derived) GeneratedName(generated, "TryGet" + value.Name);
         foreach (var array in _model.Arrays)
-        { GeneratedName(generated, "TryGet" + array.Name); GeneratedName(generated, array.Name + "Data"); GeneratedName(generated, "TryEvaluateArray" + array.Name + "Start"); }
+        {
+            GeneratedName(generated, array.Name + "Data");
+            if (array.ExternallyPositioned) GeneratedName(generated, "TryRead" + array.Name + "At");
+            else { GeneratedName(generated, "TryGet" + array.Name); GeneratedName(generated, "TryEvaluateArray" + array.Name + "Start"); }
+        }
         foreach (var payload in _model.Payloads) GeneratedName(generated, "TryGet" + payload.Array + "Payload");
         foreach (var member in symbol.GetMembers())
             if (!member.IsImplicitlyDeclared && generated.Contains(member.Name))
@@ -391,7 +401,7 @@ internal sealed class SchemaParser
         Value(_model.Derived.Length); foreach (var value in _model.Derived)
         { Value(value.Name); Position(value.Expression); Value(value.WhenVersion); Value(value.Otherwise); }
         Value(_model.Arrays.Length); foreach (var array in _model.Arrays)
-        { Value(array.Name); Value(array.Count); Position(array.Start); Value(array.Stride); Value(array.Fields.Length); foreach (var field in array.Fields) Field(field); }
+        { Value(array.Name); Value(array.Count); Position(array.Start); Value(array.Stride); Value(array.ExternallyPositioned); Value(array.Fields.Length); foreach (var field in array.Fields) Field(field); }
         Value(_model.Payloads.Length); foreach (var payload in _model.Payloads)
         { Value(payload.Array); Value(payload.Offset); Value(payload.Length); Value(payload.Base); Value(payload.Minimum); }
         return key.ToString();

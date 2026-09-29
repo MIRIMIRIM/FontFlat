@@ -59,6 +59,13 @@ namespace FontWeave.Schema
 
     [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]
     [global::System.AttributeUsage(global::System.AttributeTargets.Struct, AllowMultiple = true)]
+    internal sealed class BinaryRecordAttribute : global::System.Attribute
+    {
+        public BinaryRecordAttribute(string name, int stride) { }
+    }
+
+    [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]
+    [global::System.AttributeUsage(global::System.AttributeTargets.Struct, AllowMultiple = true)]
     internal sealed class BinaryElementAttribute : global::System.Attribute
     {
         public BinaryElementAttribute(string array, string name, WireType type, int offset, global::FontWeave.Core.DataField fieldId) { }
