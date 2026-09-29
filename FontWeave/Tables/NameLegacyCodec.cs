@@ -5,7 +5,7 @@ using FontWeave.Core;
 namespace FontWeave.Tables;
 
 /// <summary>Finite Apple mappings with exact sequence-aware reverse mapping and byte-unit grammar.</summary>
-internal sealed class NameLegacyCodec
+internal sealed partial class NameLegacyCodec
 {
     private enum Units { SingleByte, Japanese, ChineseTraditional, ChineseSimplified, Korean, Indic }
     private static readonly NameLegacyCodec[] Codecs = CreateCodecs();
@@ -63,7 +63,7 @@ internal sealed class NameLegacyCodec
     internal bool IsCompatible(ushort platformId, ushort encodingId) =>
         platformId == 1 && Array.IndexOf(_scripts, encodingId) >= 0;
 
-    internal int MaxSequenceLength => _maxSequenceLength;
+    internal int MaxSequenceLength => _maxSequenceLength + (_directions is null ? 0 : 2);
 
     internal bool TryMeasure(ReadOnlySpan<byte> bytes, out int chars, out int unmapped)
     {
@@ -72,12 +72,13 @@ internal sealed class NameLegacyCodec
     }
 
     private ReadStatus Measure(ReadOnlySpan<byte> bytes, out int chars, out int problemOffset,
-        out int problemCode, out DiagnosticCode diagnosticCode)
+        out int problemCode, out DiagnosticCode diagnosticCode, bool includeDirection = true)
     {
         chars = 0;
         problemOffset = -1;
         problemCode = 0;
         diagnosticCode = DiagnosticCode.None;
+        byte direction = 0;
         for (int at = 0; at < bytes.Length;)
         {
             int code = bytes[at], length = 1;
@@ -111,9 +112,23 @@ internal sealed class NameLegacyCodec
             {
                 if (problemOffset < 0) { problemOffset = at; problemCode = code; }
             }
-            else chars = checked(chars + text.Length);
+            else
+            {
+                chars = checked(chars + text.Length);
+                if (includeDirection && _directions is not null)
+                {
+                    byte next = _directions[code];
+                    if (direction != next)
+                    {
+                        if (direction != 0) chars = checked(chars + 1);
+                        if (next != 0) chars = checked(chars + 1);
+                        direction = next;
+                    }
+                }
+            }
             at += length;
         }
+        if (direction != 0) chars = checked(chars + 1);
         // An earlier undefined unit never hides a later malformed or incomplete character.
         if (problemOffset >= 0)
         {
@@ -170,13 +185,16 @@ internal sealed class NameLegacyCodec
         _pairs is not null && _pairs.TryGetValue((ushort)code, out string? text) ? text : null;
 
     internal ReadStatus TryDecode(ReadOnlySpan<byte> bytes, out string? text,
-        out FontDiagnostic diagnostic, DataLocation at)
+        out FontDiagnostic diagnostic, DataLocation at, bool includeDirection = true)
     {
         text = null;
-        ReadStatus status = Measure(bytes, out int chars, out int offset, out int code, out DiagnosticCode why);
+        ReadStatus status = Measure(bytes, out int chars, out int offset, out int code,
+            out DiagnosticCode why, includeDirection);
         if (status != ReadStatus.Done) return FailUnit(status, why, at, offset, code, out diagnostic);
         var builder = new StringBuilder(chars);
-        for (int cursor = 0; cursor < bytes.Length;) builder.Append(Forward(UnitAt(bytes, ref cursor)));
+        if (includeDirection && _directions is not null) AppendDirectional(bytes, builder);
+        else
+            for (int cursor = 0; cursor < bytes.Length;) builder.Append(Forward(UnitAt(bytes, ref cursor)));
         text = builder.ToString();
         diagnostic = default;
         return ReadStatus.Done;
@@ -245,6 +263,8 @@ internal sealed class NameLegacyCodec
     private ReadStatus EncodePass(string text, ReadOnlySpan<NameLegacyByteChoice> choices,
         Span<byte> output, out int written, out FontDiagnostic diagnostic)
     {
+        if (_directions is not null)
+            return EncodeDirectional(text, choices, output, out written, out diagnostic);
         written = 0;
         int choiceIndex = 0;
         var lookup = _reverse.GetAlternateLookup<ReadOnlySpan<char>>();
@@ -333,6 +353,21 @@ internal sealed class NameLegacyCodec
         new(NameCjkData.Tables[3], [3], Units.Korean),
         new(NameIndicData.Devanagari, [9], NameIndicData.DevanagariPairs),
         new(NameIndicData.Gujarati, [11], NameIndicData.GujaratiPairs),
-        new(NameIndicData.Gurmukhi, [10], NameIndicData.GurmukhiPairs)
+        new(NameIndicData.Gurmukhi, [10], NameIndicData.GurmukhiPairs),
+        new(NameRtlData.Arabic, [4], NameRtlData.ArabicDirections),
+        new(NameRtlData.Arabic, [4], NameRtlData.ArabicDirections,
+            (0xAA, "\u00D7", 2), (0xC0, "\u002A", 2)),
+        new(NameRtlData.Arabic, [4], NameRtlData.ArabicDirections,
+            (0xAA, "\u00D7", 2), (0xC0, "\u066D", 0)),
+        new(NameRtlData.Arabic, [4], NameRtlData.ArabicDirections,
+            (0x81, null, 0), (0xA3, "\uFDFA", 0), (0xA4, "\uFDF2", 0),
+            (0xAA, "\u00D7", 2), (0xDC, "\u25CF", 2), (0xFC, "\u25A0", 2)),
+        new(NameRtlData.Farsi, [4], NameRtlData.FarsiDirections),
+        new(NameRtlData.Farsi, [4], NameRtlData.FarsiDirections,
+            (0x8B, "\uF882", 0), (0xA4, "\uFDFC", 0), (0xAA, "\u00D7", 2),
+            (0xC0, "\u002A", 2), (0xF4, "\u00B0", 2), (0xF7, "\uFDFA", 0),
+            (0xF9, "\u25CF", 2), (0xFA, "\u25A0", 2), (0xFF, "\u25B2", 2)),
+        new(NameRtlData.Hebrew, [5], NameRtlData.HebrewDirections),
+        new(NameRtlData.Hebrew, [5], NameRtlData.HebrewDirections, (0xD4, "\u2007", 2))
     ];
 }

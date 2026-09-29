@@ -37,6 +37,8 @@ public sealed class NameRecordModel
     public ushort StorageRelativeOffset { get; }
     public ReadOnlyMemory<byte> Payload { get; }
     public NameDecodeState DecodeState { get; }
+    /// <summary>Decoded characters and transcoding hints. Selected Apple RTL mappings include
+    /// canonical LRO/RLO ... PDF runs; this is not an undecorated name-ID validation value.</summary>
     public string? Text { get; }
     public DataLocation RowLocation { get; }
     public DataLocation PayloadLocation { get; }

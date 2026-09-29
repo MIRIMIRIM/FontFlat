@@ -21,7 +21,9 @@ public static class NameTextCodec
         EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
 
     /// <summary>Decode an explicitly chosen Apple mapping, preserving Unicode sequences/hints.
-    /// Keyboard 09 is a defined one-way alias of 61; both decode to U+2423.</summary>
+    /// Keyboard 09 is a defined one-way alias of 61; both decode to U+2423.
+    /// RTL mappings preserve published strong-direction tags with maximal flat runs of
+    /// U+202D LRO / U+202E RLO, terminated by U+202C PDF. Untagged units remain bare.</summary>
     public static ReadStatus TryDecode(NameLegacyEncoding encoding, ReadOnlySpan<byte> payload,
         out string? text, out FontDiagnostic diagnostic, DataLocation location = default)
     {
@@ -36,7 +38,12 @@ public static class NameTextCodec
         return codec.TryDecode(payload, out text, out diagnostic, location);
     }
 
-    /// <summary>Encode without best-fit or normalization. Keyboard U+2423 uses canonical 61.</summary>
+    /// <summary>Encode without best-fit or character normalization. Keyboard U+2423 uses 61.
+    /// RTL mappings accept flat, nonnested, nonempty LRO/RLO ... PDF runs of matching tagged
+    /// tokens, not general Unicode bidi resolution. Bare text prefers a published untagged
+    /// mapping, otherwise accepts a unique tagged mapping; multiple tagged candidates require
+    /// an override or an explicit byte choice. Decoding the
+    /// result returns the canonical directional spelling, not necessarily the input controls.</summary>
     public static ReadStatus TryEncode(NameLegacyEncoding encoding, string text,
         out byte[]? payload, out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
         TryEncode(encoding, text, [], out payload, out diagnostic, limits);
@@ -130,6 +137,15 @@ public static class NameTextCodec
         NameLegacyEncoding? legacyEncoding, out string? text, out FontDiagnostic diagnostic,
         DataLocation location) => legacyEncoding is NameLegacyEncoding legacy
             ? TryDecode(legacy, payload, out text, out diagnostic, location)
+            : TryDecode(platformId, encodingId, payload, out text, out diagnostic, location);
+
+    // Name-ID constraints apply to the mapped characters, not codec-generated direction
+    // metadata. Decode from bytes so literal controls in Unicode records are never stripped.
+    internal static ReadStatus TryDecodeSemantic(ushort platformId, ushort encodingId,
+        ReadOnlySpan<byte> payload, NameLegacyEncoding? legacyEncoding, out string? text,
+        out FontDiagnostic diagnostic, DataLocation location) => legacyEncoding is NameLegacyEncoding legacy
+            ? NameLegacyCodec.Get(legacy)!.TryDecode(payload, out text, out diagnostic, location,
+                includeDirection: false)
             : TryDecode(platformId, encodingId, payload, out text, out diagnostic, location);
 
     internal static ReadStatus ValidatePayload(ushort platformId, ushort encodingId,

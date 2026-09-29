@@ -108,7 +108,7 @@ public readonly ref partial struct NameView
                 NameTextCodec.DecodeState(record.PlatformId, record.EncodingId, payload,
                     legacyEncoding) == NameDecodeState.Decoded)
             {
-                _ = NameTextCodec.TryDecode(record.PlatformId, record.EncodingId, payload,
+                _ = NameTextCodec.TryDecodeSemantic(record.PlatformId, record.EncodingId, payload,
                     legacyEncoding, out string? text, out _, payloadLocation);
                 if (!NameRecordSemantics.IsValid(record.NameId, text!) ||
                     record.NameId == 25 && variationPrefix is not null && text != variationPrefix)

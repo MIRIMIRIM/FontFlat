@@ -42,7 +42,15 @@ public enum NameLegacyEncoding
     MacKorean,
     MacDevanagari,
     MacGujarati,
-    MacGurmukhi
+    MacGurmukhi,
+    MacArabic,
+    MacArabicTrueType,
+    MacArabicThuluth,
+    MacArabicAlBayan,
+    MacFarsi,
+    MacFarsiTrueType,
+    MacHebrew,
+    MacHebrewTrueType
 }
 
 /// <summary>Assign a published mapping to one original name-record ordinal. Never inferred from locale.</summary>
@@ -51,5 +59,8 @@ public readonly record struct NameLegacyEncodingSelection(int Ordinal, NameLegac
 /// <summary>
 /// Select an original encoded byte at a UTF-16 text offset. The byte must map to the exact
 /// requested text at an encoded-token boundary. Choices are strictly increasing by offset.
+/// For RTL mappings the offset points to the first mapped character, not its LRO/RLO opener;
+/// all controls earlier in the input count toward the UTF-16 offset. A choice inside an
+/// explicit override run must match that run's published direction.
 /// </summary>
 public readonly record struct NameLegacyByteChoice(int TextOffset, byte Value);

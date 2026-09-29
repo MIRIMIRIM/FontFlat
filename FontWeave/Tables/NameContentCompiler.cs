@@ -73,7 +73,7 @@ public static partial class NameTableCompiler
                         NameTextCodec.LegacyDecodeBufferBytes(record.Payload.Length, record.LegacyEncoding)),
                         request, out diagnostic))
                     return ReadStatus.ResourceLimit;
-                _ = NameTextCodec.TryDecode(record.PlatformId, record.EncodingId, record.Payload.Span,
+                _ = NameTextCodec.TryDecodeSemantic(record.PlatformId, record.EncodingId, record.Payload.Span,
                     record.LegacyEncoding, out string? text, out _, payloadLocation);
                 if (!NameRecordSemantics.IsValid(record.NameId, text!) ||
                     record.NameId == 25 && variationPrefix is not null && text != variationPrefix)
