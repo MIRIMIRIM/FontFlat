@@ -4,20 +4,26 @@ using FontWeave.Core;
 
 namespace FontWeave.Tables;
 
-/// <summary>Finite, generated Apple SBCS data with exact sequence-aware reverse mapping.</summary>
+/// <summary>Finite Apple mappings with exact sequence-aware reverse mapping and byte-unit grammar.</summary>
 internal sealed class NameLegacyCodec
 {
+    private enum Units { SingleByte, Japanese, ChineseTraditional, ChineseSimplified, Korean }
     private static readonly NameLegacyCodec[] Codecs = CreateCodecs();
     private readonly string?[] _forward;
-    private readonly Dictionary<string, byte> _reverse = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ushort> _reverse = new(StringComparer.Ordinal);
     private readonly int _maxSequenceLength;
     private readonly ushort[] _scripts;
+    private readonly Units _units;
 
     private NameLegacyCodec(string?[] forward, ushort[] scripts,
+        params (int Byte, string? Text)[] changes) : this(forward, scripts, Units.SingleByte, changes) { }
+
+    private NameLegacyCodec(string?[] forward, ushort[] scripts, Units units,
         params (int Byte, string? Text)[] changes)
     {
         _forward = changes.Length == 0 ? forward : (string?[])forward.Clone();
         _scripts = scripts;
+        _units = units;
         foreach ((int at, string? text) in changes) _forward[at] = text;
         for (int i = 0; i < _forward.Length; i++)
         {
@@ -26,7 +32,7 @@ internal sealed class NameLegacyCodec
             _maxSequenceLength = Math.Max(_maxSequenceLength, text.Length);
             // KEYBOARD explicitly labels 09 a one-way alias of 61. Later 61 is canonical.
             // No other duplicate exists in the published SBCS catalogue.
-            if (!_reverse.TryAdd(text, (byte)i))
+            if (!_reverse.TryAdd(text, (ushort)i))
             {
                 if (forward != NameLegacyData.Keyboard || i != 0x61 || text != "\u2423")
                     throw new InvalidOperationException("Ambiguous generated Apple reverse mapping.");
@@ -48,27 +54,103 @@ internal sealed class NameLegacyCodec
 
     internal bool TryMeasure(ReadOnlySpan<byte> bytes, out int chars, out int unmapped)
     {
+        ReadStatus status = Measure(bytes, out chars, out unmapped, out _, out _);
+        return status == ReadStatus.Done;
+    }
+
+    private ReadStatus Measure(ReadOnlySpan<byte> bytes, out int chars, out int problemOffset,
+        out int problemCode, out DiagnosticCode diagnosticCode)
+    {
         chars = 0;
-        for (int i = 0; i < bytes.Length; i++)
+        problemOffset = -1;
+        problemCode = 0;
+        diagnosticCode = DiagnosticCode.None;
+        for (int at = 0; at < bytes.Length;)
         {
-            string? text = _forward[bytes[i]];
-            if (text is null) { unmapped = i; return false; }
-            chars = checked(chars + text.Length);
+            int code = bytes[at], length = 1;
+            if (IsLead(bytes[at]))
+            {
+                if (bytes.Length - at < 2)
+                {
+                    problemOffset = at;
+                    problemCode = 1;
+                    diagnosticCode = DiagnosticCode.TruncatedData;
+                    return ReadStatus.InvalidEncoding;
+                }
+                code = bytes[at] << 8 | bytes[at + 1];
+                length = 2;
+                if (!IsTrail(bytes[at], bytes[at + 1]))
+                {
+                    problemOffset = at;
+                    problemCode = code;
+                    diagnosticCode = DiagnosticCode.InvalidValue;
+                    return ReadStatus.InvalidEncoding;
+                }
+            }
+            string? text = _forward[code];
+            if (text is null)
+            {
+                if (problemOffset < 0) { problemOffset = at; problemCode = code; }
+            }
+            else chars = checked(chars + text.Length);
+            at += length;
         }
-        unmapped = -1;
-        return true;
+        // An earlier undefined unit never hides a later malformed or incomplete character.
+        if (problemOffset >= 0)
+        {
+            diagnosticCode = DiagnosticCode.UnsupportedOperation;
+            return ReadStatus.UnsupportedFormat;
+        }
+        return ReadStatus.Done;
+    }
+
+    internal ReadStatus Validate(ReadOnlySpan<byte> bytes, DataLocation at, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = Measure(bytes, out _, out int offset, out int code, out DiagnosticCode why);
+        if (status == ReadStatus.InvalidEncoding) return FailUnit(status, why, at, offset, code, out diagnostic);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private bool IsLead(byte value) => _units switch
+    {
+        Units.Japanese => value is >= 0x81 and <= 0x9F or >= 0xE0 and <= 0xFC,
+        Units.ChineseTraditional or Units.ChineseSimplified => value is >= 0xA1 and <= 0xFC,
+        Units.Korean => value is >= 0xA1 and <= 0xFE,
+        _ => false
+    };
+
+    private bool IsTrail(byte lead, byte value) => _units switch
+    {
+        Units.Japanese => value is >= 0x40 and <= 0x7E or >= 0x80 and <= 0xFC,
+        Units.ChineseTraditional => value is >= 0x40 and <= 0x7E or >= 0xA1 and <= 0xFE,
+        Units.ChineseSimplified => value is >= 0xA1 and <= 0xFE,
+        Units.Korean => value is >= 0xA1 and <= 0xFE ||
+            lead <= 0xAD && value is >= 0x41 and <= 0x7D or >= 0x81 and <= 0xA0,
+        _ => false
+    };
+
+    private static ReadStatus FailUnit(ReadStatus status, DiagnosticCode code, DataLocation at,
+        int offset, int detail, out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(status, code,
+            at with { Field = DataField.Payload, Offset = at.Offset + (uint)offset }, out diagnostic,
+            (ulong)detail, code == DiagnosticCode.TruncatedData ? 2UL : 0UL);
+
+    private int UnitAt(ReadOnlySpan<byte> bytes, ref int at)
+    {
+        int code = bytes[at++];
+        if (IsLead((byte)code)) code = code << 8 | bytes[at++];
+        return code;
     }
 
     internal ReadStatus TryDecode(ReadOnlySpan<byte> bytes, out string? text,
         out FontDiagnostic diagnostic, DataLocation at)
     {
         text = null;
-        if (!TryMeasure(bytes, out int chars, out int unmapped))
-            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
-                at with { Field = DataField.Payload, Offset = at.Offset + (uint)unmapped },
-                out diagnostic, bytes[unmapped]);
+        ReadStatus status = Measure(bytes, out int chars, out int offset, out int code, out DiagnosticCode why);
+        if (status != ReadStatus.Done) return FailUnit(status, why, at, offset, code, out diagnostic);
         var builder = new StringBuilder(chars);
-        foreach (byte value in bytes) builder.Append(_forward[value]);
+        for (int cursor = 0; cursor < bytes.Length;) builder.Append(_forward[UnitAt(bytes, ref cursor)]);
         text = builder.ToString();
         diagnostic = default;
         return ReadStatus.Done;
@@ -119,7 +201,7 @@ internal sealed class NameLegacyCodec
         {
             if (choiceIndex < choices.Length && choices[choiceIndex].TextOffset < at)
                 return InvalidChoice(choices[choiceIndex].TextOffset, choiceIndex, out diagnostic);
-            byte value = 0;
+            ushort value = 0;
             int length;
             if (choiceIndex < choices.Length && choices[choiceIndex].TextOffset == at)
             {
@@ -138,12 +220,17 @@ internal sealed class NameLegacyCodec
                     return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidValue,
                         DataLocation.Anonymous(0x6E616D65).At(DataField.Payload, (ulong)at), out diagnostic);
             }
-            if (written == ushort.MaxValue)
+            int byteLength = value > 255 ? 2 : 1;
+            if (written > ushort.MaxValue - byteLength)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     DataLocation.Anonymous(0x6E616D65).At(DataField.Length, 0), out diagnostic,
-                    (ulong)written + 1, ushort.MaxValue);
-            if (!output.IsEmpty) output[written] = value;
-            written++;
+                    (ulong)written + (uint)byteLength, ushort.MaxValue);
+            if (!output.IsEmpty)
+            {
+                if (byteLength == 2) output[written] = (byte)(value >> 8);
+                output[written + byteLength - 1] = (byte)(value & 255);
+            }
+            written += byteLength;
             at += length;
         }
         if (choiceIndex != choices.Length)
@@ -187,6 +274,11 @@ internal sealed class NameLegacyCodec
         new(NameLegacyData.Symbol, [0]),
         new(NameLegacyData.Symbol, [0], (0xA0, null)),
         new(NameLegacyData.Thai, [21]),
-        new(NameLegacyData.Turkish, [0])
+        new(NameLegacyData.Turkish, [0]),
+        new(NameCjkData.Tables[0], [1], Units.Japanese),
+        new(NameCjkData.JapaneseBasic(), [1], Units.Japanese),
+        new(NameCjkData.Tables[1], [2], Units.ChineseTraditional),
+        new(NameCjkData.Tables[2], [25], Units.ChineseSimplified),
+        new(NameCjkData.Tables[3], [3], Units.Korean)
     ];
 }

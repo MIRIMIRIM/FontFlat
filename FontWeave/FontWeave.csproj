@@ -11,6 +11,8 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Tables/NameEncodings/Apple/CjkMappings.bin"
+                      LogicalName="FontWeave.NameCjkMappings" />
     <ProjectReference Include="../FontWeave.Generators/FontWeave.Generators.csproj"
                       OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>

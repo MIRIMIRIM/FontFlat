@@ -136,12 +136,10 @@ public static class NameTextCodec
         ReadOnlySpan<byte> payload, DataLocation location, out FontDiagnostic diagnostic,
         NameLegacyEncoding? legacyEncoding = null)
     {
-        if (legacyEncoding is not null)
+        if (legacyEncoding is NameLegacyEncoding legacy)
         {
-            // Every input unit is one byte. Undefined slots remain visibly unmapped/raw;
-            // they are not replacement text or a malformed UTF-16 claim.
-            diagnostic = default;
-            return ReadStatus.Done;
+            // Undefined units remain raw; malformed multibyte input is still rejected.
+            return NameLegacyCodec.Get(legacy)!.Validate(payload, location, out diagnostic);
         }
         Encoding? encoding = GetEncoding(platformId, encodingId);
         // Unknown bytes are uninterpreted, not damaged text. DecodeState exposes that limit.

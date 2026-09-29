@@ -101,7 +101,7 @@ public readonly ref partial struct NameView
                 payload, payloadLocation, out diagnostic, legacyEncoding);
             if (status != ReadStatus.Done)
             {
-                diagnostic = diagnostic with { Detail = record.Length };
+                if (legacyEncoding is null) diagnostic = diagnostic with { Detail = record.Length };
                 return status;
             }
             if (NameRecordSemantics.HasTextConstraint(record.NameId) &&
