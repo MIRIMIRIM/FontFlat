@@ -573,6 +573,7 @@ internal static class ViewEmitter
             WireType.UInt16 => "ReadUInt16",
             WireType.UInt32 => "ReadUInt32",
             WireType.Int16 => "ReadInt16",
+            WireType.Int64 => "ReadInt64",
             _ => "ReadInt32",
         };
         string source = offset == 0 ? bytes : $"{bytes}.Slice({offset.ToString(CultureInfo.InvariantCulture)})";

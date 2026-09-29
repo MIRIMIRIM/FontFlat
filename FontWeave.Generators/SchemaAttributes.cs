@@ -7,7 +7,7 @@ internal static class SchemaAttributes
 #nullable enable
 namespace FontWeave.Schema
 {
-    internal enum WireType { UInt16, UInt32, Int16, Int32 }
+    internal enum WireType { UInt16, UInt32, Int16, Int32, Int64 }
     internal enum WireEndian { Big, Little }
     internal enum NumberSemantic { Plain, Count, Offset, FixedPoint }
     internal enum WireOrigin { None, Table, NameStorage }

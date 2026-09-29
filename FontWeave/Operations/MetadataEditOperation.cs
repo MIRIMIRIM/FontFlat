@@ -126,7 +126,7 @@ public static class MetadataEditOperation
 
     // OpenType top-level tables can be relocated opaquely for this exact edit: no name keys,
     // glyphs, metrics or table-internal offsets change. This is not their R/S/V/W acceptance.
-    private static bool IsKnownMetadataIndependentTable(uint tag) => tag is
+    internal static bool IsKnownMetadataIndependentTable(uint tag) => tag is
         0x42415345 or 0x43424454 or 0x43424C43 or 0x43464620 or 0x43464632 or
         0x434F4C52 or 0x4350414C or 0x45424454 or 0x45424C43 or 0x45425343 or
         0x47444546 or 0x47504F53 or 0x47535542 or 0x48564152 or 0x4A535446 or

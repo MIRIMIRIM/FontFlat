@@ -48,7 +48,9 @@ public readonly ref struct SfntDirectoryView
     {
         ReadStatus status = TryGetRecord(ordinal, out var record, out _);
         if (status != ReadStatus.Done) throw new InvalidOperationException("Read the directory record successfully first.");
-        return new(_face.SourceId, _face.FaceIndex, record.Tag, -1, DataField.None, OffsetBasis.Table, 0, ordinal);
+        return new DataLocation(_face.SourceId, _face.FaceIndex, record.Tag, -1,
+            DataField.None, OffsetBasis.Table, 0, ordinal)
+        { TableFileOffset = record.FileOffset };
     }
 
     public ReadStatus TryGetTableBytes(int ordinal, out ReadOnlySpan<byte> bytes, out FontDiagnostic diagnostic)

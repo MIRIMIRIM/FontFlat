@@ -33,7 +33,7 @@ internal static class SfntEmitter
                 location.At(DataField.Length, 0), out diagnostic, (ulong)length, MaxOutputBytes);
         DataLocation lengthLocation = location.At(DataField.Length, 0);
         if (!budget.Output(length, lengthLocation, out diagnostic) ||
-            !budget.Work(3 * length, lengthLocation, out diagnostic)) return ReadStatus.ResourceLimit;
+            !budget.Work(length, lengthLocation, out diagnostic)) return ReadStatus.ResourceLimit;
 
         byte[] result = new byte[(int)length];
         W32(result, 0, version);
@@ -54,11 +54,21 @@ internal static class SfntEmitter
             }
             int record = 12 + 16 * ordinal++;
             W32(result, record, tag);
-            W32(result, record + 4, Checksum(result.AsSpan(cursor, table.Length)));
             W32(result, record + 8, (uint)cursor);
             W32(result, record + 12, (uint)table.Length);
             cursor += (table.Length + 3) & ~3;
         }
+        // The output is still private here. A work limit reached during either checksum
+        // phase must not publish a partially built font.
+        if (!budget.Work(length, lengthLocation, out diagnostic)) return ReadStatus.ResourceLimit;
+        cursor = 12 + 16 * tables.Count;
+        ordinal = 0;
+        foreach (byte[] table in tables.Values)
+        {
+            W32(result, 12 + 16 * ordinal++ + 4, Checksum(result.AsSpan(cursor, table.Length)));
+            cursor += (table.Length + 3) & ~3;
+        }
+        if (!budget.Work(length, lengthLocation, out diagnostic)) return ReadStatus.ResourceLimit;
         W32(result, headOffset + 8, unchecked(0xB1B0AFBAu - Checksum(result)));
         output = result;
         return ReadStatus.Done;

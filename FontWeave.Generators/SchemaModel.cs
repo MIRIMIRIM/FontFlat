@@ -4,7 +4,7 @@ using System.Collections.Immutable;
 namespace FontWeave.Generators;
 
 // Build-time only: no syntax/symbol/Compilation references survive into this model.
-internal enum WireType { UInt16 = 0, UInt32 = 1, Int16 = 2, Int32 = 3 }
+internal enum WireType { UInt16 = 0, UInt32 = 1, Int16 = 2, Int32 = 3, Int64 = 4 }
 internal enum WireEndian { Big = 0, Little = 1 }
 internal enum NumberSemantic { Plain = 0, Count = 1, Offset = 2, FixedPoint = 3 }
 internal enum WireOrigin { None = 0, Table = 1, NameStorage = 2 }
@@ -33,9 +33,9 @@ internal sealed class ScalarModel
     public PositionModel Position { get; set; } = new();
     public long WhenVersion { get; set; } = -1;
     public ulong Otherwise { get; set; }
-    public int Width => Type is WireType.UInt16 or WireType.Int16 ? 2 : 4;
+    public int Width => Type is WireType.UInt16 or WireType.Int16 ? 2 : Type == WireType.Int64 ? 8 : 4;
     public bool IsUnsigned => Type is WireType.UInt16 or WireType.UInt32;
-    public string CsType => Type switch { WireType.UInt16 => "ushort", WireType.UInt32 => "uint", WireType.Int16 => "short", _ => "int" };
+    public string CsType => Type switch { WireType.UInt16 => "ushort", WireType.UInt32 => "uint", WireType.Int16 => "short", WireType.Int64 => "long", _ => "int" };
 }
 
 internal sealed class DerivedModel
