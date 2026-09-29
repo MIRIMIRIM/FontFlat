@@ -56,16 +56,25 @@ public static partial class NameTableCompiler
             if (!budget.Work(record.Payload.Length, request.At(DataField.Payload, 0, i), out diagnostic))
                 return ReadStatus.ResourceLimit;
             DataLocation payloadLocation = request.At(DataField.Payload, 0, i);
+            if (record.LegacyEncoding is NameLegacyEncoding legacyEncoding)
+            {
+                ReadStatus selectionStatus = NameTextCodec.ValidateSelection(record.PlatformId,
+                    record.EncodingId, legacyEncoding, request.At(DataField.EncodingId, 0, i), out diagnostic);
+                if (selectionStatus != ReadStatus.Done) return selectionStatus;
+            }
             ReadStatus status = NameTextCodec.ValidatePayload(record.PlatformId, record.EncodingId,
-                record.Payload.Span, payloadLocation, out diagnostic);
+                record.Payload.Span, payloadLocation, out diagnostic, record.LegacyEncoding);
             if (status != ReadStatus.Done) return status;
             if (NameRecordSemantics.HasTextConstraint(record.NameId) &&
-                NameTextCodec.IsSupported(record.PlatformId, record.EncodingId))
+                NameTextCodec.DecodeState(record.PlatformId, record.EncodingId, record.Payload.Span,
+                    record.LegacyEncoding) == NameDecodeState.Decoded)
             {
-                if (!budget.Buffer(record.Payload.Length * 2L, request, out diagnostic))
+                if (!budget.Buffer(Math.Max(record.Payload.Length * 2L,
+                        NameTextCodec.LegacyDecodeBufferBytes(record.Payload.Length, record.LegacyEncoding)),
+                        request, out diagnostic))
                     return ReadStatus.ResourceLimit;
                 _ = NameTextCodec.TryDecode(record.PlatformId, record.EncodingId, record.Payload.Span,
-                    out string? text, out _, payloadLocation);
+                    record.LegacyEncoding, out string? text, out _, payloadLocation);
                 if (!NameRecordSemantics.IsValid(record.NameId, text!) ||
                     record.NameId == 25 && variationPrefix is not null && text != variationPrefix)
                     return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,

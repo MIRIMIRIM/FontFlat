@@ -3,7 +3,7 @@ using FontWeave.Core;
 namespace FontWeave.Tables;
 
 /// <summary>The finite decoder's result. Unsupported bytes remain available verbatim.</summary>
-public enum NameDecodeState { Decoded, UnsupportedEncoding }
+public enum NameDecodeState { Decoded, UnsupportedEncoding, UnmappedCharacter }
 
 /// <summary>A validated name record, retaining its original ordinal and wire identity.</summary>
 public sealed class NameRecordModel
@@ -11,7 +11,7 @@ public sealed class NameRecordModel
     internal NameRecordModel(int ordinal, ushort platformId, ushort encodingId,
         ushort languageId, ushort nameId, ushort length, ushort storageRelativeOffset,
         byte[] payload, NameDecodeState decodeState, string? text,
-        DataLocation rowLocation, DataLocation payloadLocation)
+        DataLocation rowLocation, DataLocation payloadLocation, NameLegacyEncoding? legacyEncoding = null)
     {
         Ordinal = ordinal;
         PlatformId = platformId;
@@ -25,6 +25,7 @@ public sealed class NameRecordModel
         Text = text;
         RowLocation = rowLocation;
         PayloadLocation = payloadLocation;
+        LegacyEncoding = legacyEncoding;
     }
 
     public int Ordinal { get; }
@@ -39,6 +40,7 @@ public sealed class NameRecordModel
     public string? Text { get; }
     public DataLocation RowLocation { get; }
     public DataLocation PayloadLocation { get; }
+    public NameLegacyEncoding? LegacyEncoding { get; }
 }
 
 /// <summary>A validated format 1 language-tag record.</summary>
@@ -111,7 +113,7 @@ public sealed class NameTableModel
         {
             NameRecordModel record = Records[i];
             records[i] = new(record.PlatformId, record.EncodingId, record.LanguageId,
-                record.NameId, record.Payload);
+                record.NameId, record.Payload) { LegacyEncoding = record.LegacyEncoding };
             referenced.AsSpan(StorageOffset + record.StorageRelativeOffset - metadataEnd,
                 record.Length).Fill(true);
         }

@@ -13,10 +13,21 @@ public readonly ref partial struct NameView
     /// </summary>
     public ReadStatus Validate(out FontDiagnostic diagnostic,
         int maxReferencedPayloadBytes = 8 * 1024 * 1024) =>
-        ValidateCore(out diagnostic, maxReferencedPayloadBytes, requireSorted: true);
+        ValidateCore(out diagnostic, maxReferencedPayloadBytes, requireSorted: true, null);
+
+    /// <summary>Strict validation with explicit per-original-ordinal Apple encoding selections.
+    /// Undefined single-byte slots remain raw/UnmappedCharacter, not replacement text.</summary>
+    public ReadStatus Validate(ReadOnlySpan<NameLegacyEncodingSelection> selections,
+        out FontDiagnostic diagnostic, int maxReferencedPayloadBytes = 8 * 1024 * 1024)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(maxReferencedPayloadBytes);
+        ReadStatus status = TryCreateSelections(selections, null, out var encodings, out diagnostic);
+        return status == ReadStatus.Done
+            ? ValidateCore(out diagnostic, maxReferencedPayloadBytes, true, encodings) : status;
+    }
 
     private ReadStatus ValidateCore(out FontDiagnostic diagnostic,
-        int maxReferencedPayloadBytes, bool requireSorted)
+        int maxReferencedPayloadBytes, bool requireSorted, NameLegacyEncoding?[]? encodings)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(maxReferencedPayloadBytes);
         if (!IsBound)
@@ -85,18 +96,20 @@ public readonly ref partial struct NameView
             status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
             if (status != ReadStatus.Done) return status;
             DataLocation payloadLocation = Location.At(DataField.Payload, payloadOffset, ordinal);
+            NameLegacyEncoding? legacyEncoding = encodings?[ordinal];
             status = NameTextCodec.ValidatePayload(record.PlatformId, record.EncodingId,
-                payload, payloadLocation, out diagnostic);
+                payload, payloadLocation, out diagnostic, legacyEncoding);
             if (status != ReadStatus.Done)
             {
                 diagnostic = diagnostic with { Detail = record.Length };
                 return status;
             }
             if (NameRecordSemantics.HasTextConstraint(record.NameId) &&
-                NameTextCodec.IsSupported(record.PlatformId, record.EncodingId))
+                NameTextCodec.DecodeState(record.PlatformId, record.EncodingId, payload,
+                    legacyEncoding) == NameDecodeState.Decoded)
             {
                 _ = NameTextCodec.TryDecode(record.PlatformId, record.EncodingId, payload,
-                    out string? text, out _, payloadLocation);
+                    legacyEncoding, out string? text, out _, payloadLocation);
                 if (!NameRecordSemantics.IsValid(record.NameId, text!) ||
                     record.NameId == 25 && variationPrefix is not null && text != variationPrefix)
                     return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
@@ -155,6 +168,22 @@ public readonly ref partial struct NameView
         return status;
     }
 
+    /// <summary>Locally decode one record under a caller-selected Apple mapping.</summary>
+    public ReadStatus TryDecodeRecord(int ordinal, NameLegacyEncoding encoding, out string? text,
+        out FontDiagnostic diagnostic)
+    {
+        text = null;
+        ReadStatus status = TryGetRecord(ordinal, out RecordData record, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = NameTextCodec.ValidateSelection(record.PlatformId, record.EncodingId, encoding,
+            DataLocation.Anonymous(0x6E616D65).At(DataField.EncodingId, 0, ordinal), out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        return NameTextCodec.TryDecode(encoding, payload, out text, out diagnostic,
+            Location.At(DataField.Payload, (ulong)StorageOffset + record.StorageRelativeOffset, ordinal));
+    }
+
     /// <summary>Locally decode a record without treating an unknown encoding as damaged text.</summary>
     public ReadStatus TryDecodeRecordState(int ordinal, out NameDecodeState state,
         out string? text, out FontDiagnostic diagnostic)
@@ -193,8 +222,21 @@ public readonly ref partial struct NameView
         return TryRead(out model, out diagnostic, budget);
     }
 
+    public ReadStatus TryRead(ReadOnlySpan<NameLegacyEncodingSelection> selections,
+        out NameTableModel? model, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        model = null;
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ReadStatus status = TryCreateSelections(selections, budget, out var encodings, out diagnostic);
+        return status == ReadStatus.Done ? Read(out model, out diagnostic, budget, encodings) : status;
+    }
+
     internal ReadStatus TryRead(out NameTableModel? model, out FontDiagnostic diagnostic,
-        BuildBudget budget)
+        BuildBudget budget) => Read(out model, out diagnostic, budget, null);
+
+    private ReadStatus Read(out NameTableModel? model, out FontDiagnostic diagnostic,
+        BuildBudget budget, NameLegacyEncoding?[]? encodings)
     {
         model = null;
         if (!IsBound)
@@ -208,6 +250,7 @@ public readonly ref partial struct NameView
         long referencedBytes = 0;
         long tagBytes = 0;
         long constrainedTextBytes = 0;
+        long legacyDecodeBuffers = 0;
         for (int i = 0; i < DeclaredCount; i++)
         {
             ulong row = 6UL + (ulong)i * 12;
@@ -219,6 +262,8 @@ public readonly ref partial struct NameView
             if (NameRecordSemantics.HasTextConstraint(record.NameId) &&
                 NameTextCodec.IsSupported(record.PlatformId, record.EncodingId))
                 constrainedTextBytes += record.Length;
+            legacyDecodeBuffers += NameTextCodec.LegacyDecodeBufferBytes(record.Length, encodings?[i]) *
+                (NameRecordSemantics.HasTextConstraint(record.NameId) ? 2 : 1);
         }
         for (int i = 0; i < tagCount; i++)
         {
@@ -237,12 +282,12 @@ public readonly ref partial struct NameView
         if (!budget.Work(referencedBytes, Location.At(DataField.Payload, StorageOffset), out diagnostic))
             return ReadStatus.ResourceLimit;
         // Admission precedes the syntax parser's strings, split arrays and duplicate sets.
-        if (!budget.Buffer(tagBytes * 16 + constrainedTextBytes * 2,
+        if (!budget.Buffer(tagBytes * 16 + constrainedTextBytes * 2 + legacyDecodeBuffers,
                 Location.At(DataField.TemporaryBytes, StorageOffset), out diagnostic))
             return ReadStatus.ResourceLimit;
         // Unsorted records have unambiguous keys and ordinals. Preserve their source order;
         // Validate reports the wire violation and the complete-content compiler sorts stably.
-        status = ValidateCore(out diagnostic, (int)referencedBytes, requireSorted: false);
+        status = ValidateCore(out diagnostic, (int)referencedBytes, requireSorted: false, encodings);
         if (status != ReadStatus.Done) return status;
 
         long modelArrays = (long)DeclaredCount * IntPtr.Size + (long)tagCount * IntPtr.Size;
@@ -258,16 +303,19 @@ public readonly ref partial struct NameView
             _ = TryGetRecordPayload(i, out ReadOnlySpan<byte> payload, out _);
             ulong rowAt = 6UL + (ulong)i * 12;
             ulong payloadAt = (ulong)StorageOffset + row.StorageRelativeOffset;
-            bool decoded = NameTextCodec.IsSupported(row.PlatformId, row.EncodingId);
+            NameLegacyEncoding? legacyEncoding = encodings?[i];
+            NameDecodeState decodeState = NameTextCodec.DecodeState(row.PlatformId, row.EncodingId,
+                payload, legacyEncoding);
             string? text = null;
-            if (decoded) _ = NameTextCodec.TryDecode(row.PlatformId, row.EncodingId,
-                payload, out text, out _);
+            if (decodeState == NameDecodeState.Decoded)
+                _ = NameTextCodec.TryDecode(row.PlatformId, row.EncodingId,
+                    payload, legacyEncoding, out text, out _, Location.At(DataField.Payload, payloadAt, i));
             records[i] = new NameRecordModel(i, row.PlatformId, row.EncodingId,
                 row.LanguageId, row.NameId, row.Length, row.StorageRelativeOffset,
-                payload.ToArray(), decoded ? NameDecodeState.Decoded : NameDecodeState.UnsupportedEncoding,
+                payload.ToArray(), decodeState,
                 text,
                 Location.At(DataField.None, rowAt, i),
-                Location.At(DataField.Payload, payloadAt, i));
+                Location.At(DataField.Payload, payloadAt, i), legacyEncoding);
         }
         for (int i = 0; i < tags.Length; i++)
         {
@@ -281,6 +329,46 @@ public readonly ref partial struct NameView
                 Location.At(DataField.Payload, payloadAt, i));
         }
         model = new NameTableModel(Format, StorageOffset, original, records, tags, Location);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus TryCreateSelections(ReadOnlySpan<NameLegacyEncodingSelection> selections,
+        BuildBudget? budget, out NameLegacyEncoding?[]? encodings, out FontDiagnostic diagnostic)
+    {
+        encodings = null;
+        if (!IsBound)
+            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView,
+                Location.At(DataField.None, 0), out diagnostic);
+        ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (selections.IsEmpty) { diagnostic = default; return ReadStatus.Done; }
+        DataLocation request = DataLocation.Anonymous(0x6E616D65);
+        if (selections.Length > DeclaredCount)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                request.At(DataField.Count, 0), out diagnostic, (ulong)selections.Length, DeclaredCount);
+        if (budget is not null &&
+            (!budget.Work(selections.Length, request, out diagnostic) ||
+             !budget.Buffer(DeclaredCount * 8L, request, out diagnostic))) return ReadStatus.ResourceLimit;
+        var result = new NameLegacyEncoding?[DeclaredCount];
+        foreach (NameLegacyEncodingSelection selection in selections)
+        {
+            int ordinal = selection.Ordinal;
+            if (ordinal < 0 || ordinal >= DeclaredCount)
+                return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                    request.At(DataField.Count, 0, ordinal), out diagnostic,
+                    ordinal < 0 ? 0 : (ulong)ordinal, DeclaredCount);
+            if (result[ordinal] is not null)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    request.At(DataField.EncodingId, 0, ordinal), out diagnostic);
+            status = TryGetRecord(ordinal, out RecordData record, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = NameTextCodec.ValidateSelection(record.PlatformId, record.EncodingId,
+                selection.Encoding, request.At(DataField.EncodingId, 0, ordinal), out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            result[ordinal] = selection.Encoding;
+        }
+        encodings = result;
         diagnostic = default;
         return ReadStatus.Done;
     }

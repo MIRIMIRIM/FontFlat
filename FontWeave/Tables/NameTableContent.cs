@@ -2,7 +2,11 @@ namespace FontWeave.Tables;
 
 /// <summary>A complete record. Unknown encodings remain explicit bytes, never guessed text.</summary>
 public readonly record struct NameRecordValue(ushort PlatformId, ushort EncodingId,
-    ushort LanguageId, ushort NameId, ReadOnlyMemory<byte> Payload);
+    ushort LanguageId, ushort NameId, ReadOnlyMemory<byte> Payload)
+{
+    /// <summary>Caller-selected Apple mapping; null never guesses a legacy variant.</summary>
+    public NameLegacyEncoding? LegacyEncoding { get; init; }
+}
 
 /// <summary>
 /// The complete desired table, not an ordinal patch list. Records are stably key-sorted by

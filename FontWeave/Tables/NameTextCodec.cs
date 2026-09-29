@@ -4,8 +4,8 @@ using FontWeave.Core;
 namespace FontWeave.Tables;
 
 /// <summary>
-/// Strict codecs whose mapping is defined by the OpenType name chapter. Historical Mac
-/// scripts and unknown encodings are unsupported, not approximated by an OS code page.
+/// Strict codecs whose mapping is defined by the OpenType name chapter and the explicitly
+/// selected Apple catalogue. Unknown encodings are not approximated by an OS code page.
 /// Unicode 1.x IDs are decoded as UTF-16 code units, without historical character remapping.
 /// </summary>
 public static class NameTextCodec
@@ -19,6 +19,40 @@ public static class NameTextCodec
         EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
     private static readonly Encoding? Wansung = CodePagesEncodingProvider.Instance.GetEncoding(949,
         EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
+
+    /// <summary>Decode an explicitly chosen Apple mapping, preserving Unicode sequences/hints.
+    /// Keyboard 09 is a defined one-way alias of 61; both decode to U+2423.</summary>
+    public static ReadStatus TryDecode(NameLegacyEncoding encoding, ReadOnlySpan<byte> payload,
+        out string? text, out FontDiagnostic diagnostic, DataLocation location = default)
+    {
+        text = null;
+        location = location == default ? DataLocation.Anonymous(Tag) : location;
+        NameLegacyCodec? codec = NameLegacyCodec.Get(encoding);
+        if (codec is null) return UnsupportedLegacy(encoding, location, out diagnostic);
+        if (payload.Length > int.MaxValue / codec.MaxSequenceLength)
+            return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
+                location with { Field = DataField.Length }, out diagnostic,
+                (ulong)payload.Length * (uint)codec.MaxSequenceLength, int.MaxValue);
+        return codec.TryDecode(payload, out text, out diagnostic, location);
+    }
+
+    /// <summary>Encode without best-fit or normalization. Keyboard U+2423 uses canonical 61.</summary>
+    public static ReadStatus TryEncode(NameLegacyEncoding encoding, string text,
+        out byte[]? payload, out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        TryEncode(encoding, text, [], out payload, out diagnostic, limits);
+
+    /// <summary>Choose exact bytes at specified text-token boundaries, e.g. Keyboard 09 instead
+    /// of canonical 61. Other text retains the normal mapping; invalid choices fail atomically.</summary>
+    public static ReadStatus TryEncode(NameLegacyEncoding encoding, string text,
+        ReadOnlySpan<NameLegacyByteChoice> choices, out byte[]? payload,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        payload = null;
+        NameLegacyCodec? codec = NameLegacyCodec.Get(encoding);
+        if (codec is null) return UnsupportedLegacy(encoding, DataLocation.Anonymous(Tag), out diagnostic);
+        return codec.TryEncode(text, choices, out payload, out diagnostic, new BuildBudget(limits));
+    }
 
     public static ReadStatus TryDecode(ushort platformId, ushort encodingId, ReadOnlySpan<byte> payload,
         out string? text, out FontDiagnostic diagnostic, DataLocation location = default)
@@ -67,9 +101,48 @@ public static class NameTextCodec
     internal static bool IsSupported(ushort platformId, ushort encodingId) =>
         GetEncoding(platformId, encodingId) is not null;
 
-    internal static ReadStatus ValidatePayload(ushort platformId, ushort encodingId,
-        ReadOnlySpan<byte> payload, DataLocation location, out FontDiagnostic diagnostic)
+    internal static ReadStatus ValidateSelection(ushort platformId, ushort encodingId,
+        NameLegacyEncoding encoding, DataLocation at, out FontDiagnostic diagnostic)
     {
+        NameLegacyCodec? codec = NameLegacyCodec.Get(encoding);
+        if (codec is null) return UnsupportedLegacy(encoding, at, out diagnostic);
+        if (!codec.IsCompatible(platformId, encodingId))
+            return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidValue,
+                at with { Field = DataField.EncodingId }, out diagnostic, encodingId);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    internal static NameDecodeState DecodeState(ushort platformId, ushort encodingId,
+        ReadOnlySpan<byte> payload, NameLegacyEncoding? legacyEncoding)
+    {
+        if (legacyEncoding is NameLegacyEncoding legacy)
+            return NameLegacyCodec.Get(legacy)!.TryMeasure(payload, out _, out _)
+                ? NameDecodeState.Decoded : NameDecodeState.UnmappedCharacter;
+        return IsSupported(platformId, encodingId) ? NameDecodeState.Decoded : NameDecodeState.UnsupportedEncoding;
+    }
+
+    internal static long LegacyDecodeBufferBytes(int length, NameLegacyEncoding? legacyEncoding) =>
+        legacyEncoding is NameLegacyEncoding legacy
+            ? (long)length * NameLegacyCodec.Get(legacy)!.MaxSequenceLength * 4 : 0;
+
+    internal static ReadStatus TryDecode(ushort platformId, ushort encodingId, ReadOnlySpan<byte> payload,
+        NameLegacyEncoding? legacyEncoding, out string? text, out FontDiagnostic diagnostic,
+        DataLocation location) => legacyEncoding is NameLegacyEncoding legacy
+            ? TryDecode(legacy, payload, out text, out diagnostic, location)
+            : TryDecode(platformId, encodingId, payload, out text, out diagnostic, location);
+
+    internal static ReadStatus ValidatePayload(ushort platformId, ushort encodingId,
+        ReadOnlySpan<byte> payload, DataLocation location, out FontDiagnostic diagnostic,
+        NameLegacyEncoding? legacyEncoding = null)
+    {
+        if (legacyEncoding is not null)
+        {
+            // Every input unit is one byte. Undefined slots remain visibly unmapped/raw;
+            // they are not replacement text or a malformed UTF-16 claim.
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
         Encoding? encoding = GetEncoding(platformId, encodingId);
         // Unknown bytes are uninterpreted, not damaged text. DecodeState exposes that limit.
         if (encoding is not null)
@@ -88,6 +161,12 @@ public static class NameTextCodec
     private static ReadStatus Unsupported(ushort encodingId, DataLocation at, out FontDiagnostic diagnostic) =>
         ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
             at with { Field = DataField.EncodingId }, out diagnostic, encodingId);
+
+    private static ReadStatus UnsupportedLegacy(NameLegacyEncoding encoding, DataLocation at,
+        out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+            at with { Field = DataField.EncodingId }, out diagnostic,
+            (int)encoding < 0 ? 0 : (ulong)(int)encoding);
 
     private static ReadStatus Invalid(ushort platformId, ushort encodingId, DataLocation at,
         out FontDiagnostic diagnostic) => ReadWire.Fail(ReadStatus.InvalidEncoding,
