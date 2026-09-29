@@ -433,7 +433,7 @@ internal static class ViewEmitter
     {
         ArrayModel array = FindArray(model, payload.Array);
         ScalarModel offset = FindArrayField(array, payload.Offset);
-        ScalarModel baseScalar = FindScalar(model, payload.Base);
+        ScalarModel? baseScalar = payload.Base is null ? null : FindScalar(model, payload.Base);
 
         writer.Line($"public global::FontWeave.Core.ReadStatus TryGet{payload.Array}Payload(int ordinal,");
         writer.Indent++;
@@ -455,38 +455,41 @@ internal static class ViewEmitter
         writer.Line("Location.At(global::FontWeave.Core.DataField.None, minimum), out diagnostic,");
         writer.Line("(ulong)_data.Length, minimum);");
         writer.Indent -= 2;
-        writer.Line($"status = TryGet{payload.Base}(out var baseRaw, out diagnostic);");
-        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
-        writer.Line("ulong storageBase = (ulong)baseRaw;");
-        writer.Line($"status = TryEvaluateScalar{baseScalar.Name}Position(out ulong basePosition, out diagnostic);");
-        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
-        if (!baseScalar.ZeroAllowed)
+        if (baseScalar is not null)
         {
-            writer.Line("if (storageBase == 0)");
+            writer.Line($"status = TryGet{payload.Base}(out var baseRaw, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            writer.Line("ulong storageBase = (ulong)baseRaw;");
+            writer.Line($"status = TryEvaluateScalar{baseScalar.Name}Position(out ulong basePosition, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            if (!baseScalar.ZeroAllowed)
+            {
+                writer.Line("if (storageBase == 0)");
+                writer.Indent++;
+                writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+                writer.Indent++;
+                writer.Line("global::FontWeave.Core.DiagnosticCode.InvalidValue,");
+                writer.Line($"Location.At((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition),");
+                writer.Line("out diagnostic, 0, 1);");
+                writer.Indent -= 2;
+            }
+            writer.Line("if (storageBase < minimum)");
             writer.Indent++;
             writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
             writer.Indent++;
-            writer.Line("global::FontWeave.Core.DiagnosticCode.InvalidValue,");
-            writer.Line($"Location.At((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition),");
-            writer.Line("out diagnostic, 0, 1);");
+            writer.Line("global::FontWeave.Core.DiagnosticCode.StorageBeforeRecords,");
+            writer.Line($"Location.At((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition), out diagnostic,");
+            writer.Line("storageBase, minimum);");
+            writer.Indent -= 2;
+            writer.Line("if (storageBase > (ulong)_data.Length)");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+            writer.Line($"Location.At((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition), out diagnostic,");
+            writer.Line("storageBase, (ulong)_data.Length);");
             writer.Indent -= 2;
         }
-        writer.Line("if (storageBase < minimum)");
-        writer.Indent++;
-        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
-        writer.Indent++;
-        writer.Line("global::FontWeave.Core.DiagnosticCode.StorageBeforeRecords,");
-        writer.Line($"Location.At((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition), out diagnostic,");
-        writer.Line("storageBase, minimum);");
-        writer.Indent -= 2;
-        writer.Line("if (storageBase > (ulong)_data.Length)");
-        writer.Indent++;
-        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
-        writer.Indent++;
-        writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
-        writer.Line($"Location.At((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition), out diagnostic,");
-        writer.Line("storageBase, (ulong)_data.Length);");
-        writer.Indent -= 2;
         writer.Line($"ulong encodedOffset = (ulong)record.{payload.Offset};");
 
         if (!offset.ZeroAllowed)
@@ -506,7 +509,23 @@ internal static class ViewEmitter
             writer.Line("}");
         }
 
-        writer.Line($"ulong absoluteOffset = storageBase + encodedOffset * {U(offset.Scale)};");
+        writer.Line($"ulong absoluteOffset = {(baseScalar is null ? "" : "storageBase + ")}encodedOffset * {U(offset.Scale)};");
+        if (baseScalar is null)
+        {
+            writer.Line("if (absoluteOffset < minimum)");
+            writer.Line("{");
+            writer.Indent++;
+            writer.Line($"status = TryEvaluateArray{array.Name}Start(out ulong arrayStart, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            writer.Line($"ulong fieldPosition = arrayStart + (ulong)ordinal * {U(array.Stride)} + {U(offset.Position.Constant)};");
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.StorageBeforeRecords,");
+            writer.Line($"Location.At((global::FontWeave.Core.DataField){offset.FieldId}, fieldPosition, ordinal),");
+            writer.Line("out diagnostic, absoluteOffset, minimum);");
+            writer.Indent -= 2;
+            writer.Line("}");
+        }
         writer.Line($"ulong payloadLength = (ulong)record.{payload.Length};");
         writer.Line("if (!TrySlice(_data, absoluteOffset, payloadLength, out payload))");
         writer.Indent++;

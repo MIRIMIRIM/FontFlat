@@ -105,7 +105,9 @@ internal sealed class SchemaParser
                     break;
                 case "BinaryPayloadAttribute":
                     payloads.Add(new PayloadModel { Array = Text(attribute, 0), Offset = Text(attribute, 1),
-                        Length = Text(attribute, 2), Base = Text(attribute, 3), Minimum = Text(attribute, 4) });
+                        Length = Text(attribute, 2),
+                        Base = attribute.ConstructorArguments.Length == 5 ? Text(attribute, 3) : null,
+                        Minimum = Text(attribute, attribute.ConstructorArguments.Length - 1) });
                     break;
             }
         }
@@ -204,16 +206,21 @@ internal sealed class SchemaParser
             var array = _model.Arrays.FirstOrDefault(a => a.Name == payload.Array);
             var offset = array?.Fields.FirstOrDefault(f => f.Name == payload.Offset);
             var length = array?.Fields.FirstOrDefault(f => f.Name == payload.Length);
-            if (array is null || array.ExternallyPositioned || offset is null || length is null || !_scalars.TryGetValue(payload.Base, out var origin))
+            if (array is null || array.ExternallyPositioned || offset is null || length is null ||
+                (payload.Base is not null && !_scalars.ContainsKey(payload.Base)))
             {
-                Error(FontSchemaGenerator.Reference, "Payload requires an existing array, offset, length and origin scalar: " + payload.Array);
+                Error(FontSchemaGenerator.Reference, "Payload requires an existing array, offset, length and declared origin scalar: " + payload.Array);
                 continue;
             }
-            if (!offset.IsUnsigned || offset.Semantic != NumberSemantic.Offset || offset.Origin != WireOrigin.NameStorage ||
+            if (!offset.IsUnsigned || offset.Semantic != NumberSemantic.Offset ||
+                offset.Origin != (payload.Base is null ? WireOrigin.Table : WireOrigin.NameStorage) ||
                 !length.IsUnsigned || length.Semantic != NumberSemantic.Count ||
-                !origin.IsUnsigned || origin.Semantic != NumberSemantic.Offset || origin.Origin != WireOrigin.Table || origin.Scale != 1)
-                Error(FontSchemaGenerator.Layout, "Payload offsets are NameStorage-relative and require a table-relative origin and unsigned length.");
-            Add(Add(Bound(payload.Base), Multiply(RawBound(offset), offset.Scale)), RawBound(length));
+                (payload.Base is not null && (!_scalars[payload.Base].IsUnsigned ||
+                    _scalars[payload.Base].Semantic != NumberSemantic.Offset ||
+                    _scalars[payload.Base].Origin != WireOrigin.Table || _scalars[payload.Base].Scale != 1)))
+                Error(FontSchemaGenerator.Layout, "Payload requires a matching offset origin and unsigned length.");
+            ulong offsetBound = Multiply(RawBound(offset), offset.Scale);
+            Add(payload.Base is null ? offsetBound : Add(Bound(payload.Base), offsetBound), RawBound(length));
             UnsignedReference(payload.Minimum);
         }
 

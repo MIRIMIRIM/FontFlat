@@ -80,6 +80,7 @@ namespace FontWeave.Schema
     [global::System.AttributeUsage(global::System.AttributeTargets.Struct, AllowMultiple = true)]
     internal sealed class BinaryPayloadAttribute : global::System.Attribute
     {
+        public BinaryPayloadAttribute(string array, string offset, string length, string minimum) { }
         public BinaryPayloadAttribute(string array, string offset, string length, string origin, string minimum) { }
     }
 }

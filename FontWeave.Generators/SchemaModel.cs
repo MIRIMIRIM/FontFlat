@@ -60,12 +60,12 @@ internal sealed class ArrayModel
 
 internal sealed class PayloadModel
 {
-    // Method: TryGet<Array>Payload. Base/Minimum refer to table values;
-    // Offset/Length refer to fields of the selected array record.
+    // Method: TryGet<Array>Payload. A null Base means a table-relative offset;
+    // Minimum refers to a table value, Offset/Length to array record fields.
     public string Array { get; set; } = "";
     public string Offset { get; set; } = "";
     public string Length { get; set; } = "";
-    public string Base { get; set; } = "";
+    public string? Base { get; set; }
     public string Minimum { get; set; } = "";
 }
 
