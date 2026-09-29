@@ -36,6 +36,10 @@ public readonly ref partial struct NameView
         }
         status = TryGetMetadataEnd(out ulong metadataEnd, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        if (metadataEnd > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.InvalidValue,
+                Location.At(DataField.StorageOffset, 4), out diagnostic,
+                metadataEnd, ushort.MaxValue);
         if (StorageOffset < metadataEnd)
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
                 Location.At(DataField.StorageOffset, 4), out diagnostic,
@@ -131,8 +135,122 @@ public readonly ref partial struct NameView
         return ReadStatus.Done;
     }
 
+    /// <summary>Locally decode a record without treating an unknown encoding as damaged text.</summary>
+    public ReadStatus TryDecodeRecordState(int ordinal, out NameDecodeState state,
+        out string? text, out FontDiagnostic diagnostic)
+    {
+        state = NameDecodeState.UnsupportedEncoding;
+        text = null;
+        ReadStatus status = TryGetRecord(ordinal, out RecordData record, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (!IsUtf16(record.PlatformId, record.EncodingId))
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        if (!IsValidUtf16BigEndian(payload))
+            return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidUtf16,
+                Location.At(DataField.Payload,
+                    (ulong)StorageOffset + record.StorageRelativeOffset, ordinal),
+                out diagnostic, record.Length);
+        state = NameDecodeState.Decoded;
+        text = Encoding.BigEndianUnicode.GetString(payload);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    public ReadStatus TryRead(out NameTableModel? model, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        model = null;
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        return TryRead(out model, out diagnostic, budget);
+    }
+
+    internal ReadStatus TryRead(out NameTableModel? model, out FontDiagnostic diagnostic,
+        BuildBudget budget)
+    {
+        model = null;
+        if (!IsBound)
+            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView,
+                Location.At(DataField.None, 0), out diagnostic);
+        ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetLanguageTagCount(out ushort tagCount, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+
+        long referencedBytes = 0;
+        for (int i = 0; i < DeclaredCount; i++)
+        {
+            ulong row = 6UL + (ulong)i * 12;
+            if (!budget.Work(12, Location.At(DataField.Count, row, i), out diagnostic))
+                return ReadStatus.ResourceLimit;
+            status = TryGetRecord(i, out RecordData record, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            referencedBytes += record.Length;
+        }
+        for (int i = 0; i < tagCount; i++)
+        {
+            ulong row = 6UL + (ulong)DeclaredCount * 12 + 2 + (ulong)i * 4;
+            if (!budget.Work(4, Location.At(DataField.Count, row, i), out diagnostic))
+                return ReadStatus.ResourceLimit;
+            status = TryGetLanguageTag(i, out LanguageTagData tag, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            referencedBytes += tag.Length;
+        }
+        if (referencedBytes > int.MaxValue)
+            return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
+                Location.At(DataField.Payload, StorageOffset), out diagnostic,
+                (ulong)referencedBytes, int.MaxValue);
+        if (!budget.Work(referencedBytes, Location.At(DataField.Payload, StorageOffset), out diagnostic))
+            return ReadStatus.ResourceLimit;
+        status = Validate(out diagnostic, (int)referencedBytes);
+        if (status != ReadStatus.Done) return status;
+
+        long modelArrays = (long)DeclaredCount * IntPtr.Size + (long)tagCount * IntPtr.Size;
+        if (!budget.Buffer(_data.Length + modelArrays + referencedBytes,
+                Location.At(DataField.TemporaryBytes, 0), out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var records = new NameRecordModel[DeclaredCount];
+        var tags = new NameLanguageTagModel[tagCount];
+        byte[] original = _data.ToArray();
+        for (int i = 0; i < records.Length; i++)
+        {
+            _ = TryGetRecord(i, out RecordData row, out _);
+            _ = TryGetRecordPayload(i, out ReadOnlySpan<byte> payload, out _);
+            ulong rowAt = 6UL + (ulong)i * 12;
+            ulong payloadAt = (ulong)StorageOffset + row.StorageRelativeOffset;
+            bool decoded = IsUtf16(row.PlatformId, row.EncodingId);
+            records[i] = new NameRecordModel(i, row.PlatformId, row.EncodingId,
+                row.LanguageId, row.NameId, row.Length, row.StorageRelativeOffset,
+                payload.ToArray(), decoded ? NameDecodeState.Decoded : NameDecodeState.UnsupportedEncoding,
+                decoded ? Encoding.BigEndianUnicode.GetString(payload) : null,
+                Location.At(DataField.None, rowAt, i),
+                Location.At(DataField.Payload, payloadAt, i));
+        }
+        for (int i = 0; i < tags.Length; i++)
+        {
+            _ = TryGetLanguageTag(i, out LanguageTagData row, out _);
+            _ = TryGetLanguageTagPayload(i, out ReadOnlySpan<byte> payload, out _);
+            ulong rowAt = 6UL + (ulong)DeclaredCount * 12 + 2 + (ulong)i * 4;
+            ulong payloadAt = (ulong)StorageOffset + row.StorageRelativeOffset;
+            tags[i] = new NameLanguageTagModel(i, row.Length, row.StorageRelativeOffset,
+                payload.ToArray(), Encoding.BigEndianUnicode.GetString(payload),
+                Location.At(DataField.None, rowAt, i),
+                Location.At(DataField.Payload, payloadAt, i));
+        }
+        model = new NameTableModel(Format, StorageOffset, original, records, tags, Location);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
     internal static bool IsUtf16(ushort platformId, ushort encodingId) =>
-        platformId == 0 || (platformId == 3 && encodingId is 0 or 1 or 10);
+        (platformId == 0 && encodingId <= 4) ||
+        (platformId == 3 && encodingId is 0 or 1 or 2 or 6 or 10);
 
     internal static bool IsValidUtf16BigEndian(ReadOnlySpan<byte> bytes)
     {

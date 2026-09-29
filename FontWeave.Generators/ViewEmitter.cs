@@ -567,6 +567,11 @@ internal static class ViewEmitter
 
     private static string ReadExpression(ScalarModel scalar, string bytes, ulong offset)
     {
+        if (scalar.Type is WireType.UInt8 or WireType.Int8)
+        {
+            string value = $"{bytes}[{offset.ToString(CultureInfo.InvariantCulture)}]";
+            return scalar.Type == WireType.Int8 ? $"unchecked((sbyte){value})" : value;
+        }
         string suffix = scalar.Endian == WireEndian.Big ? "BigEndian" : "LittleEndian";
         string method = scalar.Type switch
         {

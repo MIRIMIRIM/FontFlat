@@ -16,17 +16,36 @@ public sealed record MetadataEditOptions
 }
 
 /// <summary>
-/// Edits explicit display-name ordinals plus head revision/modified time. Does not select a
-/// preferred name, coordinate naming records, change keys or glyph identities, or validate
-/// preserved table internals. Private-table preservation requires the caller's explicit consent.
+/// Edits explicit name ordinals. The legacy overload also edits head revision/modified time;
+/// the name-only overload leaves those fields unchanged. Neither selects a preferred name,
+/// changes glyph identities, nor validates preserved table internals. Private-table
+/// preservation requires the caller's explicit consent.
 /// </summary>
-public static class MetadataEditOperation
+public static partial class MetadataEditOperation
 {
     private const uint Head = 0x68656164, Name = 0x6E616D65, Dsig = 0x44534947;
 
     public static ReadStatus TryPrepare(FontFaceRef face, HeadMetadataEdit headEdit,
         ReadOnlySpan<NameReplacement> replacements, out CompiledFont? result,
         out FontDiagnostic diagnostic, MetadataEditOptions? options = null, BuildLimits? limits = null)
+        => Prepare(face, headEdit, replacements, null, out result, out diagnostic, options, limits);
+
+    /// <summary>Edit supported name records and language tags without changing head metadata.
+    /// The container still recomputes head.checksumAdjustment for the emitted sfnt.</summary>
+    public static ReadStatus TryPrepare(FontFaceRef face, NameEditPlan nameEdit,
+        out CompiledFont? result, out FontDiagnostic diagnostic,
+        MetadataEditOptions? options = null, BuildLimits? limits = null)
+    {
+        ArgumentNullException.ThrowIfNull(nameEdit);
+        ArgumentNullException.ThrowIfNull(nameEdit.Replacements);
+        ArgumentNullException.ThrowIfNull(nameEdit.LanguageIdChanges);
+        return Prepare(face, null, default, nameEdit, out result, out diagnostic, options, limits);
+    }
+
+    private static ReadStatus Prepare(FontFaceRef face, HeadMetadataEdit? headEdit,
+        ReadOnlySpan<NameReplacement> legacyReplacements, NameEditPlan? nameEdit,
+        out CompiledFont? result, out FontDiagnostic diagnostic,
+        MetadataEditOptions? options, BuildLimits? limits)
     {
         result = null;
         options ??= new();
@@ -54,7 +73,8 @@ public static class MetadataEditOperation
             status = directory.TryGetRecord(i, out var record, out diagnostic);
             if (status != ReadStatus.Done) return status;
             TableAction action;
-            if (record.Tag is Head or Name) action = TableAction.Rebuild;
+            if (record.Tag == Name) action = TableAction.Rebuild;
+            else if (record.Tag == Head) action = headEdit.HasValue ? TableAction.Rebuild : TableAction.Preserve;
             else if (record.Tag == Dsig)
             {
                 if (!options.DropDigitalSignature)
@@ -78,26 +98,54 @@ public static class MetadataEditOperation
         DataLocation nameLocation = directory.TableLocation(nameOrdinal);
         status = NameView.TryOpen(nameBytes, out var names, out diagnostic, nameLocation);
         if (status != ReadStatus.Done) return status;
-        if (!budget.Work(replacements.Length, nameLocation, out diagnostic)) return ReadStatus.ResourceLimit;
-        foreach (var replacement in replacements)
+        int replacementCount = headEdit.HasValue ? legacyReplacements.Length : nameEdit!.Replacements.Count;
+        int languageChangeCount = headEdit.HasValue ? 0 : nameEdit!.LanguageIdChanges.Count;
+        if (!budget.Work((long)replacementCount + languageChangeCount, nameLocation, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        for (int i = 0; i < replacementCount + languageChangeCount; i++)
         {
-            status = names.TryGetRecord(replacement.Ordinal, out var record, out diagnostic);
+            int ordinal = i < replacementCount
+                ? headEdit.HasValue ? legacyReplacements[i].Ordinal : nameEdit!.Replacements[i].Ordinal
+                : nameEdit!.LanguageIdChanges[i - replacementCount].Ordinal;
+            status = names.TryGetRecord(ordinal, out var record, out diagnostic);
             if (status != ReadStatus.Done) return status;
             // PostScript names (6/20/25), variation labels and other dependent identities are
             // deliberately not edited by this finite operation. Table compiler remains generic.
             if (record.NameId is not (1 or 2 or 4 or 16 or 17))
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
-                    nameLocation.At(DataField.Payload, 6UL + (uint)replacement.Ordinal * 12UL + 6,
-                        replacement.Ordinal), out diagnostic, record.NameId);
+                    nameLocation.At(DataField.Payload, 6UL + (uint)ordinal * 12UL + 6,
+                        ordinal), out diagnostic, record.NameId);
         }
-        status = NameTableCompiler.TryCompile(nameBytes, replacements, out byte[]? compiledName,
-            out diagnostic, budget, nameLocation);
+        byte[]? compiledName;
+        if (headEdit.HasValue)
+            status = NameTableCompiler.TryCompile(nameBytes, legacyReplacements, out compiledName,
+                out diagnostic, budget, nameLocation);
+        else
+            status = NameTableCompiler.TryCompile(nameBytes, nameEdit!, out compiledName,
+                out diagnostic, budget, nameLocation);
         if (status != ReadStatus.Done) return status;
         status = directory.TryGetTableBytes(headOrdinal, out var headBytes, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = HeadTableCompiler.TryCompile(headBytes, headEdit, out byte[]? compiledHead,
-            out diagnostic, budget, directory.TableLocation(headOrdinal));
-        if (status != ReadStatus.Done) return status;
+        byte[]? compiledHead;
+        if (headEdit.HasValue)
+        {
+            status = HeadTableCompiler.TryCompile(headBytes, headEdit.Value, out compiledHead,
+                out diagnostic, budget, directory.TableLocation(headOrdinal));
+            if (status != ReadStatus.Done) return status;
+        }
+        else
+        {
+            DataLocation headLocation = directory.TableLocation(headOrdinal);
+            status = HeadView.TryOpen(headBytes, out var headView, out diagnostic, headLocation);
+            if (status != ReadStatus.Done) return status;
+            status = headView.TryRead(out HeadTable? _, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+            if (!budget.Buffer(headBytes.Length, headLocation, out diagnostic) ||
+                !budget.Work(headBytes.Length, headLocation, out diagnostic))
+                return ReadStatus.ResourceLimit;
+            compiledHead = headBytes.ToArray();
+            budget.RecordTableCopy(compiledHead.Length);
+        }
 
         var tables = new SortedDictionary<uint, byte[]>();
         for (int i = 0; i < decisions.Length; i++)
@@ -124,8 +172,9 @@ public static class MetadataEditOperation
         return ReadStatus.Done;
     }
 
-    // OpenType top-level tables can be relocated opaquely for this exact edit: no name keys,
-    // glyphs, metrics or table-internal offsets change. This is not their R/S/V/W acceptance.
+    // These top-level tables can be relocated opaquely for this metadata-only edit: name
+    // language IDs may change, but glyph identities, metrics and table-internal offsets do not.
+    // Preserving a table is not acceptance of its own R/S/V/W profile.
     internal static bool IsKnownMetadataIndependentTable(uint tag) => tag is
         0x42415345 or 0x43424454 or 0x43424C43 or 0x43464620 or 0x43464632 or
         0x434F4C52 or 0x4350414C or 0x45424454 or 0x45424C43 or 0x45425343 or
