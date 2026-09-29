@@ -136,7 +136,7 @@ public static partial class NameTableCompiler
                         source.Records[ordinal].RowLocation.Offset, ordinal), out diagnostic);
             NameRecordModel record = source.Records[ordinal];
             // The wire remains UTF-16BE, but historical Unicode requires explicitly
-            // supported character positions (only Hangul for Unicode 1.0). Other code pages
+            // supported character positions (ASCII and Hangul for Unicode 1.0). Other code pages
             // still use complete content + NameTextCodec rather than this patch API.
             if (!NameView.IsUtf16(record.PlatformId, record.EncodingId))
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat,
