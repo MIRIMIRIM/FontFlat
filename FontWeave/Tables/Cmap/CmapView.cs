@@ -18,10 +18,10 @@ public readonly ref partial struct CmapView
                 Location.At(DataField.Offset, offset, recordOrdinal), out diagnostic,
                 (ulong)_data.Length, offset + 2);
         format = ReadWire.U16(_data, (int)offset);
-        // Dispatch length fields: format 14 stores uint32 at +2, format 12 at +4
-        // (after its reserved field), every other known family uint16 at +2.
-        int lengthOffset = format switch { 14 => 2, 12 => 4, _ => 2 };
-        int lengthWidth = format is 12 or 14 ? 4 : 2;
+        // Dispatch length fields: format 14 stores uint32 at +2, formats 12 and 13 at +4
+        // (after their reserved field), every other known family uint16 at +2.
+        int lengthOffset = format switch { 14 => 2, 12 or 13 => 4, _ => 2 };
+        int lengthWidth = format is 12 or 13 or 14 ? 4 : 2;
         if (offset > (ulong)_data.Length - (ulong)(uint)(lengthOffset + lengthWidth))
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
                 Location.At(DataField.Length, offset + (ulong)(uint)lengthOffset, recordOrdinal),
@@ -67,9 +67,39 @@ public readonly ref partial struct CmapView
             out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
     }
 
+    public ReadStatus TryOpenFormat13(int recordOrdinal, out CmapFormat13View view,
+        out FontDiagnostic diagnostic)
+    {
+        view = default;
+        ReadStatus status = TryGetSubtableExtent(recordOrdinal, out ushort format, out uint offset,
+            out ulong length, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (format != 13)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                format, 13);
+        return CmapFormat13View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
+            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+    }
+
+    public ReadStatus TryOpenFormat14(int recordOrdinal, out CmapFormat14View view,
+        out FontDiagnostic diagnostic)
+    {
+        view = default;
+        ReadStatus status = TryGetSubtableExtent(recordOrdinal, out ushort format, out uint offset,
+            out ulong length, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (format != 14)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                format, 14);
+        return CmapFormat14View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
+            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+    }
+
     /// <summary>Strict table validation: version, ordered unique records, extents that tile the
-    /// table exactly with exact aliasing, and typed format 4/12 subtable rules. Other formats are
-    /// extent-checked only; their semantic validation is explicitly out of scope.</summary>
+    /// table exactly with exact aliasing, and typed format 4/12/13/14 subtable rules. Other
+    /// formats are extent-checked only; their semantic validation is explicitly out of scope.</summary>
     public ReadStatus Validate(CmapContext context, out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -162,6 +192,20 @@ public readonly ref partial struct CmapView
                 status = format12.Validate(context.NumGlyphs, out diagnostic, budget);
                 if (status != ReadStatus.Done) return status;
             }
+            else if (extents[j].Format == 13)
+            {
+                status = CmapFormat13View.TryOpen(slice, out var format13, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                status = format13.Validate(context.NumGlyphs, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
+            else if (extents[j].Format == 14)
+            {
+                status = CmapFormat14View.TryOpen(slice, out var format14, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                status = format14.Validate(context.NumGlyphs, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
             cursor = (ulong)extents[j].Offset + extents[j].Length;
         }
         if (cursor != (ulong)_data.Length)
@@ -232,6 +276,18 @@ public readonly ref partial struct CmapView
                 if (status != ReadStatus.Done) return status;
                 subtableObjects[j] = MaterializeFormat12(view, offset, location);
             }
+            else if (format == 13)
+            {
+                status = CmapFormat13View.TryOpen(slice, out var view13, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                subtableObjects[j] = MaterializeFormat13(view13, offset, location);
+            }
+            else if (format == 14)
+            {
+                status = CmapFormat14View.TryOpen(slice, out var view14, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                subtableObjects[j] = MaterializeFormat14(view14, offset, location);
+            }
             else
             {
                 var raw = new byte[length];
@@ -284,6 +340,53 @@ public readonly ref partial struct CmapView
             groups[i] = new(group.StartCharCode, group.EndCharCode, group.StartGlyphID);
         }
         return new CmapFormat12Subtable(groups, sourceOffset, location);
+    }
+
+    private static CmapFormat13Subtable MaterializeFormat13(CmapFormat13View view, uint sourceOffset,
+        DataLocation location)
+    {
+        var groups = new CmapFormat13Group[view.NumGroups];
+        for (int i = 0; (uint)i < view.NumGroups; i++)
+        {
+            _ = view.TryGetGroup(i, out var group, out _);
+            groups[i] = new(group.StartCharCode, group.EndCharCode, group.StartGlyphID);
+        }
+        return new CmapFormat13Subtable(groups, sourceOffset, location);
+    }
+
+    private static CmapFormat14Subtable MaterializeFormat14(CmapFormat14View view, uint sourceOffset,
+        DataLocation location)
+    {
+        var selectors = new CmapVarSelectorRecord[(int)view.NumVarSelectorRecords];
+        for (int i = 0; i < selectors.Length; i++)
+        {
+            _ = view.TryGetVarSelector(i, out uint varSelector, out uint defaultOffset,
+                out uint nonDefaultOffset, out _);
+            CmapDefaultUvsRange[] defaultRanges = [];
+            if (defaultOffset != 0)
+            {
+                _ = view.TryGetDefaultRangeCount(i, out int rangeCount, out _);
+                defaultRanges = new CmapDefaultUvsRange[rangeCount];
+                for (int r = 0; r < rangeCount; r++)
+                {
+                    _ = view.TryGetDefaultRange(i, r, out uint start, out byte additionalCount, out _);
+                    defaultRanges[r] = new(start, additionalCount);
+                }
+            }
+            CmapUvsMapping[] nonDefaultMappings = [];
+            if (nonDefaultOffset != 0)
+            {
+                _ = view.TryGetUvsMappingCount(i, out int mappingCount, out _);
+                nonDefaultMappings = new CmapUvsMapping[mappingCount];
+                for (int r = 0; r < mappingCount; r++)
+                {
+                    _ = view.TryGetUvsMapping(i, r, out uint unicodeValue, out ushort glyphId, out _);
+                    nonDefaultMappings[r] = new(unicodeValue, glyphId);
+                }
+            }
+            selectors[i] = new(varSelector, defaultRanges, nonDefaultMappings);
+        }
+        return new CmapFormat14Subtable(selectors, sourceOffset, location);
     }
 
     private readonly record struct SubtableExtent(uint Offset, uint Length, ushort Format,

@@ -132,6 +132,144 @@ public sealed class CmapFormat12Subtable : CmapSubtable
     }
 }
 
+public readonly record struct CmapFormat13Group(uint StartCharCode, uint EndCharCode,
+    uint StartGlyphID);
+
+/// <summary>Constant-gid many-to-one subtable: every code in a group resolves to the group's
+/// StartGlyphID, with GID 0 meaning unmapped.</summary>
+public sealed class CmapFormat13Subtable : CmapSubtable
+{
+    private readonly CmapFormat13Group[] _groups;
+
+    internal CmapFormat13Subtable(CmapFormat13Group[] groups, uint sourceOffset,
+        DataLocation location) : base(13, sourceOffset, location)
+    {
+        _groups = groups;
+    }
+
+    public int GroupCount => _groups.Length;
+    public ReadOnlySpan<CmapFormat13Group> Groups => _groups;
+
+    public override ReadStatus TryMapCharacter(uint codePoint, out bool mapped, out uint glyphId,
+        out FontDiagnostic diagnostic)
+    {
+        mapped = false; glyphId = 0;
+        int low = 0, high = _groups.Length - 1, found = -1;
+        while (low <= high)
+        {
+            int mid = low + (high - low) / 2;
+            if (_groups[mid].StartCharCode <= codePoint) { found = mid; low = mid + 1; }
+            else high = mid - 1;
+        }
+        if (found < 0 || codePoint > _groups[found].EndCharCode)
+        {
+            diagnostic = default; return ReadStatus.Done;
+        }
+        uint resolved = _groups[found].StartGlyphID;
+        if (resolved == 0 || resolved > ushort.MaxValue)
+        {
+            diagnostic = default; return ReadStatus.Done;
+        }
+        mapped = true; glyphId = resolved;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+}
+
+/// <summary>Outcome of a variation-selector lookup against one format 14 subtable:
+/// Default reports a default-range hit whose glyph comes from the base cmap,
+/// NonDefault reports the resolved non-default mapping (GID 0 stays visible),
+/// None reports no coverage for the requested (selector, character) pair.</summary>
+public enum CmapVariationResultKind : byte
+{
+    None = 0, Default = 1, NonDefault = 2
+}
+
+public readonly record struct CmapDefaultUvsRange(uint StartUnicodeValue, byte AdditionalCount);
+
+public readonly record struct CmapUvsMapping(uint UnicodeValue, ushort GlyphId);
+
+/// <summary>One format 14 variation selector with its owned default ranges and non-default
+/// mappings; arrays are model-owned and treated as immutable by consumers.</summary>
+public sealed record CmapVarSelectorRecord(uint VarSelector,
+    CmapDefaultUvsRange[] DefaultRanges, CmapUvsMapping[] NonDefaultMappings);
+
+/// <summary>Format 14 Unicode variation sequences. Character mapping is intentionally not
+/// offered through TryMapCharacter; use TryMapVariation and the base cmap combination.</summary>
+public sealed class CmapFormat14Subtable : CmapSubtable
+{
+    private readonly CmapVarSelectorRecord[] _selectors;
+
+    internal CmapFormat14Subtable(CmapVarSelectorRecord[] selectors, uint sourceOffset,
+        DataLocation location) : base(14, sourceOffset, location)
+    {
+        _selectors = selectors;
+    }
+
+    public int SelectorCount => _selectors.Length;
+    public ReadOnlySpan<CmapVarSelectorRecord> Selectors => _selectors;
+
+    /// <summary>Looks up one (selector, character) pair: non-default mappings win over default
+    /// ranges; a non-default GID 0 is reported as-is for the caller to interpret as unmapped.</summary>
+    public ReadStatus TryMapVariation(uint varSelector, uint baseCharacter,
+        out CmapVariationResultKind kind, out uint glyphId, out FontDiagnostic diagnostic)
+    {
+        kind = CmapVariationResultKind.None; glyphId = 0;
+        int low = 0, high = _selectors.Length - 1, found = -1;
+        while (low <= high)
+        {
+            int mid = low + (high - low) / 2;
+            if (_selectors[mid].VarSelector < varSelector) low = mid + 1;
+            else if (_selectors[mid].VarSelector > varSelector) high = mid - 1;
+            else { found = mid; break; }
+        }
+        if (found < 0)
+        {
+            diagnostic = default; return ReadStatus.Done;
+        }
+        var selector = _selectors[found];
+        var mappings = selector.NonDefaultMappings;
+        int low2 = 0, high2 = mappings.Length - 1;
+        while (low2 <= high2)
+        {
+            int mid = low2 + (high2 - low2) / 2;
+            if (mappings[mid].UnicodeValue < baseCharacter) low2 = mid + 1;
+            else if (mappings[mid].UnicodeValue > baseCharacter) high2 = mid - 1;
+            else
+            {
+                kind = CmapVariationResultKind.NonDefault;
+                glyphId = mappings[mid].GlyphId;
+                diagnostic = default;
+                return ReadStatus.Done;
+            }
+        }
+        var ranges = selector.DefaultRanges;
+        int low3 = 0, high3 = ranges.Length - 1, rangeIndex = -1;
+        while (low3 <= high3)
+        {
+            int mid = low3 + (high3 - low3) / 2;
+            if (ranges[mid].StartUnicodeValue <= baseCharacter) { rangeIndex = mid; low3 = mid + 1; }
+            else high3 = mid - 1;
+        }
+        if (rangeIndex >= 0 &&
+            baseCharacter <= ranges[rangeIndex].StartUnicodeValue + ranges[rangeIndex].AdditionalCount)
+        {
+            kind = CmapVariationResultKind.Default;
+            glyphId = 0;
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    public override ReadStatus TryMapCharacter(uint codePoint, out bool mapped, out uint glyphId,
+        out FontDiagnostic diagnostic)
+    {
+        mapped = false; glyphId = 0;
+        return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+            Location.At(DataField.Version, SourceOffset), out diagnostic, Format);
+    }
+}
+
 /// <summary>A subtable whose format is outside the supported typed set: extent-checked
 /// bytes preserved verbatim, with no semantic claims.</summary>
 public sealed class CmapRawSubtable : CmapSubtable
@@ -204,10 +342,75 @@ public sealed class CmapTable
                 return EnumerateFormat4(format4, out mappings, out diagnostic, budget);
             case CmapFormat12Subtable format12:
                 return EnumerateFormat12(format12, out mappings, out diagnostic, budget);
+            case CmapFormat13Subtable format13:
+                return EnumerateFormat13(format13, out mappings, out diagnostic, budget);
             default:
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                     subtable.Location.At(DataField.Version, subtable.SourceOffset), out diagnostic,
                     subtable.Format);
+        }
+    }
+
+    /// <summary>Full forward enumeration of one format 14 subtable's selectors with their owned
+    /// default ranges and non-default mappings; the returned records are the model's own.</summary>
+    public ReadStatus TryGetVariations(CmapSubtable subtable, out CmapVarSelectorRecord[]? variations,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        variations = null;
+        ArgumentNullException.ThrowIfNull(subtable);
+        var budget = new BuildBudget(limits);
+        if (subtable is CmapFormat14Subtable format14)
+        {
+            long bytes = 16L * format14.SelectorCount;
+            foreach (var selector in format14.Selectors)
+                bytes += 12L * selector.DefaultRanges.Length + 6L * selector.NonDefaultMappings.Length;
+            if (!budget.Work(bytes, subtable.Location, out diagnostic) ||
+                !budget.Buffer(bytes, subtable.Location, out diagnostic))
+                return ReadStatus.ResourceLimit;
+            variations = format14.Selectors.ToArray();
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+            subtable.Location.At(DataField.Version, subtable.SourceOffset), out diagnostic,
+            subtable.Format);
+    }
+
+    /// <summary>Combined variation-sequence lookup: non-default mappings win, default-range hits
+    /// delegate to the base subtable's mapping of the base character, and a resolved GID 0 means
+    /// unmapped. The variation subtable must be format 14 and the base one 4/12/13; choosing
+    /// which records to consult is a caller policy.</summary>
+    public ReadStatus TryMapVariationSequence(CmapSubtable variationSubtable,
+        CmapSubtable baseSubtable, uint baseCharacter, uint varSelector, out bool mapped,
+        out uint glyphId, out FontDiagnostic diagnostic)
+    {
+        mapped = false; glyphId = 0;
+        ArgumentNullException.ThrowIfNull(variationSubtable);
+        ArgumentNullException.ThrowIfNull(baseSubtable);
+        if (variationSubtable is not CmapFormat14Subtable variation)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                variationSubtable.Location.At(DataField.Version, variationSubtable.SourceOffset),
+                out diagnostic, variationSubtable.Format);
+        if (baseSubtable is not (CmapFormat4Subtable or CmapFormat12Subtable or CmapFormat13Subtable))
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                baseSubtable.Location.At(DataField.Version, baseSubtable.SourceOffset),
+                out diagnostic, baseSubtable.Format);
+        ReadStatus status = variation.TryMapVariation(varSelector, baseCharacter,
+            out CmapVariationResultKind kind, out uint variationGlyphId, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        switch (kind)
+        {
+            case CmapVariationResultKind.NonDefault:
+                mapped = variationGlyphId != 0;
+                glyphId = variationGlyphId;
+                diagnostic = default;
+                return ReadStatus.Done;
+            case CmapVariationResultKind.Default:
+                return baseSubtable.TryMapCharacter(baseCharacter, out mapped, out glyphId, out diagnostic);
+            default:
+                mapped = false; glyphId = 0;
+                diagnostic = default;
+                return ReadStatus.Done;
         }
     }
 
@@ -276,6 +479,35 @@ public sealed class CmapTable
                     if (gid != 0 && gid <= ushort.MaxValue)
                         result.Add(new(c, (ushort)gid));
                 }
+                if (c == group.EndCharCode) break;
+            }
+        }
+        mappings = [.. result];
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    internal static ReadStatus EnumerateFormat13(CmapFormat13Subtable subtable,
+        out CmapMapping[]? mappings, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        mappings = null;
+        var groups = subtable.Groups;
+        long span = 0;
+        foreach (var group in groups)
+            span += group.EndCharCode - group.StartCharCode + 1;
+        if (!budget.Work(span + 24L * groups.Length, subtable.Location, out diagnostic) ||
+            !budget.Buffer(12L * span, subtable.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var result = new List<CmapMapping>(capacity: (int)Math.Min(span, 1 << 20));
+        for (int i = 0; i < groups.Length; i++)
+        {
+            var group = groups[i];
+            for (uint c = group.StartCharCode; ; c++)
+            {
+                // Constant gid: the group start GID applies to every covered code point.
+                if (c is not (>= 0xD800 and <= 0xDFFF) &&
+                    group.StartGlyphID != 0 && group.StartGlyphID <= ushort.MaxValue)
+                    result.Add(new(c, (ushort)group.StartGlyphID));
                 if (c == group.EndCharCode) break;
             }
         }
