@@ -5,7 +5,8 @@ using FontWeave.Core;
 namespace FontWeave.Tables;
 
 /// <summary>Bounded historical character identities, not full historical Unicode behavior.
-/// Unicode 1.0 admits ASCII, Latin1 graphic characters, and its published 2350 Hangul mappings;
+/// Unicode 1.0 admits ASCII, Latin1 graphics, 127 European Latin characters,
+/// and its published 2350 Hangul mappings;
 /// Unicode 1.1 / ISO 1993 also admits the verified identity bitmap.
 /// Other positions remain raw, not necessarily unassigned.</summary>
 internal static class NameHistoricalUnicodeCodec
@@ -93,10 +94,10 @@ internal static class NameHistoricalUnicodeCodec
             return true;
         }
         mapped = (char)code;
-        // Unicode 1.0 ch.3.1 preserves ASCII identities; ch.3.1 p.32 and ch.3.7 p.127
-        // document the U+00A0..U+00FF Latin1 graphic repertoire. C1 remains raw:
-        // ch.3.1 leaves its meanings to external standards, unlike ASCII.
-        return unicode10 ? code <= 0x7F || code is >= 0xA0 and <= 0xFF : IsIdentity(code);
+        // Unicode 1.0 ch.3.1 preserves ASCII identities; ch.3.7 pp.127-128 document
+        // Latin1 graphics and European Latin through U+017E. U+017F remains raw.
+        // C1 also remains raw: ch.3.1 leaves its meanings to external standards.
+        return unicode10 ? code <= 0x7F || code is >= 0xA0 and <= 0x17E : IsIdentity(code);
     }
 
     private static bool Reverse(char value, bool unicode10, out ushort code)
@@ -107,7 +108,7 @@ internal static class NameHistoricalUnicodeCodec
             return code != 0 && (!unicode10 || code < OldFirst + Unicode10HangulCount);
         }
         code = value;
-        return unicode10 ? value <= '\u007F' || value is >= '\u00A0' and <= '\u00FF' : IsIdentity(value);
+        return unicode10 ? value <= '\u007F' || value is >= '\u00A0' and <= '\u017E' : IsIdentity(value);
     }
 
     private static bool IsIdentity(int code) =>
