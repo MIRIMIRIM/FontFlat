@@ -191,6 +191,12 @@ internal sealed partial class NameLegacyCodec
         ReadStatus status = Measure(bytes, out int chars, out int offset, out int code,
             out DiagnosticCode why, includeDirection);
         if (status != ReadStatus.Done) return FailUnit(status, why, at, offset, code, out diagnostic);
+        if (bytes.IsEmpty)
+        {
+            text = string.Empty;
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
         var builder = new StringBuilder(chars);
         if (includeDirection && _directions is not null) AppendDirectional(bytes, builder);
         else
