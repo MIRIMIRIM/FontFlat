@@ -36,7 +36,8 @@ public enum DataField : ushort
     MaxCompositePoints = 37, MaxCompositeContours = 38, MaxZones = 39,
     MaxTwilightPoints = 40, MaxStorage = 41, MaxFunctionDefs = 42,
     MaxInstructionDefs = 43, MaxStackElements = 44, MaxSizeOfInstructions = 45,
-    MaxComponentElements = 46, MaxComponentDepth = 47
+    MaxComponentElements = 46, MaxComponentDepth = 47,
+    PlatformId = 48, CharCode = 49
 }
 
 public enum OffsetBasis : byte { None = 0, File = 1, Table = 2, NameStorage = 3 }
