@@ -9,27 +9,35 @@ public readonly ref partial struct NameView
     /// <summary>
     /// Checks structure, ordering, supported encodings and RFC 5646 tag well-formedness.
     /// Does not consult external encoding/language registries or whole-font consistency.
-    /// Repeated payload references count separately toward the scan budget.
+    /// Repeated payload references count separately toward the scan budget. Unicode defaults
+    /// to strict UTF-16BE; Historical opts into the bounded old-ID character repertoire.
     /// </summary>
     public ReadStatus Validate(out FontDiagnostic diagnostic,
-        int maxReferencedPayloadBytes = 8 * 1024 * 1024) =>
-        ValidateCore(out diagnostic, maxReferencedPayloadBytes, requireSorted: true, null);
+        int maxReferencedPayloadBytes = 8 * 1024 * 1024,
+        NameUnicodeInterpretation unicodeInterpretation = NameUnicodeInterpretation.Utf16) =>
+        ValidateCore(out diagnostic, maxReferencedPayloadBytes, requireSorted: true, null, unicodeInterpretation);
 
     /// <summary>Strict validation with explicit per-original-ordinal Apple encoding selections.
     /// Undefined single-byte slots remain raw/UnmappedCharacter, not replacement text.</summary>
     public ReadStatus Validate(ReadOnlySpan<NameLegacyEncodingSelection> selections,
-        out FontDiagnostic diagnostic, int maxReferencedPayloadBytes = 8 * 1024 * 1024)
+        out FontDiagnostic diagnostic, int maxReferencedPayloadBytes = 8 * 1024 * 1024,
+        NameUnicodeInterpretation unicodeInterpretation = NameUnicodeInterpretation.Utf16)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(maxReferencedPayloadBytes);
-        ReadStatus status = TryCreateSelections(selections, null, out var encodings, out diagnostic);
+        ReadStatus status = NameTextCodec.ValidateUnicodeInterpretation(unicodeInterpretation, Location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryCreateSelections(selections, null, out var encodings, out diagnostic);
         return status == ReadStatus.Done
-            ? ValidateCore(out diagnostic, maxReferencedPayloadBytes, true, encodings) : status;
+            ? ValidateCore(out diagnostic, maxReferencedPayloadBytes, true, encodings, unicodeInterpretation) : status;
     }
 
     private ReadStatus ValidateCore(out FontDiagnostic diagnostic,
-        int maxReferencedPayloadBytes, bool requireSorted, NameLegacyEncoding?[]? encodings)
+        int maxReferencedPayloadBytes, bool requireSorted, NameLegacyEncoding?[]? encodings,
+        NameUnicodeInterpretation unicodeInterpretation)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(maxReferencedPayloadBytes);
+        ReadStatus policyStatus = NameTextCodec.ValidateUnicodeInterpretation(unicodeInterpretation, Location, out diagnostic);
+        if (policyStatus != ReadStatus.Done) return policyStatus;
         if (!IsBound)
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView,
                 Location.At(DataField.None, 0), out diagnostic);
@@ -98,7 +106,7 @@ public readonly ref partial struct NameView
             DataLocation payloadLocation = Location.At(DataField.Payload, payloadOffset, ordinal);
             NameLegacyEncoding? legacyEncoding = encodings?[ordinal];
             status = NameTextCodec.ValidatePayload(record.PlatformId, record.EncodingId,
-                payload, payloadLocation, out diagnostic, legacyEncoding);
+                payload, payloadLocation, out diagnostic, legacyEncoding, unicodeInterpretation);
             if (status != ReadStatus.Done)
             {
                 if (legacyEncoding is null) diagnostic = diagnostic with { Detail = record.Length };
@@ -106,10 +114,10 @@ public readonly ref partial struct NameView
             }
             if (NameRecordSemantics.HasTextConstraint(record.NameId) &&
                 NameTextCodec.DecodeState(record.PlatformId, record.EncodingId, payload,
-                    legacyEncoding) == NameDecodeState.Decoded)
+                    legacyEncoding, unicodeInterpretation) == NameDecodeState.Decoded)
             {
                 _ = NameTextCodec.TryDecodeSemantic(record.PlatformId, record.EncodingId, payload,
-                    legacyEncoding, out string? text, out _, payloadLocation);
+                    legacyEncoding, out string? text, out _, payloadLocation, unicodeInterpretation);
                 if (!NameRecordSemantics.IsValid(record.NameId, text!) ||
                     record.NameId == 25 && variationPrefix is not null && text != variationPrefix)
                     return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
@@ -148,12 +156,16 @@ public readonly ref partial struct NameView
         return ReadStatus.Done;
     }
 
-    /// <summary>Materialize text only for explicitly supported strict encodings.</summary>
+    /// <summary>Materialize text only for supported strict encodings. Historical interpretation
+    /// of platform 0 encoding IDs 0–2 requires an explicit choice.</summary>
     public ReadStatus TryDecodeRecord(int ordinal, out string? text,
-        out FontDiagnostic diagnostic)
+        out FontDiagnostic diagnostic,
+        NameUnicodeInterpretation unicodeInterpretation = NameUnicodeInterpretation.Utf16)
     {
         text = null;
-        ReadStatus status = TryGetRecord(ordinal, out RecordData record, out diagnostic);
+        ReadStatus status = NameTextCodec.ValidateUnicodeInterpretation(unicodeInterpretation, Location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetRecord(ordinal, out RecordData record, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!NameTextCodec.IsSupported(record.PlatformId, record.EncodingId))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
@@ -163,19 +175,22 @@ public readonly ref partial struct NameView
         if (status != ReadStatus.Done) return status;
         status = NameTextCodec.TryDecode(record.PlatformId, record.EncodingId, payload,
             out text, out diagnostic, Location.At(DataField.Payload,
-                (ulong)StorageOffset + record.StorageRelativeOffset, ordinal));
+                (ulong)StorageOffset + record.StorageRelativeOffset, ordinal), unicodeInterpretation);
         if (status != ReadStatus.Done &&
-            (!NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId) || status == ReadStatus.InvalidEncoding))
+            (!NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId, unicodeInterpretation) || status == ReadStatus.InvalidEncoding))
             diagnostic = diagnostic with { Detail = record.Length };
         return status;
     }
 
     /// <summary>Locally decode one record under a caller-selected Apple mapping.</summary>
     public ReadStatus TryDecodeRecord(int ordinal, NameLegacyEncoding encoding, out string? text,
-        out FontDiagnostic diagnostic)
+        out FontDiagnostic diagnostic,
+        NameUnicodeInterpretation unicodeInterpretation = NameUnicodeInterpretation.Utf16)
     {
         text = null;
-        ReadStatus status = TryGetRecord(ordinal, out RecordData record, out diagnostic);
+        ReadStatus status = NameTextCodec.ValidateUnicodeInterpretation(unicodeInterpretation, Location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetRecord(ordinal, out RecordData record, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = NameTextCodec.ValidateSelection(record.PlatformId, record.EncodingId, encoding,
             DataLocation.Anonymous(0x6E616D65).At(DataField.EncodingId, 0, ordinal), out diagnostic);
@@ -188,24 +203,27 @@ public readonly ref partial struct NameView
 
     /// <summary>Locally decode a record without treating an unknown encoding as damaged text.</summary>
     public ReadStatus TryDecodeRecordState(int ordinal, out NameDecodeState state,
-        out string? text, out FontDiagnostic diagnostic)
+        out string? text, out FontDiagnostic diagnostic,
+        NameUnicodeInterpretation unicodeInterpretation = NameUnicodeInterpretation.Utf16)
     {
         state = NameDecodeState.UnsupportedEncoding;
         text = null;
-        ReadStatus status = TryGetRecord(ordinal, out RecordData record, out diagnostic);
+        ReadStatus status = NameTextCodec.ValidateUnicodeInterpretation(unicodeInterpretation, Location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetRecord(ordinal, out RecordData record, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
         if (status != ReadStatus.Done) return status;
         DataLocation payloadLocation = Location.At(DataField.Payload,
             (ulong)StorageOffset + record.StorageRelativeOffset, ordinal);
         status = NameTextCodec.ValidatePayload(record.PlatformId, record.EncodingId, payload,
-            payloadLocation, out diagnostic);
+            payloadLocation, out diagnostic, unicodeInterpretation: unicodeInterpretation);
         if (status != ReadStatus.Done)
         {
             diagnostic = diagnostic with { Detail = record.Length };
             return status;
         }
-        state = NameTextCodec.DecodeState(record.PlatformId, record.EncodingId, payload, null);
+        state = NameTextCodec.DecodeState(record.PlatformId, record.EncodingId, payload, null, unicodeInterpretation);
         if (state != NameDecodeState.Decoded)
         {
             diagnostic = default;
@@ -213,7 +231,7 @@ public readonly ref partial struct NameView
         }
         status = NameTextCodec.TryDecode(record.PlatformId, record.EncodingId, payload,
             out text, out diagnostic, Location.At(DataField.Payload,
-                (ulong)StorageOffset + record.StorageRelativeOffset, ordinal));
+                (ulong)StorageOffset + record.StorageRelativeOffset, ordinal), unicodeInterpretation);
         if (status != ReadStatus.Done)
         {
             diagnostic = diagnostic with { Detail = record.Length };
@@ -225,32 +243,41 @@ public readonly ref partial struct NameView
     }
 
     public ReadStatus TryRead(out NameTableModel? model, out FontDiagnostic diagnostic,
-        BuildLimits? limits = null)
+        BuildLimits? limits = null,
+        NameUnicodeInterpretation unicodeInterpretation = NameUnicodeInterpretation.Utf16)
     {
         model = null;
+        ReadStatus policyStatus = NameTextCodec.ValidateUnicodeInterpretation(unicodeInterpretation, Location, out diagnostic);
+        if (policyStatus != ReadStatus.Done) return policyStatus;
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
-        return TryRead(out model, out diagnostic, budget);
+        return TryRead(out model, out diagnostic, budget, unicodeInterpretation);
     }
 
     public ReadStatus TryRead(ReadOnlySpan<NameLegacyEncodingSelection> selections,
-        out NameTableModel? model, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+        out NameTableModel? model, out FontDiagnostic diagnostic, BuildLimits? limits = null,
+        NameUnicodeInterpretation unicodeInterpretation = NameUnicodeInterpretation.Utf16)
     {
         model = null;
+        ReadStatus policyStatus = NameTextCodec.ValidateUnicodeInterpretation(unicodeInterpretation, Location, out diagnostic);
+        if (policyStatus != ReadStatus.Done) return policyStatus;
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         ReadStatus status = TryCreateSelections(selections, budget, out var encodings, out diagnostic);
-        return status == ReadStatus.Done ? Read(out model, out diagnostic, budget, encodings) : status;
+        return status == ReadStatus.Done ? Read(out model, out diagnostic, budget, encodings, unicodeInterpretation) : status;
     }
 
     internal ReadStatus TryRead(out NameTableModel? model, out FontDiagnostic diagnostic,
-        BuildBudget budget) => Read(out model, out diagnostic, budget, null);
+        BuildBudget budget, NameUnicodeInterpretation unicodeInterpretation = NameUnicodeInterpretation.Utf16) =>
+        Read(out model, out diagnostic, budget, null, unicodeInterpretation);
 
     private ReadStatus Read(out NameTableModel? model, out FontDiagnostic diagnostic,
-        BuildBudget budget, NameLegacyEncoding?[]? encodings)
+        BuildBudget budget, NameLegacyEncoding?[]? encodings, NameUnicodeInterpretation unicodeInterpretation)
     {
         model = null;
+        ReadStatus policyStatus = NameTextCodec.ValidateUnicodeInterpretation(unicodeInterpretation, Location, out diagnostic);
+        if (policyStatus != ReadStatus.Done) return policyStatus;
         if (!IsBound)
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView,
                 Location.At(DataField.None, 0), out diagnostic);
@@ -273,10 +300,10 @@ public readonly ref partial struct NameView
             referencedBytes += record.Length;
             if (NameRecordSemantics.HasTextConstraint(record.NameId) &&
                 NameTextCodec.IsSupported(record.PlatformId, record.EncodingId) &&
-                !NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId))
+                !NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId, unicodeInterpretation))
                 constrainedTextBytes += record.Length;
             extraDecodeBuffers += NameTextCodec.AdditionalDecodeBufferBytes(record.PlatformId,
-                record.EncodingId, record.Length, encodings?[i]) *
+                record.EncodingId, record.Length, encodings?[i], unicodeInterpretation) *
                 (NameRecordSemantics.HasTextConstraint(record.NameId) ? 2 : 1);
         }
         for (int i = 0; i < tagCount; i++)
@@ -301,7 +328,7 @@ public readonly ref partial struct NameView
             return ReadStatus.ResourceLimit;
         // Unsorted records have unambiguous keys and ordinals. Preserve their source order;
         // Validate reports the wire violation and the complete-content compiler sorts stably.
-        status = ValidateCore(out diagnostic, (int)referencedBytes, requireSorted: false, encodings);
+        status = ValidateCore(out diagnostic, (int)referencedBytes, requireSorted: false, encodings, unicodeInterpretation);
         if (status != ReadStatus.Done) return status;
 
         long modelArrays = (long)DeclaredCount * IntPtr.Size + (long)tagCount * IntPtr.Size;
@@ -319,11 +346,11 @@ public readonly ref partial struct NameView
             ulong payloadAt = (ulong)StorageOffset + row.StorageRelativeOffset;
             NameLegacyEncoding? legacyEncoding = encodings?[i];
             NameDecodeState decodeState = NameTextCodec.DecodeState(row.PlatformId, row.EncodingId,
-                payload, legacyEncoding);
+                payload, legacyEncoding, unicodeInterpretation);
             string? text = null;
             if (decodeState == NameDecodeState.Decoded)
                 _ = NameTextCodec.TryDecode(row.PlatformId, row.EncodingId,
-                    payload, legacyEncoding, out text, out _, Location.At(DataField.Payload, payloadAt, i));
+                    payload, legacyEncoding, out text, out _, Location.At(DataField.Payload, payloadAt, i), unicodeInterpretation);
             records[i] = new NameRecordModel(i, row.PlatformId, row.EncodingId,
                 row.LanguageId, row.NameId, row.Length, row.StorageRelativeOffset,
                 payload.ToArray(), decodeState,
@@ -342,7 +369,7 @@ public readonly ref partial struct NameView
                 Location.At(DataField.None, rowAt, i),
                 Location.At(DataField.Payload, payloadAt, i));
         }
-        model = new NameTableModel(Format, StorageOffset, original, records, tags, Location);
+        model = new NameTableModel(Format, StorageOffset, original, records, tags, Location, unicodeInterpretation);
         diagnostic = default;
         return ReadStatus.Done;
     }

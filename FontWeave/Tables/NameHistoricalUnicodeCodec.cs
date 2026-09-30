@@ -4,7 +4,8 @@ using FontWeave.Core;
 
 namespace FontWeave.Tables;
 
-/// <summary>Bounded historical character identities, not full historical Unicode behavior.
+/// <summary>Explicitly selected, bounded historical character identities, not full historical
+/// Unicode behavior. The default name interpretation does not use these profiles.
 /// Unicode 1.0 admits ASCII, Latin1 graphics, 127 European Latin characters,
 /// 113 Extended Latin characters, and its published 2350 Hangul mappings;
 /// Unicode 1.1 / ISO 1993 also admits the verified identity bitmap.

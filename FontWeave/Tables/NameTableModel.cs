@@ -39,7 +39,8 @@ public sealed class NameRecordModel
     public NameDecodeState DecodeState { get; }
     /// <summary>Decoded characters and transcoding hints. Selected Apple RTL mappings include
     /// canonical LRO/RLO ... PDF runs; this is not an undecorated name-ID validation value.
-    /// Supported historical Unicode positions expose modern identities, not raw code units;
+    /// Unicode records default to strict UTF-16BE. When the table explicitly selects
+    /// Historical, supported old positions expose modern identities, not raw code units;
     /// Unicode 1.0 currently covers ASCII, Latin1 graphics, 127 European Latin characters,
     /// 113 Extended Latin characters, and its 2350 Hangul positions.
     /// Unsupported or unmapped historical positions leave Text null and preserve Payload.</summary>
@@ -77,8 +78,10 @@ public sealed class NameLanguageTagModel
 public sealed class NameTableModel
 {
     internal NameTableModel(ushort format, ushort storageOffset, byte[] originalBytes,
-        NameRecordModel[] records, NameLanguageTagModel[] languageTags, DataLocation location)
+        NameRecordModel[] records, NameLanguageTagModel[] languageTags, DataLocation location,
+        NameUnicodeInterpretation unicodeInterpretation)
     {
+        UnicodeInterpretation = unicodeInterpretation;
         Format = format;
         StorageOffset = storageOffset;
         OriginalBytes = originalBytes;
@@ -87,6 +90,8 @@ public sealed class NameTableModel
         Location = location;
     }
 
+    /// <summary>The selected Unicode interpretation, retained for editing and recompilation.</summary>
+    public NameUnicodeInterpretation UnicodeInterpretation { get; }
     public ushort Format { get; }
     public ushort StorageOffset { get; }
     public ReadOnlyMemory<byte> OriginalBytes { get; }
@@ -136,6 +141,6 @@ public sealed class NameTableModel
         int at = 0;
         for (int i = 0; i < referenced.Length; i++)
             if (!referenced[i]) opaque[at++] = OriginalBytes.Span[metadataEnd + i];
-        return new() { Format = Format, Records = records, LanguageTags = tags, UnreferencedBytes = opaque };
+        return new() { UnicodeInterpretation = UnicodeInterpretation, Format = Format, Records = records, LanguageTags = tags, UnreferencedBytes = opaque };
     }
 }

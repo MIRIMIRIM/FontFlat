@@ -9,6 +9,9 @@ public readonly record struct NameLanguageIdChange(int Ordinal, ushort LanguageI
 /// <summary>Only existing record text/IDs and one terminal format-1 tag may change.</summary>
 public sealed record NameEditPlan
 {
+    /// <summary>Interpret source text and replacements as strict modern UTF-16BE by default.
+    /// Historical opts into the bounded platform 0 encoding IDs 0–2 repertoire.</summary>
+    public NameUnicodeInterpretation UnicodeInterpretation { get; init; } = NameUnicodeInterpretation.Utf16;
     public IReadOnlyList<NameReplacement> Replacements { get; init; } = Array.Empty<NameReplacement>();
     public IReadOnlyList<NameLanguageIdChange> LanguageIdChanges { get; init; } = Array.Empty<NameLanguageIdChange>();
     public string? AppendLanguageTag { get; init; }
@@ -22,25 +25,30 @@ public static partial class NameTableCompiler
     public static ReadStatus TryCompile(ReadOnlySpan<byte> input,
         ReadOnlySpan<NameReplacement> replacements, out byte[]? output,
         out FontDiagnostic diagnostic, BuildLimits? limits = null,
-        DataLocation location = default) => CompileLegacy(input, replacements,
-            out output, out diagnostic, new BuildBudget(limits), location, true);
+        DataLocation location = default,
+        NameUnicodeInterpretation unicodeInterpretation = NameUnicodeInterpretation.Utf16) => CompileLegacy(input, replacements,
+            out output, out diagnostic, new BuildBudget(limits), location, true, unicodeInterpretation);
 
     internal static ReadStatus TryCompile(ReadOnlySpan<byte> input,
         ReadOnlySpan<NameReplacement> replacements, out byte[]? output,
-        out FontDiagnostic diagnostic, BuildBudget budget, DataLocation location = default) =>
-        CompileLegacy(input, replacements, out output, out diagnostic, budget, location, false);
+        out FontDiagnostic diagnostic, BuildBudget budget, DataLocation location = default,
+        NameUnicodeInterpretation unicodeInterpretation = NameUnicodeInterpretation.Utf16) =>
+        CompileLegacy(input, replacements, out output, out diagnostic, budget, location, false, unicodeInterpretation);
 
     private static ReadStatus CompileLegacy(ReadOnlySpan<byte> input,
         ReadOnlySpan<NameReplacement> replacements, out byte[]? output,
-        out FontDiagnostic diagnostic, BuildBudget budget, DataLocation location, bool chargeInput)
+        out FontDiagnostic diagnostic, BuildBudget budget, DataLocation location, bool chargeInput,
+        NameUnicodeInterpretation unicodeInterpretation)
     {
         output = null;
         location = location == default ? DataLocation.Anonymous(Tag) : location;
+        ReadStatus policyStatus = NameTextCodec.ValidateUnicodeInterpretation(unicodeInterpretation, location, out diagnostic);
+        if (policyStatus != ReadStatus.Done) return policyStatus;
         if (!budget.Buffer((long)replacements.Length * 2 * IntPtr.Size,
                 location.At(DataField.TemporaryBytes, 0), out diagnostic))
             return ReadStatus.ResourceLimit;
         return Compile(input, replacements.ToArray(), Array.Empty<NameLanguageIdChange>(), null, false,
-            false, out output, out diagnostic, budget, location, chargeInput);
+            false, out output, out diagnostic, budget, location, chargeInput, unicodeInterpretation);
     }
 
     public static ReadStatus TryCompile(ReadOnlySpan<byte> input, NameEditPlan edit,
@@ -62,7 +70,7 @@ public static partial class NameTableCompiler
             throw new ArgumentException("Edit collections cannot be null.", nameof(edit));
         return Compile(input, edit.Replacements, edit.LanguageIdChanges,
             edit.AppendLanguageTag, edit.RemoveLastLanguageTag, true,
-            out output, out diagnostic, budget, location, chargeInput);
+            out output, out diagnostic, budget, location, chargeInput, edit.UnicodeInterpretation);
     }
 
     private static ReadStatus Compile(ReadOnlySpan<byte> input,
@@ -70,18 +78,20 @@ public static partial class NameTableCompiler
         IReadOnlyList<NameLanguageIdChange> languageChanges,
         string? appendTag, bool removeLastTag, bool rejectNoOp,
         out byte[]? output, out FontDiagnostic diagnostic, BuildBudget budget,
-        DataLocation location, bool chargeInput)
+        DataLocation location, bool chargeInput, NameUnicodeInterpretation unicodeInterpretation)
     {
         output = null;
         location = location == default ? DataLocation.Anonymous(Tag) : location;
         DataLocation request = DataLocation.Anonymous(Tag);
+        ReadStatus policyStatus = NameTextCodec.ValidateUnicodeInterpretation(unicodeInterpretation, request, out diagnostic);
+        if (policyStatus != ReadStatus.Done) return policyStatus;
         if (chargeInput && !budget.Input(input.Length, location, out diagnostic))
             return ReadStatus.ResourceLimit;
         if (!budget.Work(input.Length, location, out diagnostic))
             return ReadStatus.ResourceLimit;
         ReadStatus status = NameView.TryOpen(input, out NameView view, out diagnostic, location);
         if (status != ReadStatus.Done) return status;
-        status = view.TryRead(out NameTableModel? model, out diagnostic, budget);
+        status = view.TryRead(out NameTableModel? model, out diagnostic, budget, unicodeInterpretation);
         if (status != ReadStatus.Done) return status;
         NameTableModel source = model!;
         int count = source.Records.Count;
@@ -135,9 +145,9 @@ public static partial class NameTableCompiler
                     source.Records[ordinal].RowLocation.At(DataField.Count,
                         source.Records[ordinal].RowLocation.Offset, ordinal), out diagnostic);
             NameRecordModel record = source.Records[ordinal];
-            // The wire remains UTF-16BE, but historical Unicode requires explicitly
-            // supported character positions (ASCII, Latin1 graphics, European/Extended Latin,
-            // and Hangul for Unicode 1.0). Other code pages still use complete content +
+            // The wire remains strict UTF-16BE. Only explicit Historical interpretation
+            // restricts replacements to the bounded implemented character repertoire.
+            // Other code pages still use complete content +
             // NameTextCodec rather than this patch API.
             if (!NameView.IsUtf16(record.PlatformId, record.EncodingId))
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat,
@@ -151,7 +161,7 @@ public static partial class NameTableCompiler
                     rejectNoOp ? request.At(DataField.Payload, 0, ordinal) :
                         record.RowLocation.At(DataField.Payload, record.RowLocation.Offset, ordinal),
                     out diagnostic);
-            if (NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId))
+            if (NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId, unicodeInterpretation))
             {
                 DataLocation textLocation = rejectNoOp ? request.At(DataField.Payload, 0, ordinal) :
                     record.RowLocation.At(DataField.Payload, record.RowLocation.Offset, ordinal);
@@ -311,7 +321,7 @@ public static partial class NameTableCompiler
                 length == 0 ? (ushort)0 : (ushort)(cursor - metadataEnd));
             if (replacement is null)
                 record.Payload.Span.CopyTo(compiled.AsSpan(cursor));
-            else if (NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId))
+            else if (NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId, unicodeInterpretation))
                 NameHistoricalUnicodeCodec.Write(replacement, compiled.AsSpan(cursor, length),
                     record.EncodingId == 0);
             else

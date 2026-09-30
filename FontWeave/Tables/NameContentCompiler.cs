@@ -19,6 +19,8 @@ public static partial class NameTableCompiler
         ArgumentNullException.ThrowIfNull(content.LanguageTags);
         output = null;
         DataLocation request = DataLocation.Anonymous(Tag);
+        ReadStatus policyStatus = NameTextCodec.ValidateUnicodeInterpretation(content.UnicodeInterpretation, request, out diagnostic);
+        if (policyStatus != ReadStatus.Done) return policyStatus;
         var budget = new BuildBudget(limits);
         if (content.Format is not (0 or 1))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
@@ -63,19 +65,19 @@ public static partial class NameTableCompiler
                 if (selectionStatus != ReadStatus.Done) return selectionStatus;
             }
             ReadStatus status = NameTextCodec.ValidatePayload(record.PlatformId, record.EncodingId,
-                record.Payload.Span, payloadLocation, out diagnostic, record.LegacyEncoding);
+                record.Payload.Span, payloadLocation, out diagnostic, record.LegacyEncoding, content.UnicodeInterpretation);
             if (status != ReadStatus.Done) return status;
             if (NameRecordSemantics.HasTextConstraint(record.NameId) &&
                 NameTextCodec.DecodeState(record.PlatformId, record.EncodingId, record.Payload.Span,
-                    record.LegacyEncoding) == NameDecodeState.Decoded)
+                    record.LegacyEncoding, content.UnicodeInterpretation) == NameDecodeState.Decoded)
             {
                 if (!budget.Buffer(Math.Max(record.Payload.Length * 2L,
                         NameTextCodec.AdditionalDecodeBufferBytes(record.PlatformId, record.EncodingId,
-                            record.Payload.Length, record.LegacyEncoding)),
+                            record.Payload.Length, record.LegacyEncoding, content.UnicodeInterpretation)),
                         request, out diagnostic))
                     return ReadStatus.ResourceLimit;
                 _ = NameTextCodec.TryDecodeSemantic(record.PlatformId, record.EncodingId, record.Payload.Span,
-                    record.LegacyEncoding, out string? text, out _, payloadLocation);
+                    record.LegacyEncoding, out string? text, out _, payloadLocation, content.UnicodeInterpretation);
                 if (!NameRecordSemantics.IsValid(record.NameId, text!) ||
                     record.NameId == 25 && variationPrefix is not null && text != variationPrefix)
                     return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,

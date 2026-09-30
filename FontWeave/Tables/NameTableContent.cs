@@ -15,6 +15,8 @@ public readonly record struct NameRecordValue(ushort PlatformId, ushort Encoding
 /// </summary>
 public sealed record NameTableContent
 {
+    /// <summary>Unicode semantics used for validation; strict modern UTF-16BE by default.</summary>
+    public NameUnicodeInterpretation UnicodeInterpretation { get; init; } = NameUnicodeInterpretation.Utf16;
     public ushort Format { get; init; }
     public IReadOnlyList<NameRecordValue> Records { get; init; } = Array.Empty<NameRecordValue>();
     public IReadOnlyList<string> LanguageTags { get; init; } = Array.Empty<string>();
