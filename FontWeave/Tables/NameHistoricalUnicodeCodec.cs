@@ -6,7 +6,7 @@ namespace FontWeave.Tables;
 
 /// <summary>Bounded historical character identities, not full historical Unicode behavior.
 /// Unicode 1.0 admits ASCII, Latin1 graphics, 127 European Latin characters,
-/// and its published 2350 Hangul mappings;
+/// 113 Extended Latin characters, and its published 2350 Hangul mappings;
 /// Unicode 1.1 / ISO 1993 also admits the verified identity bitmap.
 /// Other positions remain raw, not necessarily unassigned.</summary>
 internal static class NameHistoricalUnicodeCodec
@@ -94,10 +94,7 @@ internal static class NameHistoricalUnicodeCodec
             return true;
         }
         mapped = (char)code;
-        // Unicode 1.0 ch.3.1 preserves ASCII identities; ch.3.7 pp.127-128 document
-        // Latin1 graphics and European Latin through U+017E. U+017F remains raw.
-        // C1 also remains raw: ch.3.1 leaves its meanings to external standards.
-        return unicode10 ? code <= 0x7F || code is >= 0xA0 and <= 0x17E : IsIdentity(code);
+        return unicode10 ? IsUnicode10Identity(code) : IsIdentity(code);
     }
 
     private static bool Reverse(char value, bool unicode10, out ushort code)
@@ -108,8 +105,14 @@ internal static class NameHistoricalUnicodeCodec
             return code != 0 && (!unicode10 || code < OldFirst + Unicode10HangulCount);
         }
         code = value;
-        return unicode10 ? value <= '\u007F' || value is >= '\u00A0' and <= '\u017E' : IsIdentity(value);
+        return unicode10 ? IsUnicode10Identity(value) : IsIdentity(value);
     }
+
+    // Unicode 1.0 ch.3.1 preserves ASCII identities; ch.3.7 pp.127-128 document
+    // Latin1 graphics, European Latin through U+017E, and Extended Latin U+0180..U+01F0.
+    // U+017F and U+01F1 remain raw, as does C1 whose meanings are left to external standards.
+    private static bool IsUnicode10Identity(int code) =>
+        code <= 0x7F || code is >= 0xA0 and <= 0x17E or >= 0x180 and <= 0x1F0;
 
     private static bool IsIdentity(int code) =>
         (Data[BitmapAt + (code >> 3)] & (1 << (code & 7))) != 0;

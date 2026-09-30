@@ -41,7 +41,7 @@ public sealed class NameRecordModel
     /// canonical LRO/RLO ... PDF runs; this is not an undecorated name-ID validation value.
     /// Supported historical Unicode positions expose modern identities, not raw code units;
     /// Unicode 1.0 currently covers ASCII, Latin1 graphics, 127 European Latin characters,
-    /// and its 2350 Hangul positions.
+    /// 113 Extended Latin characters, and its 2350 Hangul positions.
     /// Unsupported or unmapped historical positions leave Text null and preserve Payload.</summary>
     public string? Text { get; }
     public DataLocation RowLocation { get; }

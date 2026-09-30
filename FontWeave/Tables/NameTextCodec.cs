@@ -7,7 +7,8 @@ namespace FontWeave.Tables;
 /// Strict codecs whose mapping is defined by the OpenType name chapter and the explicitly
 /// selected Apple catalogue. Unknown encodings are not approximated by an OS code page.
 /// Historical Unicode IDs use explicit character-identity profiles. Unicode 1.0 currently
-/// supports ASCII, Latin1 graphics, 127 European Latin characters, and its 2350 Hangul mappings;
+/// supports ASCII, Latin1 graphics, 127 European Latin characters, 113 Extended Latin characters,
+/// and its 2350 Hangul mappings;
 /// other e0 positions remain raw, not "unassigned".
 /// </summary>
 public static class NameTextCodec
