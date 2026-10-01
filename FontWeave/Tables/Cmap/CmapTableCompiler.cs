@@ -19,10 +19,10 @@ public sealed record CmapSubtableEdit
 {
     public int RecordOrdinal { get; init; }
 
-    /// <summary>Mapping edits for format 4/12/13 targets; must be null or empty for format 14.</summary>
+    /// <summary>Mapping edits for format 0/2/4/6/8/10/12/13 targets; must be null or empty for format 14.</summary>
     public IReadOnlyList<CmapMappingEdit>? Mappings { get; init; }
 
-    /// <summary>Variation edits for format 14 targets; must be null or empty for format 4/12/13.</summary>
+    /// <summary>Variation edits for format 14 targets; must be null or empty for the other formats.</summary>
     public IReadOnlyList<CmapVariationEdit>? Variations { get; init; }
 }
 
@@ -31,11 +31,16 @@ public sealed record CmapEditPlan
     public IReadOnlyList<CmapSubtableEdit> Subtables { get; init; } = [];
 }
 
-/// <summary>Canonical cmap compiler. Format 4 subtables are re-encoded as delta-only maximal
-/// affine segments plus the structural sentinel; format 12 as maximal (cp+1, gid+1) merged
-/// groups; format 13 as constant-gid groups with adjacent equal-gid runs merged; format 14 as
-/// ascending selectors with merged default ranges and fresh per-selector tables (internal
-/// table aliasing is not preserved). Subtables outside formats 4/12/13/14 are preserved
+/// <summary>Canonical cmap compiler. Format 0 subtables re-encode as the full 256-entry array;
+/// format 4 as delta-only maximal affine segments plus the structural sentinel; format 6 as one
+/// trimmed window with zero-filled holes; format 2 as a full subHeader-0 array plus one explicit
+/// idDelta-0 window per leading byte (no sharing, merging or delta tricks); format 12 as maximal
+/// (cp+1, gid+1) merged groups; format 13 as constant-gid groups with adjacent equal-gid runs
+/// merged; format 8 as maximal (cp+1, gid+1) merged groups split at the 0xFFFF/0x10000 boundary
+/// plus the minimal deterministic is32 bitmap (only the high 16-bit values covered by non-BMP
+/// groups are set); format 10 as one minimal trimmed window with zero-filled holes; format 14 as
+/// ascending selectors with merged default ranges and fresh per-selector tables (internal table
+/// aliasing is not preserved). Subtables outside formats 0/2/4/6/8/10/12/13/14 are preserved
 /// byte-for-byte, and records that shared a subtable keep sharing the recompiled one.</summary>
 public static class CmapTableCompiler
 {
@@ -156,7 +161,9 @@ public static class CmapTableCompiler
                 }
                 sortedVariations[e] = variations;
             }
-            else if (subtable is CmapFormat4Subtable or CmapFormat12Subtable or CmapFormat13Subtable)
+            else if (subtable is CmapFormat0Subtable or CmapFormat2Subtable or CmapFormat4Subtable
+                or CmapFormat6Subtable or CmapFormat8Subtable or CmapFormat10Subtable
+                or CmapFormat12Subtable or CmapFormat13Subtable)
             {
                 if (request.Variations is { Count: > 0 })
                     return RejectMismatch(model, records[ordinal].SourceOffset, ordinal,
@@ -164,7 +171,17 @@ public static class CmapTableCompiler
                 var mappings = request.Mappings?.ToArray() ?? [];
                 Array.Sort(mappings, static (a, b) => a.CharacterCode.CompareTo(b.CharacterCode));
                 sortedMappings[e] = mappings;
-                uint maxCode = subtable is CmapFormat4Subtable ? 0xFFFEu : 0x10FFFFu;
+                uint maxCode = subtable switch
+                {
+                    CmapFormat4Subtable => 0xFFFEu,
+                    CmapFormat0Subtable => 0xFFu,
+                    CmapFormat2Subtable or CmapFormat6Subtable => 0xFFFFu,
+                    _ => 0x10FFFFu,
+                };
+                // Format 0 stores one-byte glyph ids: the edit bound is the tighter of
+                // the glyph count and what the wire can hold.
+                uint maxGlyph = subtable is CmapFormat0Subtable
+                    ? (uint)Math.Min(model.NumGlyphs, 256) : (uint)model.NumGlyphs;
                 for (int m = 1; m < mappings.Length; m++)
                     if (mappings[m].CharacterCode == mappings[m - 1].CharacterCode)
                         return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
@@ -177,10 +194,10 @@ public static class CmapTableCompiler
                         return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                             model.Location.At(DataField.CharCode, mapping.CharacterCode, ordinal),
                             out diagnostic, mapping.CharacterCode, maxCode);
-                    if (mapping.GlyphId is { } gid && (gid < 1 || gid >= model.NumGlyphs))
+                    if (mapping.GlyphId is { } gid && (gid < 1 || gid >= maxGlyph))
                         return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                             model.Location.At(DataField.GlyphId, mapping.CharacterCode, ordinal),
-                            out diagnostic, unchecked((ulong)(long)gid), (uint)model.NumGlyphs);
+                            out diagnostic, unchecked((ulong)(long)gid), maxGlyph);
                 }
             }
             else
@@ -239,6 +256,83 @@ public static class CmapTableCompiler
                     if (!editChanged) continue;
                     replacement = new CmapFormat13Subtable(groups13, format13.SourceOffset,
                         format13.Location);
+                    break;
+                case CmapFormat8Subtable format8:
+                    status = CmapTable.EnumerateFormat8(format8, out var existing8, out diagnostic, budget);
+                    if (status != ReadStatus.Done) return status;
+                    status = ApplyMappings(existing8!, sortedMappings[e]!, format8.Location,
+                        out var merged8, out diagnostic, out editChanged);
+                    if (status != ReadStatus.Done) return status;
+                    if (!editChanged) continue;
+                    status = BuildFormat8Canonical(merged8!, format8.Location,
+                        out var groups8, out var is32Map8, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    if (!budget.Buffer(CmapFormat8Layout.Is32Length + 12L * groups8.Length,
+                        format8.Location, out diagnostic))
+                        return ReadStatus.ResourceLimit;
+                    replacement = new CmapFormat8Subtable(format8.Language, groups8, is32Map8,
+                        format8.SourceOffset, format8.Location);
+                    break;
+                case CmapFormat10Subtable format10:
+                    status = CmapTable.EnumerateFormat10(format10, out var existing10, out diagnostic, budget);
+                    if (status != ReadStatus.Done) return status;
+                    status = ApplyMappings(existing10!, sortedMappings[e]!, format10.Location,
+                        out var merged10, out diagnostic, out editChanged);
+                    if (status != ReadStatus.Done) return status;
+                    if (!editChanged) continue;
+                    status = BuildFormat10Canonical(merged10!, format10.Location,
+                        out uint start10, out var glyphArray10, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    if (!budget.Buffer(2L * glyphArray10.Length, format10.Location, out diagnostic))
+                        return ReadStatus.ResourceLimit;
+                    replacement = new CmapFormat10Subtable(format10.Language, start10, glyphArray10,
+                        format10.SourceOffset, format10.Location);
+                    break;
+                case CmapFormat0Subtable format0:
+                    status = CmapTable.EnumerateFormat0(format0, out var existing0, out diagnostic, budget);
+                    if (status != ReadStatus.Done) return status;
+                    status = ApplyMappings(existing0!, sortedMappings[e]!, format0.Location,
+                        out var merged0, out diagnostic, out editChanged);
+                    if (status != ReadStatus.Done) return status;
+                    if (!editChanged) continue;
+                    if (!budget.Buffer(256L, format0.Location, out diagnostic))
+                        return ReadStatus.ResourceLimit;
+                    var glyphArray0 = new byte[256];
+                    foreach (var mapping in merged0!)
+                        glyphArray0[(int)mapping.CharacterCode] = checked((byte)mapping.GlyphId);
+                    replacement = new CmapFormat0Subtable(format0.Language, glyphArray0,
+                        format0.SourceOffset, format0.Location);
+                    break;
+                case CmapFormat6Subtable format6:
+                    status = CmapTable.EnumerateFormat6(format6, out var existing6, out diagnostic, budget);
+                    if (status != ReadStatus.Done) return status;
+                    status = ApplyMappings(existing6!, sortedMappings[e]!, format6.Location,
+                        out var merged6, out diagnostic, out editChanged);
+                    if (status != ReadStatus.Done) return status;
+                    if (!editChanged) continue;
+                    status = BuildFormat6Canonical(merged6!, format6.Location,
+                        out ushort firstCode6, out var glyphArray6, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    if (!budget.Buffer(2L * glyphArray6.Length, format6.Location, out diagnostic))
+                        return ReadStatus.ResourceLimit;
+                    replacement = new CmapFormat6Subtable(format6.Language, firstCode6, glyphArray6,
+                        format6.SourceOffset, format6.Location);
+                    break;
+                case CmapFormat2Subtable format2:
+                    status = CmapTable.EnumerateFormat2(format2, out var existing2, out diagnostic, budget);
+                    if (status != ReadStatus.Done) return status;
+                    status = ApplyMappings(existing2!, sortedMappings[e]!, format2.Location,
+                        out var merged2, out diagnostic, out editChanged);
+                    if (status != ReadStatus.Done) return status;
+                    if (!editChanged) continue;
+                    status = BuildFormat2Canonical(merged2!, format2.Location,
+                        out var keys2, out var headers2, out var glyphs2, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    if (!budget.Buffer(2L * keys2.Length + 8L * headers2.Length + 2L * glyphs2.Length,
+                        format2.Location, out diagnostic))
+                        return ReadStatus.ResourceLimit;
+                    replacement = new CmapFormat2Subtable(format2.Language, keys2, headers2,
+                        glyphs2, format2.SourceOffset, format2.Location);
                     break;
                 case CmapFormat14Subtable format14:
                     long variationBytes = 16L * format14.SelectorCount;
@@ -679,11 +773,30 @@ public static class CmapTableCompiler
         {
             var subtable = GetSubtableAt(model, j);
             ReadStatus status;
-            if (subtable is CmapFormat4Subtable format4)
+            if (subtable is CmapFormat0Subtable format0)
+            {
+                status = EncodeFormat0(format0, subtable.Location, budget,
+                    out payloads[j], out diagnostic);
+            }
+            else if (subtable is CmapFormat2Subtable format2)
+            {
+                status = CmapTable.EnumerateFormat2(format2, out var mappings2, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+                status = EncodeFormat2(format2.Language, mappings2!, subtable.Location,
+                    budget, out payloads[j], out diagnostic);
+            }
+            else if (subtable is CmapFormat4Subtable format4)
             {
                 status = CmapTable.EnumerateFormat4(format4, out var mappings, out diagnostic, budget);
                 if (status != ReadStatus.Done) return status;
                 status = EncodeFormat4(format4.Language, mappings!, subtable.Location,
+                    budget, out payloads[j], out diagnostic);
+            }
+            else if (subtable is CmapFormat6Subtable format6)
+            {
+                status = CmapTable.EnumerateFormat6(format6, out var mappings6, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+                status = EncodeFormat6(format6.Language, mappings6!, subtable.Location,
                     budget, out payloads[j], out diagnostic);
             }
             else if (subtable is CmapFormat12Subtable format12)
@@ -696,6 +809,20 @@ public static class CmapTableCompiler
             else if (subtable is CmapFormat13Subtable format13)
             {
                 status = EncodeFormat13(format13.Groups.ToArray(), subtable.Location, budget,
+                    out payloads[j], out diagnostic);
+            }
+            else if (subtable is CmapFormat8Subtable format8)
+            {
+                status = CmapTable.EnumerateFormat8(format8, out var mappings8, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+                status = EncodeFormat8(format8.Language, mappings8!, subtable.Location, budget,
+                    out payloads[j], out diagnostic);
+            }
+            else if (subtable is CmapFormat10Subtable format10)
+            {
+                status = CmapTable.EnumerateFormat10(format10, out var mappings10, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+                status = EncodeFormat10(format10.Language, mappings10!, subtable.Location, budget,
                     out payloads[j], out diagnostic);
             }
             else if (subtable is CmapFormat14Subtable format14)
@@ -793,6 +920,202 @@ public static class CmapTableCompiler
         return ReadStatus.Done;
     }
 
+    /// <summary>Canonical format 0: the fixed 256-entry array exactly as materialized, with
+    /// the language value preserved. The validated array is already canonical, so the writer
+    /// copies it instead of re-deriving it from mappings.</summary>
+    internal static ReadStatus EncodeFormat0(CmapFormat0Subtable subtable, DataLocation location,
+        BuildBudget budget, out byte[]? output, out FontDiagnostic diagnostic)
+    {
+        output = null;
+        const int length = CmapFormat0Layout.SubtableLength;
+        if (!budget.Work(length, location, out diagnostic) ||
+            !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var bytes = new byte[length];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes, 0);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(2), length);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), subtable.Language);
+        var glyphArray = subtable.GlyphArray;
+        for (int i = 0; i < CmapFormat0Layout.GlyphCount; i++)
+            bytes[6 + i] = glyphArray[i];
+        output = bytes;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Canonical format 6 structure: one trimmed window from the smallest to the
+    /// largest mapped code with zero-filled holes; an empty mapping list yields the legal
+    /// entryCount-0 form. Shared by the compiler writer and the edited-model constructor.</summary>
+    internal static ReadStatus BuildFormat6Canonical(CmapMapping[] mappings, DataLocation location,
+        out ushort firstCode, out ushort[] glyphArray, out FontDiagnostic diagnostic)
+    {
+        firstCode = 0;
+        glyphArray = [];
+        if (mappings.Length == 0)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        uint start = mappings[0].CharacterCode, end = start;
+        foreach (var mapping in mappings)
+        {
+            if (mapping.CharacterCode < start) start = mapping.CharacterCode;
+            if (mapping.CharacterCode > end) end = mapping.CharacterCode;
+        }
+        long entryCount = end - start + 1;
+        long length = 10L + 2L * entryCount;
+        if (length > 0xFFFF)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.At(DataField.Length, 2), out diagnostic, (ulong)length, 0xFFFF);
+        var array = new ushort[entryCount];
+        foreach (var mapping in mappings)
+            array[(int)(mapping.CharacterCode - start)] = mapping.GlyphId;
+        firstCode = (ushort)start;
+        glyphArray = array;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    internal static ReadStatus EncodeFormat6(ushort language, CmapMapping[] mappings,
+        DataLocation location, BuildBudget budget, out byte[]? output, out FontDiagnostic diagnostic)
+    {
+        output = null;
+        ReadStatus status = BuildFormat6Canonical(mappings, location,
+            out ushort firstCode, out var glyphArray, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int length = 10 + 2 * glyphArray.Length;
+        if (!budget.Work(length, location, out diagnostic) ||
+            !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var bytes = new byte[length];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes, 6);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(2), (ushort)length);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), language);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6), firstCode);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(8), (ushort)glyphArray.Length);
+        for (int i = 0; i < glyphArray.Length; i++)
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(10 + 2 * i), glyphArray[i]);
+        output = bytes;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Canonical format 2 structure: subHeader 0 always holds the full 256-entry
+    /// single-byte array (firstCode 0, entryCount 256, idDelta 0), every mapped leading byte
+    /// above 0xFF gets its own explicit idDelta-0 window [minLow, maxLow] with zero-filled
+    /// holes, keys point at those windows and every other key stays 0. Windows are never
+    /// shared or merged. The uint16 subtable length bounds the result.</summary>
+    internal static ReadStatus BuildFormat2Canonical(CmapMapping[] mappings, DataLocation location,
+        out ushort[] subHeaderKeys, out CmapFormat2SubHeader[] subHeaders, out ushort[] glyphArray,
+        out FontDiagnostic diagnostic)
+    {
+        subHeaderKeys = new ushort[256];
+        subHeaders = [];
+        glyphArray = [];
+        foreach (var mapping in mappings)
+        {
+            if (mapping.CharacterCode > 0xFFFF)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.At(DataField.CharCode, mapping.CharacterCode), out diagnostic,
+                    mapping.CharacterCode, 0xFFFF);
+        }
+        var leadFirst = new int[256];
+        var leadLast = new int[256];
+        var leadMapped = new bool[256];
+        foreach (var mapping in mappings)
+        {
+            uint code = mapping.CharacterCode;
+            if (code <= 0xFF) continue;
+            int lead = (int)(code >> 8);
+            int low = (int)(code & 0xFF);
+            if (!leadMapped[lead])
+            {
+                leadMapped[lead] = true;
+                leadFirst[lead] = low;
+                leadLast[lead] = low;
+            }
+            else
+            {
+                if (low < leadFirst[lead]) leadFirst[lead] = low;
+                if (low > leadLast[lead]) leadLast[lead] = low;
+            }
+        }
+        int subHeaderCount = 1;
+        long windowEntries = 256;
+        for (int b = 1; b < 256; b++)
+        {
+            if (!leadMapped[b]) continue;
+            subHeaderCount++;
+            windowEntries += leadLast[b] - leadFirst[b] + 1;
+        }
+        long length = 518L + 8L * subHeaderCount + 2L * windowEntries;
+        if (length > 0xFFFF)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.At(DataField.Length, 2), out diagnostic, (ulong)length, 0xFFFF);
+        glyphArray = new ushort[windowEntries];
+        subHeaders = new CmapFormat2SubHeader[subHeaderCount];
+        long glyphArrayStart = 518L + 8L * subHeaderCount;
+        subHeaders[0] = new(0, 256, 0, checked((ushort)(glyphArrayStart - 524L)));
+        var leadEntryBase = new long[256];
+        long at = 256;
+        int index = 1;
+        for (int b = 1; b < 256; b++)
+        {
+            if (!leadMapped[b]) continue;
+            int first = leadFirst[b], last = leadLast[b];
+            long windowStart = glyphArrayStart + 2L * at;
+            long fieldAddress = 518L + 8L * index + 6L;
+            subHeaders[index] = new((ushort)first, (ushort)(last - first + 1), 0,
+                checked((ushort)(windowStart - fieldAddress)));
+            leadEntryBase[b] = at;
+            subHeaderKeys[b] = (ushort)(8 * index);
+            at += last - first + 1;
+            index++;
+        }
+        foreach (var mapping in mappings)
+        {
+            uint code = mapping.CharacterCode;
+            if (code <= 0xFF)
+                glyphArray[code] = mapping.GlyphId;
+            else
+                glyphArray[leadEntryBase[code >> 8] + (int)(code & 0xFF) - leadFirst[code >> 8]] =
+                    mapping.GlyphId;
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    internal static ReadStatus EncodeFormat2(ushort language, CmapMapping[] mappings,
+        DataLocation location, BuildBudget budget, out byte[]? output, out FontDiagnostic diagnostic)
+    {
+        output = null;
+        ReadStatus status = BuildFormat2Canonical(mappings, location,
+            out var subHeaderKeys, out var subHeaders, out var glyphArray, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int length = 518 + 8 * subHeaders.Length + 2 * glyphArray.Length;
+        if (!budget.Work(length, location, out diagnostic) ||
+            !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var bytes = new byte[length];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes, 2);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(2), (ushort)length);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), language);
+        for (int i = 0; i < 256; i++)
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6 + 2 * i), subHeaderKeys[i]);
+        for (int k = 0; k < subHeaders.Length; k++)
+        {
+            var header = subHeaders[k];
+            int at = 518 + 8 * k;
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at), header.FirstCode);
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 2), header.EntryCount);
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 4), unchecked((ushort)header.IdDelta));
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 6), header.IdRangeOffset);
+        }
+        int glyphStart = 518 + 8 * subHeaders.Length;
+        for (int i = 0; i < glyphArray.Length; i++)
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(glyphStart + 2 * i), glyphArray[i]);
+        output = bytes;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
     internal static ReadStatus EncodeFormat4(ushort language, CmapMapping[] mappings,
         DataLocation location, BuildBudget budget, out byte[]? output, out FontDiagnostic diagnostic)
     {
@@ -883,6 +1206,150 @@ public static class CmapTableCompiler
             BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(20 + 12 * r), runs[r].EndCharCode);
             BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(24 + 12 * r), runs[r].StartGlyphID);
         }
+        output = bytes;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Canonical format 8 structure: maximal (cp+1, gid+1) merged groups as in format
+    /// 12, split at the 0xFFFF/0x10000 boundary so no group spans the 16/32-bit domains, plus
+    /// the minimal deterministic is32 bitmap: only the high 16-bit values actually covered by
+    /// non-BMP groups are set and proactive input bits are not preserved. The canonical output
+    /// therefore revalidates against the format 8 rules. Shared by the compiler writer and the
+    /// edited-model constructor so both agree.</summary>
+    internal static ReadStatus BuildFormat8Canonical(CmapMapping[] mappings, DataLocation location,
+        out CmapFormat8Group[] groups, out byte[] is32, out FontDiagnostic diagnostic)
+    {
+        groups = [];
+        is32 = [];
+        foreach (var mapping in mappings)
+        {
+            if (mapping.CharacterCode > 0x10FFFF)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.At(DataField.CharCode, mapping.CharacterCode), out diagnostic,
+                    mapping.CharacterCode, 0x10FFFF);
+        }
+        var runs = BuildRuns(mappings);
+        var split = new List<Run>(runs.Count);
+        foreach (var run in runs)
+        {
+            if (run.Start <= 0xFFFF && run.End > 0xFFFF)
+            {
+                split.Add(new(run.Start, 0xFFFF, run.Glyph));
+                split.Add(new(0x10000, run.End, run.Glyph + (0x10000 - run.Start)));
+            }
+            else split.Add(run);
+        }
+        groups = new CmapFormat8Group[split.Count];
+        is32 = new byte[CmapFormat8Layout.Is32Length];
+        for (int r = 0; r < split.Count; r++)
+        {
+            var run = split[r];
+            groups[r] = new(run.Start, run.End, run.Glyph);
+            if (run.Start > 0xFFFF)
+            {
+                for (uint high = run.Start >> 16; ; high++)
+                {
+                    is32[(int)(high >> 3)] |= (byte)(1 << (7 - (int)(high & 7)));
+                    if (high == run.End >> 16) break;
+                }
+            }
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Canonical format 8 wire form: validated header with the preserved language, the
+    /// rebuilt minimal is32 bitmap and the merged groups; an empty mapping list yields the legal
+    /// numGroups-0 form.</summary>
+    internal static ReadStatus EncodeFormat8(uint language, CmapMapping[] mappings,
+        DataLocation location, BuildBudget budget, out byte[]? output, out FontDiagnostic diagnostic)
+    {
+        output = null;
+        ReadStatus status = BuildFormat8Canonical(mappings, location,
+            out var groups, out var is32, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        long length = CmapFormat8Layout.HeaderLength + 12L * groups.Length;
+        if (!budget.Work(length, location, out diagnostic) ||
+            !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var bytes = new byte[length];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes, 8);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(4), (uint)length);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(8), language);
+        is32.CopyTo(bytes.AsSpan(CmapFormat8Layout.Is32Offset));
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(CmapFormat8Layout.NumGroupsOffset),
+            (uint)groups.Length);
+        for (int r = 0; r < groups.Length; r++)
+        {
+            int at = CmapFormat8Layout.HeaderLength + 12 * r;
+            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(at), groups[r].StartCharCode);
+            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(at + 4), groups[r].EndCharCode);
+            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(at + 8), groups[r].StartGlyphID);
+        }
+        output = bytes;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Canonical format 10 structure: one minimal window from the smallest to the
+    /// largest mapped code with zero-filled holes, or the legal empty (numChars-0) form. A
+    /// mapping set spanning the surrogate block has no valid minimal window and is rejected,
+    /// mirroring the read-side window rule.</summary>
+    internal static ReadStatus BuildFormat10Canonical(CmapMapping[] mappings, DataLocation location,
+        out uint startCharCode, out ushort[] glyphArray, out FontDiagnostic diagnostic)
+    {
+        startCharCode = 0;
+        glyphArray = [];
+        foreach (var mapping in mappings)
+        {
+            if (mapping.CharacterCode > 0x10FFFF)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.At(DataField.CharCode, mapping.CharacterCode), out diagnostic,
+                    mapping.CharacterCode, 0x10FFFF);
+        }
+        if (mappings.Length == 0)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        uint start = mappings[0].CharacterCode, end = start;
+        foreach (var mapping in mappings)
+        {
+            if (mapping.CharacterCode < start) start = mapping.CharacterCode;
+            if (mapping.CharacterCode > end) end = mapping.CharacterCode;
+        }
+        if (start <= 0xDFFF && end >= 0xD800)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.OverlappingRange,
+                location.At(DataField.CharCode, start), out diagnostic, end, 0xD800);
+        var array = new ushort[end - start + 1];
+        foreach (var mapping in mappings)
+            array[(int)(mapping.CharacterCode - start)] = mapping.GlyphId;
+        startCharCode = start;
+        glyphArray = array;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Canonical format 10 wire form: validated header with the preserved language and
+    /// the minimal window; an empty mapping list yields the legal numChars-0 form.</summary>
+    internal static ReadStatus EncodeFormat10(uint language, CmapMapping[] mappings,
+        DataLocation location, BuildBudget budget, out byte[]? output, out FontDiagnostic diagnostic)
+    {
+        output = null;
+        ReadStatus status = BuildFormat10Canonical(mappings, location,
+            out uint start, out var glyphArray, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int length = CmapFormat10Layout.HeaderLength + 2 * glyphArray.Length;
+        if (!budget.Work(length, location, out diagnostic) ||
+            !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var bytes = new byte[length];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes, 10);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(4), (uint)length);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(8), language);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(12), start);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16), (uint)glyphArray.Length);
+        for (int i = 0; i < glyphArray.Length; i++)
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(20 + 2 * i), glyphArray[i]);
         output = bytes;
         diagnostic = default;
         return ReadStatus.Done;

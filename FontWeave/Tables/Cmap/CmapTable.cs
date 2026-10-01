@@ -176,6 +176,228 @@ public sealed class CmapFormat13Subtable : CmapSubtable
     }
 }
 
+public readonly record struct CmapFormat8Group(uint StartCharCode, uint EndCharCode,
+    uint StartGlyphID);
+
+/// <summary>Mixed 16/32-bit subtable: linear groups as in format 12 plus the is32 first-half
+/// bitmap. A 16-bit lookup whose is32 bit is set is not itself mapped (the value only occurs
+/// as the first half of a 32-bit code); enumeration skips such code points as well.</summary>
+public sealed class CmapFormat8Subtable : CmapSubtable
+{
+    private readonly CmapFormat8Group[] _groups;
+    private readonly byte[] _is32;
+
+    internal CmapFormat8Subtable(uint language, CmapFormat8Group[] groups, byte[] is32,
+        uint sourceOffset, DataLocation location) : base(8, sourceOffset, location)
+    {
+        Language = language; _groups = groups; _is32 = is32;
+    }
+
+    public uint Language { get; }
+    public int GroupCount => _groups.Length;
+    public ReadOnlySpan<CmapFormat8Group> Groups => _groups;
+    public ReadOnlySpan<byte> Is32 => _is32;
+
+    public override ReadStatus TryMapCharacter(uint codePoint, out bool mapped, out uint glyphId,
+        out FontDiagnostic diagnostic)
+    {
+        mapped = false; glyphId = 0;
+        if (codePoint <= 0xFFFF &&
+            CmapFormat8Layout.GetIs32Bit(_is32, codePoint))
+        {
+            // The 16-bit value only occurs as the first half of a 32-bit code.
+            diagnostic = default; return ReadStatus.Done;
+        }
+        int low = 0, high = _groups.Length - 1, found = -1;
+        while (low <= high)
+        {
+            int mid = low + (high - low) / 2;
+            if (_groups[mid].StartCharCode <= codePoint) { found = mid; low = mid + 1; }
+            else high = mid - 1;
+        }
+        if (found < 0 || codePoint > _groups[found].EndCharCode)
+        {
+            diagnostic = default; return ReadStatus.Done;
+        }
+        uint resolved = _groups[found].StartGlyphID + (codePoint - _groups[found].StartCharCode);
+        if (resolved == 0 || resolved > ushort.MaxValue)
+        {
+            diagnostic = default; return ReadStatus.Done;
+        }
+        mapped = true; glyphId = resolved;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+}
+
+/// <summary>Trimmed 32-bit window subtable: one window [StartCharCode, StartCharCode +
+/// GlyphArray.Length) of explicit glyph ids, with GID 0 meaning unmapped.</summary>
+public sealed class CmapFormat10Subtable : CmapSubtable
+{
+    private readonly ushort[] _glyphArray;
+
+    internal CmapFormat10Subtable(uint language, uint startCharCode, ushort[] glyphArray,
+        uint sourceOffset, DataLocation location) : base(10, sourceOffset, location)
+    {
+        Language = language; StartCharCode = startCharCode; _glyphArray = glyphArray;
+    }
+
+    public uint Language { get; }
+    public uint StartCharCode { get; }
+    public ReadOnlySpan<ushort> GlyphArray => _glyphArray;
+
+    public override ReadStatus TryMapCharacter(uint codePoint, out bool mapped, out uint glyphId,
+        out FontDiagnostic diagnostic)
+    {
+        mapped = false; glyphId = 0;
+        if (codePoint < StartCharCode || codePoint - StartCharCode >= (uint)_glyphArray.Length)
+        {
+            diagnostic = default; return ReadStatus.Done;
+        }
+        ushort resolved = _glyphArray[(int)(codePoint - StartCharCode)];
+        if (resolved == 0) { diagnostic = default; return ReadStatus.Done; }
+        mapped = true; glyphId = resolved;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+}
+
+/// <summary>Single-byte format 0 subtable: one fixed 256-entry glyph array indexed by the
+/// code point itself, with GID 0 meaning unmapped.</summary>
+public sealed class CmapFormat0Subtable : CmapSubtable
+{
+    private readonly byte[] _glyphArray;
+
+    internal CmapFormat0Subtable(ushort language, byte[] glyphArray, uint sourceOffset,
+        DataLocation location) : base(0, sourceOffset, location)
+    {
+        Language = language; _glyphArray = glyphArray;
+    }
+
+    public ushort Language { get; }
+    public ReadOnlySpan<byte> GlyphArray => _glyphArray;
+
+    public override ReadStatus TryMapCharacter(uint codePoint, out bool mapped, out uint glyphId,
+        out FontDiagnostic diagnostic)
+    {
+        mapped = false; glyphId = 0;
+        if (codePoint > 0xFF) { diagnostic = default; return ReadStatus.Done; }
+        if (codePoint >= (uint)_glyphArray.Length)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                Location.At(DataField.GlyphId, 6 + codePoint), out diagnostic,
+                codePoint, (uint)_glyphArray.Length);
+        byte resolved = _glyphArray[(int)codePoint];
+        if (resolved == 0) { diagnostic = default; return ReadStatus.Done; }
+        mapped = true; glyphId = resolved;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+}
+
+/// <summary>Trimmed format 6 subtable: one window [FirstCode, FirstCode + GlyphArray.Length)
+/// of explicit glyph ids, with GID 0 meaning unmapped.</summary>
+public sealed class CmapFormat6Subtable : CmapSubtable
+{
+    private readonly ushort[] _glyphArray;
+
+    internal CmapFormat6Subtable(ushort language, ushort firstCode, ushort[] glyphArray,
+        uint sourceOffset, DataLocation location) : base(6, sourceOffset, location)
+    {
+        Language = language; FirstCode = firstCode; _glyphArray = glyphArray;
+    }
+
+    public ushort Language { get; }
+    public ushort FirstCode { get; }
+    public ReadOnlySpan<ushort> GlyphArray => _glyphArray;
+
+    public override ReadStatus TryMapCharacter(uint codePoint, out bool mapped, out uint glyphId,
+        out FontDiagnostic diagnostic)
+    {
+        mapped = false; glyphId = 0;
+        if (codePoint > 0xFFFF || codePoint < FirstCode)
+        {
+            diagnostic = default; return ReadStatus.Done;
+        }
+        uint index = codePoint - FirstCode;
+        if (index >= (uint)_glyphArray.Length)
+        {
+            diagnostic = default; return ReadStatus.Done;
+        }
+        ushort resolved = _glyphArray[(int)index];
+        if (resolved == 0) { diagnostic = default; return ReadStatus.Done; }
+        mapped = true; glyphId = resolved;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+}
+
+public readonly record struct CmapFormat2SubHeader(ushort FirstCode, ushort EntryCount,
+    short IdDelta, ushort IdRangeOffset);
+
+/// <summary>High-byte format 2 subtable: 256 lead-byte keys into shared subHeaders whose
+/// self-relative windows index the glyph array. Key 0 on the zero lead byte is the
+/// single-byte path; a nonzero key resolves byte2 through subHeader key/8. Raw 0 and a
+/// (raw + idDelta) result of 0 both mean unmapped.</summary>
+public sealed class CmapFormat2Subtable : CmapSubtable
+{
+    private readonly ushort[] _subHeaderKeys;
+    private readonly CmapFormat2SubHeader[] _subHeaders;
+    private readonly ushort[] _glyphArray;
+
+    internal CmapFormat2Subtable(ushort language, ushort[] subHeaderKeys,
+        CmapFormat2SubHeader[] subHeaders, ushort[] glyphArray, uint sourceOffset,
+        DataLocation location) : base(2, sourceOffset, location)
+    {
+        Language = language; _subHeaderKeys = subHeaderKeys;
+        _subHeaders = subHeaders; _glyphArray = glyphArray;
+    }
+
+    public ushort Language { get; }
+    public int SubHeaderCount => _subHeaders.Length;
+    public ReadOnlySpan<ushort> SubHeaderKeys => _subHeaderKeys;
+    public ReadOnlySpan<CmapFormat2SubHeader> SubHeaders => _subHeaders;
+    public ReadOnlySpan<ushort> GlyphArray => _glyphArray;
+
+    public override ReadStatus TryMapCharacter(uint codePoint, out bool mapped, out uint glyphId,
+        out FontDiagnostic diagnostic)
+    {
+        mapped = false; glyphId = 0;
+        if (codePoint > 0xFFFF) { diagnostic = default; return ReadStatus.Done; }
+        uint byte1 = codePoint >> 8, byte2 = codePoint & 0xFF;
+        ushort key = _subHeaderKeys[(int)byte1];
+        if (key == 0 && byte1 != 0)
+        {
+            // A zero key for a nonzero lead byte starts no two-byte sequence.
+            diagnostic = default; return ReadStatus.Done;
+        }
+        int header = (int)((uint)key / 8);
+        if (header >= _subHeaders.Length)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                Location.At(DataField.Offset, SourceOffset), out diagnostic,
+                key, (uint)_subHeaders.Length * 8);
+        var subHeader = _subHeaders[header];
+        if (byte2 < subHeader.FirstCode || byte2 >= subHeader.FirstCode + subHeader.EntryCount)
+        {
+            diagnostic = default; return ReadStatus.Done;
+        }
+        // Self-relative IdRangeOffset normalized into glyph-array uint16 units.
+        long index = (long)subHeader.IdRangeOffset / 2 + 3
+            + 4L * (header - _subHeaders.Length) + (byte2 - subHeader.FirstCode);
+        if (index < 0 || index >= _glyphArray.Length)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                Location.At(DataField.Offset,
+                    (ulong)(518 + 8L * header + 6L), header), out diagnostic,
+                (ulong)index, (ulong)_glyphArray.Length);
+        ushort raw = _glyphArray[(int)index];
+        if (raw == 0) { diagnostic = default; return ReadStatus.Done; }
+        ushort resolved = unchecked((ushort)(raw + subHeader.IdDelta));
+        if (resolved == 0) { diagnostic = default; return ReadStatus.Done; }
+        mapped = true; glyphId = resolved;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+}
+
 /// <summary>Outcome of a variation-selector lookup against one format 14 subtable:
 /// Default reports a default-range hit whose glyph comes from the base cmap,
 /// NonDefault reports the resolved non-default mapping (GID 0 stays visible),
@@ -329,7 +551,8 @@ public sealed class CmapTable
     }
 
     /// <summary>Full forward mapping of one subtable: Unicode scalar values with nonzero GIDs.
-    /// The format 4 structural U+FFFF sentinel and surrogate code points are excluded.</summary>
+    /// Surrogate code points are excluded; the format 4 structural U+FFFF sentinel is excluded
+    /// as well. Format 2 expands its single-byte and two-byte paths without duplicates.</summary>
     public ReadStatus TryGetMappings(CmapSubtable subtable, out CmapMapping[]? mappings,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
@@ -338,12 +561,22 @@ public sealed class CmapTable
         var budget = new BuildBudget(limits);
         switch (subtable)
         {
+            case CmapFormat0Subtable format0:
+                return EnumerateFormat0(format0, out mappings, out diagnostic, budget);
+            case CmapFormat2Subtable format2:
+                return EnumerateFormat2(format2, out mappings, out diagnostic, budget);
             case CmapFormat4Subtable format4:
                 return EnumerateFormat4(format4, out mappings, out diagnostic, budget);
+            case CmapFormat6Subtable format6:
+                return EnumerateFormat6(format6, out mappings, out diagnostic, budget);
             case CmapFormat12Subtable format12:
                 return EnumerateFormat12(format12, out mappings, out diagnostic, budget);
             case CmapFormat13Subtable format13:
                 return EnumerateFormat13(format13, out mappings, out diagnostic, budget);
+            case CmapFormat8Subtable format8:
+                return EnumerateFormat8(format8, out mappings, out diagnostic, budget);
+            case CmapFormat10Subtable format10:
+                return EnumerateFormat10(format10, out mappings, out diagnostic, budget);
             default:
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                     subtable.Location.At(DataField.Version, subtable.SourceOffset), out diagnostic,
@@ -378,7 +611,8 @@ public sealed class CmapTable
 
     /// <summary>Combined variation-sequence lookup: non-default mappings win, default-range hits
     /// delegate to the base subtable's mapping of the base character, and a resolved GID 0 means
-    /// unmapped. The variation subtable must be format 14 and the base one 4/12/13; choosing
+    /// unmapped. The variation subtable must be format 14 and the base one any typed
+    /// scalar-mapping format (0/2/4/6/8/10/12/13); choosing
     /// which records to consult is a caller policy.</summary>
     public ReadStatus TryMapVariationSequence(CmapSubtable variationSubtable,
         CmapSubtable baseSubtable, uint baseCharacter, uint varSelector, out bool mapped,
@@ -391,7 +625,9 @@ public sealed class CmapTable
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 variationSubtable.Location.At(DataField.Version, variationSubtable.SourceOffset),
                 out diagnostic, variationSubtable.Format);
-        if (baseSubtable is not (CmapFormat4Subtable or CmapFormat12Subtable or CmapFormat13Subtable))
+        if (baseSubtable is not (CmapFormat0Subtable or CmapFormat2Subtable or CmapFormat4Subtable
+            or CmapFormat6Subtable or CmapFormat8Subtable or CmapFormat10Subtable
+            or CmapFormat12Subtable or CmapFormat13Subtable))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 baseSubtable.Location.At(DataField.Version, baseSubtable.SourceOffset),
                 out diagnostic, baseSubtable.Format);
@@ -456,6 +692,117 @@ public sealed class CmapTable
         return ReadStatus.Done;
     }
 
+    internal static ReadStatus EnumerateFormat0(CmapFormat0Subtable subtable,
+        out CmapMapping[]? mappings, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        mappings = null;
+        var glyphs = subtable.GlyphArray;
+        long span = glyphs.Length;
+        if (!budget.Work(span + 16, subtable.Location, out diagnostic) ||
+            !budget.Buffer(12L * span, subtable.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var result = new List<CmapMapping>(capacity: (int)Math.Min(span, 1 << 20));
+        for (int i = 0; i < glyphs.Length; i++)
+        {
+            // Codes are at most 0xFF, so every mapped code is a scalar value.
+            if (glyphs[i] != 0)
+                result.Add(new((uint)i, glyphs[i]));
+        }
+        mappings = [.. result];
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    internal static ReadStatus EnumerateFormat6(CmapFormat6Subtable subtable,
+        out CmapMapping[]? mappings, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        mappings = null;
+        var glyphs = subtable.GlyphArray;
+        long span = glyphs.Length;
+        if (!budget.Work(span + 16, subtable.Location, out diagnostic) ||
+            !budget.Buffer(12L * span, subtable.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var result = new List<CmapMapping>(capacity: (int)Math.Min(span, 1 << 20));
+        for (int i = 0; i < glyphs.Length; i++)
+        {
+            uint code = subtable.FirstCode + (uint)i;
+            if (glyphs[i] != 0 && code is not (>= 0xD800 and <= 0xDFFF))
+                result.Add(new(code, glyphs[i]));
+        }
+        mappings = [.. result];
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    internal static ReadStatus EnumerateFormat2(CmapFormat2Subtable subtable,
+        out CmapMapping[]? mappings, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        mappings = null;
+        var keys = subtable.SubHeaderKeys;
+        var subHeaders = subtable.SubHeaders;
+        var glyphs = subtable.GlyphArray;
+        var referenced = new bool[subHeaders.Length];
+        if (!budget.Buffer(referenced.Length, subtable.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        long span = 0;
+        for (int b = 0; b < 256; b++)
+        {
+            ushort key = keys[b];
+            if (key == 0)
+            {
+                if (b == 0 && subHeaders.Length > 0 && !referenced[0])
+                {
+                    referenced[0] = true;
+                    span += subHeaders[0].EntryCount;
+                }
+            }
+            else
+            {
+                int index = key / 8;
+                if (index < subHeaders.Length && !referenced[index])
+                {
+                    referenced[index] = true;
+                    span += subHeaders[index].EntryCount;
+                }
+            }
+        }
+        if (!budget.Work(span + 16L * subHeaders.Length, subtable.Location, out diagnostic) ||
+            !budget.Buffer(12L * span, subtable.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var result = new List<CmapMapping>(capacity: (int)Math.Min(span, 1 << 20));
+        for (int b = 0; b < 256; b++)
+        {
+            ushort key = keys[b];
+            // A zero key on a nonzero lead byte starts no two-byte sequence; the zero
+            // lead byte takes the single-byte path through subHeader 0.
+            if (key == 0 && b != 0) continue;
+            int header = key / 8;
+            if (header >= subHeaders.Length)
+                return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                    subtable.Location.At(DataField.Offset, subtable.SourceOffset), out diagnostic,
+                    key, (uint)subHeaders.Length * 8);
+            var subHeader = subHeaders[header];
+            for (int i = 0; i < subHeader.EntryCount; i++)
+            {
+                uint code = ((uint)b << 8) | (uint)(subHeader.FirstCode + i);
+                long index = (long)subHeader.IdRangeOffset / 2 + 3
+                    + 4L * (header - subHeaders.Length) + i;
+                if (index < 0 || index >= glyphs.Length)
+                    return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                        subtable.Location.At(DataField.Offset, (ulong)(518 + 8L * header + 6L), header),
+                        out diagnostic, (ulong)index, (ulong)glyphs.Length);
+                ushort raw = glyphs[(int)index];
+                if (raw == 0) continue;
+                ushort gid = unchecked((ushort)(raw + subHeader.IdDelta));
+                if (gid == 0 || code is (>= 0xD800 and <= 0xDFFF)) continue;
+                result.Add(new(code, gid));
+            }
+        }
+        mappings = [.. result];
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
     internal static ReadStatus EnumerateFormat12(CmapFormat12Subtable subtable,
         out CmapMapping[]? mappings, out FontDiagnostic diagnostic, BuildBudget budget)
     {
@@ -510,6 +857,66 @@ public sealed class CmapTable
                     result.Add(new(c, (ushort)group.StartGlyphID));
                 if (c == group.EndCharCode) break;
             }
+        }
+        mappings = [.. result];
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Full forward enumeration of one format 8 subtable: scalar code points with
+    /// nonzero GIDs. Surrogates are excluded; 16-bit code points whose is32 bit is set are
+    /// skipped because they only occur as first halves of 32-bit codes.</summary>
+    internal static ReadStatus EnumerateFormat8(CmapFormat8Subtable subtable,
+        out CmapMapping[]? mappings, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        mappings = null;
+        var groups = subtable.Groups;
+        long span = 0;
+        foreach (var group in groups)
+            span += group.EndCharCode - group.StartCharCode + 1;
+        if (!budget.Work(span + 24L * groups.Length, subtable.Location, out diagnostic) ||
+            !budget.Buffer(12L * span, subtable.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var result = new List<CmapMapping>(capacity: (int)Math.Min(span, 1 << 20));
+        var is32 = subtable.Is32;
+        for (int i = 0; i < groups.Length; i++)
+        {
+            var group = groups[i];
+            for (uint c = group.StartCharCode; ; c++)
+            {
+                if (c is not (>= 0xD800 and <= 0xDFFF) &&
+                    !(c <= 0xFFFF && CmapFormat8Layout.GetIs32Bit(is32, c)))
+                {
+                    uint gid = group.StartGlyphID + (c - group.StartCharCode);
+                    if (gid != 0 && gid <= ushort.MaxValue)
+                        result.Add(new(c, (ushort)gid));
+                }
+                if (c == group.EndCharCode) break;
+            }
+        }
+        mappings = [.. result];
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Full forward enumeration of one format 10 subtable: the window's scalar code
+    /// points with nonzero GIDs. Validated windows never intersect the surrogate block.</summary>
+    internal static ReadStatus EnumerateFormat10(CmapFormat10Subtable subtable,
+        out CmapMapping[]? mappings, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        mappings = null;
+        var glyphs = subtable.GlyphArray;
+        long span = glyphs.Length;
+        if (!budget.Work(span + 24, subtable.Location, out diagnostic) ||
+            !budget.Buffer(12L * span, subtable.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var result = new List<CmapMapping>(capacity: (int)Math.Min(span, 1 << 20));
+        uint start = subtable.StartCharCode;
+        for (int i = 0; i < glyphs.Length; i++)
+        {
+            uint code = start + (uint)i;
+            if (glyphs[i] != 0 && code is not (>= 0xD800 and <= 0xDFFF))
+                result.Add(new(code, glyphs[i]));
         }
         mappings = [.. result];
         diagnostic = default;

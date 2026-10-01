@@ -18,10 +18,10 @@ public readonly ref partial struct CmapView
                 Location.At(DataField.Offset, offset, recordOrdinal), out diagnostic,
                 (ulong)_data.Length, offset + 2);
         format = ReadWire.U16(_data, (int)offset);
-        // Dispatch length fields: format 14 stores uint32 at +2, formats 12 and 13 at +4
+        // Dispatch length fields: format 14 stores uint32 at +2, formats 8/10/12/13 at +4
         // (after their reserved field), every other known family uint16 at +2.
-        int lengthOffset = format switch { 14 => 2, 12 or 13 => 4, _ => 2 };
-        int lengthWidth = format is 12 or 13 or 14 ? 4 : 2;
+        int lengthOffset = format switch { 14 => 2, 8 or 10 or 12 or 13 => 4, _ => 2 };
+        int lengthWidth = format is 8 or 10 or 12 or 13 or 14 ? 4 : 2;
         if (offset > (ulong)_data.Length - (ulong)(uint)(lengthOffset + lengthWidth))
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
                 Location.At(DataField.Length, offset + (ulong)(uint)lengthOffset, recordOrdinal),
@@ -35,6 +35,51 @@ public readonly ref partial struct CmapView
                 Location.At(DataField.Length, offset + (ulong)(uint)lengthOffset, recordOrdinal),
                 out diagnostic, offset + length, (ulong)_data.Length);
         return ReadStatus.Done;
+    }
+
+    public ReadStatus TryOpenFormat0(int recordOrdinal, out CmapFormat0View view,
+        out FontDiagnostic diagnostic)
+    {
+        view = default;
+        ReadStatus status = TryGetSubtableExtent(recordOrdinal, out ushort format, out uint offset,
+            out ulong length, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (format != 0)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                format, 0);
+        return CmapFormat0View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
+            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+    }
+
+    public ReadStatus TryOpenFormat2(int recordOrdinal, out CmapFormat2View view,
+        out FontDiagnostic diagnostic)
+    {
+        view = default;
+        ReadStatus status = TryGetSubtableExtent(recordOrdinal, out ushort format, out uint offset,
+            out ulong length, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (format != 2)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                format, 2);
+        return CmapFormat2View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
+            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+    }
+
+    public ReadStatus TryOpenFormat6(int recordOrdinal, out CmapFormat6View view,
+        out FontDiagnostic diagnostic)
+    {
+        view = default;
+        ReadStatus status = TryGetSubtableExtent(recordOrdinal, out ushort format, out uint offset,
+            out ulong length, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (format != 6)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                format, 6);
+        return CmapFormat6View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
+            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
     }
 
     public ReadStatus TryOpenFormat4(int recordOrdinal, out CmapFormat4View view,
@@ -97,9 +142,39 @@ public readonly ref partial struct CmapView
             out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
     }
 
+    public ReadStatus TryOpenFormat8(int recordOrdinal, out CmapFormat8View view,
+        out FontDiagnostic diagnostic)
+    {
+        view = default;
+        ReadStatus status = TryGetSubtableExtent(recordOrdinal, out ushort format, out uint offset,
+            out ulong length, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (format != 8)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                format, 8);
+        return CmapFormat8View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
+            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+    }
+
+    public ReadStatus TryOpenFormat10(int recordOrdinal, out CmapFormat10View view,
+        out FontDiagnostic diagnostic)
+    {
+        view = default;
+        ReadStatus status = TryGetSubtableExtent(recordOrdinal, out ushort format, out uint offset,
+            out ulong length, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (format != 10)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                format, 10);
+        return CmapFormat10View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
+            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+    }
+
     /// <summary>Strict table validation: version, ordered unique records, extents that tile the
-    /// table exactly with exact aliasing, and typed format 4/12/13/14 subtable rules. Other
-    /// formats are extent-checked only; their semantic validation is explicitly out of scope.</summary>
+    /// table exactly with exact aliasing, and typed rules for every declared subtable format
+    /// (0/2/4/6/8/10/12/13/14).</summary>
     public ReadStatus Validate(CmapContext context, out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -177,11 +252,35 @@ public readonly ref partial struct CmapView
             var slice = _data.Slice((int)extents[j].Offset,
                 checked((int)extents[j].Length));
             var location = Location.At(DataField.Offset, extents[j].Offset, extents[j].RecordOrdinal);
-            if (extents[j].Format == 4)
+            if (extents[j].Format == 0)
+            {
+                status = CmapFormat0View.TryOpen(slice, out var format0, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                status = format0.Validate(extents[j].RequireZeroLanguage, context.NumGlyphs,
+                    out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
+            else if (extents[j].Format == 2)
+            {
+                status = CmapFormat2View.TryOpen(slice, out var format2, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                status = format2.Validate(extents[j].RequireZeroLanguage, context.NumGlyphs,
+                    out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
+            else if (extents[j].Format == 4)
             {
                 status = CmapFormat4View.TryOpen(slice, out var format4, out diagnostic, location);
                 if (status != ReadStatus.Done) return status;
                 status = format4.Validate(extents[j].RequireZeroLanguage, context.NumGlyphs,
+                    out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
+            else if (extents[j].Format == 6)
+            {
+                status = CmapFormat6View.TryOpen(slice, out var format6, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                status = format6.Validate(extents[j].RequireZeroLanguage, context.NumGlyphs,
                     out diagnostic, budget);
                 if (status != ReadStatus.Done) return status;
             }
@@ -197,6 +296,22 @@ public readonly ref partial struct CmapView
                 status = CmapFormat13View.TryOpen(slice, out var format13, out diagnostic, location);
                 if (status != ReadStatus.Done) return status;
                 status = format13.Validate(context.NumGlyphs, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
+            else if (extents[j].Format == 8)
+            {
+                status = CmapFormat8View.TryOpen(slice, out var format8, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                status = format8.Validate(extents[j].RequireZeroLanguage, context.NumGlyphs,
+                    out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
+            else if (extents[j].Format == 10)
+            {
+                status = CmapFormat10View.TryOpen(slice, out var format10, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                status = format10.Validate(extents[j].RequireZeroLanguage, context.NumGlyphs,
+                    out diagnostic, budget);
                 if (status != ReadStatus.Done) return status;
             }
             else if (extents[j].Format == 14)
@@ -264,11 +379,29 @@ public readonly ref partial struct CmapView
             if (!budget.Buffer(buffer, Location, out diagnostic)) return ReadStatus.ResourceLimit;
             var location = Location.At(DataField.Offset, offset, -1);
             var slice = _data.Slice(checked((int)offset), checked((int)length));
-            if (format == 4)
+            if (format == 0)
+            {
+                status = CmapFormat0View.TryOpen(slice, out var view0, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                subtableObjects[j] = MaterializeFormat0(view0, offset, location);
+            }
+            else if (format == 2)
+            {
+                status = CmapFormat2View.TryOpen(slice, out var view2, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                subtableObjects[j] = MaterializeFormat2(view2, offset, location);
+            }
+            else if (format == 4)
             {
                 status = CmapFormat4View.TryOpen(slice, out var view, out diagnostic, location);
                 if (status != ReadStatus.Done) return status;
                 subtableObjects[j] = MaterializeFormat4(view, offset, location);
+            }
+            else if (format == 6)
+            {
+                status = CmapFormat6View.TryOpen(slice, out var view6, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                subtableObjects[j] = MaterializeFormat6(view6, offset, location);
             }
             else if (format == 12)
             {
@@ -281,6 +414,18 @@ public readonly ref partial struct CmapView
                 status = CmapFormat13View.TryOpen(slice, out var view13, out diagnostic, location);
                 if (status != ReadStatus.Done) return status;
                 subtableObjects[j] = MaterializeFormat13(view13, offset, location);
+            }
+            else if (format == 8)
+            {
+                status = CmapFormat8View.TryOpen(slice, out var view8, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                subtableObjects[j] = MaterializeFormat8(view8, offset, location);
+            }
+            else if (format == 10)
+            {
+                status = CmapFormat10View.TryOpen(slice, out var view10, out diagnostic, location);
+                if (status != ReadStatus.Done) return status;
+                subtableObjects[j] = MaterializeFormat10(view10, offset, location);
             }
             else if (format == 14)
             {
@@ -330,6 +475,57 @@ public readonly ref partial struct CmapView
         return new CmapFormat4Subtable(view.Language, segments, glyphArray, sourceOffset, location);
     }
 
+    private static CmapFormat0Subtable MaterializeFormat0(CmapFormat0View view, uint sourceOffset,
+        DataLocation location)
+    {
+        var glyphArray = new byte[CmapFormat0Layout.GlyphCount];
+        for (int i = 0; i < CmapFormat0Layout.GlyphCount; i++)
+        {
+            _ = view.TryGetGlyphEntry(i, out var entry, out _);
+            glyphArray[i] = entry.Value;
+        }
+        return new CmapFormat0Subtable(view.Language, glyphArray, sourceOffset, location);
+    }
+
+    private static CmapFormat2Subtable MaterializeFormat2(CmapFormat2View view, uint sourceOffset,
+        DataLocation location)
+    {
+        var keys = new ushort[CmapFormat2Layout.KeyCount];
+        for (int i = 0; i < CmapFormat2Layout.KeyCount; i++)
+        {
+            _ = view.TryGetSubHeaderKey(i, out ushort key, out _);
+            keys[i] = key;
+        }
+        int count = view.SubHeaderCount;
+        var subHeaders = new CmapFormat2SubHeader[count];
+        for (int k = 0; k < count; k++)
+        {
+            _ = view.TryGetSubHeader(k, out var header, out _);
+            subHeaders[k] = new(header.FirstCode, header.EntryCount, header.IdDelta,
+                header.IdRangeOffset);
+        }
+        long glyphEntries = (view.RawBytes.Length - CmapFormat2Layout.KeysEnd - 8L * count) / 2;
+        var glyphArray = new ushort[glyphEntries];
+        for (long i = 0; i < glyphEntries; i++)
+            _ = view.TryReadGlyphAt((ulong)(CmapFormat2Layout.KeysEnd + 8L * count + 2L * i),
+                out glyphArray[i], out _);
+        return new CmapFormat2Subtable(view.Language, keys, subHeaders, glyphArray,
+            sourceOffset, location);
+    }
+
+    private static CmapFormat6Subtable MaterializeFormat6(CmapFormat6View view, uint sourceOffset,
+        DataLocation location)
+    {
+        var glyphArray = new ushort[view.EntryCount];
+        for (int i = 0; (uint)i < view.EntryCount; i++)
+        {
+            _ = view.TryGetGlyphEntry(i, out var entry, out _);
+            glyphArray[i] = entry.Value;
+        }
+        return new CmapFormat6Subtable(view.Language, view.FirstCode, glyphArray,
+            sourceOffset, location);
+    }
+
     private static CmapFormat12Subtable MaterializeFormat12(CmapFormat12View view, uint sourceOffset,
         DataLocation location)
     {
@@ -352,6 +548,35 @@ public readonly ref partial struct CmapView
             groups[i] = new(group.StartCharCode, group.EndCharCode, group.StartGlyphID);
         }
         return new CmapFormat13Subtable(groups, sourceOffset, location);
+    }
+
+    private static CmapFormat8Subtable MaterializeFormat8(CmapFormat8View view, uint sourceOffset,
+        DataLocation location)
+    {
+        var groups = new CmapFormat8Group[view.NumGroups];
+        for (int i = 0; (uint)i < view.NumGroups; i++)
+        {
+            _ = view.TryGetGroup(i, out var group, out _);
+            groups[i] = new(group.StartCharCode, group.EndCharCode, group.StartGlyphID);
+        }
+        // Validation pinned the exact 8208+12n extent, so the fixed 8192-byte bitmap is present.
+        var is32 = new byte[CmapFormat8Layout.Is32Length];
+        view.RawBytes.Slice(CmapFormat8Layout.Is32Offset, CmapFormat8Layout.Is32Length)
+            .CopyTo(is32);
+        return new CmapFormat8Subtable(view.Language, groups, is32, sourceOffset, location);
+    }
+
+    private static CmapFormat10Subtable MaterializeFormat10(CmapFormat10View view, uint sourceOffset,
+        DataLocation location)
+    {
+        var glyphs = new ushort[view.NumChars];
+        for (int i = 0; (uint)i < view.NumChars; i++)
+        {
+            _ = view.TryGetGlyphEntry(i, out var entry, out _);
+            glyphs[i] = entry.Value;
+        }
+        return new CmapFormat10Subtable(view.Language, view.StartCharCode, glyphs,
+            sourceOffset, location);
     }
 
     private static CmapFormat14Subtable MaterializeFormat14(CmapFormat14View view, uint sourceOffset,
