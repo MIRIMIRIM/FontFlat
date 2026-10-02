@@ -14,12 +14,26 @@ public readonly record struct HeadTableValues(
 public sealed class HeadTable
 {
     internal HeadTable(HeadTableValues values, DataLocation location)
-    { Values = values; Location = location; }
+        : this(values, location, hasOriginalIndexToLocFormat: true) { }
+
+    internal HeadTable(HeadTableValues values, DataLocation location,
+        bool hasOriginalIndexToLocFormat)
+    {
+        Values = values; Location = location;
+        HasOriginalIndexToLocFormat = hasOriginalIndexToLocFormat;
+    }
 
     public ushort MajorVersion => (ushort)(HeadLayout.Version >> 16);
     public ushort MinorVersion => (ushort)(HeadLayout.Version & 0xFFFF);
     public HeadTableValues Values { get; }
     public DataLocation Location { get; }
+
+    /// <summary>True only while IndexToLocFormat still matches the bytes this model was read
+    /// from. Source-bound loca/glyf contexts require the original relation, not an edited one.</summary>
+    internal bool HasOriginalIndexToLocFormat { get; }
+
+    /// <summary>The original wire format selector, narrowed after strict validation.</summary>
+    public short IndexToLocFormat => Values.IndexToLocFormat;
     public FontDiagnostic DeprecationDiagnostic => Values.FontDirectionHint == 2
         ? default
         : new(DiagnosticCode.DeprecatedValue, Location.At(DataField.FontDirectionHint, HeadLayout.FontDirectionHintAt),
@@ -36,7 +50,8 @@ public sealed class HeadTable
                 unchecked((ushort)values.FontDirectionHint), 2);
         ReadStatus status = HeadView.ValidateValues(values, Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        model = new HeadTable(values, Location);
+        model = new HeadTable(values, Location,
+            HasOriginalIndexToLocFormat && values.IndexToLocFormat == Values.IndexToLocFormat);
         return ReadStatus.Done;
     }
 }
