@@ -283,9 +283,18 @@ public static class GlyfTableCompiler
                     unchecked((ulong)(long)Math.Max(item.X, item.Y)), (ulong)short.MaxValue);
             points[item.PointOrdinal] = new(item.X, item.Y,
                 item.OnCurve ?? points[item.PointOrdinal].OnCurve);
+            // The flag byte is rebuilt from the point model below, so an edited OnCurve has
+            // to reach the retained bits here or it would be silently dropped.
+            if (item.OnCurve is bool onCurve)
+                flags[item.PointOrdinal] = onCurve
+                    ? (byte)(flags[item.PointOrdinal] | GlyfLayout.OnCurve)
+                    : (byte)(flags[item.PointOrdinal] & ~GlyfLayout.OnCurve);
         }
         byte[] instructions = plan.Instructions ?? simple.Instructions.ToArray();
-        // Inter-point deltas, then choose the cheapest legal encoding per axis.
+        // Inter-point deltas, then choose the cheapest legal encoding per axis. A delta is
+        // written as a signed 16-bit value, so it must fit one: two points that each sit
+        // inside the int16 domain can still be 65535 apart, and truncating that would emit
+        // a contour that no longer matches the request.
         var dx = new int[count];
         var dy = new int[count];
         int px = 0, py = 0;
@@ -295,6 +304,13 @@ public static class GlyfTableCompiler
             dy[i] = points[i].Y - py;
             px = points[i].X;
             py = points[i].Y;
+            if (DeltaFits(dx[i]) && DeltaFits(dy[i])) continue;
+            bool xAxis = !DeltaFits(dx[i]);
+            int offending = xAxis ? dx[i] : dy[i];
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.Payload, 0, i),
+                out diagnostic, unchecked((ulong)(long)offending),
+                (ulong)short.MaxValue);
         }
         // Rebuild each flag from the retained semantic bits plus the cheapest legal
         // encoding of this point's delta. Bits that describe the coordinate stream are
@@ -349,6 +365,10 @@ public static class GlyfTableCompiler
         diagnostic = default;
         return ReadStatus.Done;
     }
+
+    /// <summary>Whether an inter-point delta can be written on the wire. Short form covers
+    /// -255..255; otherwise the value is stored as a signed 16-bit.</summary>
+    private static bool DeltaFits(int delta) => delta is >= short.MinValue and <= short.MaxValue;
 
     private static void WriteCoordinate(List<byte> body, byte flag, int delta, byte shortBit,
         byte sameBit)
