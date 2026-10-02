@@ -315,22 +315,31 @@ internal sealed class ComponentGraphBuilder
             }
             else children[gid] = [];
         }
-        // Depth-first verification: a back edge is a cycle, and exceeding the declared
-        // depth budget is refused rather than recursed into.
+        // Depth-first verification: a back edge is a cycle. Depth is computed post-order, so
+        // the result does not depend on the order glyphs happen to be visited in, and the
+        // budget is checked against that computed depth rather than against a DFS path
+        // counter (a path counter can be reset by the memoized `state == 2` early return,
+        // which made the limit depend on how the glyphs were numbered).
         var state = new byte[count];
         var depth = new int[count];
         for (int gid = 0; gid < count; gid++)
         {
             if (state[gid] != 0) continue;
-            if (!Visit(gid, children, state, depth, 1, out diagnostic)) return null;
+            if (!Visit(gid, children, state, depth, out diagnostic)) return null;
         }
         int maxDepth = 0;
         for (int gid = 0; gid < count; gid++) maxDepth = Math.Max(maxDepth, depth[gid]);
+        if (maxDepth > GlyfLayout.MaxComponentDepthBudget)
+        {
+            int offender = Array.IndexOf(depth, maxDepth);
+            return Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded, offender,
+                out diagnostic, (ulong)maxDepth, GlyfLayout.MaxComponentDepthBudget);
+        }
         return new(children, depth, [.. state.Select(s => s != 0)], edges, maxDepth);
     }
 
     private static bool Visit(int gid, int[][] children, byte[] state, int[] depth,
-        int level, out FontDiagnostic diagnostic)
+        out FontDiagnostic diagnostic)
     {
         diagnostic = default;
         if (state[gid] == 1)
@@ -342,20 +351,13 @@ internal sealed class ComponentGraphBuilder
             return false;
         }
         if (state[gid] == 2) return true;
-        if (level > GlyfLayout.MaxComponentDepthBudget)
-        {
-            diagnostic = new(DiagnosticCode.BudgetExceeded,
-                DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.GlyphId, 0, gid),
-                (ulong)level, GlyfLayout.MaxComponentDepthBudget);
-            return false;
-        }
         state[gid] = 1;
         // Depth follows the maxp definition: a glyph with no components has depth 0, and a
         // composite is one level deeper than its deepest component.
         depth[gid] = 0;
         foreach (int child in children[gid])
         {
-            if (!Visit(child, children, state, depth, level + 1, out diagnostic))
+            if (!Visit(child, children, state, depth, out diagnostic))
             {
                 state[gid] = 0;
                 return false;
