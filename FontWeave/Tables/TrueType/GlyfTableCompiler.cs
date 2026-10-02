@@ -236,7 +236,39 @@ public static class GlyfTableCompiler
                 image.AddRange(model.OriginalBytes.Slice((int)glyph.Start, (int)glyph.Length));
         }
         offsets[model.NumGlyphs] = (uint)image.Count;
-        glyf = [.. image];
+        byte[] glyfImage = [.. image];
+        // The component graph must be re-verified on the edited glyphs. Component-level edits
+        // can introduce a cycle or exceed the depth budget while every individual reference
+        // stays inside the glyph domain, and the reader refuses such a table — so emitting it
+        // here would produce a font that this library cannot read back. The graph builder only
+        // consults component references, so the edited composites are substituted into a
+        // candidate model and checked with the same verifier the reading path uses.
+        if (compositePlans.Count > 0)
+        {
+            var checkedGlyphs = new GlyfGlyph?[model.NumGlyphs];
+            for (int gid = 0; gid < checkedGlyphs.Length; gid++)
+            {
+                _ = model.TryGetGlyph(gid, out var existing, out _);
+                if (existing is null) continue;
+                if (!compositePlans.TryGetValue(gid, out var compositePlan))
+                {
+                    checkedGlyphs[gid] = existing;
+                    continue;
+                }
+                ReadStatus editStatus = model.TryGetGlyph(gid, out var source, out diagnostic);
+                if (editStatus != ReadStatus.Done) return editStatus;
+                editStatus = TryEditComposite(source!, compositePlan, model.NumGlyphs,
+                    out var editedComposite, out diagnostic);
+                if (editStatus != ReadStatus.Done) return editStatus;
+                checkedGlyphs[gid] = new GlyfGlyph(existing.GlyphId, existing.Header,
+                    existing.Kind, existing.Start, existing.End, null, editedComposite);
+            }
+            var candidate = new GlyfTable(checkedGlyphs, glyfImage, model.Location,
+                model.LocaLocation);
+            if (new ComponentGraphBuilder(candidate).Build(out diagnostic) is null)
+                return ReadStatus.InvalidFormat;
+        }
+        glyf = glyfImage;
         locaOffsets = offsets;
         budget.RecordCompiledTable(glyf.Length);
         diagnostic = default;
