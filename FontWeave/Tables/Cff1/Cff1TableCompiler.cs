@@ -270,7 +270,7 @@ public static class Cff1TableCompiler
         out FontDiagnostic diagnostic, BuildBudget budget)
     {
         bytes = null;
-        long charsetLength = CharsetLength(model);
+        long charsetLength = CharsetLength(model.CharsetForm, model.CharsetSids);
         bool charsetCustom = !model.CharsetForm.Predefined;
         bool encodingCustom = !model.EncodingForm.Predefined;
         long encodingLength = EncodingLength(model);
@@ -402,7 +402,7 @@ public static class Cff1TableCompiler
         EmitIndex(output, ref at, model.Strings);
         EmitIndex(output, ref at, model.GlobalSubrs);
         if (charsetCustom)
-            EmitCharset(output, ref at, model);
+            EmitCharset(output, ref at, model.CharsetForm, model.CharsetSids);
         if (encodingCustom)
         {
             ReadStatus status = EmitEncoding(model, output, ref at, out diagnostic);
@@ -422,10 +422,10 @@ public static class Cff1TableCompiler
         return ReadStatus.Done;
     }
 
-    private static long SingleItemIndexLength(int itemLength) =>
+    internal static long SingleItemIndexLength(int itemLength) =>
         3 + 2L * OffSizeFor((long)itemLength + 1) + itemLength;
 
-    private static void EmitSingleItemIndex(byte[] output, ref int at, ReadOnlySpan<byte> item)
+    internal static void EmitSingleItemIndex(byte[] output, ref int at, ReadOnlySpan<byte> item)
     {
         int offSize = OffSizeFor((long)item.Length + 1);
         EmitCountedIndexHeader(output, ref at, 1, offSize);
@@ -435,14 +435,14 @@ public static class Cff1TableCompiler
         at += item.Length;
     }
 
-    private static void EmitCountedIndexHeader(byte[] output, ref int at, int count, int offSize)
+    internal static void EmitCountedIndexHeader(byte[] output, ref int at, int count, int offSize)
     {
         BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(at), (ushort)count);
         at += 2;
         output[at++] = unchecked((byte)(offSize));
     }
 
-    private static int OffSizeFor(long maxOffset) => maxOffset switch
+    internal static int OffSizeFor(long maxOffset) => maxOffset switch
     {
         <= 0xFF => 1,
         <= 0xFFFF => 2,
@@ -450,7 +450,7 @@ public static class Cff1TableCompiler
         _ => 4
     };
 
-    private static int IntOperandLength(int value) => value switch
+    internal static int IntOperandLength(int value) => value switch
     {
         >= -107 and <= 107 => 1,
         >= 108 and <= 1131 or >= -1131 and <= -108 => 2,
@@ -458,7 +458,7 @@ public static class Cff1TableCompiler
         _ => 5
     };
 
-    private static void WriteIntOperand(byte[] output, ref int at, int value)
+    internal static void WriteIntOperand(byte[] output, ref int at, int value)
     {
         if (value is >= -107 and <= 107)
         {
@@ -490,7 +490,7 @@ public static class Cff1TableCompiler
         }
     }
 
-    private static int DictLength(ReadOnlySpan<Cff1DictEntry> entries, Dictionary<int, int[]> replacements)
+    internal static int DictLength(ReadOnlySpan<Cff1DictEntry> entries, Dictionary<int, int[]> replacements)
     {
         long length = 0;
         foreach (var entry in entries)
@@ -512,7 +512,7 @@ public static class Cff1TableCompiler
         return (int)length;
     }
 
-    private static void EmitDict(byte[] output, ref int at, ReadOnlySpan<Cff1DictEntry> entries,
+    internal static void EmitDict(byte[] output, ref int at, ReadOnlySpan<Cff1DictEntry> entries,
         Dictionary<int, int[]> replacements)
     {
         foreach (var entry in entries)
@@ -545,7 +545,7 @@ public static class Cff1TableCompiler
         }
     }
 
-    private static byte[] EncodeEntryRaw(int op, IReadOnlyList<Cff1Operand> operands)
+    internal static byte[] EncodeEntryRaw(int op, IReadOnlyList<Cff1Operand> operands)
     {
         int length = op > 0xFF ? 2 : 1;
         foreach (var operand in operands)
@@ -574,7 +574,7 @@ public static class Cff1TableCompiler
         return raw;
     }
 
-    private static long IndexLength(ReadOnlySpan<byte[]> items)
+    internal static long IndexLength(ReadOnlySpan<byte[]> items)
     {
         if (items.Length == 0)
             return 2;
@@ -584,7 +584,7 @@ public static class Cff1TableCompiler
         return 3 + (long)(items.Length + 1) * OffSizeFor(data + 1) + data;
     }
 
-    private static void EmitIndex(byte[] output, ref int at, ReadOnlySpan<byte[]> items)
+    internal static void EmitIndex(byte[] output, ref int at, ReadOnlySpan<byte[]> items)
     {
         BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(at), (ushort)items.Length);
         at += 2;
@@ -609,7 +609,7 @@ public static class Cff1TableCompiler
         }
     }
 
-    private static void WriteIndexOffset(byte[] output, ref int at, long value, int offSize)
+    internal static void WriteIndexOffset(byte[] output, ref int at, long value, int offSize)
     {
         // Big-endian offSize-byte offset; shifts land inside 8*offSize <= 32 bits,
         // but the long shift expression is checked, so narrow through int bits.
@@ -618,16 +618,16 @@ public static class Cff1TableCompiler
         at += offSize;
     }
 
-    private static long CharsetLength(Cff1Table model)
+    internal static long CharsetLength(Cff1CharsetForm form, ReadOnlySpan<int> sids)
     {
-        if (model.CharsetForm.Predefined)
+        if (form.Predefined)
             return 0;
-        if (model.CharsetForm.Format == 0)
-            return 1 + 2L * (model.NumGlyphs - 1);
-        return 1 + CharsetRangeBytes(model.CharsetSids, model.CharsetForm.Format);
+        if (form.Format == 0)
+            return 1 + 2L * (sids.Length - 1);
+        return 1 + CharsetRangeBytes(sids, form.Format);
     }
 
-    private static long CharsetRangeBytes(ReadOnlySpan<int> sids, int format)
+    internal static long CharsetRangeBytes(ReadOnlySpan<int> sids, int format)
     {
         long bytes = 0;
         int maxRun = format == 1 ? 256 : 65536;
@@ -643,11 +643,10 @@ public static class Cff1TableCompiler
         return bytes;
     }
 
-    private static void EmitCharset(byte[] output, ref int at, Cff1Table model)
+    internal static void EmitCharset(byte[] output, ref int at, Cff1CharsetForm form, ReadOnlySpan<int> sids)
     {
-        output[at++] = unchecked((byte)(model.CharsetForm.Format));
-        var sids = model.CharsetSids;
-        if (model.CharsetForm.Format == 0)
+        output[at++] = unchecked((byte)(form.Format));
+        if (form.Format == 0)
         {
             for (int gid = 1; gid < sids.Length; gid++)
             {
@@ -656,7 +655,7 @@ public static class Cff1TableCompiler
             }
             return;
         }
-        int maxRun = model.CharsetForm.Format == 1 ? 256 : 65536;
+        int maxRun = form.Format == 1 ? 256 : 65536;
         int i = 1;
         while (i < sids.Length)
         {
@@ -666,7 +665,7 @@ public static class Cff1TableCompiler
             output[at++] = unchecked((byte)((sids[i] >> 8)));
             output[at++] = unchecked((byte)(sids[i]));
             int nLeft = j - i;
-            if (model.CharsetForm.Format == 1)
+            if (form.Format == 1)
             {
                 output[at++] = unchecked((byte)(nLeft));
             }

@@ -63,8 +63,24 @@ public readonly ref partial struct Cff1View
 
         status = IndexItemBounds(tops, 0, out int dictStart, out int dictLength, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = ParseDict(dictStart, dictLength, topScope: true, out var entries, out diagnostic);
+        status = ParseDict(dictStart, dictLength, Cff1DictScope.Top, out var entries, out diagnostic);
         if (status != ReadStatus.Done) return status;
+
+        // The ROS key is what makes a CFF1 font CID-keyed. The two forms are structurally
+        // different (CID has a per-FD Private DICT and no Encoding), so the branch is taken
+        // once here and the rest of this method handles the name-keyed form only.
+        bool isCid = TryFindEntry(entries, Cff1Layout.OpRos, out _);
+        if (isCid)
+            return ValidateCid(entries, dictStart, strings, globals, budget, out diagnostic);
+        // A CID-only key without ROS leaves the font in neither form: the CID structures
+        // would be present but nothing would declare the character collection.
+        foreach (var candidate in entries)
+        {
+            if (!Cff1Layout.IsCidOnlyOperator(candidate.Operator)) continue;
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.At(DataField.Payload, (uint)candidate.EntryStart), out diagnostic,
+                (uint)candidate.Operator, (uint)Cff1Layout.OpRos);
+        }
 
         int charsetValue = 0, encodingValue = 0, charstringsAt = -1, privateSize = -1, privateOffset = -1;
         if (TryFindEntry(entries, Cff1Layout.OpCharset, out var entry))
@@ -185,7 +201,7 @@ public readonly ref partial struct Cff1View
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
                 Location.At(DataField.Length, (ulong)(uint)(privateOffset + privateSize)), out diagnostic,
                 (ulong)((long)privateOffset + privateSize), (ulong)_data.Length);
-        status = ParseDict(privateOffset, privateSize, topScope: false, out var privateEntries, out diagnostic);
+        status = ParseDict(privateOffset, privateSize, Cff1DictScope.Private, out var privateEntries, out diagnostic);
         if (status != ReadStatus.Done) return status;
 
         int blockEnd = privateOffset + privateSize;
@@ -221,14 +237,15 @@ public readonly ref partial struct Cff1View
     /// nGlyphs-1 coverage, SID bounds and non-overlapping (unique) name spans. Range
     /// SID order is deliberately not required; disjointness is checked by sorting spans.</summary>
     private ReadStatus ValidateCustomCharset(int offset, int expectedStart, int numGlyphs,
-        int sidBound, BuildBudget budget, out int blockEnd, out FontDiagnostic diagnostic)
+        int sidBound, BuildBudget budget, out int blockEnd, out FontDiagnostic diagnostic,
+        bool requireTiling = true)
     {
         blockEnd = 0;
         if (offset > _data.Length - 1)
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
                 Location.At(DataField.Offset, (uint)offset), out diagnostic,
                 (uint)offset, (ulong)_data.Length);
-        if (offset != expectedStart)
+        if (requireTiling && offset != expectedStart)
         {
             if (offset < expectedStart)
                 return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,

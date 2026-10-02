@@ -16,12 +16,57 @@ public readonly ref partial struct Cff1View
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
-        return TryRead(out table, out diagnostic, budget);
+        ReadStatus status = TryRead(out table, out var cid, out _, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        // This entry point is the name-keyed reader. A CID-keyed font is a different shape,
+        // so it is reported as such rather than forced into a model that cannot hold it.
+        if (cid is not null)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnsupportedOperation,
+                Location.At(DataField.Payload, 0), out diagnostic, 0, 1);
+        return ReadStatus.Done;
     }
 
-    internal ReadStatus TryRead(out Cff1Table? table, out FontDiagnostic diagnostic, BuildBudget budget)
+    /// <summary>Reads whichever CFF1 form the table is, reporting which one it was.
+    ///
+    /// A CID-keyed font has no top-level Private DICT, no Encoding and no glyph names, so one
+    /// result type cannot honestly carry both. Exactly one of the two outputs is non-null on
+    /// success; <paramref name="flavor"/> says which, so a caller cannot mistake one form for
+    /// the other.</summary>
+    public ReadStatus TryRead(out Cff1Table? nameKeyed, out CidCff1Table? cidKeyed,
+        out Cff1Flavor flavor, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        nameKeyed = null;
+        cidKeyed = null;
+        flavor = Cff1Flavor.NameKeyed;
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        return TryRead(out nameKeyed, out cidKeyed, out flavor, out diagnostic, budget);
+    }
+
+    /// <summary>Reads a CID-keyed table specifically. A name-keyed table is refused rather
+    /// than silently reinterpreted, so a caller that needs CID data cannot accept a
+    /// name-keyed font by accident.</summary>
+    public ReadStatus TryReadCid(out CidCff1Table? table, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
     {
         table = null;
+        ReadStatus status = TryRead(out _, out var cid, out var flavor, out diagnostic, limits);
+        if (status != ReadStatus.Done) return status;
+        if (cid is null || flavor != Cff1Flavor.CidKeyed)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnsupportedOperation,
+                Location.At(DataField.Payload, 0), out diagnostic, 0, 1);
+        table = cid;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    internal ReadStatus TryRead(out Cff1Table? table, out CidCff1Table? cidKeyed,
+        out Cff1Flavor flavor, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        table = null;
+        cidKeyed = null;
+        flavor = Cff1Flavor.NameKeyed;
         if (!IsBound)
             return Unbound(out diagnostic);
         ReadStatus status = Validate(out diagnostic, budget);
@@ -34,8 +79,18 @@ public readonly ref partial struct Cff1View
 
         status = IndexItemBounds(tops, 0, out int dictStart, out int dictLength, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = ParseDict(dictStart, dictLength, topScope: true, out var dictEntries, out diagnostic);
+        status = ParseDict(dictStart, dictLength, Cff1DictScope.Top, out var dictEntries, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        // CID-keyed fonts have a different top-level shape, so they materialize through the
+        // CID path. The shared validation above already proved the table is well formed.
+        if (TryFindEntry(dictEntries, Cff1Layout.OpRos, out _))
+        {
+            status = TryReadCid(strings, dictEntries, budget, out cidKeyed, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            flavor = Cff1Flavor.CidKeyed;
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
         _ = TryFindEntry(dictEntries, Cff1Layout.OpCharset, out var charsetEntry);
         _ = TryFindEntry(dictEntries, Cff1Layout.OpEncoding, out var encodingEntry);
         _ = TryFindEntry(dictEntries, Cff1Layout.OpCharStrings, out var charstringsEntry);
@@ -52,7 +107,7 @@ public readonly ref partial struct Cff1View
         if (status != ReadStatus.Done) return status;
         int numGlyphs = charstrings.Count;
 
-        status = ParseDict(privateOffset, privateSize, topScope: false, out var privateEntries, out diagnostic);
+        status = ParseDict(privateOffset, privateSize, Cff1DictScope.Private, out var privateEntries, out diagnostic);
         if (status != ReadStatus.Done) return status;
         bool hasLocalSubrs = TryFindEntry(privateEntries, Cff1Layout.OpSubrs, out _);
         IndexSpan local = default;

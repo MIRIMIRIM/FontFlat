@@ -24,6 +24,16 @@ internal static class Cff1Layout
 
     // CID-keyed markers: their presence means the table is not name-keyed.
     internal const int OpRos = 0x0c1e, OpFdArray = 0x0c24, OpFdSelect = 0x0c25;
+    internal const int OpCidCount = 0x0c22;
+    internal const int OpCidFontVersion = 0x0c1f, OpCidFontRevision = 0x0c20;
+    internal const int OpCidFontType = 0x0c21, OpUidBase = 0x0c23;
+    internal const int OpCidFontName = 0x0c26;
+
+    /// <summary>Top DICT keys that only a CID-keyed font may carry. Their presence without
+    /// ROS would leave the font in neither form, so they are used to reject that case.</summary>
+    internal static bool IsCidOnlyOperator(int op) =>
+        op is OpRos or OpCidFontVersion or OpCidFontRevision or OpCidFontType or OpCidCount
+            or OpUidBase or OpFdArray or OpFdSelect or OpCidFontName;
 
     // Private DICT operators.
     internal const int OpBlueValues = 6, OpOtherBlues = 7, OpFamilyBlues = 8, OpFamilyOtherBlues = 9;
@@ -40,9 +50,21 @@ internal static class Cff1Layout
     internal static bool IsSidOperator(int op) =>
         op is OpVersion or OpNotice or OpFullName or OpFamilyName or OpWeight or OpCopyright;
 
-    internal static int DictArity(bool topScope, int op)
+    /// <summary>Font DICT operators whose single operand is a SID.</summary>
+    internal static bool IsFontDictSidOperator(int op) => op is OpCidFontName;
+
+    internal static int DictArity(bool topScope, int op) =>
+        DictArity(topScope ? Cff1DictScope.Top : Cff1DictScope.Private, op);
+
+    /// <summary>Operand arity for a DICT operator in a given scope; -1 means "any number of
+    /// operands", -2 means the operator is not defined in that scope.
+    ///
+    /// Font DICT and Private DICT are separate scopes because they admit different keys: a
+    /// CID Font DICT may carry CIDFontName, which a Private DICT may not. Treating them as
+    /// one scope would either reject valid CID fonts or accept keys that do not belong.</summary>
+    internal static int DictArity(Cff1DictScope scope, int op)
     {
-        if (topScope)
+        if (scope == Cff1DictScope.Top)
         {
             return op switch
             {
@@ -52,10 +74,27 @@ internal static class Cff1Layout
                 OpXuid => -1,
                 OpCharset or OpEncoding or OpCharStrings => 1,
                 OpPrivate => 2,
+                // CID-keyed top DICT keys. ROS carries three operands (registry SID,
+                // ordering SID, supplement); the rest are scalars or offsets.
+                OpRos => 3,
+                OpCidFontVersion or OpCidFontRevision or OpCidFontType or OpCidCount
+                    or OpUidBase or OpFdArray or OpFdSelect => 1,
                 OpCopyright or OpIsFixedPitch or OpItalicAngle or OpUnderlinePosition
                     or OpUnderlineThickness or OpCharstringType or OpPaintType
                     or OpStrokeWidth => 1,
                 OpFontMatrix => 6,
+                _ => -2
+            };
+        }
+        if (scope == Cff1DictScope.FontDict)
+        {
+            // A CID Font DICT owns one FD: its Private DICT, optionally a FontMatrix, and
+            // the CIDFontName that names the FD.
+            return op switch
+            {
+                OpPrivate => 2,
+                OpFontMatrix => 6,
+                OpCidFontName => 1,
                 _ => -2
             };
         }
@@ -69,6 +108,15 @@ internal static class Cff1Layout
             _ => -2
         };
     }
+}
+
+/// <summary>Which DICT is being parsed. The scopes admit different operators, and a CID
+/// Font DICT is neither a Top DICT nor a Private DICT.</summary>
+internal enum Cff1DictScope : byte
+{
+    Top = 0,
+    Private = 1,
+    FontDict = 2
 }
 
 /// <summary>Form of one charset or encoding reference in the Top DICT: a predefined
@@ -214,7 +262,7 @@ public readonly ref partial struct Cff1View
         }
         status = LocatePrivate(out int privateStart, out int privateLength, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = ParseDict(privateStart, privateLength, topScope: false, out var entries, out diagnostic);
+        status = ParseDict(privateStart, privateLength, Cff1DictScope.Private, out var entries, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!TryFindEntry(entries, Cff1Layout.OpSubrs, out var entry))
         {
@@ -298,7 +346,7 @@ public readonly ref partial struct Cff1View
         operands = null;
         ReadStatus status = LocatePrivate(out int start, out int length, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        return ReadDictIntegers(start, length, topScope: false, operatorKey, out operands, out diagnostic);
+        return ReadDictIntegers(start, length, Cff1DictScope.Private, operatorKey, out operands, out diagnostic);
     }
 
     /// <summary>Integer operands of one Top DICT operator; NotFound reports a key the
@@ -309,7 +357,7 @@ public readonly ref partial struct Cff1View
         operands = null;
         ReadStatus status = LocateTopDict(out int start, out int length, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        return ReadDictIntegers(start, length, topScope: true, operatorKey, out operands, out diagnostic);
+        return ReadDictIntegers(start, length, Cff1DictScope.Top, operatorKey, out operands, out diagnostic);
     }
 
     /// <summary>Faithful raw operand bytes of one Top DICT entry. Real operands are
@@ -321,7 +369,7 @@ public readonly ref partial struct Cff1View
         realBytes = default;
         ReadStatus status = LocateTopDict(out int start, out int length, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = ParseDict(start, length, topScope: true, out var entries, out diagnostic);
+        status = ParseDict(start, length, Cff1DictScope.Top, out var entries, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!TryFindEntry(entries, operatorKey, out var entry))
             return ReadWire.Fail(ReadStatus.NotFound, DiagnosticCode.TableNotFound,
@@ -622,7 +670,7 @@ public readonly ref partial struct Cff1View
         index = default;
         ReadStatus status = LocatePrivate(out int privateStart, out int privateLength, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = ParseDict(privateStart, privateLength, topScope: false, out var entries, out diagnostic);
+        status = ParseDict(privateStart, privateLength, Cff1DictScope.Private, out var entries, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!TryFindEntry(entries, Cff1Layout.OpSubrs, out var entry))
             return ReadWire.Fail(ReadStatus.NotFound, DiagnosticCode.TableNotFound,
@@ -670,7 +718,7 @@ public readonly ref partial struct Cff1View
     /// <summary>Strict DICT entry decode (Top or Private scope): arity whitelist with
     /// reversed name-keyed rules, operand stack cap, duplicate operator rejection,
     /// real tokens scanned structurally and preserved as raw spans.</summary>
-    private ReadStatus ParseDict(int start, int length, bool topScope,
+    private ReadStatus ParseDict(int start, int length, Cff1DictScope scope,
         out List<DictEntryData> entries, out FontDiagnostic diagnostic)
     {
         entries = [];
@@ -734,10 +782,10 @@ public readonly ref partial struct Cff1View
                         return FailDictPayload(at, out diagnostic);
                     op = 0x0c00 | _data[at++];
                 }
-                if (topScope && op is Cff1Layout.OpRos or Cff1Layout.OpFdArray or Cff1Layout.OpFdSelect)
-                    return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                        Location.At(DataField.Payload, (uint)operatorStart), out diagnostic, (uint)op);
-                int arity = Cff1Layout.DictArity(topScope, op);
+                // CID-keyed operators are accepted here and interpreted by the CID partial.
+                // Rejecting them outright would make every CID font an unsupported version,
+                // which is what this slice exists to lift.
+                int arity = Cff1Layout.DictArity(scope, op);
                 if (arity == -2)
                     return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.InvalidValue,
                         Location.At(DataField.Payload, (uint)operatorStart), out diagnostic, (uint)op);
@@ -820,11 +868,11 @@ public readonly ref partial struct Cff1View
         }
     }
 
-    private ReadStatus ReadDictIntegers(int start, int length, bool topScope, int operatorKey,
+    private ReadStatus ReadDictIntegers(int start, int length, Cff1DictScope scope, int operatorKey,
         out int[]? operands, out FontDiagnostic diagnostic)
     {
         operands = null;
-        ReadStatus status = ParseDict(start, length, topScope, out var entries, out diagnostic);
+        ReadStatus status = ParseDict(start, length, scope, out var entries, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!TryFindEntry(entries, operatorKey, out var entry))
             return ReadWire.Fail(ReadStatus.NotFound, DiagnosticCode.TableNotFound,
