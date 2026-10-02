@@ -58,6 +58,12 @@ public static class CidCff1TableCompiler
         var budget = new BuildBudget(limits);
         if (!budget.Work(1L + model.NumGlyphs + model.FdCount, model.Location, out diagnostic))
             return ReadStatus.ResourceLimit;
+        // Prepare materializes working copies of the charset, FDSelect, CharStrings, FDArray,
+        // the per-FD Private DICTs and the Local Subrs before anything is written. The
+        // temporary charge is taken here, up front, so an over-budget plan is refused before
+        // those arrays exist rather than after one of them has been allocated.
+        if (!budget.Buffer(TemporaryBytes(model, plan), model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
 
         ReadStatus status = Prepare(model, plan, out var layout, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -70,6 +76,33 @@ public static class CidCff1TableCompiler
         bytes = output;
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    /// <summary>Upper bound on the working set <see cref="Prepare"/> allocates. The model's
+    /// own arrays are counted alongside the edited copies the plan can introduce, so the
+    /// charge covers every materialized buffer and not just the plan's entries.</summary>
+    private static long TemporaryBytes(CidCff1Table model, CidEditPlan plan)
+    {
+        long total = 0;
+        // Per-glyph charset CIDs, plus one FDSelect entry per glyph.
+        total += 8L * model.NumGlyphs;
+        // CharStrings: the model's own programs, plus replacements the plan supplies.
+        foreach (var program in model.CharStrings) total += program.Length;
+        foreach (var edit in plan.CharStrings) total += edit.Program?.Length ?? 0;
+        // FDArray: each FD's raw DICT plus its Private DICT bytes and Local Subrs.
+        for (int fd = 0; fd < model.FdCount; fd++)
+        {
+            var fontDict = model[fd];
+            total += fontDict.RawBytes.Length;
+            if (!fontDict.HasPrivate) continue;
+            foreach (var entry in fontDict.PrivateEntries) total += entry.RawBytes.Length;
+            foreach (var subrs in fontDict.LocalSubrs) total += subrs.Length;
+        }
+        // Top DICT, strings and the global subr index are copied through as well.
+        foreach (var entry in model.TopDict) total += entry.RawBytes.Length;
+        foreach (var s in model.Strings) total += s.Length;
+        foreach (var subrs in model.GlobalSubrs) total += subrs.Length;
+        return Math.Max(total, 1);
     }
 
     public static ReadStatus TryWrite(CidCff1Table model, CidEditPlan plan,
