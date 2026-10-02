@@ -241,6 +241,13 @@ public readonly ref partial struct Cff1View
         bool requireTiling = true)
     {
         blockEnd = 0;
+        // A negative offset is refused before it can index the table. The tiling branch below
+        // compares against expectedStart, but the non-tiling caller (the CID charset) has no
+        // such comparison, so the guard has to live here.
+        if (offset < 0)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                Location.At(DataField.Offset, 0), out diagnostic,
+                unchecked((ulong)(long)offset), (ulong)_data.Length);
         if (offset > _data.Length - 1)
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
                 Location.At(DataField.Offset, (uint)offset), out diagnostic,
