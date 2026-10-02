@@ -1,0 +1,373 @@
+using FontWeave.Core;
+
+namespace FontWeave.Tables;
+
+/// <summary>Composite decoding, composite-aware validation, and component-graph
+/// verification for the single glyf View.
+///
+/// This is the same <c>GlyfView</c> type as the simple-glyph slice; composite records
+/// are decoded by one parser reached through these entry points. The simple-only
+/// <c>Validate</c>/<c>TryRead</c> deliberately keep their narrower contract, so a caller
+/// that only needs simple outlines never pays for composite structure or graph work.</summary>
+public readonly ref partial struct GlyfView
+{
+    /// <summary>Decodes one composite glyph record. <paramref name="numGlyphs"/> supplies
+    /// the glyph-count bound for component references; component indexes are checked
+    /// against it so an out-of-range reference is a diagnostic, not a deferred fault.</summary>
+    public ReadStatus TryDecodeComposite(LocaRange range, int numGlyphs,
+        out GlyfCompositeGlyph? glyph, out FontDiagnostic diagnostic, bool strict = true)
+    {
+        glyph = null;
+        ReadStatus status = RequireRange(range, out ReadOnlySpan<byte> record, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryDecodeCompositeBody(range, record, numGlyphs, out glyph, out diagnostic,
+            strict);
+        return status;
+    }
+
+    private ReadStatus TryDecodeCompositeBody(LocaRange range, ReadOnlySpan<byte> record,
+        int numGlyphs, out GlyfCompositeGlyph? glyph, out FontDiagnostic diagnostic,
+        bool strict)
+    {
+        glyph = null;
+        var header = new GlyfHeader(
+            unchecked((short)((record[0] << 8) | record[1])),
+            unchecked((short)((record[2] << 8) | record[3])),
+            unchecked((short)((record[4] << 8) | record[5])),
+            unchecked((short)((record[6] << 8) | record[7])),
+            unchecked((short)((record[8] << 8) | record[9])));
+        if (header.NumberOfContours >= 0)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.At(DataField.Count, range.Start, range.GlyphId), out diagnostic,
+                unchecked((ulong)header.NumberOfContours), 0);
+        int at = GlyfLayout.HeaderLength;
+        var components = new List<GlyfComponent>();
+        bool lastHadInstructions = false;
+        bool sawNonLastInstructions = false;
+        while (true)
+        {
+            if (components.Count >= GlyfLayout.MaxComponentsPerGlyph)
+                return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
+                    Location.At(DataField.Count, range.Start + (ulong)at, range.GlyphId),
+                    out diagnostic, (ulong)components.Count,
+                    GlyfLayout.MaxComponentsPerGlyph);
+            if (at + 4 > record.Length)
+                return TruncatedComposite(range, at, at + 4, out diagnostic);
+            ushort flags = (ushort)((record[at] << 8) | record[at + 1]);
+            ushort glyphIndex = (ushort)((record[at + 2] << 8) | record[at + 3]);
+            at += 4;
+            int ordinal = components.Count;
+
+            if (strict && (flags & GlyfLayout.ReservedComponentBits) != 0)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    Location.At(DataField.Flags, range.Start + (ulong)(at - 4), range.GlyphId),
+                    out diagnostic, flags, GlyfLayout.ReservedComponentBits);
+
+            int transformBits = flags & (GlyfLayout.WeHaveAScale |
+                GlyfLayout.WeHaveAnXAndYScale | GlyfLayout.WeHaveATwoByTwo);
+            if (transformBits != 0 && transformBits != GlyfLayout.WeHaveAScale &&
+                transformBits != GlyfLayout.WeHaveAnXAndYScale &&
+                transformBits != GlyfLayout.WeHaveATwoByTwo)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    Location.At(DataField.Flags, range.Start + (ulong)(at - 4), range.GlyphId),
+                    out diagnostic, (ulong)transformBits, GlyfLayout.WeHaveAScale);
+
+            if ((flags & GlyfLayout.ScaledComponentOffset) != 0 &&
+                (flags & GlyfLayout.UnscaledComponentOffset) != 0)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    Location.At(DataField.Flags, range.Start + (ulong)(at - 4), range.GlyphId),
+                    out diagnostic, 1, 0);
+
+            // Point matching (ARGS_ARE_XY_VALUES clear) is a distinct semantic this slice
+            // does not implement. The specification also requires the first component to
+            // carry xy values, so a clear bit is refused explicitly rather than accepted
+            // and ignored.
+            if ((flags & GlyfLayout.ArgsAreXyValues) == 0)
+                return ReadWire.Fail(ReadStatus.UnsupportedFormat,
+                    DiagnosticCode.UnsupportedOperation,
+                    Location.At(DataField.Flags, range.Start + (ulong)(at - 4), range.GlyphId),
+                    out diagnostic, (ulong)ordinal, GlyfLayout.ArgsAreXyValues);
+
+            if (glyphIndex >= numGlyphs)
+                return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                    Location.At(DataField.GlyphId, range.Start + (ulong)(at - 2), range.GlyphId),
+                    out diagnostic, glyphIndex, (ulong)numGlyphs);
+
+            bool words = (flags & GlyfLayout.Arg1And2AreWords) != 0;
+            int argumentBytes = words ? 4 : 2;
+            if (at + argumentBytes > record.Length)
+                return TruncatedComposite(range, at, at + argumentBytes, out diagnostic);
+            short arg1, arg2;
+            if (words)
+            {
+                arg1 = unchecked((short)((record[at] << 8) | record[at + 1]));
+                arg2 = unchecked((short)((record[at + 2] << 8) | record[at + 3]));
+            }
+            else
+            {
+                arg1 = unchecked((sbyte)record[at]);
+                arg2 = unchecked((sbyte)record[at + 1]);
+            }
+            at += argumentBytes;
+
+            var transform = GlyfTransform.Identity;
+            int transformBytes = (flags & GlyfLayout.WeHaveAScale) != 0 ? 2
+                : (flags & GlyfLayout.WeHaveAnXAndYScale) != 0 ? 4
+                : (flags & GlyfLayout.WeHaveATwoByTwo) != 0 ? 8 : 0;
+            if (transformBytes > 0)
+            {
+                if (at + transformBytes > record.Length)
+                    return TruncatedComposite(range, at, at + transformBytes, out diagnostic);
+                // Read inline rather than through a local function: a local function
+                // cannot capture the ref-like span parameter.
+                short first = unchecked((short)((record[at] << 8) | record[at + 1]));
+                transform = (flags & GlyfLayout.WeHaveAScale) != 0
+                    ? new(GlyfTransformKind.Scale, first, 0, 0,
+                        unchecked((short)((record[at] << 8) | record[at + 1])))
+                    : (flags & GlyfLayout.WeHaveAnXAndYScale) != 0
+                        ? new(GlyfTransformKind.XAndYScale, first, 0, 0,
+                            unchecked((short)((record[at + 2] << 8) | record[at + 3])))
+                        : new(GlyfTransformKind.TwoByTwo, first,
+                            unchecked((short)((record[at + 2] << 8) | record[at + 3])),
+                            unchecked((short)((record[at + 4] << 8) | record[at + 5])),
+                            unchecked((short)((record[at + 6] << 8) | record[at + 7])));
+                at += transformBytes;
+            }
+
+            bool more = (flags & GlyfLayout.MoreComponents) != 0;
+            if ((flags & GlyfLayout.WeHaveInstructions) != 0)
+            {
+                if (more) sawNonLastInstructions = true;
+                else lastHadInstructions = true;
+            }
+            components.Add(new(ordinal, flags, glyphIndex, arg1, arg2, transform));
+            if (!more) break;
+        }
+        // WE_HAVE_INSTRUCTIONS is meaningful only on the final component. A non-final
+        // component setting it while the final one does not is a structural ambiguity.
+        if (sawNonLastInstructions && !lastHadInstructions)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.At(DataField.Flags, range.Start + (ulong)at, range.GlyphId),
+                out diagnostic, GlyfLayout.WeHaveInstructions, 0);
+        byte[] instructions = [];
+        if (lastHadInstructions)
+        {
+            if (at + 2 > record.Length)
+                return TruncatedComposite(range, at, at + 2, out diagnostic);
+            int instructionLength = (record[at] << 8) | record[at + 1];
+            at += 2;
+            if (instructionLength > record.Length - at)
+                return TruncatedComposite(range, at, at + instructionLength, out diagnostic);
+            instructions = record.Slice(at, instructionLength).ToArray();
+            at += instructionLength;
+        }
+        for (int i = at; i < record.Length; i++)
+            if (record[i] != 0)
+                return ReadWire.Fail(ReadStatus.InvalidFormat,
+                    DiagnosticCode.UnexpectedTrailingData,
+                    Location.At(DataField.Payload, range.Start + (ulong)i, range.GlyphId),
+                    out diagnostic, record[i], 0);
+        glyph = new(range.GlyphId, header, [.. components], instructions, at, range.Start);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Shared range admission for the composite entry points: the view must be
+    /// bound, the range must be ordered, non-empty, ten bytes or more, and inside the
+    /// image. Returns the record slice on success.</summary>
+    private ReadStatus RequireRange(LocaRange range, out ReadOnlySpan<byte> record,
+        out FontDiagnostic diagnostic)
+    {
+        record = default;
+        if (!IsBound)
+            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView,
+                Location.At(DataField.None, 0), out diagnostic);
+        if (range.End < range.Start)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.InvalidValue,
+                Location.At(DataField.Offset, range.Start, range.GlyphId), out diagnostic,
+                range.End, range.Start);
+        if (range.End > (uint)_data.Length)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                Location.At(DataField.Offset, range.Start, range.GlyphId), out diagnostic,
+                range.End, (ulong)_data.Length);
+        if (range.IsEmpty || range.Length < GlyfLayout.MinimumGlyph)
+            return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
+                Location.At(DataField.Payload, range.Start, range.GlyphId), out diagnostic,
+                range.Length, GlyfLayout.MinimumGlyph);
+        record = _data.Slice((int)range.Start, (int)range.Length);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus TruncatedComposite(LocaRange range, int at, int needed,
+        out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
+            Location.At(DataField.Payload, range.Start + (ulong)at, range.GlyphId),
+            out diagnostic, (ulong)at, (ulong)needed);
+
+    /// <summary>Validates every glyph including composite structure, then verifies the
+    /// component graph. Failure produces no partial model and leaves the input untouched.</summary>
+    public ReadStatus ValidateComposites(LocaTable loca, out GlyfValidationSummary summary,
+        out FontDiagnostic diagnostic, bool strict = true)
+    {
+        summary = default;
+        ReadStatus status = RequireLoca(loca, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryReadComposites(loca, out var model, out diagnostic, Budget(), strict);
+        if (status != ReadStatus.Done) return status;
+        var graph = new ComponentGraphBuilder(model!).Build(out diagnostic);
+        if (graph is null) return ReadStatus.InvalidFormat;
+        summary = model!.Summarize();
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Materializes owned contents with composite structure decoded. The component
+    /// graph is verified before any model is published.</summary>
+    public ReadStatus TryReadComposites(LocaTable loca, out GlyfTable? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, bool strict = true)
+    {
+        model = null;
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        return TryReadComposites(loca, out model, out diagnostic, budget, strict);
+    }
+
+    internal ReadStatus TryReadComposites(LocaTable loca, out GlyfTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget, bool strict = true)
+    {
+        model = null;
+        ReadStatus status = RequireLoca(loca, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (!budget.Work(_data.Length, Location, out diagnostic) ||
+            !budget.Buffer(2L * _data.Length, Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var glyphs = new GlyfGlyph?[loca.NumGlyphs];
+        for (int gid = 0; gid < glyphs.Length; gid++)
+        {
+            status = loca.TryGetGlyphRange(gid, out var range, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = TryDecodeGlyph(range, out var glyph, out diagnostic, strict,
+                loca.NumGlyphs);
+            if (status != ReadStatus.Done) return status;
+            glyphs[gid] = glyph;
+        }
+        var candidate = new GlyfTable(glyphs, _data.ToArray(), Location, loca.Location);
+        // The graph is verified before the model is handed to the caller, so a cyclic or
+        // over-budget hierarchy can never be observed as a usable result.
+        if (new ComponentGraphBuilder(candidate).Build(out diagnostic) is null)
+            return ReadStatus.InvalidFormat;
+        model = candidate;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Graph-only verification for a materialized model.</summary>
+    public ReadStatus ValidateComponentGraph(GlyfTable model, out ComponentGraph? graph,
+        out FontDiagnostic diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        graph = new ComponentGraphBuilder(model).Build(out diagnostic);
+        return graph is null ? ReadStatus.InvalidFormat : ReadStatus.Done;
+    }
+
+    private static BuildBudget Budget() => new();
+}
+
+/// <summary>Builds and verifies the component hierarchy, enforcing the declared depth
+/// and edge budgets.</summary>
+internal sealed class ComponentGraphBuilder
+{
+    private readonly GlyfTable _model;
+
+    internal ComponentGraphBuilder(GlyfTable model) => _model = model;
+
+    internal ComponentGraph? Build(out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        int count = _model.NumGlyphs;
+        var children = new int[count][];
+        int edges = 0;
+        for (int gid = 0; gid < count; gid++)
+        {
+            _ = _model.TryGetGlyph(gid, out var glyph, out _);
+            if (glyph?.Composite is { } composite)
+            {
+                var list = new int[composite.ComponentCount];
+                for (int i = 0; i < list.Length; i++)
+                {
+                    int child = composite[i].GlyphIndex;
+                    if (child >= count)
+                        return Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                            gid, out diagnostic, (ulong)child, (ulong)count);
+                    list[i] = child;
+                }
+                children[gid] = list;
+                edges += list.Length;
+                if (edges > GlyfLayout.MaxComponentEdgesBudget)
+                    return Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
+                        gid, out diagnostic, (ulong)edges,
+                        GlyfLayout.MaxComponentEdgesBudget);
+            }
+            else children[gid] = [];
+        }
+        // Depth-first verification: a back edge is a cycle, and exceeding the declared
+        // depth budget is refused rather than recursed into.
+        var state = new byte[count];
+        var depth = new int[count];
+        for (int gid = 0; gid < count; gid++)
+        {
+            if (state[gid] != 0) continue;
+            if (!Visit(gid, children, state, depth, 1, out diagnostic)) return null;
+        }
+        int maxDepth = 0;
+        for (int gid = 0; gid < count; gid++) maxDepth = Math.Max(maxDepth, depth[gid]);
+        return new(children, depth, [.. state.Select(s => s != 0)], edges, maxDepth);
+    }
+
+    private static bool Visit(int gid, int[][] children, byte[] state, int[] depth,
+        int level, out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        if (state[gid] == 1)
+        {
+            // The glyph is on the current DFS path, so this edge closes a cycle.
+            diagnostic = new(DiagnosticCode.InvalidValue,
+                DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.GlyphId, 0, gid),
+                (ulong)gid, 0);
+            return false;
+        }
+        if (state[gid] == 2) return true;
+        if (level > GlyfLayout.MaxComponentDepthBudget)
+        {
+            diagnostic = new(DiagnosticCode.BudgetExceeded,
+                DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.GlyphId, 0, gid),
+                (ulong)level, GlyfLayout.MaxComponentDepthBudget);
+            return false;
+        }
+        state[gid] = 1;
+        // Depth follows the maxp definition: a glyph with no components has depth 0, and a
+        // composite is one level deeper than its deepest component.
+        depth[gid] = 0;
+        foreach (int child in children[gid])
+        {
+            if (!Visit(child, children, state, depth, level + 1, out diagnostic))
+            {
+                state[gid] = 0;
+                return false;
+            }
+            depth[gid] = Math.Max(depth[gid], depth[child] + 1);
+        }
+        state[gid] = 2;
+        return true;
+    }
+
+    private static ComponentGraph? Fail(ReadStatus status, DiagnosticCode code, int gid,
+        out FontDiagnostic diagnostic, ulong detail = 0, ulong expected = 0)
+    {
+        _ = status;
+        diagnostic = new(code, DataLocation.Anonymous(GlyfLayout.Tag)
+            .At(DataField.GlyphId, 0, gid), detail, expected);
+        return null;
+    }
+}
