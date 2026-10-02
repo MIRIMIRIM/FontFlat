@@ -239,16 +239,20 @@ public readonly ref partial struct GlyfView
         model = null;
         ReadStatus status = RequireLoca(loca, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (!budget.Work(_data.Length, Location, out diagnostic) ||
-            !budget.Buffer(2L * _data.Length, Location, out diagnostic))
+        // Work is charged per input byte here; temporary space is charged per glyph as it is
+        // decoded, because a glyph's decoded size follows its point count rather than its
+        // wire length (a REPEAT flag run describes many points in a few bytes).
+        if (!budget.Work(_data.Length, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
         var glyphs = new GlyfGlyph?[loca.NumGlyphs];
+        if (!budget.Buffer(8L * loca.NumGlyphs, Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
         for (int gid = 0; gid < glyphs.Length; gid++)
         {
             status = loca.TryGetGlyphRange(gid, out var range, out diagnostic);
             if (status != ReadStatus.Done) return status;
             status = TryDecodeGlyph(range, out var glyph, out diagnostic, strict,
-                loca.NumGlyphs);
+                loca.NumGlyphs, budget);
             if (status != ReadStatus.Done) return status;
             glyphs[gid] = glyph;
         }

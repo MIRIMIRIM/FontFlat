@@ -72,6 +72,16 @@ public readonly ref partial struct GlyfView
     public ReadStatus TryDecodeGlyph(LocaRange range, out GlyfGlyph? glyph,
         out FontDiagnostic diagnostic, bool strict, int numGlyphs)
     {
+        return TryDecodeGlyph(range, out glyph, out diagnostic, strict, numGlyphs, null);
+    }
+
+    /// <summary>Decoding entry point that also charges temporary space for the arrays a
+    /// simple glyph expands into. The caller's budget is passed down because a glyph's
+    /// decoded size is driven by its point count, not by the bytes it occupies on the wire:
+    /// a compressed flag run lets a few hundred bytes describe many thousands of points.</summary>
+    internal ReadStatus TryDecodeGlyph(LocaRange range, out GlyfGlyph? glyph,
+        out FontDiagnostic diagnostic, bool strict, int numGlyphs, BuildBudget? budget)
+    {
         glyph = null;
         if (!IsBound)
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView,
@@ -123,11 +133,15 @@ public readonly ref partial struct GlyfView
             diagnostic = default;
             return ReadStatus.Done;
         }
-        return TryDecodeSimple(range, header, record, strict, out glyph, out diagnostic);
+        return TryDecodeSimple(range, header, record, strict, budget, out glyph, out diagnostic);
     }
 
+    /// <summary>Bytes of temporary space one decoded point costs: the expanded flag byte,
+    /// the byte[] the flag run materializes into, and the GlyphPoint record itself.</summary>
+    private const int TemporaryBytesPerPoint = 1 + 1 + 8;
+
     private ReadStatus TryDecodeSimple(LocaRange range, GlyfHeader header,
-        ReadOnlySpan<byte> record, bool strict, out GlyfGlyph? glyph,
+        ReadOnlySpan<byte> record, bool strict, BuildBudget? budget, out GlyfGlyph? glyph,
         out FontDiagnostic diagnostic)
     {
         glyph = null;
@@ -169,6 +183,12 @@ public readonly ref partial struct GlyfView
                     2 * contours), range.GlyphId), out diagnostic,
                 ushort.MaxValue, (ulong)(ushort.MaxValue - 1));
         int pointCount = contours == 0 ? 0 : endPoints[contours - 1] + 1;
+        // Charge the expanded point count, not the record length. TryExpandFlags allocates a
+        // List<byte> of one flag per point and TryDecodeCoordinates materializes one
+        // GlyphPoint per point, so the temporary cost is set by pointCount alone.
+        if (budget is { } charge &&
+            !charge.Buffer((long)TemporaryBytesPerPoint * pointCount, Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
         ReadStatus status = TryExpandFlags(record, range, at, pointCount, strict,
             out byte[] flags, out int flagEnd, out diagnostic);
         if (status != ReadStatus.Done) return status;

@@ -15,6 +15,13 @@ public readonly ref partial struct GlyfView
         out FontDiagnostic diagnostic, bool strict = true)
     {
         summary = default;
+        return Validate(loca, out summary, out diagnostic, new BuildBudget(null), strict);
+    }
+
+    internal ReadStatus Validate(LocaTable loca, out GlyfValidationSummary summary,
+        out FontDiagnostic diagnostic, BuildBudget budget, bool strict)
+    {
+        summary = default;
         ReadStatus status = RequireLoca(loca, out diagnostic);
         if (status != ReadStatus.Done) return status;
         int empty = 0, simple = 0, composite = 0, padding = 0;
@@ -22,7 +29,7 @@ public readonly ref partial struct GlyfView
         {
             status = loca.TryGetGlyphRange(gid, out var range, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            status = TryDecodeGlyph(range, out var glyph, out diagnostic, strict);
+            status = TryDecodeGlyph(range, out var glyph, out diagnostic, strict, -1, budget);
             if (status != ReadStatus.Done) return status;
             switch (glyph!.Kind)
             {
@@ -56,15 +63,19 @@ public readonly ref partial struct GlyfView
         model = null;
         ReadStatus status = RequireLoca(loca, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (!budget.Work(_data.Length, Location, out diagnostic) ||
-            !budget.Buffer(2L * _data.Length, Location, out diagnostic))
+        // Work is charged per input byte; temporary space is charged per glyph as it decodes,
+        // since a glyph's decoded size follows its point count rather than its wire length.
+        if (!budget.Work(_data.Length, Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        if (!budget.Buffer(8L * loca.NumGlyphs, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
         var glyphs = new GlyfGlyph?[loca.NumGlyphs];
         for (int gid = 0; gid < glyphs.Length; gid++)
         {
             status = loca.TryGetGlyphRange(gid, out var range, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            status = TryDecodeGlyph(range, out var glyph, out diagnostic, strict);
+            status = TryDecodeGlyph(range, out var glyph, out diagnostic, strict,
+                -1, budget);
             if (status != ReadStatus.Done) return status;
             glyphs[gid] = glyph;
         }
@@ -77,6 +88,12 @@ public readonly ref partial struct GlyfView
     /// The same per-glyph rules apply; composite glyphs stay not parsed.</summary>
     public ReadStatus ValidateRange(LocaTable loca, int firstGlyph, int glyphCount,
         out GlyfValidationSummary summary, out FontDiagnostic diagnostic, bool strict = true)
+        => ValidateRange(loca, firstGlyph, glyphCount, out summary, out diagnostic,
+            new BuildBudget(null), strict);
+
+    internal ReadStatus ValidateRange(LocaTable loca, int firstGlyph, int glyphCount,
+        out GlyfValidationSummary summary, out FontDiagnostic diagnostic, BuildBudget budget,
+        bool strict)
     {
         summary = default;
         ReadStatus status = RequireLoca(loca, out diagnostic);
@@ -90,7 +107,7 @@ public readonly ref partial struct GlyfView
         {
             status = loca.TryGetGlyphRange(gid, out var range, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            status = TryDecodeGlyph(range, out var glyph, out diagnostic, strict);
+            status = TryDecodeGlyph(range, out var glyph, out diagnostic, strict, -1, budget);
             if (status != ReadStatus.Done) return status;
             switch (glyph!.Kind)
             {
