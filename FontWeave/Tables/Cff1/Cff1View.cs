@@ -475,10 +475,13 @@ public readonly ref partial struct Cff1View
         index = default;
         if (!IsBound)
             return Unbound(out diagnostic);
-        if (at < 0 || at + 2 > _data.Length)
+        // The addition must be done in 64-bit: a corrupt offset can be near int.MaxValue, and
+        // `at + 2` would overflow (the project builds with checked arithmetic) instead of
+        // reporting the range violation the caller is owed.
+        if (at < 0 || (long)at + 2 > _data.Length)
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
                 Location.At(DataField.Count, (ulong)(uint)Math.Max(0, at)), out diagnostic,
-                (ulong)_data.Length, (ulong)(at + 2));
+                (ulong)_data.Length, (ulong)((long)Math.Max(0, at) + 2));
         int start = at;
         int count = ReadWire.U16(_data, at);
         if (count == 0)
@@ -487,10 +490,12 @@ public readonly ref partial struct Cff1View
             diagnostic = default;
             return ReadStatus.Done;
         }
-        if (at + 3 > _data.Length)
+        // Same 64-bit care as above: `at` can be a corrupt offset, so neither `at + 2` nor
+        // `at + 3` may be computed in 32-bit arithmetic.
+        if ((long)at + 3 > _data.Length)
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.Length, (ulong)(uint)(at + 2)), out diagnostic,
-                (ulong)_data.Length, (ulong)(at + 3));
+                Location.At(DataField.Length, (ulong)(uint)((long)at + 2)), out diagnostic,
+                (ulong)_data.Length, (ulong)((long)at + 3));
         int offSize = _data[at + 2];
         if (offSize is < 1 or > 4)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,

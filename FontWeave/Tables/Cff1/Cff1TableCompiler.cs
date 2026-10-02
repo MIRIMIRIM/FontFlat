@@ -503,7 +503,9 @@ public static class Cff1TableCompiler
             else
             {
                 foreach (var operand in entry.Operands)
-                    length += operand.IsReal ? operand.RealBytes!.Length : IntOperandLength(operand.Value);
+                    length += operand.IsReal
+                        ? operand.RealBytes!.Length + 1     // + the 0x1E real-number marker
+                        : IntOperandLength(operand.Value);
             }
             length += entry.Operator > 0xFF ? 2 : 1;
         }
@@ -526,6 +528,8 @@ public static class Cff1TableCompiler
                 {
                     if (operand.IsReal)
                     {
+                        // RealNumber bytes are held without their 0x1E marker.
+                        output[at++] = 30;
                         operand.RealBytes!.CopyTo(output.AsSpan(at));
                         at += operand.RealBytes!.Length;
                     }
@@ -545,13 +549,18 @@ public static class Cff1TableCompiler
     {
         int length = op > 0xFF ? 2 : 1;
         foreach (var operand in operands)
-            length += operand.IsReal ? operand.RealBytes!.Length : IntOperandLength(operand.Value);
+            length += operand.IsReal
+                ? operand.RealBytes!.Length + 1     // + the 0x1E real-number marker
+                : IntOperandLength(operand.Value);
         var raw = new byte[length];
         int at = 0;
         foreach (var operand in operands)
         {
             if (operand.IsReal)
             {
+                // RealNumber operands are stored without their 0x1E marker, so it has to be
+                // written back here; omitting it would corrupt the DICT.
+                raw[at++] = 30;
                 operand.RealBytes!.CopyTo(raw.AsSpan(at));
                 at += operand.RealBytes!.Length;
             }
