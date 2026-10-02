@@ -258,6 +258,13 @@ public static class CidCff1TableCompiler
                 return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                     model.Location.At(DataField.FdIndex, 0, edit.FdIndex), out diagnostic,
                     unchecked((ulong)(long)edit.FdIndex), (ulong)model.FdCount);
+            // An FD with no Private DICT has nowhere to put the value. Accepting the edit and
+            // dropping it would report success for a change that never reaches the output.
+            if (!model[edit.FdIndex].HasPrivate)
+                return ReadWire.Fail(ReadStatus.UnsupportedFormat,
+                    DiagnosticCode.UnsupportedOperation,
+                    model.Location.At(DataField.FdIndex, 0, edit.FdIndex), out diagnostic,
+                    unchecked((ulong)(long)edit.FdIndex), 0);
         }
         var localSubrsLength = new int[model.FdCount];
         for (int fd = 0; fd < model.FdCount; fd++)
