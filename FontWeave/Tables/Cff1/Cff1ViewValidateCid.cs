@@ -384,6 +384,19 @@ public readonly ref partial struct Cff1View
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 Location.At(DataField.Count, (uint)rangesEnd, nRanges), out diagnostic,
                 (uint)sentinel, (uint)numGlyphs);
+        // Every run start must lie inside the glyph domain the sentinel closes. Without this
+        // a final run could start at or beyond the sentinel and still satisfy the ordering
+        // checks, which would make the run table claim glyphs that do not exist and silently
+        // move in-domain glyphs onto the wrong FD.
+        for (int i = 0; i < nRanges; i++)
+        {
+            int at = offset + 3 + i * CidLayout.FdSelectRangeStride;
+            int first = ReadWire.U16(_data, at);
+            if (first >= sentinel)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    Location.At(DataField.Count, (uint)at, i), out diagnostic,
+                    (uint)first, (uint)(sentinel - 1));
+        }
         fdCount = maxFd + 1;
         blockEnd = (int)sentinelEnd;
         diagnostic = default;
