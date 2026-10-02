@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14.0</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsPackable>false</IsPackable>
+    <!-- xunit v3 test projects are stand-alone executables, so they build an app host and can
+         be run directly. -->
+    <OutputType>Exe</OutputType>
+    <!-- Microsoft.Testing.Platform is the dotnet test runner on .NET 10; the repository
+         global.json additionally selects it for the SDK. -->
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- xunit.v3.mtp-v2 is the flavor whose entry point speaks Microsoft.Testing.Platform.
+         The plain xunit.v3 package ships the xunit-native console runner instead. -->
+    <PackageReference Include="xunit.v3.mtp-v2" Version="4.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../FontWeave/FontWeave.csproj" />
+  </ItemGroup>
+</Project>
