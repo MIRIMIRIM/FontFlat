@@ -156,8 +156,11 @@ public static class FoundationTableEditOperation
                 status = directory.TryGetTableBytes(i, out var signatureBytes, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 // An empty DSIG has no signature to invalidate. A real signature may only be dropped.
-                bool emptyDsig = signatureBytes.Length == 8 && ReadWire.U32(signatureBytes, 0) == 1 &&
-                    ReadWire.U16(signatureBytes, 4) == 0 && ReadWire.U16(signatureBytes, 6) == 0;
+                bool emptyDsig = signatureBytes.Length == DsigLayout.HeaderLength &&
+                    DsigView.TryOpen(signatureBytes, out var signatureView, out _,
+                        directory.TableLocation(i)) == ReadStatus.Done &&
+                    signatureView.Version == 1 && signatureView.NumSignatures == 0 &&
+                    signatureView.Flags == 0;
                 if (!emptyDsig && !options.DropDigitalSignature)
                     return ReadWire.Fail(ReadStatus.UnsupportedFormat,
                         DiagnosticCode.SignatureRequiresDrop, directory.TableLocation(i),
