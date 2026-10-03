@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -23,7 +22,8 @@ public static class HeadTableCompiler
             !budget.Buffer(HeadLayout.Length, location, out diagnostic))
             return ReadStatus.ResourceLimit;
         byte[] bytes = new byte[HeadLayout.Length];
-        Write(model.Values, bytes);
+        ReadStatus status = Write(model.Values, bytes, out diagnostic, model.Location);
+        if (status != ReadStatus.Done) return status;
         budget.RecordCompiledTable(HeadLayout.Length);
         output = bytes;
         diagnostic = default;
@@ -38,9 +38,7 @@ public static class HeadTableCompiler
             return ReadWire.Fail(ReadStatus.DestinationTooSmall, DiagnosticCode.DestinationTooSmall,
                 model.Location.At(DataField.OutputBytes, 0), out diagnostic,
                 (ulong)destination.Length, HeadLayout.Length);
-        Write(model.Values, destination);
-        diagnostic = default;
-        return ReadStatus.Done;
+        return Write(model.Values, destination, out diagnostic, model.Location);
     }
 
     public static ReadStatus TryCompile(ReadOnlySpan<byte> input, HeadMetadataEdit edit,
@@ -73,24 +71,43 @@ public static class HeadTableCompiler
         return TryCompile(updated!, out output, out diagnostic, budget);
     }
 
-    private static void Write(HeadTableValues value, Span<byte> bytes)
+    private static ReadStatus Write(HeadTableValues value, Span<byte> bytes,
+        out FontDiagnostic diagnostic, DataLocation location)
     {
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(HeadLayout.VersionAt), HeadLayout.Version);
-        BinaryPrimitives.WriteInt32BigEndian(bytes.Slice(HeadLayout.FontRevisionAt), value.FontRevisionRaw);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(HeadLayout.ChecksumAdjustmentAt), value.ChecksumAdjustment);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(HeadLayout.MagicNumberAt), value.MagicNumber);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(HeadLayout.FlagsAt), value.Flags);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(HeadLayout.UnitsPerEmAt), value.UnitsPerEm);
-        BinaryPrimitives.WriteInt64BigEndian(bytes.Slice(HeadLayout.CreatedAt), value.CreatedSeconds);
-        BinaryPrimitives.WriteInt64BigEndian(bytes.Slice(HeadLayout.ModifiedAt), value.ModifiedSeconds);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(HeadLayout.XMinAt), value.XMin);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(HeadLayout.YMinAt), value.YMin);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(HeadLayout.XMaxAt), value.XMax);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(HeadLayout.YMaxAt), value.YMax);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(HeadLayout.MacStyleAt), value.MacStyle);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(HeadLayout.LowestRecPpemAt), value.LowestRecPpem);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(HeadLayout.FontDirectionHintAt), value.FontDirectionHint);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(HeadLayout.IndexToLocFormatAt), value.IndexToLocFormat);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(HeadLayout.GlyphDataFormatAt), value.GlyphDataFormat);
+        ReadStatus status = HeadView.TryWriteVersion(bytes, HeadLayout.Version, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteFontRevision(bytes, value.FontRevisionRaw, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteChecksumAdjustment(bytes, value.ChecksumAdjustment, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteMagicNumber(bytes, value.MagicNumber, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteFlags(bytes, value.Flags, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteUnitsPerEm(bytes, value.UnitsPerEm, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteCreated(bytes, value.CreatedSeconds, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteModified(bytes, value.ModifiedSeconds, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteXMin(bytes, value.XMin, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteYMin(bytes, value.YMin, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteXMax(bytes, value.XMax, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteYMax(bytes, value.YMax, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteMacStyle(bytes, value.MacStyle, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteLowestRecPpem(bytes, value.LowestRecPpem, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteFontDirectionHint(bytes, value.FontDirectionHint, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteIndexToLocFormat(bytes, value.IndexToLocFormat, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = HeadView.TryWriteGlyphDataFormat(bytes, value.GlyphDataFormat, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        return ReadStatus.Done;
     }
 }

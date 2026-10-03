@@ -230,6 +230,8 @@ internal sealed class SchemaParser
         foreach (var scalar in _model.Scalars)
         {
             GeneratedName(generated, "TryGet" + scalar.Name);
+            if (scalar.WhenVersion < 0 && scalar.Position.Base is null && scalar.Position.Count is null)
+                GeneratedName(generated, "TryWrite" + scalar.Name);
             GeneratedName(generated, "TryEvaluateScalar" + scalar.Name + "Position");
             if (scalar.Semantic == NumberSemantic.FixedPoint) GeneratedName(generated, "TryGet" + scalar.Name + "Value");
             if (scalar.WhenVersion < 0 && scalar.Position.Base is null && scalar.Position.Constant + (uint)scalar.Width <= (ulong)Math.Max(0, _model.MinimumHeader))
@@ -239,6 +241,7 @@ internal sealed class SchemaParser
         foreach (var array in _model.Arrays)
         {
             GeneratedName(generated, array.Name + "Data");
+            GeneratedName(generated, "TryWrite" + array.Name + "At");
             if (array.ExternallyPositioned) GeneratedName(generated, "TryRead" + array.Name + "At");
             else { GeneratedName(generated, "TryGet" + array.Name); GeneratedName(generated, "TryEvaluateArray" + array.Name + "Start"); }
         }

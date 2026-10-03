@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -20,7 +19,8 @@ public static class MaxpTableCompiler
             !budget.Buffer(length, model.Location, out diagnostic))
             return ReadStatus.ResourceLimit;
         byte[] bytes = new byte[length];
-        Write(model, bytes);
+        ReadStatus status = Write(model, bytes, out diagnostic);
+        if (status != ReadStatus.Done) return status;
         budget.RecordCompiledTable(length);
         output = bytes;
         diagnostic = default;
@@ -36,29 +36,45 @@ public static class MaxpTableCompiler
             return ReadWire.Fail(ReadStatus.DestinationTooSmall, DiagnosticCode.DestinationTooSmall,
                 model.Location.At(DataField.OutputBytes, 0), out diagnostic,
                 (ulong)destination.Length, (ulong)length);
-        Write(model, destination);
-        diagnostic = default;
-        return ReadStatus.Done;
+        return Write(model, destination, out diagnostic);
     }
 
-    private static void Write(MaxpTable model, Span<byte> bytes)
+    private static ReadStatus Write(MaxpTable model, Span<byte> bytes,
+        out FontDiagnostic diagnostic)
     {
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(MaxpLayout.VersionAt), model.VersionRaw);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.NumGlyphsAt), model.NumGlyphs);
-        if (model is not Maxp10Table v10) return;
+        DataLocation location = model.Location;
+        ReadStatus status = MaxpView.TryWriteVersion(bytes, model.VersionRaw, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteNumGlyphs(bytes, model.NumGlyphs, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        if (model is not Maxp10Table v10) return ReadStatus.Done;
         Maxp10Values value = v10.Values;
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxPointsAt), value.MaxPoints);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxContoursAt), value.MaxContours);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxCompositePointsAt), value.MaxCompositePoints);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxCompositeContoursAt), value.MaxCompositeContours);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxZonesAt), value.MaxZones);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxTwilightPointsAt), value.MaxTwilightPoints);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxStorageAt), value.MaxStorage);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxFunctionDefsAt), value.MaxFunctionDefs);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxInstructionDefsAt), value.MaxInstructionDefs);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxStackElementsAt), value.MaxStackElements);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxSizeOfInstructionsAt), value.MaxSizeOfInstructions);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxComponentElementsAt), value.MaxComponentElements);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(MaxpLayout.MaxComponentDepthAt), value.MaxComponentDepth);
+        status = MaxpView.TryWriteMaxPoints(bytes, value.MaxPoints, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteMaxContours(bytes, value.MaxContours, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteMaxCompositePoints(bytes, value.MaxCompositePoints, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteMaxCompositeContours(bytes, value.MaxCompositeContours, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteMaxZones(bytes, value.MaxZones, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteMaxTwilightPoints(bytes, value.MaxTwilightPoints, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteMaxStorage(bytes, value.MaxStorage, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteMaxFunctionDefs(bytes, value.MaxFunctionDefs, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteMaxInstructionDefs(bytes, value.MaxInstructionDefs, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteMaxStackElements(bytes, value.MaxStackElements, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteMaxSizeOfInstructions(bytes, value.MaxSizeOfInstructions, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteMaxComponentElements(bytes, value.MaxComponentElements, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = MaxpView.TryWriteMaxComponentDepth(bytes, value.MaxComponentDepth, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        return ReadStatus.Done;
     }
 }

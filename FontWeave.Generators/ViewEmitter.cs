@@ -56,6 +56,11 @@ internal static class ViewEmitter
             EmitScalarPosition(writer, scalar);
             writer.Line();
             EmitScalar(writer, model, scalar);
+            if (scalar.WhenVersion < 0 && scalar.Position.Base is null && scalar.Position.Count is null)
+            {
+                writer.Line();
+                EmitScalarWrite(writer, scalar);
+            }
             if (scalar.Semantic == NumberSemantic.FixedPoint)
             {
                 writer.Line();
@@ -73,6 +78,8 @@ internal static class ViewEmitter
         {
             writer.Line();
             EmitArrayRecord(writer, array);
+            writer.Line();
+            EmitRecordWrite(writer, array);
             writer.Line();
             if (array.ExternallyPositioned)
                 EmitExternallyPositionedRecord(writer, array);
@@ -252,6 +259,74 @@ internal static class ViewEmitter
         writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
         writer.Indent--;
         writer.Line("}");
+    }
+
+    // These helpers only encode schema-covered wire fields. Semantic compilers retain
+    // version selection, layout planning, admission, canonical policy and publication.
+    private static void EmitScalarWrite(CodeWriter writer, ScalarModel scalar)
+    {
+        writer.Line($"internal static global::FontWeave.Core.ReadStatus TryWrite{scalar.Name}(global::System.Span<byte> destination, {scalar.CsType} value,");
+        writer.Indent++;
+        writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic, global::FontWeave.Core.DataLocation location = default)");
+        writer.Indent--;
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("location = NormalizeLocation(location);");
+        writer.Line($"if (!TrySlice(destination, {U(scalar.Position.Constant)}, {U(scalar.Width)}, out _))");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.DestinationTooSmall, global::FontWeave.Core.DiagnosticCode.DestinationTooSmall,");
+        writer.Indent++;
+        writer.Line($"location.AtLocal((global::FontWeave.Core.DataField){scalar.FieldId}, {U(scalar.Position.Constant)}), out diagnostic,");
+        writer.Line($"(ulong)destination.Length, {U(scalar.Position.Constant + (ulong)scalar.Width)});");
+        writer.Indent -= 2;
+        EmitWriteValue(writer, scalar, "destination", "value", scalar.Position.Constant);
+        writer.Line("diagnostic = default;");
+        writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    private static void EmitRecordWrite(CodeWriter writer, ArrayModel array)
+    {
+        writer.Line($"internal static global::FontWeave.Core.ReadStatus TryWrite{array.Name}At(global::System.Span<byte> destination, ulong rowPosition, in {array.Name}Data record,");
+        writer.Indent++;
+        writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic, global::FontWeave.Core.DataLocation location = default)");
+        writer.Indent--;
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("location = NormalizeLocation(location);");
+        writer.Line($"if (!TrySlice(destination, rowPosition, {U(array.Stride)}, out _))");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.DestinationTooSmall, global::FontWeave.Core.DiagnosticCode.DestinationTooSmall,");
+        writer.Indent++;
+        writer.Line("location.AtLocal(global::FontWeave.Core.DataField.OutputBytes, rowPosition, record.Ordinal), out diagnostic,");
+        writer.Line($"(ulong)destination.Length, rowPosition > ulong.MaxValue - {U(array.Stride)} ? ulong.MaxValue : rowPosition + {U(array.Stride)});");
+        writer.Indent -= 2;
+        // Padding is not a declared field and is left untouched.
+        writer.Line($"global::System.Span<byte> row = destination.Slice((int)rowPosition, {array.Stride});");
+        foreach (ScalarModel field in array.Fields)
+            EmitWriteValue(writer, field, "row", "record." + field.Name, field.Position.Constant);
+        writer.Line("diagnostic = default;");
+        writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    private static void EmitWriteValue(CodeWriter writer, ScalarModel field, string bytes,
+        string value, ulong offset)
+    {
+        if (field.Type is WireType.UInt8 or WireType.Int8)
+        {
+            writer.Line($"{bytes}[{offset}] = unchecked((byte){value});");
+            return;
+        }
+        string suffix = field.Endian == WireEndian.Big ? "BigEndian" : "LittleEndian";
+        string type = field.Type switch
+        {
+            WireType.UInt16 => "UInt16", WireType.UInt32 => "UInt32", WireType.Int16 => "Int16",
+            WireType.Int64 => "Int64", _ => "Int32",
+        };
+        writer.Line($"global::System.Buffers.Binary.BinaryPrimitives.Write{type}{suffix}({bytes}.Slice({offset}, {field.Width}), {value});");
     }
 
     private static void EmitDerived(CodeWriter writer, TableModel model, DerivedModel derived)

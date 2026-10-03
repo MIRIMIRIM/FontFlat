@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -18,7 +17,8 @@ public static class VheaTableCompiler
             !budget.Output(VheaLayout.Length, model.Location, out diagnostic) ||
             !budget.Buffer(VheaLayout.Length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         byte[] bytes = new byte[VheaLayout.Length];
-        Write(model.Values, bytes);
+        ReadStatus status = Write(model.Values, bytes, out diagnostic, model.Location);
+        if (status != ReadStatus.Done) return status;
         budget.RecordCompiledTable(bytes.Length);
         output = bytes;
         diagnostic = default;
@@ -33,29 +33,46 @@ public static class VheaTableCompiler
             return ReadWire.Fail(ReadStatus.DestinationTooSmall, DiagnosticCode.DestinationTooSmall,
                 model.Location.At(DataField.OutputBytes, 0), out diagnostic,
                 (ulong)destination.Length, VheaLayout.Length);
-        Write(model.Values, destination);
-        diagnostic = default;
-        return ReadStatus.Done;
+        return Write(model.Values, destination, out diagnostic, model.Location);
     }
 
-    private static void Write(VheaValues v, Span<byte> bytes)
+    private static ReadStatus Write(VheaValues v, Span<byte> bytes,
+        out FontDiagnostic diagnostic, DataLocation location)
     {
-        BinaryPrimitives.WriteUInt32BigEndian(bytes, v.VersionRaw);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(4), v.Ascender);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(6), v.Descender);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(8), v.LineGap);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(10), v.AdvanceHeightMax);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(12), v.MinTopSideBearing);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(14), v.MinBottomSideBearing);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(16), v.YMaxExtent);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(18), v.CaretSlopeRise);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(20), v.CaretSlopeRun);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(22), v.CaretOffset);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(24), v.Reserved1);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(26), v.Reserved2);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(28), v.Reserved3);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(30), v.Reserved4);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(32), v.MetricDataFormat);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(34), v.NumOfLongVerMetrics);
+        ReadStatus status = VheaView.TryWriteVersionRaw(bytes, v.VersionRaw, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteAscender(bytes, v.Ascender, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteDescender(bytes, v.Descender, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteLineGap(bytes, v.LineGap, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteAdvanceHeightMax(bytes, v.AdvanceHeightMax, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteMinTopSideBearing(bytes, v.MinTopSideBearing, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteMinBottomSideBearing(bytes, v.MinBottomSideBearing, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteYMaxExtent(bytes, v.YMaxExtent, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteCaretSlopeRise(bytes, v.CaretSlopeRise, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteCaretSlopeRun(bytes, v.CaretSlopeRun, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteCaretOffset(bytes, v.CaretOffset, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteReserved1(bytes, v.Reserved1, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteReserved2(bytes, v.Reserved2, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteReserved3(bytes, v.Reserved3, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteReserved4(bytes, v.Reserved4, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteMetricDataFormat(bytes, v.MetricDataFormat, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        status = VheaView.TryWriteNumOfLongVerMetrics(bytes, v.NumOfLongVerMetrics, out diagnostic, location);
+        if (status != ReadStatus.Done) return status;
+        return ReadStatus.Done;
     }
 }
