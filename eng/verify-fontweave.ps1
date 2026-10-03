@@ -19,6 +19,7 @@ $reportPath = Join-Path $output 'tests.ctrf.json'
 $head = $null
 $dirty = @()
 $sdk = $null
+$testReports = [Collections.Generic.List[object]]::new()
 
 function Invoke-GateProcess([string] $Name, [string[]] $Arguments,
     [string] $Executable = 'dotnet') {
@@ -76,22 +77,30 @@ try {
     }
     # The native xUnit entry point produces a machine-readable report without MTP's
     # argument forwarding. A missing, empty, skipped or failed report cannot pass.
-    $null = Invoke-GateProcess 'tests-Release' @(
-        'FontWeave.Tests/bin/Release/net10.0/FontWeave.Tests.dll',
-        '-failSkips', '-result-ctrf', $reportPath
-    )
-    $counts = (Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json).results.summary
-    if ($counts.tests -le 0 -or $counts.passed -ne $counts.tests) {
-        throw 'The gate requires at least one test and every test must pass'
+    $total = 0
+    foreach ($project in 'FontWeave.Tests', 'FontWeave.Generators.Tests') {
+        $filename = if ($project -eq 'FontWeave.Tests') { 'tests.ctrf.json' } else { 'generator-tests.ctrf.json' }
+        $reportPath = Join-Path $output $filename
+        $null = Invoke-GateProcess "tests-$project-Release" @(
+            "$project/bin/Release/net10.0/$project.dll",
+            '-failSkips', '-result-ctrf', $reportPath
+        )
+        $counts = (Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json).results.summary
+        if ($counts.tests -le 0 -or $counts.passed -ne $counts.tests) {
+            throw "$project requires at least one test and every test must pass"
+        }
+        $total += $counts.passed
+        $testReports.Add(@{ project = $project; passed = $counts.passed; report = $filename })
     }
     $status = 'PASS'
-    Write-Host "FontWeave $Arithmetic gate: $($counts.passed) tests passed"
+    Write-Host "FontWeave $Arithmetic gate: $total tests passed"
 }
 finally {
     @{
         status = $status; arithmetic = $Arithmetic; timeoutSeconds = $TimeoutSeconds
         head = $head; dirtyPaths = $dirty; sdk = $sdk
         steps = $steps.ToArray(); testReport = 'tests.ctrf.json'
+        testReports = $testReports.ToArray()
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $output 'summary.json')
     Write-Host "Artifacts: $output"
 }
