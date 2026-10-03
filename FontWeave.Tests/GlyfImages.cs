@@ -100,8 +100,8 @@ internal static class GlyfImages
         int remaining = points;
         while (remaining > 0)
         {
-            body.Add(0x39);                     // ON_CURVE | X_SAME | Y_SAME | REPEAT
             int repeat = Math.Min(255, remaining - 1);
+            body.Add(repeat > 0 ? (byte)0x39 : (byte)0x31); // REPEAT requires a count byte
             if (repeat == 0) { remaining -= 1; continue; }
             body.Add((byte)repeat);
             remaining -= repeat + 1;

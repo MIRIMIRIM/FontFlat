@@ -154,6 +154,9 @@ public static class GlyfTableCompiler
         if (edit.Glyphs.Count == 0 && edit.Composites.Count == 0)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.At(DataField.Payload, 0), out diagnostic);
+        if (!budget.Work((long)edit.Glyphs.Count + edit.Composites.Count,
+            model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
         var plans = new Dictionary<int, GlyphEdit>();
         var compositePlans = new Dictionary<int, GlyfCompositeEdit>();
         foreach (var plan in edit.Glyphs)
@@ -184,6 +187,7 @@ public static class GlyfTableCompiler
         }
         // Encode every edited glyph first so a failure leaves no partial output.
         var encoded = new Dictionary<int, byte[]>();
+        var editedComposites = new Dictionary<int, GlyfCompositeGlyph>();
         foreach (var pair in plans)
         {
             ReadStatus status = model.TryGetGlyph(pair.Key, out var glyph, out diagnostic);
@@ -193,7 +197,8 @@ public static class GlyfTableCompiler
                     DiagnosticCode.UnsupportedOperation,
                     model.Location.At(DataField.GlyphId, 0, pair.Key), out diagnostic,
                     unchecked((ulong)(long)pair.Key), (ulong)glyph.Kind);
-            status = EncodeSimple(glyph, pair.Value, out byte[]? record, out diagnostic);
+            status = EncodeSimple(glyph, pair.Value, out byte[]? record, out diagnostic,
+                budget, model.Location);
             if (status != ReadStatus.Done) return status;
             encoded[pair.Key] = record!;
         }
@@ -206,11 +211,17 @@ public static class GlyfTableCompiler
                     DiagnosticCode.UnsupportedOperation,
                     model.Location.At(DataField.GlyphId, 0, pair.Key), out diagnostic,
                     unchecked((ulong)(long)pair.Key), (ulong)glyph.Kind);
-            status = EncodeComposite(glyph, pair.Value, model.NumGlyphs, out byte[]? record,
-                out diagnostic);
+            status = TryEditComposite(glyph, pair.Value, model.NumGlyphs,
+                out var editedComposite, out diagnostic, budget, model.Location);
+            if (status != ReadStatus.Done) return status;
+            status = EncodeComposite(editedComposite!, out byte[]? record, out diagnostic,
+                budget, model.Location);
             if (status != ReadStatus.Done) return status;
             encoded[pair.Key] = record!;
+            editedComposites[pair.Key] = editedComposite!;
         }
+        if (!budget.Work(model.NumGlyphs, model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
         long total = 0;
         for (int gid = 0; gid < model.NumGlyphs; gid++)
         {
@@ -221,22 +232,31 @@ public static class GlyfTableCompiler
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 model.Location.At(DataField.Length, 0), out diagnostic,
                 unchecked((ulong)total), int.MaxValue);
-        if (!budget.Work(4L * total, model.Location, out diagnostic) ||
+        if (!budget.Work(total + model.NumGlyphs, model.Location, out diagnostic) ||
             !budget.Output(total, model.Location, out diagnostic) ||
-            !budget.Buffer(total + 8L * (model.NumGlyphs + 1), model.Location, out diagnostic))
+            !budget.Buffer(total + 4L * (model.NumGlyphs + 1), model.Location, out diagnostic))
             return ReadStatus.ResourceLimit;
-        var image = new List<byte>((int)total);
+        var glyfImage = new byte[(int)total];
         var offsets = new uint[model.NumGlyphs + 1];
+        int imagePosition = 0;
         for (int gid = 0; gid < model.NumGlyphs; gid++)
         {
             _ = model.TryGetGlyph(gid, out var glyph, out _);
-            offsets[gid] = (uint)image.Count;
-            if (encoded.TryGetValue(gid, out var record)) image.AddRange(record);
+            offsets[gid] = (uint)imagePosition;
+            if (encoded.TryGetValue(gid, out var record))
+            {
+                record.CopyTo(glyfImage.AsSpan(imagePosition));
+                imagePosition += record.Length;
+            }
             else if (!glyph!.IsEmpty)
-                image.AddRange(model.OriginalBytes.Slice((int)glyph.Start, (int)glyph.Length));
+            {
+                int length = (int)glyph.Length;
+                model.OriginalBytes.Slice((int)glyph.Start, length)
+                    .CopyTo(glyfImage.AsSpan(imagePosition));
+                imagePosition += length;
+            }
         }
-        offsets[model.NumGlyphs] = (uint)image.Count;
-        byte[] glyfImage = [.. image];
+        offsets[model.NumGlyphs] = (uint)imagePosition;
         // The component graph must be re-verified on the edited glyphs. Component-level edits
         // can introduce a cycle or exceed the depth budget while every individual reference
         // stays inside the glyph domain, and the reader refuses such a table — so emitting it
@@ -245,21 +265,20 @@ public static class GlyfTableCompiler
         // candidate model and checked with the same verifier the reading path uses.
         if (compositePlans.Count > 0)
         {
+            if (!budget.Work(model.NumGlyphs, model.Location, out diagnostic) ||
+                !budget.Buffer((long)IntPtr.Size * model.NumGlyphs,
+                    model.Location, out diagnostic))
+                return ReadStatus.ResourceLimit;
             var checkedGlyphs = new GlyfGlyph?[model.NumGlyphs];
             for (int gid = 0; gid < checkedGlyphs.Length; gid++)
             {
                 _ = model.TryGetGlyph(gid, out var existing, out _);
                 if (existing is null) continue;
-                if (!compositePlans.TryGetValue(gid, out var compositePlan))
+                if (!editedComposites.TryGetValue(gid, out var editedComposite))
                 {
                     checkedGlyphs[gid] = existing;
                     continue;
                 }
-                ReadStatus editStatus = model.TryGetGlyph(gid, out var source, out diagnostic);
-                if (editStatus != ReadStatus.Done) return editStatus;
-                editStatus = TryEditComposite(source!, compositePlan, model.NumGlyphs,
-                    out var editedComposite, out diagnostic);
-                if (editStatus != ReadStatus.Done) return editStatus;
                 checkedGlyphs[gid] = new GlyfGlyph(existing.GlyphId, existing.Header,
                     existing.Kind, existing.Start, existing.End, null, editedComposite);
             }
@@ -279,11 +298,23 @@ public static class GlyfTableCompiler
     /// <summary>Re-encodes one simple glyph. Flag and coordinate encodings are chosen
     /// deterministically from the current values; the point count is invariant.</summary>
     internal static ReadStatus EncodeSimple(GlyfGlyph glyph, GlyphEdit plan, out byte[]? record,
-        out FontDiagnostic diagnostic)
+        out FontDiagnostic diagnostic, BuildBudget budget, DataLocation location)
     {
         record = null;
         SimpleGlyph simple = glyph.Simple!;
         int count = simple.PointCount;
+        ReadOnlySpan<byte> instructions = plan.Instructions is { } replacement
+            ? replacement : simple.Instructions;
+        if (instructions.Length > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.Length, 0), out diagnostic,
+                (ulong)instructions.Length, ushort.MaxValue);
+        // Logical array payload: one flag byte, a point (two ints and a bool), and two
+        // int delta values per point. This is cumulative admission, not CLR layout or RSS.
+        if (!budget.Work(8L * count + simple.ContourCount + plan.Flags.Count +
+                plan.Points.Count, location, out diagnostic) ||
+            !budget.Buffer(18L * count, location, out diagnostic))
+            return ReadStatus.ResourceLimit;
         byte[] flags = simple.Flags.ToArray();
         if (plan.Flags.Count > 0)
         {
@@ -323,7 +354,6 @@ public static class GlyfTableCompiler
                     ? (byte)(flags[item.PointOrdinal] | GlyfLayout.OnCurve)
                     : (byte)(flags[item.PointOrdinal] & ~GlyfLayout.OnCurve);
         }
-        byte[] instructions = plan.Instructions ?? simple.Instructions.ToArray();
         // Inter-point deltas, then choose the cheapest legal encoding per axis. A delta is
         // written as a signed 16-bit value, so it must fit one: two points that each sit
         // inside the int16 domain can still be 65535 apart, and truncating that would emit
@@ -348,6 +378,7 @@ public static class GlyfTableCompiler
         // Rebuild each flag from the retained semantic bits plus the cheapest legal
         // encoding of this point's delta. Bits that describe the coordinate stream are
         // fully determined by the values, so they are recomputed rather than preserved.
+        int coordinateBytes = 0;
         for (int i = 0; i < count; i++)
         {
             byte flag = (byte)(flags[i] & (GlyfLayout.OnCurve | GlyfLayout.OverlapSimple));
@@ -358,9 +389,18 @@ public static class GlyfTableCompiler
             else if (dy[i] is >= -255 and <= 255)
                 flag |= (byte)(GlyfLayout.YShort | (dy[i] > 0 ? GlyfLayout.YSameOrPositive : 0));
             flags[i] = flag;
+            coordinateBytes += CoordinateLength(flag, GlyfLayout.XShort,
+                GlyfLayout.XSameOrPositive) + CoordinateLength(flag, GlyfLayout.YShort,
+                GlyfLayout.YSameOrPositive);
         }
-        var body = new List<byte>(GlyfLayout.HeaderLength + count * 5 + instructions.Length);
-        WriteInt16(body, glyph.Header.NumberOfContours);
+        int length = GlyfLayout.HeaderLength + 2 * simple.ContourCount + 2 +
+            instructions.Length + count + coordinateBytes;
+        if (!budget.Work(length, location, out diagnostic) ||
+            !budget.Buffer(length, location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var body = new byte[length];
+        int position = 0;
+        WriteInt16(body, ref position, glyph.Header.NumberOfContours);
         // The bounding box is derived from the edited points; this slice reports geometry
         // facts rather than preserving a possibly stale box.
         short xMin = 0, yMin = 0, xMax = 0, yMax = 0;
@@ -380,21 +420,24 @@ public static class GlyfTableCompiler
                 yMax = Math.Max(yMax, boxY);
             }
         }
-        WriteInt16(body, xMin);
-        WriteInt16(body, yMin);
-        WriteInt16(body, xMax);
-        WriteInt16(body, yMax);
-        foreach (ushort end in simple.EndPointsOfContours) WriteUInt16(body, end);
-        if (instructions.Length > ushort.MaxValue)
-            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.Length, 0), out diagnostic,
-                (ulong)instructions.Length, ushort.MaxValue);
-        WriteUInt16(body, (ushort)instructions.Length);
-        body.AddRange(instructions);
-        for (int i = 0; i < count; i++) body.Add(flags[i]);
-        for (int i = 0; i < count; i++) WriteCoordinate(body, flags[i], dx[i], GlyfLayout.XShort, GlyfLayout.XSameOrPositive);
-        for (int i = 0; i < count; i++) WriteCoordinate(body, flags[i], dy[i], GlyfLayout.YShort, GlyfLayout.YSameOrPositive);
-        record = [.. body];
+        WriteInt16(body, ref position, xMin);
+        WriteInt16(body, ref position, yMin);
+        WriteInt16(body, ref position, xMax);
+        WriteInt16(body, ref position, yMax);
+        foreach (ushort end in simple.EndPointsOfContours)
+            WriteUInt16(body, ref position, end);
+        WriteUInt16(body, ref position, (ushort)instructions.Length);
+        instructions.CopyTo(body.AsSpan(position));
+        position += instructions.Length;
+        flags.CopyTo(body.AsSpan(position));
+        position += flags.Length;
+        for (int i = 0; i < count; i++)
+            WriteCoordinate(body, ref position, flags[i], dx[i], GlyfLayout.XShort,
+                GlyfLayout.XSameOrPositive);
+        for (int i = 0; i < count; i++)
+            WriteCoordinate(body, ref position, flags[i], dy[i], GlyfLayout.YShort,
+                GlyfLayout.YSameOrPositive);
+        record = body;
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -403,42 +446,53 @@ public static class GlyfTableCompiler
     /// -255..255; otherwise the value is stored as a signed 16-bit.</summary>
     private static bool DeltaFits(int delta) => delta is >= short.MinValue and <= short.MaxValue;
 
-    private static void WriteCoordinate(List<byte> body, byte flag, int delta, byte shortBit,
-        byte sameBit)
+    private static int CoordinateLength(byte flag, byte shortBit, byte sameBit) =>
+        (flag & shortBit) != 0 ? 1 : (flag & sameBit) == 0 ? 2 : 0;
+
+    private static void WriteCoordinate(Span<byte> body, ref int position, byte flag,
+        int delta, byte shortBit, byte sameBit)
     {
-        if ((flag & shortBit) != 0) body.Add((byte)Math.Abs(delta));
-        else if ((flag & sameBit) == 0) WriteInt16(body, unchecked((short)delta));
+        if ((flag & shortBit) != 0) body[position++] = (byte)Math.Abs(delta);
+        else if ((flag & sameBit) == 0)
+            WriteInt16(body, ref position, unchecked((short)delta));
     }
 
-    private static void WriteInt16(List<byte> body, short value)
+    private static void WriteInt16(Span<byte> body, ref int position, short value)
     {
         // Splitting a signed value into bytes is reinterpretation, not overflow.
         ushort raw = unchecked((ushort)value);
-        body.Add(unchecked((byte)(raw >> 8)));
-        body.Add(unchecked((byte)raw));
+        body[position++] = unchecked((byte)(raw >> 8));
+        body[position++] = unchecked((byte)raw);
     }
 
-    private static void WriteUInt16(List<byte> body, ushort value)
+    private static void WriteUInt16(Span<byte> body, ref int position, ushort value)
     {
-        body.Add(unchecked((byte)(value >> 8)));
-        body.Add(unchecked((byte)value));
+        body[position++] = unchecked((byte)(value >> 8));
+        body[position++] = unchecked((byte)value);
     }
 
     /// <summary>Applies a component-level rewrite and returns an edited copy of the
     /// composite, without encoding it. Component order is preserved, flags are carried
     /// over, and transforms are never merged or optimized.</summary>
     internal static ReadStatus TryEditComposite(GlyfGlyph glyph, GlyfCompositeEdit plan,
-        int numGlyphs, out GlyfCompositeGlyph? edited, out FontDiagnostic diagnostic)
+        int numGlyphs, out GlyfCompositeGlyph? edited, out FontDiagnostic diagnostic,
+        BuildBudget budget, DataLocation location)
     {
         edited = null;
         GlyfCompositeGlyph source = glyph.Composite!;
         int original = source.ComponentCount;
+        if (!budget.Work((long)plan.RemoveComponents.Count + plan.Components.Count +
+            plan.AddComponents.Count + original, location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var removals = new HashSet<int>();
         foreach (int ordinal in plan.RemoveComponents)
+        {
             if (ordinal < 0 || ordinal >= original)
                 return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                     DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.Count, 0, glyph.GlyphId),
                     out diagnostic, unchecked((ulong)(long)ordinal), (ulong)original);
-        var removals = new HashSet<int>(plan.RemoveComponents);
+            removals.Add(ordinal);
+        }
         var edits = new Dictionary<int, GlyfComponentEdit>();
         foreach (var edit in plan.Components)
         {
@@ -453,20 +507,44 @@ public static class GlyfTableCompiler
                     out diagnostic, unchecked((ulong)(long)edit.Ordinal), 0);
             edits[edit.Ordinal] = edit;
         }
-        var kept = new List<GlyfComponent>(original + plan.AddComponents.Count);
+        long componentCount = (long)original - removals.Count + plan.AddComponents.Count;
+        if (componentCount == 0)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.Count, 0, glyph.GlyphId),
+                out diagnostic, 0, 1);
+        if (componentCount > GlyfLayout.MaxComponentsPerGlyph)
+            return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
+                DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.Count, 0, glyph.GlyphId),
+                out diagnostic, (ulong)componentCount, GlyfLayout.MaxComponentsPerGlyph);
+        int instructionLength = plan.Instructions?.Length ?? source.Instructions.Length;
+        if (instructionLength > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.Length, 0, glyph.GlyphId),
+                out diagnostic, (ulong)instructionLength, ushort.MaxValue);
+        int copiedInstructions = plan.Instructions is null ? instructionLength : 0;
+        if (!budget.Work(copiedInstructions, location, out diagnostic) ||
+            !budget.Buffer((long)IntPtr.Size * componentCount + copiedInstructions,
+                location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        byte[] instructions = plan.Instructions ?? source.Instructions.ToArray();
+        var renumbered = new GlyfComponent[(int)componentCount];
+        int position = 0;
         for (int ordinal = 0; ordinal < original; ordinal++)
         {
             if (removals.Contains(ordinal)) continue;
             var current = source[ordinal];
-            if (!edits.TryGetValue(ordinal, out var edit))
+            if (edits.TryGetValue(ordinal, out var edit))
             {
-                kept.Add(current);
-                continue;
+                ReadStatus status = MergeComponent(current, edit, numGlyphs, glyph.GlyphId,
+                    out var merged, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                current = merged!;
             }
-            ReadStatus status = MergeComponent(current, edit, numGlyphs, glyph.GlyphId,
-                out var merged, out diagnostic);
-            if (status != ReadStatus.Done) return status;
-            kept.Add(merged!);
+            ushort flags = SequenceFlags(current.Flags, position, renumbered.Length,
+                instructionLength);
+            renumbered[position] = new(position, flags, current.GlyphIndex, current.Arg1,
+                current.Arg2, current.Transform);
+            position++;
         }
         foreach (var addition in plan.AddComponents)
         {
@@ -494,38 +572,25 @@ public static class GlyfTableCompiler
                 GlyfTransformKind.TwoByTwo => GlyfLayout.WeHaveATwoByTwo,
                 _ => 0
             });
-            kept.Add(new(kept.Count, flags, addition.GlyphIndex, (short)addition.XOffset,
-                (short)addition.YOffset, addition.Transform));
-        }
-        if (kept.Count == 0)
-            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.Count, 0, glyph.GlyphId),
-                out diagnostic, 0, 1);
-        if (kept.Count > GlyfLayout.MaxComponentsPerGlyph)
-            return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
-                DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.Count, 0, glyph.GlyphId),
-                out diagnostic, (ulong)kept.Count, GlyfLayout.MaxComponentsPerGlyph);
-        byte[] instructions = plan.Instructions ?? source.Instructions.ToArray();
-        // The sequence is renumbered so ordinal matches position after removals, and
-        // MORE_COMPONENTS is always clear on the final record by construction.
-        var renumbered = new GlyfComponent[kept.Count];
-        for (int i = 0; i < kept.Count; i++)
-        {
-            var component = kept[i];
-            ushort flags = component.Flags;
-            flags = (ushort)(i == kept.Count - 1
-                ? flags & ~GlyfLayout.MoreComponents
-                : flags | GlyfLayout.MoreComponents);
-            flags = (ushort)(instructions.Length > 0
-                ? (i == kept.Count - 1 ? flags | GlyfLayout.WeHaveInstructions
-                    : flags & ~GlyfLayout.WeHaveInstructions)
-                : flags & ~GlyfLayout.WeHaveInstructions);
-            renumbered[i] = new(i, flags, component.GlyphIndex, component.Arg1,
-                component.Arg2, component.Transform);
+            flags = SequenceFlags(flags, position, renumbered.Length, instructionLength);
+            renumbered[position] = new(position, flags, addition.GlyphIndex,
+                (short)addition.XOffset, (short)addition.YOffset, addition.Transform);
+            position++;
         }
         edited = new(glyph.GlyphId, source.Header, renumbered, instructions, 0, glyph.Start);
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    // Renumber once after removals: only the final component can terminate the sequence
+    // and carry instructions. Both encoding and graph verification use this same result.
+    private static ushort SequenceFlags(ushort flags, int ordinal, int count,
+        int instructionLength)
+    {
+        flags = (ushort)(ordinal == count - 1
+            ? flags & ~GlyfLayout.MoreComponents : flags | GlyfLayout.MoreComponents);
+        return (ushort)(instructionLength > 0 && ordinal == count - 1
+            ? flags | GlyfLayout.WeHaveInstructions : flags & ~GlyfLayout.WeHaveInstructions);
     }
 
     private static ReadStatus MergeComponent(GlyfComponent current, GlyfComponentEdit edit,
@@ -587,20 +652,38 @@ public static class GlyfTableCompiler
     /// <summary>Re-encodes one composite glyph. Component order and flags are preserved;
     /// the argument encoding is chosen from the current values, and the trailing padding
     /// is dropped because it is not part of the decoded structure.</summary>
-    internal static ReadStatus EncodeComposite(GlyfGlyph glyph, GlyfCompositeEdit plan,
-        int numGlyphs, out byte[]? record, out FontDiagnostic diagnostic)
+    internal static ReadStatus EncodeComposite(GlyfCompositeGlyph composite,
+        out byte[]? record, out FontDiagnostic diagnostic, BuildBudget budget,
+        DataLocation location)
     {
         record = null;
-        ReadStatus status = TryEditComposite(glyph, plan, numGlyphs, out var edited,
-            out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        GlyfCompositeGlyph composite = edited!;
-        var body = new List<byte>(GlyfLayout.HeaderLength + 16 * composite.ComponentCount + 4);
-        WriteInt16(body, composite.Header.NumberOfContours);
-        WriteInt16(body, composite.Header.XMin);
-        WriteInt16(body, composite.Header.YMin);
-        WriteInt16(body, composite.Header.XMax);
-        WriteInt16(body, composite.Header.YMax);
+        if (!budget.Work(composite.ComponentCount, location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        int length = GlyfLayout.HeaderLength;
+        for (int i = 0; i < composite.ComponentCount; i++)
+        {
+            var component = composite[i];
+            bool words = component.Arg1 is < sbyte.MinValue or > sbyte.MaxValue ||
+                component.Arg2 is < sbyte.MinValue or > sbyte.MaxValue;
+            length += 4 + (words ? 4 : 2) + (component.Transform.Kind switch
+            {
+                GlyfTransformKind.Scale => 2,
+                GlyfTransformKind.XAndYScale => 4,
+                GlyfTransformKind.TwoByTwo => 8,
+                _ => 0
+            });
+        }
+        if (composite.HasInstructions) length += 2 + composite.Instructions.Length;
+        if (!budget.Work(length, location, out diagnostic) ||
+            !budget.Buffer(length, location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var body = new byte[length];
+        int position = 0;
+        WriteInt16(body, ref position, composite.Header.NumberOfContours);
+        WriteInt16(body, ref position, composite.Header.XMin);
+        WriteInt16(body, ref position, composite.Header.YMin);
+        WriteInt16(body, ref position, composite.Header.XMax);
+        WriteInt16(body, ref position, composite.Header.YMax);
         for (int i = 0; i < composite.ComponentCount; i++)
         {
             var component = composite[i];
@@ -613,46 +696,41 @@ public static class GlyfTableCompiler
             flags = words
                 ? (ushort)(flags | GlyfLayout.Arg1And2AreWords)
                 : (ushort)(flags & ~GlyfLayout.Arg1And2AreWords);
-            WriteUInt16(body, flags);
-            WriteUInt16(body, component.GlyphIndex);
+            WriteUInt16(body, ref position, flags);
+            WriteUInt16(body, ref position, component.GlyphIndex);
             if (words)
             {
-                WriteInt16(body, component.Arg1);
-                WriteInt16(body, component.Arg2);
+                WriteInt16(body, ref position, component.Arg1);
+                WriteInt16(body, ref position, component.Arg2);
             }
             else
             {
-                body.Add(unchecked((byte)(sbyte)component.Arg1));
-                body.Add(unchecked((byte)(sbyte)component.Arg2));
+                body[position++] = unchecked((byte)(sbyte)component.Arg1);
+                body[position++] = unchecked((byte)(sbyte)component.Arg2);
             }
             switch (component.Transform.Kind)
             {
                 case GlyfTransformKind.Scale:
-                    WriteInt16(body, component.Transform.A);
+                    WriteInt16(body, ref position, component.Transform.A);
                     break;
                 case GlyfTransformKind.XAndYScale:
-                    WriteInt16(body, component.Transform.A);
-                    WriteInt16(body, component.Transform.D);
+                    WriteInt16(body, ref position, component.Transform.A);
+                    WriteInt16(body, ref position, component.Transform.D);
                     break;
                 case GlyfTransformKind.TwoByTwo:
-                    WriteInt16(body, component.Transform.A);
-                    WriteInt16(body, component.Transform.B);
-                    WriteInt16(body, component.Transform.C);
-                    WriteInt16(body, component.Transform.D);
+                    WriteInt16(body, ref position, component.Transform.A);
+                    WriteInt16(body, ref position, component.Transform.B);
+                    WriteInt16(body, ref position, component.Transform.C);
+                    WriteInt16(body, ref position, component.Transform.D);
                     break;
             }
         }
         if (composite.HasInstructions)
         {
-            if (composite.Instructions.Length > ushort.MaxValue)
-                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.Length, 0, glyph.GlyphId),
-                    out diagnostic, (ulong)composite.Instructions.Length, ushort.MaxValue);
-            body.Add(unchecked((byte)(composite.Instructions.Length >> 8)));
-            body.Add(unchecked((byte)composite.Instructions.Length));
-            body.AddRange(composite.Instructions);
+            WriteUInt16(body, ref position, (ushort)composite.Instructions.Length);
+            composite.Instructions.CopyTo(body.AsSpan(position));
         }
-        record = [.. body];
+        record = body;
         diagnostic = default;
         return ReadStatus.Done;
     }
