@@ -4,7 +4,7 @@ namespace FontWeave.Tables;
 
 public readonly ref partial struct CmapFormat14View
 {
-    /// <summary>Bounded record read: the u24 varSelector plus the two declared u32 table offsets.</summary>
+    /// <summary>Bounded record read of the selector and its two UVS table offsets.</summary>
     public ReadStatus TryGetVarSelector(int ordinal, out uint varSelector, out uint defaultUvsOffset,
         out uint nonDefaultUvsOffset, out FontDiagnostic diagnostic)
     {
@@ -16,10 +16,9 @@ public readonly ref partial struct CmapFormat14View
                 Location.AtLocal(DataField.Count, 6, ordinal), out diagnostic,
                 unchecked((ulong)(long)ordinal), NumVarSelectorRecords);
         ulong position = CmapFormat14Layout.HeaderLength + CmapFormat14Layout.RecordStride * (ulong)(uint)ordinal;
-        ReadStatus status = TryReadU24At(position, out varSelector, out diagnostic);
+        ReadStatus status = TryReadVarSelectorAt(position, ordinal, out var record, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = TryReadVarSelectorAt(position, ordinal, out var record, out diagnostic);
-        if (status != ReadStatus.Done) return status;
+        varSelector = record.VarSelector;
         defaultUvsOffset = record.DefaultUVSOffset;
         nonDefaultUvsOffset = record.NonDefaultUVSOffset;
         return ReadStatus.Done;
@@ -56,11 +55,10 @@ public readonly ref partial struct CmapFormat14View
                 Location.AtLocal(DataField.Count, tablePosition, recordOrdinal), out diagnostic,
                 unchecked((ulong)(long)rangeOrdinal), count);
         ulong position = tablePosition + 4 + CmapFormat14Layout.DefaultRangeStride * (ulong)(uint)rangeOrdinal;
-        status = TryReadU24At(position, out startUnicodeValue, out diagnostic);
-        if (status != ReadStatus.Done) return status;
         // Preserve the local field diagnostic's unspecified record ordinal.
         status = TryReadDefaultRangeAt(position, -1, out var range, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        startUnicodeValue = range.StartUnicodeValue;
         additionalCount = range.AdditionalCount;
         return ReadStatus.Done;
     }
@@ -96,11 +94,10 @@ public readonly ref partial struct CmapFormat14View
                 Location.AtLocal(DataField.Count, tablePosition, recordOrdinal), out diagnostic,
                 unchecked((ulong)(long)mappingOrdinal), count);
         ulong position = tablePosition + 4 + CmapFormat14Layout.UvsMappingStride * (ulong)(uint)mappingOrdinal;
-        status = TryReadU24At(position, out unicodeValue, out diagnostic);
-        if (status != ReadStatus.Done) return status;
         // Preserve the local field diagnostic's unspecified record ordinal.
         status = TryReadUvsMappingAt(position, -1, out var mapping, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        unicodeValue = mapping.UnicodeValue;
         glyphId = mapping.GlyphId;
         return ReadStatus.Done;
     }
@@ -338,19 +335,6 @@ public readonly ref partial struct CmapFormat14View
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
                 Location.AtLocal(DataField.Count, position), out diagnostic, (ulong)_data.Length, position + 4);
         value = ReadWire.U32(_data, (int)position);
-        diagnostic = default;
-        return ReadStatus.Done;
-    }
-
-    private ReadStatus TryReadU24At(ulong position, out uint value, out FontDiagnostic diagnostic)
-    {
-        value = 0;
-        if (!IsBound)
-            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
-        if (!TrySlice(_data, position, 3, out var bytes))
-            return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.AtLocal(DataField.CharCode, position), out diagnostic, (ulong)_data.Length, position + 3);
-        value = ((uint)bytes[0] << 16) | ((uint)bytes[1] << 8) | bytes[2];
         diagnostic = default;
         return ReadStatus.Done;
     }

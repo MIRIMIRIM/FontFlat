@@ -279,7 +279,16 @@ internal static class ViewEmitter
         writer.Line($"location.AtLocal((global::FontWeave.Core.DataField){scalar.FieldId}, {U(scalar.Position.Constant)}), out diagnostic,");
         writer.Line($"(ulong)destination.Length, {U(scalar.Position.Constant + (ulong)scalar.Width)});");
         writer.Indent -= 2;
-        EmitWriteValue(writer, scalar, "destination", "value", scalar.Position.Constant);
+        if (scalar.Type == WireType.UInt24)
+        {
+            EmitUInt24Guard(writer, scalar, "value", U(scalar.Position.Constant));
+            // Slice first so an accepted high offset never becomes an invalid C#
+            // byte-index constant, even when the destination preflight always refuses it.
+            writer.Line($"global::System.Span<byte> bytes = destination.Slice({scalar.Position.Constant}, {scalar.Width});");
+            EmitWriteValue(writer, scalar, "bytes", "value", 0);
+        }
+        else
+            EmitWriteValue(writer, scalar, "destination", "value", scalar.Position.Constant);
         writer.Line("diagnostic = default;");
         writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
         writer.Indent--;
@@ -302,7 +311,14 @@ internal static class ViewEmitter
         writer.Line("location.AtLocal(global::FontWeave.Core.DataField.OutputBytes, rowPosition, record.Ordinal), out diagnostic,");
         writer.Line($"(ulong)destination.Length, rowPosition > ulong.MaxValue - {U(array.Stride)} ? ulong.MaxValue : rowPosition + {U(array.Stride)});");
         writer.Indent -= 2;
-        // Padding is not a declared field and is left untouched.
+        // Check every narrow value before touching a row, even when the invalid value
+        // follows valid fields. Padding is not a declared field and is left untouched.
+        foreach (ScalarModel field in array.Fields)
+            if (field.Type == WireType.UInt24)
+            {
+                string position = $"rowPosition + {U(field.Position.Constant)}";
+                EmitUInt24Guard(writer, field, "record." + field.Name, position, "record.Ordinal");
+            }
         writer.Line($"global::System.Span<byte> row = destination.Slice((int)rowPosition, {array.Stride});");
         foreach (ScalarModel field in array.Fields)
             EmitWriteValue(writer, field, "row", "record." + field.Name, field.Position.Constant);
@@ -312,12 +328,32 @@ internal static class ViewEmitter
         writer.Line("}");
     }
 
+    private static void EmitUInt24Guard(CodeWriter writer, ScalarModel field, string value,
+        string position, string ordinal = "-1")
+    {
+        writer.Line($"if ({value} > 0xFFFFFFu)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidFormat, global::FontWeave.Core.DiagnosticCode.InvalidValue,");
+        writer.Indent++;
+        writer.Line($"location.AtLocal((global::FontWeave.Core.DataField){field.FieldId}, {position}, {ordinal}), out diagnostic, {value}, 0xFFFFFFu);");
+        writer.Indent -= 2;
+    }
+
     private static void EmitWriteValue(CodeWriter writer, ScalarModel field, string bytes,
         string value, ulong offset)
     {
         if (field.Type is WireType.UInt8 or WireType.Int8)
         {
             writer.Line($"{bytes}[{offset}] = unchecked((byte){value});");
+            return;
+        }
+        if (field.Type == WireType.UInt24)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                int shift = (field.Endian == WireEndian.Big ? 2 - i : i) * 8;
+                writer.Line($"{bytes}[{offset + (uint)i}] = unchecked((byte)({value} >> {shift}));");
+            }
             return;
         }
         string suffix = field.Endian == WireEndian.Big ? "BigEndian" : "LittleEndian";
@@ -723,6 +759,12 @@ internal static class ViewEmitter
 
     private static string ReadExpression(ScalarModel scalar, string bytes, ulong offset)
     {
+        if (scalar.Type == WireType.UInt24)
+        {
+            ulong high = scalar.Endian == WireEndian.Big ? offset : offset + 2;
+            ulong low = scalar.Endian == WireEndian.Big ? offset + 2 : offset;
+            return $"((uint){bytes}[{high}] << 16) | ((uint){bytes}[{offset + 1}] << 8) | {bytes}[{low}]";
+        }
         if (scalar.Type is WireType.UInt8 or WireType.Int8)
         {
             string value = $"{bytes}[{offset.ToString(CultureInfo.InvariantCulture)}]";

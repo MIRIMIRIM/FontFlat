@@ -253,7 +253,7 @@ internal sealed class SchemaParser
 
     private void ValidateScalar(ScalarModel value)
     {
-        if ((int)value.Type is < 0 or > 6 || (int)value.Endian is < 0 or > 1 ||
+        if ((int)value.Type is < 0 or > 7 || (int)value.Endian is < 0 or > 1 ||
             (int)value.Semantic is < 0 or > 3 || (int)value.Origin is < 0 or > 2 || !_fieldIds.Contains(value.FieldId))
             Error(FontSchemaGenerator.Layout, "Invalid wire type, endianness, numeric semantic, origin or FieldId: " + value.Name);
         if (value.Scale == 0 || (value.Semantic is NumberSemantic.Count or NumberSemantic.Offset && !value.IsUnsigned) ||
@@ -336,7 +336,7 @@ internal sealed class SchemaParser
         return left * right;
     }
     private static ulong RawBound(ScalarModel value) => value.Type switch
-    { WireType.UInt8 => byte.MaxValue, WireType.Int8 => (ulong)sbyte.MaxValue, WireType.UInt16 => ushort.MaxValue, WireType.UInt32 => uint.MaxValue, WireType.Int16 => (ulong)short.MaxValue, WireType.Int64 => long.MaxValue, _ => int.MaxValue };
+    { WireType.UInt8 => byte.MaxValue, WireType.Int8 => (ulong)sbyte.MaxValue, WireType.UInt16 => ushort.MaxValue, WireType.UInt24 => 0xFFFFFF, WireType.UInt32 => uint.MaxValue, WireType.Int16 => (ulong)short.MaxValue, WireType.Int64 => long.MaxValue, _ => int.MaxValue };
 
     private void Overlaps(ImmutableArray<ScalarModel> fields)
     {
