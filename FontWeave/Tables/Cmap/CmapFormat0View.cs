@@ -12,7 +12,7 @@ public readonly ref partial struct CmapFormat0View
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
         if (ordinal < 0 || ordinal >= CmapFormat0Layout.GlyphCount)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.GlyphId, CmapFormat0Layout.HeaderLength, ordinal), out diagnostic,
+                Location.AtLocal(DataField.GlyphId, CmapFormat0Layout.HeaderLength, ordinal), out diagnostic,
                 unchecked((ulong)(long)ordinal), CmapFormat0Layout.GlyphCount);
         return TryReadGlyphEntryAt(CmapFormat0Layout.HeaderLength + (ulong)(uint)ordinal, ordinal,
             out entry, out diagnostic);
@@ -37,10 +37,10 @@ public readonly ref partial struct CmapFormat0View
         if (status != ReadStatus.Done) return status;
         if (requireZeroLanguage && Language != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.LanguageId, 4), out diagnostic, Language, 0);
+                Location.AtLocal(DataField.LanguageId, 4), out diagnostic, Language, 0);
         if ((ulong)_data.Length != CmapFormat0Layout.SubtableLength)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Length, 2), out diagnostic, (ulong)_data.Length,
+                Location.AtLocal(DataField.Length, 2), out diagnostic, (ulong)_data.Length,
                 CmapFormat0Layout.SubtableLength);
         if (!budget.Work(_data.Length + 2L * CmapFormat0Layout.GlyphCount, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
@@ -50,7 +50,7 @@ public readonly ref partial struct CmapFormat0View
             if (status != ReadStatus.Done) return status;
             if (entry.Value != 0 && entry.Value >= (uint)numGlyphs)
                 return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                    Location.At(DataField.GlyphId, CmapFormat0Layout.HeaderLength + (ulong)(uint)i, i),
+                    Location.AtLocal(DataField.GlyphId, CmapFormat0Layout.HeaderLength + (ulong)(uint)i, i),
                     out diagnostic, entry.Value, (uint)numGlyphs);
         }
         diagnostic = default;

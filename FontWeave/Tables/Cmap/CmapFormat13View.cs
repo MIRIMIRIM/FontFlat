@@ -12,7 +12,7 @@ public readonly ref partial struct CmapFormat13View
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
         if (ordinal < 0 || (uint)ordinal >= NumGroups)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Count, 12, ordinal), out diagnostic,
+                Location.AtLocal(DataField.Count, 12, ordinal), out diagnostic,
                 unchecked((ulong)(long)ordinal), NumGroups);
         return TryReadGroupAt(CmapFormat13Layout.HeaderLength + 12UL * (uint)ordinal, ordinal,
             out group, out diagnostic);
@@ -35,14 +35,14 @@ public readonly ref partial struct CmapFormat13View
         if (status != ReadStatus.Done) return status;
         if (Reserved != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Payload, 2), out diagnostic, Reserved, 0);
+                Location.AtLocal(DataField.Payload, 2), out diagnostic, Reserved, 0);
         if (Language != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.LanguageId, 8), out diagnostic, Language, 0);
+                Location.AtLocal(DataField.LanguageId, 8), out diagnostic, Language, 0);
         ulong expected = CmapFormat13Layout.HeaderLength + 12UL * NumGroups;
         if ((ulong)_data.Length != expected)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Length, 4), out diagnostic, (ulong)_data.Length, expected);
+                Location.AtLocal(DataField.Length, 4), out diagnostic, (ulong)_data.Length, expected);
         if (!budget.Work(_data.Length + 32L * NumGroups, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
         ulong previousEnd = 0;
@@ -51,7 +51,7 @@ public readonly ref partial struct CmapFormat13View
         {
             status = TryGetGroup(i, out var group, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            var location = Location.At(DataField.CharCode,
+            var location = Location.AtLocal(DataField.CharCode,
                 CmapFormat13Layout.HeaderLength + 12UL * (uint)i, i);
             if (group.StartCharCode > group.EndCharCode || group.EndCharCode > 0x10FFFF ||
                 (!first && group.StartCharCode <= previousEnd))
@@ -60,7 +60,7 @@ public readonly ref partial struct CmapFormat13View
             // Every code in the group resolves to the same GID, so only the start GID is bound.
             if (group.StartGlyphID >= (ulong)numGlyphs)
                 return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                    Location.At(DataField.GlyphId,
+                    Location.AtLocal(DataField.GlyphId,
                         CmapFormat13Layout.HeaderLength + 12UL * (uint)i + 8, i),
                     out diagnostic, group.StartGlyphID, (ulong)numGlyphs);
             previousEnd = group.EndCharCode;

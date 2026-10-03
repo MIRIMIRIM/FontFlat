@@ -15,7 +15,7 @@ public readonly ref partial struct CmapView
         offset = record.SubtableOffset;
         if (offset > (ulong)_data.Length - 2)
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.Offset, offset, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Offset, offset, recordOrdinal), out diagnostic,
                 (ulong)_data.Length, offset + 2);
         format = ReadWire.U16(_data, (int)offset);
         // Dispatch length fields: format 14 stores uint32 at +2, formats 8/10/12/13 at +4
@@ -24,7 +24,7 @@ public readonly ref partial struct CmapView
         int lengthWidth = format is 8 or 10 or 12 or 13 or 14 ? 4 : 2;
         if (offset > (ulong)_data.Length - (ulong)(uint)(lengthOffset + lengthWidth))
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.Length, offset + (ulong)(uint)lengthOffset, recordOrdinal),
+                Location.AtLocal(DataField.Length, offset + (ulong)(uint)lengthOffset, recordOrdinal),
                 out diagnostic, (ulong)_data.Length,
                 offset + (ulong)(uint)(lengthOffset + lengthWidth));
         length = lengthWidth == 4
@@ -32,7 +32,7 @@ public readonly ref partial struct CmapView
             : ReadWire.U16(_data, (int)offset + lengthOffset);
         if (length < (ulong)(uint)(lengthOffset + lengthWidth) || offset + length > (ulong)_data.Length)
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                Location.At(DataField.Length, offset + (ulong)(uint)lengthOffset, recordOrdinal),
+                Location.AtLocal(DataField.Length, offset + (ulong)(uint)lengthOffset, recordOrdinal),
                 out diagnostic, offset + length, (ulong)_data.Length);
         return ReadStatus.Done;
     }
@@ -46,10 +46,10 @@ public readonly ref partial struct CmapView
         if (status != ReadStatus.Done) return status;
         if (format != 0)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Version, offset, recordOrdinal), out diagnostic,
                 format, 0);
         return CmapFormat0View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
-            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+            out view, out diagnostic, Location.AtLocal(DataField.Offset, offset, recordOrdinal));
     }
 
     public ReadStatus TryOpenFormat2(int recordOrdinal, out CmapFormat2View view,
@@ -61,10 +61,10 @@ public readonly ref partial struct CmapView
         if (status != ReadStatus.Done) return status;
         if (format != 2)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Version, offset, recordOrdinal), out diagnostic,
                 format, 2);
         return CmapFormat2View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
-            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+            out view, out diagnostic, Location.AtLocal(DataField.Offset, offset, recordOrdinal));
     }
 
     public ReadStatus TryOpenFormat6(int recordOrdinal, out CmapFormat6View view,
@@ -76,10 +76,10 @@ public readonly ref partial struct CmapView
         if (status != ReadStatus.Done) return status;
         if (format != 6)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Version, offset, recordOrdinal), out diagnostic,
                 format, 6);
         return CmapFormat6View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
-            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+            out view, out diagnostic, Location.AtLocal(DataField.Offset, offset, recordOrdinal));
     }
 
     public ReadStatus TryOpenFormat4(int recordOrdinal, out CmapFormat4View view,
@@ -91,10 +91,10 @@ public readonly ref partial struct CmapView
         if (status != ReadStatus.Done) return status;
         if (format != 4)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Version, offset, recordOrdinal), out diagnostic,
                 format, 4);
         return CmapFormat4View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
-            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+            out view, out diagnostic, Location.AtLocal(DataField.Offset, offset, recordOrdinal));
     }
 
     public ReadStatus TryOpenFormat12(int recordOrdinal, out CmapFormat12View view,
@@ -106,10 +106,10 @@ public readonly ref partial struct CmapView
         if (status != ReadStatus.Done) return status;
         if (format != 12)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Version, offset, recordOrdinal), out diagnostic,
                 format, 12);
         return CmapFormat12View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
-            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+            out view, out diagnostic, Location.AtLocal(DataField.Offset, offset, recordOrdinal));
     }
 
     public ReadStatus TryOpenFormat13(int recordOrdinal, out CmapFormat13View view,
@@ -121,10 +121,10 @@ public readonly ref partial struct CmapView
         if (status != ReadStatus.Done) return status;
         if (format != 13)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Version, offset, recordOrdinal), out diagnostic,
                 format, 13);
         return CmapFormat13View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
-            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+            out view, out diagnostic, Location.AtLocal(DataField.Offset, offset, recordOrdinal));
     }
 
     public ReadStatus TryOpenFormat14(int recordOrdinal, out CmapFormat14View view,
@@ -136,10 +136,10 @@ public readonly ref partial struct CmapView
         if (status != ReadStatus.Done) return status;
         if (format != 14)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Version, offset, recordOrdinal), out diagnostic,
                 format, 14);
         return CmapFormat14View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
-            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+            out view, out diagnostic, Location.AtLocal(DataField.Offset, offset, recordOrdinal));
     }
 
     public ReadStatus TryOpenFormat8(int recordOrdinal, out CmapFormat8View view,
@@ -151,10 +151,10 @@ public readonly ref partial struct CmapView
         if (status != ReadStatus.Done) return status;
         if (format != 8)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Version, offset, recordOrdinal), out diagnostic,
                 format, 8);
         return CmapFormat8View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
-            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+            out view, out diagnostic, Location.AtLocal(DataField.Offset, offset, recordOrdinal));
     }
 
     public ReadStatus TryOpenFormat10(int recordOrdinal, out CmapFormat10View view,
@@ -166,10 +166,10 @@ public readonly ref partial struct CmapView
         if (status != ReadStatus.Done) return status;
         if (format != 10)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                Location.At(DataField.Version, offset, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Version, offset, recordOrdinal), out diagnostic,
                 format, 10);
         return CmapFormat10View.TryOpen(_data.Slice(checked((int)offset), checked((int)length)),
-            out view, out diagnostic, Location.At(DataField.Offset, offset, recordOrdinal));
+            out view, out diagnostic, Location.AtLocal(DataField.Offset, offset, recordOrdinal));
     }
 
     /// <summary>Strict table validation: version, ordered unique records, extents that tile the
@@ -195,11 +195,11 @@ public readonly ref partial struct CmapView
         if (status != ReadStatus.Done) return status;
         if (NumTables == 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Count, 2), out diagnostic, 0, 1);
+                Location.AtLocal(DataField.Count, 2), out diagnostic, 0, 1);
         long recordsEnd = CmapLayout.HeaderLength + (long)CmapLayout.RecordStride * NumTables;
         if (_data.Length < recordsEnd)
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.Count, 2), out diagnostic, (ulong)_data.Length, (ulong)recordsEnd);
+                Location.AtLocal(DataField.Count, 2), out diagnostic, (ulong)_data.Length, (ulong)recordsEnd);
         if (!budget.Buffer(32L * NumTables, Location, out diagnostic) ||
             !budget.Work(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         var extents = new SubtableExtent[NumTables];
@@ -212,14 +212,14 @@ public readonly ref partial struct CmapView
             if (i > 0 && (record.PlatformId < previousPlatform ||
                 (record.PlatformId == previousPlatform && record.EncodingId <= previousEncoding)))
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.PlatformId, (ulong)(4 + 8L * i), i), out diagnostic,
+                    Location.AtLocal(DataField.PlatformId, (ulong)(4 + 8L * i), i), out diagnostic,
                     (uint)((record.PlatformId << 16) | record.EncodingId),
                     (uint)((previousPlatform << 16) | previousEncoding));
             previousPlatform = record.PlatformId;
             previousEncoding = record.EncodingId;
             if (record.SubtableOffset < (ulong)recordsEnd)
                 return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
-                    Location.At(DataField.Offset, (ulong)(12 + 8L * i), i), out diagnostic,
+                    Location.AtLocal(DataField.Offset, (ulong)(12 + 8L * i), i), out diagnostic,
                     record.SubtableOffset, (ulong)recordsEnd);
             status = TryGetSubtableExtent(i, out ushort format, out uint offset, out ulong length,
                 out diagnostic);
@@ -232,7 +232,7 @@ public readonly ref partial struct CmapView
                     record.PlatformId != 1, i);
             else if (extents[found].Length != length || extents[found].Format != format)
                 return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.OverlappingRange,
-                    Location.At(DataField.Offset, (ulong)(12 + 8L * i), i), out diagnostic,
+                    Location.AtLocal(DataField.Offset, (ulong)(12 + 8L * i), i), out diagnostic,
                     offset, extents[found].Offset);
             else if (record.PlatformId != 1)
                 extents[found] = extents[found] with { RequireZeroLanguage = true };
@@ -243,15 +243,15 @@ public readonly ref partial struct CmapView
         {
             if (extents[j].Offset < cursor)
                 return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.OverlappingRange,
-                    Location.At(DataField.Offset, extents[j].Offset, extents[j].RecordOrdinal),
+                    Location.AtLocal(DataField.Offset, extents[j].Offset, extents[j].RecordOrdinal),
                     out diagnostic, extents[j].Offset, cursor);
             if (extents[j].Offset > cursor)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                    Location.At(DataField.Offset, cursor, extents[j].RecordOrdinal),
+                    Location.AtLocal(DataField.Offset, cursor, extents[j].RecordOrdinal),
                     out diagnostic, extents[j].Offset, cursor);
             var slice = _data.Slice((int)extents[j].Offset,
                 checked((int)extents[j].Length));
-            var location = Location.At(DataField.Offset, extents[j].Offset, extents[j].RecordOrdinal);
+            var location = Location.AtLocal(DataField.Offset, extents[j].Offset, extents[j].RecordOrdinal);
             if (extents[j].Format == 0)
             {
                 status = CmapFormat0View.TryOpen(slice, out var format0, out diagnostic, location);
@@ -325,7 +325,7 @@ public readonly ref partial struct CmapView
         }
         if (cursor != (ulong)_data.Length)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Length, cursor), out diagnostic,
+                Location.AtLocal(DataField.Length, cursor), out diagnostic,
                 (ulong)_data.Length, cursor);
         diagnostic = default;
         return ReadStatus.Done;
@@ -377,7 +377,7 @@ public readonly ref partial struct CmapView
             if (status != ReadStatus.Done) return status;
             buffer += (long)length + 32;
             if (!budget.Buffer(buffer, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-            var location = Location.At(DataField.Offset, offset, -1);
+            var location = Location.AtLocal(DataField.Offset, offset, -1);
             var slice = _data.Slice(checked((int)offset), checked((int)length));
             if (format == 0)
             {

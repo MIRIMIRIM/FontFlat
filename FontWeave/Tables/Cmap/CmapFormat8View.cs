@@ -16,7 +16,7 @@ public readonly ref partial struct CmapFormat8View
         // execute a negative int -> uint conversion.
         if (wordIndex < 0 || (uint)wordIndex > 0xFFFFu)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.CharCode, CmapFormat8Layout.Is32Offset, wordIndex), out diagnostic,
+                Location.AtLocal(DataField.CharCode, CmapFormat8Layout.Is32Offset, wordIndex), out diagnostic,
                 unchecked((ulong)(long)wordIndex), 0x10000);
         is32 = CmapFormat8Layout.GetIs32Bit(
             _data.Slice(CmapFormat8Layout.Is32Offset, CmapFormat8Layout.Is32Length), (uint)wordIndex);
@@ -32,7 +32,7 @@ public readonly ref partial struct CmapFormat8View
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
         if (ordinal < 0 || (uint)ordinal >= NumGroups)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Count, CmapFormat8Layout.NumGroupsOffset, ordinal), out diagnostic,
+                Location.AtLocal(DataField.Count, CmapFormat8Layout.NumGroupsOffset, ordinal), out diagnostic,
                 unchecked((ulong)(long)ordinal), NumGroups);
         return TryReadGroupAt(CmapFormat8Layout.HeaderLength + 12UL * (uint)ordinal, ordinal,
             out group, out diagnostic);
@@ -60,14 +60,14 @@ public readonly ref partial struct CmapFormat8View
         if (status != ReadStatus.Done) return status;
         if (Reserved != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Payload, 2), out diagnostic, Reserved, 0);
+                Location.AtLocal(DataField.Payload, 2), out diagnostic, Reserved, 0);
         if (requireZeroLanguage && Language != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.LanguageId, 8), out diagnostic, Language, 0);
+                Location.AtLocal(DataField.LanguageId, 8), out diagnostic, Language, 0);
         ulong expected = CmapFormat8Layout.HeaderLength + 12UL * NumGroups;
         if ((ulong)_data.Length != expected)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Length, 4), out diagnostic, (ulong)_data.Length, expected);
+                Location.AtLocal(DataField.Length, 4), out diagnostic, (ulong)_data.Length, expected);
         if (!budget.Work(_data.Length + 32L * NumGroups, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
         ulong previousEnd = 0;
@@ -76,7 +76,7 @@ public readonly ref partial struct CmapFormat8View
         {
             status = TryGetGroup(i, out var group, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            var location = Location.At(DataField.CharCode,
+            var location = Location.AtLocal(DataField.CharCode,
                 CmapFormat8Layout.HeaderLength + 12UL * (uint)i, i);
             if (group.StartCharCode > group.EndCharCode || group.EndCharCode > 0x10FFFF ||
                 (!first && group.StartCharCode <= previousEnd))
@@ -84,7 +84,7 @@ public readonly ref partial struct CmapFormat8View
                     location, out diagnostic, group.StartCharCode, previousEnd);
             if ((ulong)group.StartGlyphID + (group.EndCharCode - group.StartCharCode) >= (ulong)numGlyphs)
                 return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                    Location.At(DataField.GlyphId,
+                    Location.AtLocal(DataField.GlyphId,
                         CmapFormat8Layout.HeaderLength + 12UL * (uint)i + 8, i),
                     out diagnostic, group.StartGlyphID, (ulong)numGlyphs);
             if (group.StartCharCode > 0xFFFF)

@@ -12,7 +12,7 @@ public readonly ref partial struct CmapFormat10View
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
         if (ordinal < 0 || (uint)ordinal >= NumChars)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Count, 16, ordinal), out diagnostic,
+                Location.AtLocal(DataField.Count, 16, ordinal), out diagnostic,
                 unchecked((ulong)(long)ordinal), NumChars);
         return TryReadGlyphEntryAt(CmapFormat10Layout.HeaderLength + 2UL * (uint)ordinal, ordinal,
             out entry, out diagnostic);
@@ -40,24 +40,24 @@ public readonly ref partial struct CmapFormat10View
         if (status != ReadStatus.Done) return status;
         if (Reserved != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Payload, 2), out diagnostic, Reserved, 0);
+                Location.AtLocal(DataField.Payload, 2), out diagnostic, Reserved, 0);
         if (requireZeroLanguage && Language != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.LanguageId, 8), out diagnostic, Language, 0);
+                Location.AtLocal(DataField.LanguageId, 8), out diagnostic, Language, 0);
         ulong expected = CmapFormat10Layout.HeaderLength + 2UL * NumChars;
         if ((ulong)_data.Length != expected)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Length, 4), out diagnostic, (ulong)_data.Length, expected);
+                Location.AtLocal(DataField.Length, 4), out diagnostic, (ulong)_data.Length, expected);
         // Window-endpoint arithmetic in ulong: start and numChars are independent uint32.
         if (NumChars > 0)
         {
             ulong last = (ulong)StartCharCode + NumChars - 1;
             if (last > 0x10FFFF)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.OverlappingRange,
-                    Location.At(DataField.CharCode, 12), out diagnostic, last, 0x10FFFF);
+                    Location.AtLocal(DataField.CharCode, 12), out diagnostic, last, 0x10FFFF);
             if (StartCharCode <= 0xDFFF && last >= 0xD800)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.OverlappingRange,
-                    Location.At(DataField.CharCode, 12), out diagnostic, StartCharCode, 0xD800);
+                    Location.AtLocal(DataField.CharCode, 12), out diagnostic, StartCharCode, 0xD800);
         }
         if (!budget.Work(_data.Length + 2L * NumChars, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
@@ -67,7 +67,7 @@ public readonly ref partial struct CmapFormat10View
             if (status != ReadStatus.Done) return status;
             if (entry.Value != 0 && entry.Value >= (uint)numGlyphs)
                 return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                    Location.At(DataField.GlyphId, CmapFormat10Layout.HeaderLength + 2UL * (uint)i, i),
+                    Location.AtLocal(DataField.GlyphId, CmapFormat10Layout.HeaderLength + 2UL * (uint)i, i),
                     out diagnostic, entry.Value, (uint)numGlyphs);
         }
         diagnostic = default;

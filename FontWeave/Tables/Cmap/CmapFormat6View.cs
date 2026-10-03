@@ -12,7 +12,7 @@ public readonly ref partial struct CmapFormat6View
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
         if (ordinal < 0 || (uint)ordinal >= EntryCount)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Count, 8, ordinal), out diagnostic,
+                Location.AtLocal(DataField.Count, 8, ordinal), out diagnostic,
                 unchecked((ulong)(long)ordinal), EntryCount);
         return TryReadGlyphEntryAt(CmapFormat6Layout.HeaderLength + 2UL * (uint)ordinal, ordinal,
             out entry, out diagnostic);
@@ -38,14 +38,14 @@ public readonly ref partial struct CmapFormat6View
         if (status != ReadStatus.Done) return status;
         if (requireZeroLanguage && Language != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.LanguageId, 4), out diagnostic, Language, 0);
+                Location.AtLocal(DataField.LanguageId, 4), out diagnostic, Language, 0);
         ulong expected = CmapFormat6Layout.HeaderLength + 2UL * EntryCount;
         if ((ulong)_data.Length != expected)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Length, 2), out diagnostic, (ulong)_data.Length, expected);
+                Location.AtLocal(DataField.Length, 2), out diagnostic, (ulong)_data.Length, expected);
         if (FirstCode + EntryCount > 0x10000)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.CharCode, 6), out diagnostic,
+                Location.AtLocal(DataField.CharCode, 6), out diagnostic,
                 (uint)FirstCode + EntryCount, 0x10000);
         if (!budget.Work(_data.Length + 2L * EntryCount, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
@@ -55,7 +55,7 @@ public readonly ref partial struct CmapFormat6View
             if (status != ReadStatus.Done) return status;
             if (entry.Value != 0 && entry.Value >= (uint)numGlyphs)
                 return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                    Location.At(DataField.GlyphId, CmapFormat6Layout.HeaderLength + 2UL * (uint)i, i),
+                    Location.AtLocal(DataField.GlyphId, CmapFormat6Layout.HeaderLength + 2UL * (uint)i, i),
                     out diagnostic, entry.Value, (uint)numGlyphs);
         }
         diagnostic = default;

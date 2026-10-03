@@ -62,7 +62,7 @@ internal sealed class SchemaParser
         _model.MinimumHeader = (int)Number(table, 1);
         _model.VersionField = Text(table, "VersionField");
         _model.SupportedVersions = Versions(table);
-        if (_model.MinimumHeader <= 0) Error(FontSchemaGenerator.Layout, "minimumHeader must be positive.");
+        if (_model.MinimumHeader < 0) Error(FontSchemaGenerator.Layout, "minimumHeader cannot be negative.");
         if (_fieldIds.Count == 0) Error(FontSchemaGenerator.Reference, "FontWeave.Core.DataField is required; no second diagnostic contract is generated.");
 
         var scalars = new List<ScalarModel>();
@@ -225,7 +225,7 @@ internal sealed class SchemaParser
         }
 
         var generated = new HashSet<string>(StringComparer.Ordinal)
-            { "IsBound", "RawBytes", "TryOpen", "_data", "_location", "Location", "NormalizeLocation", "TrySlice", "Fail", "TryRequireKnownVersion" };
+            { "IsBound", "RawBytes", "TryOpen", "_data", "_location", "_bound", "Location", "NormalizeLocation", "TrySlice", "Fail", "TryRequireKnownVersion" };
         GeneratedName(generated, _model.Name);
         foreach (var scalar in _model.Scalars)
         {

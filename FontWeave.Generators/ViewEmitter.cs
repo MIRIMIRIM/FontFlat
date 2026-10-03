@@ -26,16 +26,18 @@ internal static class ViewEmitter
         writer.Indent++;
         writer.Line("private readonly global::System.ReadOnlySpan<byte> _data;");
         writer.Line("private readonly global::FontWeave.Core.DataLocation _location;");
+        writer.Line("private readonly bool _bound;");
         writer.Line();
         writer.Line($"private {model.Name}(global::System.ReadOnlySpan<byte> data, global::FontWeave.Core.DataLocation location)");
         writer.Line("{");
         writer.Indent++;
         writer.Line("_data = data;");
         writer.Line("_location = location;");
+        writer.Line("_bound = true;");
         writer.Indent--;
         writer.Line("}");
         writer.Line();
-        writer.Line($"public bool IsBound => _data.Length >= {model.MinimumHeader};");
+        writer.Line("public bool IsBound => _bound;");
         writer.Line("public global::System.ReadOnlySpan<byte> RawBytes => IsBound");
         writer.Indent++;
         writer.Line("? _data");
@@ -153,14 +155,14 @@ internal static class ViewEmitter
             writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
             writer.Indent++;
             writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
-            writer.Line($"location.At((global::FontWeave.Core.DataField){scalar.FieldId}, {U(scalar.Position.Constant)}),");
+            writer.Line($"location.AtLocal((global::FontWeave.Core.DataField){scalar.FieldId}, {U(scalar.Position.Constant)}),");
             writer.Line($"out diagnostic, (ulong)data.Length, {U(end)});");
             writer.Indent -= 2;
         }
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
-        writer.Line("location.At(global::FontWeave.Core.DataField.None, 0), out diagnostic,");
+        writer.Line("location.AtLocal(global::FontWeave.Core.DataField.None, 0), out diagnostic,");
         writer.Line($"(ulong)data.Length, {U(model.MinimumHeader)});");
         writer.Indent -= 2;
         writer.Line("}");
@@ -200,7 +202,7 @@ internal static class ViewEmitter
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Uninitialized,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
-        writer.Line($"Location.At((global::FontWeave.Core.DataField){scalar.FieldId}, {U(scalar.Position.Constant)}), out diagnostic);");
+        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){scalar.FieldId}, {U(scalar.Position.Constant)}), out diagnostic);");
         writer.Indent -= 2;
 
         if (scalar.WhenVersion >= 0)
@@ -224,7 +226,7 @@ internal static class ViewEmitter
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
-        writer.Line($"Location.At((global::FontWeave.Core.DataField){scalar.FieldId}, position), out diagnostic,");
+        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){scalar.FieldId}, position), out diagnostic,");
         writer.Line($"(ulong)_data.Length, position + {U(scalar.Width)});");
         writer.Indent -= 2;
         writer.Line($"value = {ReadExpression(scalar, "bytes", 0)};");
@@ -266,7 +268,7 @@ internal static class ViewEmitter
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Uninitialized,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
-        writer.Line("Location.At(global::FontWeave.Core.DataField.None, 0), out diagnostic);");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0), out diagnostic);");
         writer.Indent -= 2;
 
         if (derived.WhenVersion >= 0)
@@ -314,7 +316,7 @@ internal static class ViewEmitter
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Uninitialized,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
-        writer.Line("Location.At(global::FontWeave.Core.DataField.None, rowPosition, ordinal), out diagnostic);");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, rowPosition, ordinal), out diagnostic);");
         writer.Indent -= 2;
         writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);");
         writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
@@ -332,7 +334,7 @@ internal static class ViewEmitter
             writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
             writer.Indent++;
             writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
-            writer.Line($"Location.At((global::FontWeave.Core.DataField){field.FieldId}, fieldPosition, ordinal),");
+            writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){field.FieldId}, fieldPosition, ordinal),");
             writer.Line("out diagnostic, (ulong)_data.Length, expectedEnd);");
             writer.Indent--;
             writer.Indent--;
@@ -341,7 +343,7 @@ internal static class ViewEmitter
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
-        writer.Line("Location.At(global::FontWeave.Core.DataField.None, rowPosition, ordinal),");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, rowPosition, ordinal),");
         writer.Line($"out diagnostic, (ulong)_data.Length, rowPosition > ulong.MaxValue - {U(array.Stride)} ? ulong.MaxValue : rowPosition + {U(array.Stride)});");
         writer.Indent -= 2;
         writer.Line("}");
@@ -380,7 +382,7 @@ internal static class ViewEmitter
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Uninitialized,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
-        writer.Line("Location.At(global::FontWeave.Core.DataField.None, 0, ordinal), out diagnostic);");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0, ordinal), out diagnostic);");
         writer.Indent -= 2;
         writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);");
         writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
@@ -395,7 +397,7 @@ internal static class ViewEmitter
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidIndex,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.IndexOutOfRange,");
-        writer.Line($"Location.At((global::FontWeave.Core.DataField){count.FieldId}, countPosition, ordinal),");
+        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){count.FieldId}, countPosition, ordinal),");
         writer.Line("out diagnostic, ordinal < 0 ? 0UL : (ulong)ordinal, count);");
         writer.Indent -= 2;
         writer.Line("}");
@@ -407,7 +409,7 @@ internal static class ViewEmitter
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
-        writer.Line("Location.At(global::FontWeave.Core.DataField.None, rowPosition, ordinal),");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, rowPosition, ordinal),");
         writer.Line($"out diagnostic, (ulong)_data.Length, rowPosition + {U(array.Stride)});");
         writer.Indent -= 2;
 
@@ -452,7 +454,7 @@ internal static class ViewEmitter
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
-        writer.Line("Location.At(global::FontWeave.Core.DataField.None, minimum), out diagnostic,");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, minimum), out diagnostic,");
         writer.Line("(ulong)_data.Length, minimum);");
         writer.Indent -= 2;
         if (baseScalar is not null)
@@ -469,7 +471,7 @@ internal static class ViewEmitter
                 writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
                 writer.Indent++;
                 writer.Line("global::FontWeave.Core.DiagnosticCode.InvalidValue,");
-                writer.Line($"Location.At((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition),");
+                writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition),");
                 writer.Line("out diagnostic, 0, 1);");
                 writer.Indent -= 2;
             }
@@ -478,7 +480,7 @@ internal static class ViewEmitter
             writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
             writer.Indent++;
             writer.Line("global::FontWeave.Core.DiagnosticCode.StorageBeforeRecords,");
-            writer.Line($"Location.At((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition), out diagnostic,");
+            writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition), out diagnostic,");
             writer.Line("storageBase, minimum);");
             writer.Indent -= 2;
             writer.Line("if (storageBase > (ulong)_data.Length)");
@@ -486,7 +488,7 @@ internal static class ViewEmitter
             writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
             writer.Indent++;
             writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
-            writer.Line($"Location.At((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition), out diagnostic,");
+            writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition), out diagnostic,");
             writer.Line("storageBase, (ulong)_data.Length);");
             writer.Indent -= 2;
         }
@@ -503,7 +505,7 @@ internal static class ViewEmitter
             writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
             writer.Indent++;
             writer.Line("global::FontWeave.Core.DiagnosticCode.InvalidValue,");
-            writer.Line($"Location.At((global::FontWeave.Core.DataField){offset.FieldId}, fieldPosition, ordinal),");
+            writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){offset.FieldId}, fieldPosition, ordinal),");
             writer.Line("out diagnostic, 0, 1);");
             writer.Indent -= 2;
             writer.Line("}");
@@ -521,7 +523,7 @@ internal static class ViewEmitter
             writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
             writer.Indent++;
             writer.Line("global::FontWeave.Core.DiagnosticCode.StorageBeforeRecords,");
-            writer.Line($"Location.At((global::FontWeave.Core.DataField){offset.FieldId}, fieldPosition, ordinal),");
+            writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){offset.FieldId}, fieldPosition, ordinal),");
             writer.Line("out diagnostic, absoluteOffset, minimum);");
             writer.Indent -= 2;
             writer.Line("}");
@@ -532,7 +534,7 @@ internal static class ViewEmitter
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
-        writer.Line("Location.At(global::FontWeave.Core.DataField.Payload, absoluteOffset, ordinal),");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.Payload, absoluteOffset, ordinal),");
         writer.Line("out diagnostic, absoluteOffset + payloadLength, (ulong)_data.Length);");
         writer.Indent -= 2;
         writer.Line("diagnostic = default;");
@@ -582,7 +584,7 @@ internal static class ViewEmitter
             writer.Line("return Fail(global::FontWeave.Core.ReadStatus.UnsupportedFormat,");
             writer.Indent++;
             writer.Line("global::FontWeave.Core.DiagnosticCode.UnsupportedVersion,");
-            writer.Line($"Location.At((global::FontWeave.Core.DataField){version.FieldId}, versionPosition),");
+            writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){version.FieldId}, versionPosition),");
             writer.Line("out diagnostic, version);");
             writer.Indent--;
         }

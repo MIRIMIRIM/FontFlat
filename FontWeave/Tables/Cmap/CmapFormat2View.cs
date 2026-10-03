@@ -30,7 +30,7 @@ public readonly ref partial struct CmapFormat2View
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
         if (byteIndex < 0 || byteIndex >= CmapFormat2Layout.KeyCount)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Offset, CmapFormat2Layout.HeaderLength, byteIndex), out diagnostic,
+                Location.AtLocal(DataField.Offset, CmapFormat2Layout.HeaderLength, byteIndex), out diagnostic,
                 unchecked((ulong)(long)byteIndex), CmapFormat2Layout.KeyCount);
         ReadStatus status = TryReadSubHeaderKeyAt(
             CmapFormat2Layout.HeaderLength + 2UL * (uint)byteIndex, byteIndex,
@@ -50,7 +50,7 @@ public readonly ref partial struct CmapFormat2View
         int count = SubHeaderCount;
         if (ordinal < 0 || ordinal >= count)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.None, CmapFormat2Layout.KeysEnd, ordinal), out diagnostic,
+                Location.AtLocal(DataField.None, CmapFormat2Layout.KeysEnd, ordinal), out diagnostic,
                 unchecked((ulong)(long)ordinal), (uint)count);
         return TryReadSubHeaderAt(CmapFormat2Layout.KeysEnd + 8UL * (uint)ordinal, ordinal,
             out header, out diagnostic);
@@ -64,8 +64,8 @@ public readonly ref partial struct CmapFormat2View
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
         if (position > (ulong)_data.Length - 2)
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.GlyphId, position), out diagnostic,
-                (ulong)_data.Length, position + 2);
+                Location.AtLocal(DataField.GlyphId, position), out diagnostic,
+                (ulong)_data.Length, position > ulong.MaxValue - 2 ? ulong.MaxValue : position + 2);
         value = ReadWire.U16(_data, (int)position);
         diagnostic = default;
         return ReadStatus.Done;
@@ -92,7 +92,7 @@ public readonly ref partial struct CmapFormat2View
         if (status != ReadStatus.Done) return status;
         if (_data.Length < CmapFormat2Layout.KeysEnd)
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.Length, 2), out diagnostic, (ulong)_data.Length,
+                Location.AtLocal(DataField.Length, 2), out diagnostic, (ulong)_data.Length,
                 CmapFormat2Layout.KeysEnd);
         uint maxKey = 0;
         for (int i = 0; i < CmapFormat2Layout.KeyCount; i++)
@@ -101,7 +101,7 @@ public readonly ref partial struct CmapFormat2View
             if (status != ReadStatus.Done) return status;
             if ((key & 0x7) != 0)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.Offset, CmapFormat2Layout.HeaderLength + 2UL * (uint)i, i),
+                    Location.AtLocal(DataField.Offset, CmapFormat2Layout.HeaderLength + 2UL * (uint)i, i),
                     out diagnostic, key, (ulong)key & ~7UL);
             if (key > maxKey) maxKey = key;
         }
@@ -109,14 +109,14 @@ public readonly ref partial struct CmapFormat2View
         long glyphArrayStart = CmapFormat2Layout.KeysEnd + 8L * count;
         if (_data.Length < glyphArrayStart)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Length, 2), out diagnostic, (ulong)_data.Length, (ulong)glyphArrayStart);
+                Location.AtLocal(DataField.Length, 2), out diagnostic, (ulong)_data.Length, (ulong)glyphArrayStart);
         if (((_data.Length - glyphArrayStart) & 1) == 1)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Length, 2), out diagnostic, (uint)_data.Length,
+                Location.AtLocal(DataField.Length, 2), out diagnostic, (uint)_data.Length,
                 (uint)(_data.Length - 1));
         if (requireZeroLanguage && Language != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.LanguageId, 4), out diagnostic, Language, 0);
+                Location.AtLocal(DataField.LanguageId, 4), out diagnostic, Language, 0);
         if (!budget.Work(_data.Length + 8L * count + 2L * CmapFormat2Layout.KeyCount, Location, out diagnostic) ||
             !budget.Buffer(count, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
@@ -137,28 +137,28 @@ public readonly ref partial struct CmapFormat2View
             ulong fieldAddress = (ulong)(CmapFormat2Layout.KeysEnd + 8L * k);
             if (header.FirstCode + (uint)header.EntryCount > 256)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.CharCode, fieldAddress, k), out diagnostic,
+                    Location.AtLocal(DataField.CharCode, fieldAddress, k), out diagnostic,
                     (uint)header.FirstCode + header.EntryCount, 256);
             if (header.EntryCount == 0)
             {
                 if (header.IdRangeOffset != 0)
                     return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                        Location.At(DataField.Offset, fieldAddress + 6, k), out diagnostic,
+                        Location.AtLocal(DataField.Offset, fieldAddress + 6, k), out diagnostic,
                         header.IdRangeOffset, 0);
                 continue;
             }
             if (header.IdRangeOffset == 0)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.Offset, fieldAddress + 6, k), out diagnostic, 0, 1);
+                    Location.AtLocal(DataField.Offset, fieldAddress + 6, k), out diagnostic, 0, 1);
             if ((header.IdRangeOffset & 1) == 1)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.Offset, fieldAddress + 6, k), out diagnostic,
+                    Location.AtLocal(DataField.Offset, fieldAddress + 6, k), out diagnostic,
                     header.IdRangeOffset, (uint)(header.IdRangeOffset - 1));
             ulong windowStart = fieldAddress + 6 + header.IdRangeOffset;
             ulong windowEnd = windowStart + 2UL * (uint)(header.EntryCount - 1);
             if (windowStart < (ulong)glyphArrayStart || windowEnd > (ulong)_data.Length - 2)
                 return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                    Location.At(DataField.Offset, fieldAddress + 6, k), out diagnostic,
+                    Location.AtLocal(DataField.Offset, fieldAddress + 6, k), out diagnostic,
                     windowStart, (ulong)_data.Length - 2);
             if (!referenced[k]) continue;
             span += header.EntryCount;
@@ -170,7 +170,7 @@ public readonly ref partial struct CmapFormat2View
                 ushort mapped = unchecked((ushort)(raw + header.IdDelta));
                 if (mapped >= (uint)numGlyphs)
                     return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                        Location.At(DataField.GlyphId, windowStart + 2UL * (uint)i, k),
+                        Location.AtLocal(DataField.GlyphId, windowStart + 2UL * (uint)i, k),
                         out diagnostic, mapped, (uint)numGlyphs);
             }
         }

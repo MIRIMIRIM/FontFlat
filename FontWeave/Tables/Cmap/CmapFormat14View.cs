@@ -13,7 +13,7 @@ public readonly ref partial struct CmapFormat14View
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
         if (ordinal < 0 || (uint)ordinal >= NumVarSelectorRecords)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Count, 6, ordinal), out diagnostic,
+                Location.AtLocal(DataField.Count, 6, ordinal), out diagnostic,
                 unchecked((ulong)(long)ordinal), NumVarSelectorRecords);
         ulong position = CmapFormat14Layout.HeaderLength + CmapFormat14Layout.RecordStride * (ulong)(uint)ordinal;
         ReadStatus status = TryReadU24At(position, out varSelector, out diagnostic);
@@ -36,7 +36,7 @@ public readonly ref partial struct CmapFormat14View
         if (status != ReadStatus.Done) return status;
         if (raw > int.MaxValue)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Count, tablePosition, recordOrdinal), out diagnostic, raw, int.MaxValue);
+                Location.AtLocal(DataField.Count, tablePosition, recordOrdinal), out diagnostic, raw, int.MaxValue);
         count = (int)raw;
         diagnostic = default;
         return ReadStatus.Done;
@@ -53,7 +53,7 @@ public readonly ref partial struct CmapFormat14View
         if (status != ReadStatus.Done) return status;
         if (rangeOrdinal < 0 || (ulong)rangeOrdinal >= count)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Count, tablePosition, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Count, tablePosition, recordOrdinal), out diagnostic,
                 unchecked((ulong)(long)rangeOrdinal), count);
         ulong position = tablePosition + 4 + CmapFormat14Layout.DefaultRangeStride * (ulong)(uint)rangeOrdinal;
         status = TryReadU24At(position, out startUnicodeValue, out diagnostic);
@@ -76,7 +76,7 @@ public readonly ref partial struct CmapFormat14View
         if (status != ReadStatus.Done) return status;
         if (raw > int.MaxValue)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Count, tablePosition, recordOrdinal), out diagnostic, raw, int.MaxValue);
+                Location.AtLocal(DataField.Count, tablePosition, recordOrdinal), out diagnostic, raw, int.MaxValue);
         count = (int)raw;
         diagnostic = default;
         return ReadStatus.Done;
@@ -93,7 +93,7 @@ public readonly ref partial struct CmapFormat14View
         if (status != ReadStatus.Done) return status;
         if (mappingOrdinal < 0 || (ulong)mappingOrdinal >= count)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Count, tablePosition, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Count, tablePosition, recordOrdinal), out diagnostic,
                 unchecked((ulong)(long)mappingOrdinal), count);
         ulong position = tablePosition + 4 + CmapFormat14Layout.UvsMappingStride * (ulong)(uint)mappingOrdinal;
         status = TryReadU24At(position, out unicodeValue, out diagnostic);
@@ -123,12 +123,12 @@ public readonly ref partial struct CmapFormat14View
         if (status != ReadStatus.Done) return status;
         if ((ulong)_data.Length != Length)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Length, 2), out diagnostic, (ulong)_data.Length, Length);
+                Location.AtLocal(DataField.Length, 2), out diagnostic, (ulong)_data.Length, Length);
         uint recordCount = NumVarSelectorRecords;
         ulong recordsEnd = CmapFormat14Layout.HeaderLength + CmapFormat14Layout.RecordStride * (ulong)recordCount;
         if ((ulong)_data.Length < recordsEnd)
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.Count, 6), out diagnostic, (ulong)_data.Length, recordsEnd);
+                Location.AtLocal(DataField.Count, 6), out diagnostic, (ulong)_data.Length, recordsEnd);
         if (!budget.Work(_data.Length + 96L * recordCount, Location, out diagnostic) ||
             !budget.Buffer(48L * recordCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         var tiles = new List<UvsTile>((int)Math.Min(2L * recordCount, 1 << 16));
@@ -141,11 +141,11 @@ public readonly ref partial struct CmapFormat14View
             ulong recordPosition = CmapFormat14Layout.HeaderLength + CmapFormat14Layout.RecordStride * (ulong)(uint)i;
             if (i > 0 && varSelector <= previousSelector)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.CharCode, recordPosition, i), out diagnostic,
+                    Location.AtLocal(DataField.CharCode, recordPosition, i), out diagnostic,
                     varSelector, previousSelector);
             if (!IsVariationSelector(varSelector))
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.CharCode, recordPosition, i), out diagnostic, varSelector, 0);
+                    Location.AtLocal(DataField.CharCode, recordPosition, i), out diagnostic, varSelector, 0);
             status = BoundUvsOffset(defaultOffset, recordsEnd, recordPosition + 3, i, out diagnostic);
             if (status != ReadStatus.Done) return status;
             status = BoundUvsOffset(nonDefaultOffset, recordsEnd, recordPosition + 7, i, out diagnostic);
@@ -158,7 +158,7 @@ public readonly ref partial struct CmapFormat14View
                 ulong size = 4 + CmapFormat14Layout.DefaultRangeStride * (ulong)rangeCount;
                 if (defaultOffset + size > (ulong)_data.Length)
                     return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                        Location.At(DataField.Count, defaultOffset, i), out diagnostic,
+                        Location.AtLocal(DataField.Count, defaultOffset, i), out diagnostic,
                         defaultOffset + size, (ulong)_data.Length);
                 tiles.Add(new(defaultOffset, size, i));
                 status = ValidateDefaultTable(defaultOffset, rangeCount, i, budget, out diagnostic);
@@ -171,7 +171,7 @@ public readonly ref partial struct CmapFormat14View
                 ulong size = 4 + CmapFormat14Layout.UvsMappingStride * (ulong)mappingCount;
                 if (nonDefaultOffset + size > (ulong)_data.Length)
                     return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                        Location.At(DataField.Count, nonDefaultOffset, i), out diagnostic,
+                        Location.AtLocal(DataField.Count, nonDefaultOffset, i), out diagnostic,
                         nonDefaultOffset + size, (ulong)_data.Length);
                 tiles.Add(new(nonDefaultOffset, size, i));
                 status = ValidateNonDefaultTable(nonDefaultOffset, mappingCount, i, numGlyphs, budget, out diagnostic);
@@ -188,7 +188,7 @@ public readonly ref partial struct CmapFormat14View
                 // Exact offset equality is legal sharing; anything else overlaps.
                 if (tiles[j - 1].Size != tile.Size)
                     return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.OverlappingRange,
-                        Location.At(DataField.Offset, tile.Offset, tile.Ordinal), out diagnostic,
+                        Location.AtLocal(DataField.Offset, tile.Offset, tile.Ordinal), out diagnostic,
                         tile.Size, tiles[j - 1].Size);
                 continue;
             }
@@ -196,17 +196,17 @@ public readonly ref partial struct CmapFormat14View
             {
                 if (tile.Offset < cursor)
                     return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.OverlappingRange,
-                        Location.At(DataField.Offset, tile.Offset, tile.Ordinal), out diagnostic,
+                        Location.AtLocal(DataField.Offset, tile.Offset, tile.Ordinal), out diagnostic,
                         tile.Offset, cursor);
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                    Location.At(DataField.Offset, cursor, tile.Ordinal), out diagnostic,
+                    Location.AtLocal(DataField.Offset, cursor, tile.Ordinal), out diagnostic,
                     tile.Offset, cursor);
             }
             cursor = tile.Offset + tile.Size;
         }
         if (cursor != (ulong)_data.Length)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Length, cursor), out diagnostic, (ulong)_data.Length, cursor);
+                Location.AtLocal(DataField.Length, cursor), out diagnostic, (ulong)_data.Length, cursor);
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -230,24 +230,24 @@ public readonly ref partial struct CmapFormat14View
             ulong position = tableOffset + 4 + CmapFormat14Layout.DefaultRangeStride * (ulong)(uint)r;
             if (additionalCount > 239)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.Count, position + 3, recordOrdinal), out diagnostic,
+                    Location.AtLocal(DataField.Count, position + 3, recordOrdinal), out diagnostic,
                     additionalCount, 239);
             if (start is >= 0xD800 and <= 0xDFFF)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.CharCode, position, recordOrdinal), out diagnostic,
+                    Location.AtLocal(DataField.CharCode, position, recordOrdinal), out diagnostic,
                     start, 0x10FFFF);
             uint end = start + additionalCount;
             if (end > 0x10FFFF)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.OverlappingRange,
-                    Location.At(DataField.CharCode, position, recordOrdinal), out diagnostic,
+                    Location.AtLocal(DataField.CharCode, position, recordOrdinal), out diagnostic,
                     end, 0x10FFFF);
             if (end is >= 0xD800 and <= 0xDFFF)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.CharCode, position, recordOrdinal), out diagnostic,
+                    Location.AtLocal(DataField.CharCode, position, recordOrdinal), out diagnostic,
                     end, 0x10FFFF);
             if ((uint)r > 0 && start <= previousEnd)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.OverlappingRange,
-                    Location.At(DataField.CharCode, position, recordOrdinal), out diagnostic,
+                    Location.AtLocal(DataField.CharCode, position, recordOrdinal), out diagnostic,
                     start, previousEnd);
             previousEnd = end;
         }
@@ -269,15 +269,15 @@ public readonly ref partial struct CmapFormat14View
             ulong position = tableOffset + 4 + CmapFormat14Layout.UvsMappingStride * (ulong)(uint)r;
             if (unicodeValue > 0x10FFFF || unicodeValue is >= 0xD800 and <= 0xDFFF)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.CharCode, position, recordOrdinal), out diagnostic,
+                    Location.AtLocal(DataField.CharCode, position, recordOrdinal), out diagnostic,
                     unicodeValue, 0x10FFFF);
             if ((uint)r > 0 && unicodeValue <= previousValue)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.CharCode, position, recordOrdinal), out diagnostic,
+                    Location.AtLocal(DataField.CharCode, position, recordOrdinal), out diagnostic,
                     unicodeValue, previousValue);
             if (glyphId >= numGlyphs)
                 return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                    Location.At(DataField.GlyphId, position + 3, recordOrdinal), out diagnostic,
+                    Location.AtLocal(DataField.GlyphId, position + 3, recordOrdinal), out diagnostic,
                     glyphId, (uint)numGlyphs);
             previousValue = unicodeValue;
         }
@@ -293,7 +293,7 @@ public readonly ref partial struct CmapFormat14View
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
         if (recordOrdinal < 0 || (uint)recordOrdinal >= NumVarSelectorRecords)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Count, 6, recordOrdinal), out diagnostic,
+                Location.AtLocal(DataField.Count, 6, recordOrdinal), out diagnostic,
                 unchecked((ulong)(long)recordOrdinal), NumVarSelectorRecords);
         ulong recordPosition = CmapFormat14Layout.HeaderLength + CmapFormat14Layout.RecordStride * (ulong)(uint)recordOrdinal;
         ReadStatus status = TryReadVarSelectorAt(recordPosition, recordOrdinal, out var record, out diagnostic);
@@ -301,7 +301,7 @@ public readonly ref partial struct CmapFormat14View
         uint offset = isDefault ? record.DefaultUVSOffset : record.NonDefaultUVSOffset;
         if (offset == 0)
             return ReadWire.Fail(ReadStatus.NotFound, DiagnosticCode.TableNotFound,
-                Location.At(DataField.Offset, recordPosition + (isDefault ? 3UL : 7UL), recordOrdinal),
+                Location.AtLocal(DataField.Offset, recordPosition + (isDefault ? 3UL : 7UL), recordOrdinal),
                 out diagnostic, 0);
         status = BoundUvsOffset(offset, 0, recordPosition + (isDefault ? 3UL : 7UL), recordOrdinal, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -320,10 +320,10 @@ public readonly ref partial struct CmapFormat14View
         }
         if (offset < recordsEnd)
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
-                Location.At(DataField.Offset, fieldPosition, ordinal), out diagnostic, offset, recordsEnd);
+                Location.AtLocal(DataField.Offset, fieldPosition, ordinal), out diagnostic, offset, recordsEnd);
         if (offset > (ulong)_data.Length - 4)
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                Location.At(DataField.Offset, fieldPosition, ordinal), out diagnostic,
+                Location.AtLocal(DataField.Offset, fieldPosition, ordinal), out diagnostic,
                 offset + 4, (ulong)_data.Length);
         diagnostic = default;
         return ReadStatus.Done;
@@ -336,7 +336,7 @@ public readonly ref partial struct CmapFormat14View
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
         if (!TrySlice(_data, position, 4, out _))
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.Count, position), out diagnostic, (ulong)_data.Length, position + 4);
+                Location.AtLocal(DataField.Count, position), out diagnostic, (ulong)_data.Length, position + 4);
         value = ReadWire.U32(_data, (int)position);
         diagnostic = default;
         return ReadStatus.Done;
@@ -349,7 +349,7 @@ public readonly ref partial struct CmapFormat14View
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
         if (!TrySlice(_data, position, 3, out var bytes))
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.CharCode, position), out diagnostic, (ulong)_data.Length, position + 3);
+                Location.AtLocal(DataField.CharCode, position), out diagnostic, (ulong)_data.Length, position + 3);
         value = ((uint)bytes[0] << 16) | ((uint)bytes[1] << 8) | bytes[2];
         diagnostic = default;
         return ReadStatus.Done;

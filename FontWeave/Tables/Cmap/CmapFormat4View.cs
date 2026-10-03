@@ -62,7 +62,7 @@ public readonly ref partial struct CmapFormat4View
         int count = SegmentCount;
         if (ordinal < 0 || ordinal >= count)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Count, 6, ordinal), out diagnostic,
+                Location.AtLocal(DataField.Count, 6, ordinal), out diagnostic,
                 unchecked((ulong)(long)ordinal), (uint)count);
         position = (ulong)(start + 2L * ordinal);
         diagnostic = default;
@@ -77,8 +77,8 @@ public readonly ref partial struct CmapFormat4View
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
         if (position > (ulong)_data.Length - 2)
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.GlyphId, position), out diagnostic,
-                (ulong)_data.Length, position + 2);
+                Location.AtLocal(DataField.GlyphId, position), out diagnostic,
+                (ulong)_data.Length, position > ulong.MaxValue - 2 ? ulong.MaxValue : position + 2);
         value = ReadWire.U16(_data, (int)position);
         diagnostic = default;
         return ReadStatus.Done;
@@ -103,35 +103,35 @@ public readonly ref partial struct CmapFormat4View
         if (status != ReadStatus.Done) return status;
         if (SegCountX2 == 0 || (SegCountX2 & 1) == 1)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Count, 6), out diagnostic, SegCountX2, 2);
+                Location.AtLocal(DataField.Count, 6), out diagnostic, SegCountX2, 2);
         int count = SegmentCount;
         if (count == 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Count, 6), out diagnostic, 0, 1);
+                Location.AtLocal(DataField.Count, 6), out diagnostic, 0, 1);
         long glyphArrayStart = 16 + 8L * count;
         if (_data.Length < glyphArrayStart)
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.Length, 2), out diagnostic, (ulong)_data.Length, (ulong)glyphArrayStart);
+                Location.AtLocal(DataField.Length, 2), out diagnostic, (ulong)_data.Length, (ulong)glyphArrayStart);
         if ((_data.Length & 1) == 1)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Length, 2), out diagnostic, (uint)_data.Length,
+                Location.AtLocal(DataField.Length, 2), out diagnostic, (uint)_data.Length,
                 (uint)(_data.Length - 1));
         status = TryGetStartCode(0, out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
         ushort reservedPad = ReadWire.U16(_data, (int)(14 + 2L * count));
         if (reservedPad != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Payload, (ulong)(14 + 2L * count)), out diagnostic, reservedPad, 0);
+                Location.AtLocal(DataField.Payload, (ulong)(14 + 2L * count)), out diagnostic, reservedPad, 0);
         if (requireZeroLanguage && Language != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.LanguageId, 4), out diagnostic, Language, 0);
+                Location.AtLocal(DataField.LanguageId, 4), out diagnostic, Language, 0);
         if (!budget.Work(_data.Length + 32L * count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         int power = 1, selector = 0;
         while (power <= count / 2) { power *= 2; selector++; }
         int expectedSearch = power * 2, expectedShift = count * 2 - expectedSearch;
         if (SearchRange != expectedSearch || EntrySelector != selector || RangeShift != expectedShift)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Payload, 8), out diagnostic,
+                Location.AtLocal(DataField.Payload, 8), out diagnostic,
                 (uint)(SearchRange | (EntrySelector << 16)), (uint)(expectedSearch | (selector << 16)));
         int previousEnd = -1;
         long totalSpan = 0;
@@ -145,7 +145,7 @@ public readonly ref partial struct CmapFormat4View
             if (status != ReadStatus.Done) return status;
             status = TryGetIdRangeOffset(i, out ushort rangeOffset, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            var location = Location.At(DataField.CharCode, (ulong)(14 + 2L * count) + 2UL * (uint)i, i);
+            var location = Location.AtLocal(DataField.CharCode, (ulong)(14 + 2L * count) + 2UL * (uint)i, i);
             if (start > end || (i > 0 && start <= previousEnd))
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.OverlappingRange,
                     location, out diagnostic, start, unchecked((uint)previousEnd));
@@ -162,14 +162,14 @@ public readonly ref partial struct CmapFormat4View
             {
                 if ((rangeOffset & 1) == 1)
                     return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                        Location.At(DataField.Offset, (ulong)(16 + 6L * count) + 2UL * (uint)i, i),
+                        Location.AtLocal(DataField.Offset, (ulong)(16 + 6L * count) + 2UL * (uint)i, i),
                         out diagnostic, rangeOffset, (uint)(rangeOffset - 1));
                 ulong fieldPosition = (ulong)(16 + 6L * count + 2L * i);
                 ulong windowStart = fieldPosition + rangeOffset;
                 ulong windowEnd = windowStart + 2UL * (uint)(end - start);
                 if (windowStart < (ulong)glyphArrayStart || windowEnd > (ulong)_data.Length - 2)
                     return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                        Location.At(DataField.Offset, fieldPosition, i), out diagnostic,
+                        Location.AtLocal(DataField.Offset, fieldPosition, i), out diagnostic,
                         windowStart, (ulong)_data.Length - 2);
                 for (uint c = start; ; c++)
                 {
@@ -180,7 +180,7 @@ public readonly ref partial struct CmapFormat4View
                         ushort mapped = unchecked((ushort)(raw + delta));
                         if (mapped >= numGlyphs)
                             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                                Location.At(DataField.GlyphId, windowStart + 2UL * (c - start), i),
+                                Location.AtLocal(DataField.GlyphId, windowStart + 2UL * (c - start), i),
                                 out diagnostic, mapped, (uint)numGlyphs);
                     }
                     if (c == end) break;

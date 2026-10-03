@@ -8,7 +8,8 @@ public readonly record struct CmapRecord(ushort PlatformId, ushort EncodingId,
     uint SourceOffset, int SubtableIndex);
 
 /// <summary>Base for one materialized subtable: format identity and source provenance.
-/// SourceOffset is where the subtable started in its source table, not a live binding.</summary>
+/// SourceOffset is where the subtable started in its source table, not a live binding.
+/// Location carries the subtable origin for translating subtable-local fields.</summary>
 public abstract class CmapSubtable
 {
     private protected CmapSubtable(ushort format, uint sourceOffset, DataLocation location)
@@ -76,7 +77,7 @@ public sealed class CmapFormat4Subtable : CmapSubtable
                 + (codePoint - segment.StartCode);
             if (index < 0 || index >= _glyphIdArray.Length)
                 return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                    Location.At(DataField.GlyphId,
+                    Location.AtLocal(DataField.GlyphId,
                         (ulong)(16 + 6L * _segments.Length) + 2UL * (uint)found, found),
                     out diagnostic, (ulong)index, (ulong)_glyphIdArray.Length);
             ushort raw = _glyphIdArray[index];
@@ -284,7 +285,7 @@ public sealed class CmapFormat0Subtable : CmapSubtable
         if (codePoint > 0xFF) { diagnostic = default; return ReadStatus.Done; }
         if (codePoint >= (uint)_glyphArray.Length)
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                Location.At(DataField.GlyphId, 6 + codePoint), out diagnostic,
+                Location.AtLocal(DataField.GlyphId, 6 + codePoint), out diagnostic,
                 codePoint, (uint)_glyphArray.Length);
         byte resolved = _glyphArray[(int)codePoint];
         if (resolved == 0) { diagnostic = default; return ReadStatus.Done; }
@@ -385,7 +386,7 @@ public sealed class CmapFormat2Subtable : CmapSubtable
             + 4L * (header - _subHeaders.Length) + (byte2 - subHeader.FirstCode);
         if (index < 0 || index >= _glyphArray.Length)
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                Location.At(DataField.Offset,
+                Location.AtLocal(DataField.Offset,
                     (ulong)(518 + 8L * header + 6L), header), out diagnostic,
                 (ulong)index, (ulong)_glyphArray.Length);
         ushort raw = _glyphArray[(int)index];
@@ -789,7 +790,7 @@ public sealed class CmapTable
                     + 4L * (header - subHeaders.Length) + i;
                 if (index < 0 || index >= glyphs.Length)
                     return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                        subtable.Location.At(DataField.Offset, (ulong)(518 + 8L * header + 6L), header),
+                        subtable.Location.AtLocal(DataField.Offset, (ulong)(518 + 8L * header + 6L), header),
                         out diagnostic, (ulong)index, (ulong)glyphs.Length);
                 ushort raw = glyphs[(int)index];
                 if (raw == 0) continue;

@@ -8,10 +8,8 @@ internal static class CvtLayout
     internal const uint Tag = 0x63767420;
     internal const int ValueStride = 2;
 
-    /// <summary>cvt  has no header at all; the schema requires a positive minimum, and one
-    /// value is the smallest table that carries any content. A zero-length table is legal on
-    /// the wire and is admitted by the semantic partial rather than by this floor.</summary>
-    internal const int MinimumHeader = ValueStride;
+    /// <summary>cvt  has no header; the legal empty table is structurally bindable.</summary>
+    internal const int MinimumHeader = 0;
 
     /// <summary>Declared element budget, so a table that claims an implausible value count
     /// is refused rather than allocated.</summary>
@@ -60,7 +58,8 @@ public sealed class CvtTable
         amount = 0;
         if (index < 0 || index >= _values.Length)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Count, (ulong)(index * CvtLayout.ValueStride), index),
+                Location.AtLocal(DataField.Count,
+                    index < 0 ? 0 : (ulong)index * CvtLayout.ValueStride, index),
                 out diagnostic, unchecked((ulong)(long)index), (ulong)_values.Length);
         amount = _values[index];
         diagnostic = default;

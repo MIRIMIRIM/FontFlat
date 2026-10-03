@@ -62,6 +62,16 @@ public readonly record struct DataLocation(long SourceId, int FaceIndex, uint Ta
 
     public DataLocation At(DataField field, ulong offset, int recordOrdinal = -1) =>
         this with { Field = field, Offset = offset, RecordOrdinal = recordOrdinal };
+
+    /// <summary>Translates a window-local position from this location's origin. If the
+    /// origin is unknown or the coordinate cannot be represented, keeps source identity
+    /// and the local position but does not claim a table or file coordinate.</summary>
+    public DataLocation AtLocal(DataField field, ulong localOffset, int recordOrdinal = -1) =>
+        Basis == OffsetBasis.None || localOffset > ulong.MaxValue - Offset
+            ? this with { Field = field, Basis = OffsetBasis.None, Offset = localOffset,
+                RecordOrdinal = recordOrdinal }
+            : this with { Field = field, Offset = Offset + localOffset,
+                RecordOrdinal = recordOrdinal };
 }
 
 /// <summary>Detail/Expected meaning is defined per code and field, never formatted in Core.</summary>
