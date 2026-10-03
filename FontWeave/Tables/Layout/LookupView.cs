@@ -47,13 +47,15 @@ public readonly ref partial struct LookupView
         ReadStatus status = TryReadHeader(numGlyphs, kind, out var header, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         LookupTable parsed = header!;
-        if (kind != LayoutLookupKind.Gsub || parsed.LookupType != 1)
+        if (parsed.LookupType != 1)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, parsed.LookupType);
-        status = LookupTable.ValidateGsubSource(Location, out diagnostic);
+        status = kind == LayoutLookupKind.Gsub ? LookupTable.ValidateGsubSource(Location, out diagnostic)
+            : LookupTable.ValidateGposSource(Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = parsed.ValidateFlags(context, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
+        if (kind == LayoutLookupKind.Gpos) return ReadPositions(parsed, out model, out diagnostic, budget);
         if (!budget.Work(parsed.SubtableCount, Location, out diagnostic) ||
             !budget.Buffer(8L * parsed.SubtableCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         SingleSubstTable[] subtables = parsed.SubtableCount == 0 ? [] : new SingleSubstTable[parsed.SubtableCount];
@@ -80,6 +82,34 @@ public readonly ref partial struct LookupView
         model = parsed.WithDecodedSubtables(subtables);
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    private ReadStatus ReadPositions(LookupTable header, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        int count = header.SubtableCount;
+        if (!budget.Work(count, Location, out diagnostic) ||
+            !budget.Buffer(8L * count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        SinglePosTable[] subtables = new SinglePosTable[count];
+        var children = new Dictionary<ushort, SinglePosTable>();
+        var state = new SinglePosReadState(header.NumGlyphs, Location, _data.Length, true);
+        for (int i = 0; i < count; i++)
+        {
+            ushort offset = header.SourceSubtableOffsets[i];
+            if (!children.TryGetValue(offset, out var childModel))
+            {
+                ReadStatus status = SinglePosView.TryOpen(_data.Slice(offset), out var child,
+                    out diagnostic, Location.AtLocal(DataField.None, offset));
+                if (status != ReadStatus.Done) return status;
+                status = child.TryRead(header.NumGlyphs, out childModel, out diagnostic, budget, state, offset);
+                if (status != ReadStatus.Done) return status;
+                if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                children.Add(offset, childModel!);
+            }
+            subtables[i] = childModel!;
+        }
+        model = header.WithDecodedPositions(subtables); diagnostic = default; return ReadStatus.Done;
     }
 
     private ReadStatus ReadHeader(int numGlyphs, LayoutLookupKind kind, bool materialize,

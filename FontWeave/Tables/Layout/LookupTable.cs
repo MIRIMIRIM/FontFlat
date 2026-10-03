@@ -6,14 +6,14 @@ public enum LayoutLookupKind : byte { Gsub, Gpos }
 public enum EffectiveMarkFilter : byte { None, AttachmentClass, MarkSet, IgnoreMarks }
 
 /// <summary>Ordered Lookup metadata and, when explicitly decoded, supported typed leaves.
-/// Null SingleSubstitutions means metadata-only; an empty typed collection is a valid no-op.</summary>
+/// Null typed children means metadata-only; an empty typed collection is a valid no-op.</summary>
 public sealed class LookupTable
 {
     private readonly ushort[] _sourceOffsets;
 
     internal LookupTable(LayoutLookupKind kind, int numGlyphs, ushort lookupType, ushort flags,
         ushort? markFilteringSet, ushort[] sourceOffsets, SingleSubstTable[]? singleSubstitutions,
-        DataLocation location)
+        DataLocation location, SinglePosTable[]? singlePositions = null)
     {
         Kind = kind;
         NumGlyphs = numGlyphs;
@@ -22,6 +22,7 @@ public sealed class LookupTable
         MarkFilteringSet = markFilteringSet;
         _sourceOffsets = sourceOffsets;
         SingleSubstitutions = singleSubstitutions is null ? null : Array.AsReadOnly(singleSubstitutions);
+        SinglePositions = singlePositions is null ? null : Array.AsReadOnly(singlePositions);
         Location = location;
     }
 
@@ -30,11 +31,12 @@ public sealed class LookupTable
     public ushort LookupType { get; }
     public ushort Flags { get; }
     public ushort? MarkFilteringSet { get; }
-    public int SubtableCount => SingleSubstitutions?.Count ?? _sourceOffsets.Length;
+    public int SubtableCount => SingleSubstitutions?.Count ?? SinglePositions?.Count ?? _sourceOffsets.Length;
     public DataLocation Location { get; }
     public DataLocation SourceLocation => Location;
     public ReadOnlySpan<ushort> SourceSubtableOffsets => _sourceOffsets;
     public IReadOnlyList<SingleSubstTable>? SingleSubstitutions { get; }
+    public IReadOnlyList<SinglePosTable>? SinglePositions { get; }
     public EffectiveMarkFilter EffectiveMarkFilter => (Flags & LookupLayout.IgnoreMarks) != 0
         ? EffectiveMarkFilter.IgnoreMarks : (Flags & LookupLayout.UseMarkFilteringSet) != 0
             ? EffectiveMarkFilter.MarkSet : (Flags & LookupLayout.AttachmentMask) != 0
@@ -86,6 +88,29 @@ public sealed class LookupTable
 
     internal LookupTable WithDecodedSubtables(SingleSubstTable[] subtables) =>
         new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, subtables, Location);
+
+    internal LookupTable WithDecodedPositions(SinglePosTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location, subtables);
+
+    internal static ReadStatus ValidateGposSource(DataLocation location, out FontDiagnostic diagnostic)
+    {
+        if (location.SourceId != 0 && location.TableTag != SinglePosLayout.Tag)
+            return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
+                location.AtLocal(DataField.None, 0), out diagnostic, location.TableTag, SinglePosLayout.Tag);
+        diagnostic = default; return ReadStatus.Done;
+    }
+
+    public ReadStatus TryWithSinglePositions(IReadOnlyList<SinglePosTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gpos || LookupType != 1)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreateSinglePos(NumGlyphs, subtables, Flags, MarkFilteringSet,
+            context, out updated, out diagnostic, limits, Location);
+    }
 
     public ReadStatus TryWithSingleSubstitutions(IReadOnlyList<SingleSubstTable> subtables,
         GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,

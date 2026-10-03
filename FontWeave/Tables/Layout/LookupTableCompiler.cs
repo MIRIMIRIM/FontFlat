@@ -54,7 +54,50 @@ public static class LookupTableCompiler
         return ReadStatus.Done;
     }
 
-    /// <summary>Encodes only explicitly decoded GSUB type-1 leaves. No opaque or Extension fallback.</summary>
+    public static ReadStatus TryCreateSinglePos(int numGlyphs, IReadOnlyList<SinglePosTable> subtables,
+        ushort flags, ushort? markFilteringSet, GdefLookupContext? context, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default) =>
+        TryCreateSinglePos(numGlyphs, subtables, flags, markFilteringSet, context,
+            out model, out diagnostic, new BuildBudget(limits), location);
+
+    internal static ReadStatus TryCreateSinglePos(int numGlyphs, IReadOnlyList<SinglePosTable> subtables,
+        ushort flags, ushort? markFilteringSet, GdefLookupContext? context, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget, DataLocation location = default)
+    {
+        ArgumentNullException.ThrowIfNull(subtables);
+        model = null;
+        ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = LookupTable.ValidateGposSource(location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int count = subtables.Count;
+        if (count is < 0 or > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, LookupLayout.CountAt), out diagnostic,
+                unchecked((ulong)(long)count), ushort.MaxValue);
+        if (!budget.Work(2L * count, location, out diagnostic) ||
+            !budget.Buffer(8L * count, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var copy = new SinglePosTable[count];
+        for (int i = 0; i < count; i++)
+        {
+            SinglePosTable? child = subtables[i];
+            if (child is null)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.AtLocal(DataField.Payload, 0, i), out diagnostic);
+            if (child.NumGlyphs != numGlyphs || child.Location.SourceId != location.SourceId || child.Location.FaceIndex != location.FaceIndex)
+                return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
+                    location.AtLocal(DataField.None, 0, i), out diagnostic);
+            status = LookupTable.ValidateGposSource(child.Location, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            copy[i] = child;
+        }
+        var candidate = new LookupTable(LayoutLookupKind.Gpos, numGlyphs, 1, flags, markFilteringSet, [], null, location, copy);
+        status = candidate.ValidateFlags(context, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        model = candidate; diagnostic = default; return ReadStatus.Done;
+    }
+
+    /// <summary>Encodes explicitly decoded GSUB/GPOS type-1 leaves. No opaque or Extension fallback.</summary>
     public static ReadStatus TryCompile(LookupTable model, GdefLookupContext? context, out byte[]? output,
         out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
         TryCompile(model, context, out output, out diagnostic, new BuildBudget(limits));
@@ -96,28 +139,47 @@ public static class LookupTableCompiler
         out Plan? plan, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         plan = null;
-        if (model.Kind != LayoutLookupKind.Gsub || model.LookupType != 1 || model.SingleSubstitutions is null)
+        bool substitution = model.Kind == LayoutLookupKind.Gsub && model.SingleSubstitutions is not null;
+        bool positioning = model.Kind == LayoutLookupKind.Gpos && model.SinglePositions is not null;
+        if (model.LookupType != 1 || (!substitution && !positioning))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, model.LookupType);
-        ReadStatus status = LookupTable.ValidateGsubSource(model.Location, out diagnostic);
+        ReadStatus status = substitution ? LookupTable.ValidateGsubSource(model.Location, out diagnostic)
+            : LookupTable.ValidateGposSource(model.Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = model.ValidateFlags(context, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
-        int sourceCount = model.SingleSubstitutions.Count;
+        int sourceCount = substitution ? model.SingleSubstitutions!.Count : model.SinglePositions!.Count;
         if (!budget.Work(sourceCount, model.Location, out diagnostic) ||
             !budget.Buffer(8L * sourceCount, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         byte[][][] groups = sourceCount == 0 ? [] : new byte[sourceCount][][];
         var children = new Dictionary<SingleSubstTable, byte[][]>(ReferenceEqualityComparer.Instance);
+        var positions = new Dictionary<SinglePosTable, byte[][]>(ReferenceEqualityComparer.Instance);
         int entryCount = 0;
         for (int i = 0; i < sourceCount; i++)
         {
-            SingleSubstTable child = model.SingleSubstitutions[i];
-            if (!children.TryGetValue(child, out byte[][]? group))
+            byte[][]? group;
+            if (substitution)
             {
-                status = SingleSubstTableCompiler.TryCompileSubtables(child, out group, out diagnostic, budget);
-                if (status != ReadStatus.Done) return status;
-                if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
-                children.Add(child, group!);
+                SingleSubstTable child = model.SingleSubstitutions![i];
+                if (!children.TryGetValue(child, out group))
+                {
+                    status = SingleSubstTableCompiler.TryCompileSubtables(child, out group, out diagnostic, budget);
+                    if (status != ReadStatus.Done) return status;
+                    if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                    children.Add(child, group!);
+                }
+            }
+            else
+            {
+                SinglePosTable child = model.SinglePositions![i];
+                if (!positions.TryGetValue(child, out group))
+                {
+                    status = SinglePosTableCompiler.TryCompileSubtables(child, out group, out diagnostic, budget);
+                    if (status != ReadStatus.Done) return status;
+                    if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                    positions.Add(child, group!);
+                }
             }
             groups[i] = group!;
             entryCount += group!.Length;
