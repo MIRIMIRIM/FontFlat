@@ -38,10 +38,10 @@ public static partial class LayoutListsTableCompiler
     }
 
     private static ReadStatus PlanLookups(ReadOnlySpan<LookupTable> input, GdefLookupContext? context,
-        out LookupPlan? plan, out FontDiagnostic diagnostic, BuildBudget budget)
+        out LookupPlan? plan, out FontDiagnostic diagnostic, BuildBudget budget, DataLocation sourceFallback = default)
     {
         plan = null;
-        DataLocation at = input.IsEmpty || input[0] is null ? default : input[0].Location;
+        DataLocation at = input.IsEmpty ? sourceFallback : input[0] is null ? default : input[0].Location;
         ReadStatus status = CheckCount(input.Length, at, 0, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!budget.Work(2L * input.Length + 1, at, out diagnostic) ||
@@ -133,11 +133,15 @@ public static partial class LayoutListsTableCompiler
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Offset, LayoutListsLayout.VariationsOffsetField),
                 out diagnostic, model.FeatureVariationsOffsetRaw, 0);
-        ReadStatus status = PlanScripts(model.Scripts, model.Features.Length, out var scripts, out diagnostic, budget);
+        ReadStatus status = model.Kind == LayoutLookupKind.Gsub
+            ? LookupTable.ValidateGsubSource(model.Location, out diagnostic)
+            : LookupTable.ValidateGposSource(model.Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = PlanFeatures(model.Features, model.Lookups.Length, out var features, out diagnostic, budget);
+        status = PlanScripts(model.Scripts, model.Features.Length, out var scripts, out diagnostic, budget, model.Location);
         if (status != ReadStatus.Done) return status;
-        status = PlanLookups(model.Lookups, context, out var lookups, out diagnostic, budget);
+        status = PlanFeatures(model.Features, model.Lookups.Length, out var features, out diagnostic, budget, model.Location);
+        if (status != ReadStatus.Done) return status;
+        status = PlanLookups(model.Lookups, context, out var lookups, out diagnostic, budget, model.Location);
         if (status != ReadStatus.Done) return status;
         long total = (long)scripts!.Length + features!.Length + lookups!.Length;
         if (!budget.Output(total, model.Location, out diagnostic) ||

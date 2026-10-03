@@ -50,10 +50,10 @@ public static partial class LayoutListsTableCompiler
     }
 
     private static ReadStatus PlanScripts(ReadOnlySpan<LayoutScript> input, int featureCount,
-        out ScriptPlan? plan, out FontDiagnostic diagnostic, BuildBudget budget)
+        out ScriptPlan? plan, out FontDiagnostic diagnostic, BuildBudget budget, DataLocation sourceFallback = default)
     {
         plan = null;
-        DataLocation at = input.IsEmpty || input[0] is null ? default : input[0].ListLocation;
+        DataLocation at = input.IsEmpty ? sourceFallback : input[0] is null ? default : input[0].ListLocation;
         ReadStatus status = CheckCount(input.Length, at, 0, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!budget.Work(input.Length, at, out diagnostic) ||
@@ -233,10 +233,10 @@ public static partial class LayoutListsTableCompiler
     }
 
     private static ReadStatus PlanFeatures(ReadOnlySpan<LayoutFeature> input, int lookupCount,
-        out FeaturePlan? plan, out FontDiagnostic diagnostic, BuildBudget budget)
+        out FeaturePlan? plan, out FontDiagnostic diagnostic, BuildBudget budget, DataLocation sourceFallback = default)
     {
         plan = null;
-        DataLocation at = input.IsEmpty || input[0] is null ? default : input[0].ListLocation;
+        DataLocation at = input.IsEmpty ? sourceFallback : input[0] is null ? default : input[0].ListLocation;
         ReadStatus status = CheckCount(input.Length, at, 0, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!budget.Work(2L * input.Length + 1, at, out diagnostic) ||
