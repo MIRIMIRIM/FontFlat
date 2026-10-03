@@ -1,0 +1,88 @@
+using FontWeave.Core;
+
+namespace FontWeave.Tables.Layout;
+
+public readonly ref partial struct GdefView
+{
+    /// <summary>Reads the two class-definition consumers, not the complete GDEF table.
+    /// Other header offsets are retained as raw values without traversing their targets.</summary>
+    public ReadStatus TryReadClasses(int numGlyphs, out GdefClassDefinitions? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        model = null;
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        return TryReadClasses(numGlyphs, out model, out diagnostic, budget);
+    }
+
+    internal ReadStatus TryReadClasses(int numGlyphs, out GdefClassDefinitions? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int headerLength = GdefLayout.Header10;
+        ushort markSetsOffset = 0;
+        uint variationStoreOffset = 0;
+        if (version >= GdefLayout.Version12)
+        {
+            status = TryReadMarkSetsHeaderAt(GdefLayout.MarkSetsAt, -1, out var header, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            markSetsOffset = header.MarkGlyphSetsDefOffset;
+            headerLength = GdefLayout.Header12;
+        }
+        if (version == GdefLayout.Version13)
+        {
+            status = TryReadVariationStoreHeaderAt(GdefLayout.VariationStoreAt, -1, out var header, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            variationStoreOffset = header.ItemVariationStoreOffset;
+            headerLength = GdefLayout.Header13;
+        }
+        if (!budget.Work(headerLength, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        status = ReadClasses(GlyphClassDefOffset, GdefLayout.GlyphClassesAt, headerLength,
+            numGlyphs, 4, out var glyphClasses, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        // The same ClassDef layout and glyph context is compatible in both roles.
+        // The stricter 0..4 check above entails the generic mark-attachment value limit.
+        ClassDefTable? markAttachmentClasses;
+        if (glyphClasses is not null && MarkAttachClassDefOffset == GlyphClassDefOffset)
+            markAttachmentClasses = glyphClasses;
+        else
+        {
+            status = ReadClasses(MarkAttachClassDefOffset, GdefLayout.MarkAttachmentClassesAt,
+                headerLength, numGlyphs, ushort.MaxValue, out markAttachmentClasses, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+        }
+        model = new((uint)version, numGlyphs, glyphClasses, markAttachmentClasses,
+            AttachListOffset, LigCaretListOffset, markSetsOffset, variationStoreOffset, Location);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus ReadClasses(ushort offset, int fieldPosition, int headerLength,
+        int numGlyphs, ushort classLimit, out ClassDefTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        if (offset == 0) { diagnostic = default; return ReadStatus.Done; }
+        if (offset >= _data.Length)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                Location.AtLocal(DataField.Offset, (ulong)fieldPosition), out diagnostic,
+                offset, (ulong)_data.Length);
+        if (offset < headerLength)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
+                Location.AtLocal(DataField.Offset, (ulong)fieldPosition), out diagnostic,
+                offset, (ulong)headerLength);
+        ReadStatus status = ClassDefView.TryOpen(_data.Slice(offset), out var child, out diagnostic,
+            Location.AtLocal(DataField.None, offset));
+        if (status != ReadStatus.Done) return status;
+        if (classLimit != ushort.MaxValue)
+        {
+            status = child.ValidateClassLimit(classLimit, budget, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
+        return child.TryRead(numGlyphs, out model, out diagnostic, budget);
+    }
+}
