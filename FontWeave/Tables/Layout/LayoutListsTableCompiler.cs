@@ -38,7 +38,9 @@ public static partial class LayoutListsTableCompiler
         out FontDiagnostic diagnostic, BuildBudget budget, DataLocation location = default)
     {
         model = null;
-        ReadStatus status = ValidateScript(tag, defaultLanguage, languages, featureCount, location, out diagnostic, budget);
+        ReadStatus status = CheckTagEncoding(tag, location.AtLocal(DataField.Tag, 0), out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = ValidateScript(tag, defaultLanguage, languages, featureCount, location, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         if (!budget.Work(languages.Length, location, out diagnostic) ||
             !budget.Buffer(16L * languages.Length, location, out diagnostic)) return ReadStatus.ResourceLimit;
@@ -57,7 +59,9 @@ public static partial class LayoutListsTableCompiler
         DataLocation location = default)
     {
         model = null;
-        ReadStatus status = CheckCount(lookupIndices.Length, location, LayoutFeatureLayout.CountOffset, out diagnostic);
+        ReadStatus status = CheckTagEncoding(tag, location.AtLocal(DataField.Tag, 0), out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = CheckCount(lookupIndices.Length, location, LayoutFeatureLayout.CountOffset, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = CheckCount(lookupCount, location, LayoutFeatureLayout.CountOffset, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -130,6 +134,20 @@ public static partial class LayoutListsTableCompiler
         diagnostic = default; return ReadStatus.Done;
     }
 
+    internal static ReadStatus CheckTagEncoding(uint tag, DataLocation tagLocation, out FontDiagnostic diagnostic)
+    {
+        bool padding = false;
+        for (int shift = 24; shift >= 0; shift -= 8)
+        {
+            uint value = (tag >> shift) & 0xFF;
+            if (value is < 0x20 or > 0x7E || shift == 24 && value == 0x20 || padding && value != 0x20)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    tagLocation, out diagnostic, tag);
+            padding |= value == 0x20;
+        }
+        diagnostic = default; return ReadStatus.Done;
+    }
+
     private static ReadStatus ValidateFeatureIndices(ushort required, ReadOnlySpan<ushort> indices,
         int count, DataLocation location, out FontDiagnostic diagnostic)
     {
@@ -191,10 +209,13 @@ public static partial class LayoutListsTableCompiler
         {
             var item = languages[i];
             if (item.Language is null) return InvalidModel(location, i, out diagnostic);
+            DataLocation tagAt = location.AtLocal(DataField.Tag, LayoutScriptLayout.HeaderLength +
+                (ulong)i * LayoutTagListLayout.RecordStride, i);
+            status = CheckTagEncoding(item.Tag, tagAt, out diagnostic);
+            if (status != ReadStatus.Done) return status;
             if (i > 0 && item.Tag <= previous)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    location.AtLocal(DataField.Tag, LayoutScriptLayout.HeaderLength +
-                        (ulong)i * LayoutTagListLayout.RecordStride, i), out diagnostic, item.Tag, previous);
+                    tagAt, out diagnostic, item.Tag, previous);
             previous = item.Tag;
             status = ValidateLanguage(item.Language, featureCount, location, out diagnostic, budget);
             if (status != ReadStatus.Done) return status;
@@ -217,6 +238,8 @@ public static partial class LayoutListsTableCompiler
             if (script is null) return InvalidModel(location, i, out diagnostic);
             if (!SameSource(location, script.Location))
                 return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace, script.Location, out diagnostic);
+            status = CheckTagEncoding(script.Tag, script.RecordLocation, out diagnostic);
+            if (status != ReadStatus.Done) return status;
             if (i > 0 && script.Tag <= previous)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     script.RecordLocation, out diagnostic, script.Tag, previous);
@@ -243,6 +266,8 @@ public static partial class LayoutListsTableCompiler
             if (feature is null) return InvalidModel(location, i, out diagnostic);
             if (!SameSource(location, feature.Location))
                 return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace, feature.Location, out diagnostic);
+            status = CheckTagEncoding(feature.Tag, feature.RecordLocation, out diagnostic);
+            if (status != ReadStatus.Done) return status;
             if (i > 0 && feature.Tag < previous)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     feature.RecordLocation, out diagnostic, feature.Tag, previous);

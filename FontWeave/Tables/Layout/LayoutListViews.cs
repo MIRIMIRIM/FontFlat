@@ -68,6 +68,9 @@ public readonly ref partial struct LayoutTagListView
             status = TryGetTagRecord(i, out var record, out diagnostic);
             if (status != ReadStatus.Done) return status;
             int at = LayoutTagListLayout.HeaderLength + i * LayoutTagListLayout.RecordStride;
+            status = LayoutListsTableCompiler.CheckTagEncoding(record.Tag,
+                Location.AtLocal(DataField.Tag, (ulong)at, i), out diagnostic);
+            if (status != ReadStatus.Done) return status;
             if (i > 0 && record.Tag <= previous)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     Location.AtLocal(DataField.Tag, (ulong)at, i), out diagnostic, record.Tag, previous);
@@ -110,6 +113,9 @@ public readonly ref partial struct LayoutTagListView
             status = TryGetTagRecord(i, out var record, out diagnostic);
             if (status != ReadStatus.Done) return status;
             int at = LayoutTagListLayout.HeaderLength + i * LayoutTagListLayout.RecordStride;
+            status = LayoutListsTableCompiler.CheckTagEncoding(record.Tag,
+                Location.AtLocal(DataField.Tag, (ulong)at, i), out diagnostic);
+            if (status != ReadStatus.Done) return status;
             if (i > 0 && record.Tag < previous)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     Location.AtLocal(DataField.Tag, (ulong)at, i), out diagnostic, record.Tag, previous);

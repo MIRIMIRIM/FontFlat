@@ -174,6 +174,9 @@ public readonly ref partial struct LayoutScriptView
             status = TryGetLanguageRecord(i, out var row, out diagnostic);
             if (status != ReadStatus.Done) return status;
             int at = LayoutScriptLayout.HeaderLength + i * LayoutTagListLayout.RecordStride;
+            status = LayoutListsTableCompiler.CheckTagEncoding(row.Tag,
+                Location.AtLocal(DataField.Tag, (ulong)at, i), out diagnostic);
+            if (status != ReadStatus.Done) return status;
             if (i > 0 && row.Tag <= previous)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     Location.AtLocal(DataField.Tag, (ulong)at, i), out diagnostic, row.Tag, previous);
