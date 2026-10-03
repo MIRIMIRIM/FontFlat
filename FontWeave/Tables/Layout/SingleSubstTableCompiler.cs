@@ -1,0 +1,245 @@
+using FontWeave.Core;
+
+namespace FontWeave.Tables.Layout;
+
+public static class SingleSubstTableCompiler
+{
+    private readonly record struct PartPlan(int Start, int Count, ushort Format, ushort CoverageFormat,
+        int CoverageRangeCount, int Length);
+
+    public static ReadStatus TryCreate(ReadOnlySpan<ushort> glyphs, ReadOnlySpan<ushort> substitutes,
+        int numGlyphs, ushort format, out SingleSubstTable? model, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null, DataLocation location = default, ushort coverageFormat = 1) =>
+        TryCreate(glyphs, substitutes, numGlyphs, format, out model, out diagnostic,
+            new BuildBudget(limits), location, coverageFormat);
+
+    internal static ReadStatus TryCreate(ReadOnlySpan<ushort> glyphs, ReadOnlySpan<ushort> substitutes,
+        int numGlyphs, ushort format, out SingleSubstTable? model, out FontDiagnostic diagnostic,
+        BuildBudget budget, DataLocation location = default, ushort coverageFormat = 1)
+    {
+        model = null;
+        ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (format is not (1 or 2))
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+                location.AtLocal(DataField.Version, 0), out diagnostic, format);
+        if (glyphs.Length != substitutes.Length)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, SingleSubstLayout.BodyOffset),
+                out diagnostic, (ulong)substitutes.Length, (ulong)glyphs.Length);
+        if (glyphs.Length > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, SingleSubstLayout.BodyOffset),
+                out diagnostic, (ulong)glyphs.Length, ushort.MaxValue);
+        // Replacement validation/copy, plus the requested format-1 uniform-delta check.
+        if (!budget.Work((format == 1 ? 3L : 2L) * substitutes.Length, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        for (int i = 0; i < substitutes.Length; i++)
+            if (substitutes[i] >= numGlyphs)
+                return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                    location.AtLocal(DataField.GlyphId, SingleSubstLayout.HeaderLength +
+                        (ulong)i * SingleSubstLayout.SubstituteStride, i),
+                    out diagnostic, substitutes[i], (ulong)numGlyphs);
+        if (format == 1 && !HasUniformDelta(glyphs, substitutes, out _))
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                location.AtLocal(DataField.Payload, SingleSubstLayout.BodyOffset), out diagnostic, format, 2);
+        int coverageAt = SingleSubstLayout.HeaderLength + (format == 2 ? SingleSubstLayout.SubstituteStride * glyphs.Length : 0);
+        status = CoverageTableCompiler.TryCreate(glyphs, numGlyphs, coverageFormat, out var coverage,
+            out diagnostic, budget, location.AtLocal(DataField.None, (ulong)coverageAt));
+        if (status != ReadStatus.Done) return status;
+        if (!budget.Buffer(2L * substitutes.Length, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        model = new(coverage!, substitutes.ToArray(), format, location, coverageAt + CoverageTableCompiler.Measure(coverage!));
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Compiles one subtable. Use TryCompileSubtables for internally oversized format-2 rows.</summary>
+    public static ReadStatus TryCompile(SingleSubstTable model, out byte[]? output,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        TryCompile(model, out output, out diagnostic, new BuildBudget(limits));
+
+    internal static ReadStatus TryCompile(SingleSubstTable model, out byte[]? output,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        output = null;
+        if (!budget.Work(model.Glyphs.Length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ReadStatus status = PlanSingle(model, out var plan, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (!budget.Work(EmissionWork(plan), model.Location, out diagnostic) ||
+            !budget.Output(plan.Length, model.Location, out diagnostic) ||
+            !budget.Buffer(plan.Length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        byte[] bytes = new byte[plan.Length];
+        WritePart(model, plan, bytes);
+        budget.RecordCompiledTable(bytes.Length);
+        output = bytes;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    public static ReadStatus TryWrite(SingleSubstTable model, Span<byte> destination,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        var budget = new BuildBudget(limits);
+        if (!budget.Work(model.Glyphs.Length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ReadStatus status = PlanSingle(model, out var plan, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (destination.Length < plan.Length)
+            return ReadWire.Fail(ReadStatus.DestinationTooSmall, DiagnosticCode.DestinationTooSmall,
+                model.Location.AtLocal(DataField.OutputBytes, 0), out diagnostic,
+                (ulong)destination.Length, (ulong)plan.Length);
+        if (!budget.Work(EmissionWork(plan), model.Location, out diagnostic) ||
+            !budget.Output(plan.Length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        WritePart(model, plan, destination);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Deterministic, key-disjoint subtable splitting without Extension wrappers.</summary>
+    public static ReadStatus TryCompileSubtables(SingleSubstTable model, out byte[][]? output,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        TryCompileSubtables(model, out output, out diagnostic, new BuildBudget(limits));
+
+    internal static ReadStatus TryCompileSubtables(SingleSubstTable model, out byte[][]? output,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        output = null;
+        int count = model.Glyphs.Length;
+        if (!budget.Work(32L * count + 1, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        int partCount = model.Format == 1 || count <= SingleSubstLayout.MaximumFormat2Rows ||
+            HasUniformDelta(model.Glyphs, model.Substitutes, out _) ? 1 :
+            (count + SingleSubstLayout.MaximumFormat2Rows - 1) / SingleSubstLayout.MaximumFormat2Rows;
+        if (!budget.Buffer(20L * partCount, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var plans = new PartPlan[partCount];
+        if (partCount == 1)
+        {
+            ReadStatus status = PlanSingle(model, out plans[0], out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
+        else if (partCount == 2)
+        {
+            int minimumFirst = count - SingleSubstLayout.MaximumFormat2Rows;
+            int lo = minimumFirst, hi = count / 2, first = minimumFirst;
+            // Prefix wire length is monotone. At most 16 probes for the UInt16 GID domain.
+            while (lo <= hi)
+            {
+                int mid = lo + (hi - lo) / 2;
+                PartPlan candidate = PlanSplit(model, 0, mid);
+                if (candidate.Length <= SingleSubstLayout.MaximumFirstSplitLength)
+                {
+                    first = mid;
+                    lo = mid + 1;
+                }
+                else hi = mid - 1;
+            }
+            plans[0] = PlanSplit(model, 0, first);
+            plans[1] = PlanSplit(model, first, count - first);
+            if (plans[0].Length > SingleSubstLayout.MaximumFirstSplitLength)
+                return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                    model.Location.AtLocal(DataField.Offset, SingleSubstLayout.CoverageOffsetField),
+                    out diagnostic, (ulong)plans[0].Length, SingleSubstLayout.MaximumFirstSplitLength);
+        }
+        else
+        {
+            int at = 0;
+            for (int i = 0; i < partCount; i++)
+            {
+                int rows = (count - at) / (partCount - i);
+                plans[i] = PlanSplit(model, at, rows);
+                at += rows;
+            }
+        }
+        int total = 0;
+        long emissionWork = 0;
+        foreach (var plan in plans)
+        {
+            total += plan.Length;
+            emissionWork += EmissionWork(plan);
+        }
+        if (!budget.Work(emissionWork, model.Location, out diagnostic) ||
+            !budget.Output(total, model.Location, out diagnostic) ||
+            !budget.Buffer(total + 8L * partCount, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var bytes = new byte[partCount][];
+        for (int i = 0; i < partCount; i++)
+        {
+            bytes[i] = new byte[plans[i].Length];
+            WritePart(model, plans[i], bytes[i]);
+            budget.RecordCompiledTable(bytes[i].Length);
+        }
+        output = bytes;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus PlanSingle(SingleSubstTable model, out PartPlan plan, out FontDiagnostic diagnostic)
+    {
+        plan = default;
+        ushort format = model.Format;
+        if (format == 2 && model.Glyphs.Length > SingleSubstLayout.MaximumFormat2Rows)
+        {
+            if (!HasUniformDelta(model.Glyphs, model.Substitutes, out _))
+                return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                    model.Location.AtLocal(DataField.Offset, SingleSubstLayout.CoverageOffsetField),
+                    out diagnostic, (ulong)(SingleSubstLayout.HeaderLength +
+                        SingleSubstLayout.SubstituteStride * model.Glyphs.Length), ushort.MaxValue);
+            format = 1;
+        }
+        int bodyEnd = SingleSubstLayout.HeaderLength + (format == 2 ? SingleSubstLayout.SubstituteStride * model.Glyphs.Length : 0);
+        plan = new(0, model.Glyphs.Length, format, model.Coverage.Format, model.Coverage.RangeCount,
+            bodyEnd + CoverageTableCompiler.Measure(model.Coverage));
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static PartPlan PlanSplit(SingleSubstTable model, int start, int count)
+    {
+        ReadOnlySpan<ushort> glyphs = model.Glyphs.Slice(start, count);
+        int rangeCount = CoverageTableCompiler.CountRanges(glyphs);
+        ushort coverageFormat = CoverageLayout.RangeStride * rangeCount < CoverageLayout.GlyphStride * count
+            ? (ushort)2 : (ushort)1;
+        int bodyEnd = SingleSubstLayout.HeaderLength + SingleSubstLayout.SubstituteStride * count;
+        int coverageLength = CoverageLayout.HeaderLength + (coverageFormat == 1
+            ? CoverageLayout.GlyphStride * count : CoverageLayout.RangeStride * rangeCount);
+        return new(start, count, 2, coverageFormat, rangeCount, bodyEnd + coverageLength);
+    }
+
+    private static void WritePart(SingleSubstTable model, PartPlan plan, Span<byte> destination)
+    {
+        ReadOnlySpan<ushort> glyphs = model.Glyphs.Slice(plan.Start, plan.Count);
+        ReadOnlySpan<ushort> substitutes = model.Substitutes.Slice(plan.Start, plan.Count);
+        int coverageAt = SingleSubstLayout.HeaderLength + (plan.Format == 2 ? SingleSubstLayout.SubstituteStride * plan.Count : 0);
+        CoverageTableCompiler.RequireWritten(SingleSubstView.TryWriteFormat(destination, plan.Format, out _, model.Location));
+        CoverageTableCompiler.RequireWritten(SingleSubstView.TryWriteCoverageOffset(destination,
+            (ushort)coverageAt, out _, model.Location));
+        if (plan.Format == 1)
+        {
+            // The model or PlanSingle has already established the uniform-delta invariant.
+            short delta = glyphs.IsEmpty ? (short)0 : unchecked((short)(substitutes[0] - glyphs[0]));
+            CoverageTableCompiler.RequireWritten(SingleSubstView.TryWriteDeltaRecordAt(destination,
+                SingleSubstLayout.BodyOffset, new SingleSubstView.DeltaRecordData(-1, delta), out _, model.Location));
+        }
+        else
+        {
+            CoverageTableCompiler.RequireWritten(SingleSubstView.TryWriteSubstituteHeaderAt(destination,
+                SingleSubstLayout.BodyOffset, new SingleSubstView.SubstituteHeaderData(-1, (ushort)plan.Count), out _, model.Location));
+            for (int i = 0; i < substitutes.Length; i++)
+                CoverageTableCompiler.RequireWritten(SingleSubstView.TryWriteSubstituteRecordAt(destination,
+                    SingleSubstLayout.HeaderLength + (ulong)i * SingleSubstLayout.SubstituteStride,
+                    new SingleSubstView.SubstituteRecordData(i, substitutes[i]), out _, model.Location));
+        }
+        CoverageTableCompiler.WritePlanned(glyphs, plan.CoverageFormat, plan.CoverageRangeCount, destination.Slice(coverageAt),
+            model.Location.AtLocal(DataField.None, (ulong)coverageAt));
+    }
+
+    private static long EmissionWork(PartPlan plan) => plan.Length +
+        (plan.CoverageFormat == 2 ? (long)plan.Count : 0);
+
+    private static bool HasUniformDelta(ReadOnlySpan<ushort> glyphs, ReadOnlySpan<ushort> substitutes, out short delta)
+    {
+        delta = glyphs.IsEmpty ? (short)0 : unchecked((short)(substitutes[0] - glyphs[0]));
+        for (int i = 1; i < glyphs.Length; i++)
+            if (unchecked((ushort)(glyphs[i] + delta)) != substitutes[i]) return false;
+        return true;
+    }
+}
