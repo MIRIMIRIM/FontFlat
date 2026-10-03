@@ -6,16 +6,16 @@ public readonly ref partial struct CmapFormat2View
 {
     /// <summary>Derived subHeader count: max(subHeaderKeys)/8 + 1, 1 when all keys are 0.
     /// Best effort before Validate: keys beyond the bound bytes are ignored, so the exact
-    /// structure is only guaranteed once Validate passed.</summary>
+    /// structure is only guaranteed once Validate passed. Unsupported formats have no
+    /// readable keys and return 1.</summary>
     public int SubHeaderCount
     {
         get
         {
             uint maxKey = 0;
-            for (int i = 0; i < CmapFormat2Layout.KeyCount &&
-                CmapFormat2Layout.HeaderLength + 2 * i + 2 <= _data.Length; i++)
+            for (int i = 0; i < CmapFormat2Layout.KeyCount; i++)
             {
-                uint key = ReadWire.U16(_data, CmapFormat2Layout.HeaderLength + 2 * i);
+                if (TryGetSubHeaderKey(i, out ushort key, out _) != ReadStatus.Done) break;
                 if (key > maxKey) maxKey = key;
             }
             return (int)(maxKey / 8) + 1;

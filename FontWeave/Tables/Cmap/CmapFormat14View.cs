@@ -58,7 +58,11 @@ public readonly ref partial struct CmapFormat14View
         ulong position = tablePosition + 4 + CmapFormat14Layout.DefaultRangeStride * (ulong)(uint)rangeOrdinal;
         status = TryReadU24At(position, out startUnicodeValue, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        return TryReadU8At(position + 3, out additionalCount, out diagnostic);
+        // Preserve the local field diagnostic's unspecified record ordinal.
+        status = TryReadDefaultRangeAt(position, -1, out var range, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        additionalCount = range.AdditionalCount;
+        return ReadStatus.Done;
     }
 
     /// <summary>Bounded row count of the non-default-UVS table referenced by one record;
@@ -94,7 +98,11 @@ public readonly ref partial struct CmapFormat14View
         ulong position = tablePosition + 4 + CmapFormat14Layout.UvsMappingStride * (ulong)(uint)mappingOrdinal;
         status = TryReadU24At(position, out unicodeValue, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        return TryReadU16At(position + 3, out glyphId, out diagnostic);
+        // Preserve the local field diagnostic's unspecified record ordinal.
+        status = TryReadUvsMappingAt(position, -1, out var mapping, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        glyphId = mapping.GlyphId;
+        return ReadStatus.Done;
     }
 
     /// <summary>Strict format 14 validation: exact length, offset bounds, selector ordering and
@@ -343,32 +351,6 @@ public readonly ref partial struct CmapFormat14View
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
                 Location.At(DataField.CharCode, position), out diagnostic, (ulong)_data.Length, position + 3);
         value = ((uint)bytes[0] << 16) | ((uint)bytes[1] << 8) | bytes[2];
-        diagnostic = default;
-        return ReadStatus.Done;
-    }
-
-    private ReadStatus TryReadU16At(ulong position, out ushort value, out FontDiagnostic diagnostic)
-    {
-        value = 0;
-        if (!IsBound)
-            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
-        if (!TrySlice(_data, position, 2, out _))
-            return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.GlyphId, position), out diagnostic, (ulong)_data.Length, position + 2);
-        value = ReadWire.U16(_data, (int)position);
-        diagnostic = default;
-        return ReadStatus.Done;
-    }
-
-    private ReadStatus TryReadU8At(ulong position, out byte value, out FontDiagnostic diagnostic)
-    {
-        value = 0;
-        if (!IsBound)
-            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
-        if (position >= (ulong)_data.Length)
-            return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.At(DataField.Count, position), out diagnostic, (ulong)_data.Length, position + 1);
-        value = _data[(int)position];
         diagnostic = default;
         return ReadStatus.Done;
     }
