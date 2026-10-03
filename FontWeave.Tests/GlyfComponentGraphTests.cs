@@ -18,18 +18,39 @@ public sealed class GlyfComponentGraphTests
     /// reset by the memoized early return.
     /// </summary>
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void ChainDeeperThanTheBudgetIsRefusedInEitherNumbering(bool ascending)
+    [InlineData(80, true)]
+    [InlineData(80, false)]
+    [InlineData(30000, true)]
+    [InlineData(30000, false)]
+    public void ChainDeeperThanTheBudgetIsRefusedInEitherNumbering(int length, bool ascending)
     {
-        const int length = 80;
         var (locaBytes, glyfBytes, numGlyphs) = GlyfImages.DepthChain(length, ascending);
         var loca = GlyfImages.LocaOrThrow(locaBytes, numGlyphs);
         _ = GlyfView.TryOpen(glyfBytes, out var view, out _, GlyfImages.GlyfLocation);
 
         var status = view.TryReadComposites(loca, out var model, out var diagnostic);
-        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(ReadStatus.ResourceLimit, status);
         Assert.Equal(DiagnosticCode.BudgetExceeded, diagnostic.Code);
+        Assert.Null(model);
+    }
+
+    /// <summary>A long cycle must produce a structural diagnostic, never exhaust the
+    /// process stack. Unlike an acyclic chain, it has no resolved depth.</summary>
+    [Fact]
+    public void LongCycleIsDiagnosedWithoutRecursion()
+    {
+        const int count = 30000;
+        var records = new List<byte[]>(count);
+        for (int gid = 0; gid < count; gid++)
+            records.Add(GlyfImages.CompositeRecord((ushort)((gid + 1) % count)));
+        var (locaBytes, glyfBytes, numGlyphs) = GlyfImages.Assemble(records);
+        var loca = GlyfImages.LocaOrThrow(locaBytes, numGlyphs);
+        _ = GlyfView.TryOpen(glyfBytes, out var view, out _, GlyfImages.GlyfLocation);
+
+        var status = view.TryReadComposites(loca, out var model, out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+        Assert.Equal(GlyfImages.GlyfLocation.SourceId, diagnostic.Location.SourceId);
         Assert.Null(model);
     }
 

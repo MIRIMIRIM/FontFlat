@@ -265,8 +265,9 @@ public static class GlyfTableCompiler
             }
             var candidate = new GlyfTable(checkedGlyphs, glyfImage, model.Location,
                 model.LocaLocation);
-            if (new ComponentGraphBuilder(candidate).Build(out diagnostic) is null)
-                return ReadStatus.InvalidFormat;
+            ReadStatus graphStatus = new ComponentGraphBuilder(candidate)
+                .TryBuild(out _, out diagnostic, budget);
+            if (graphStatus != ReadStatus.Done) return graphStatus;
         }
         glyf = glyfImage;
         locaOffsets = offsets;

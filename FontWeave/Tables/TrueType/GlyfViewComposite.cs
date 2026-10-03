@@ -215,8 +215,7 @@ public readonly ref partial struct GlyfView
         if (status != ReadStatus.Done) return status;
         status = TryReadComposites(loca, out var model, out diagnostic, Budget(), strict);
         if (status != ReadStatus.Done) return status;
-        var graph = new ComponentGraphBuilder(model!).Build(out diagnostic);
-        if (graph is null) return ReadStatus.InvalidFormat;
+        // TryReadComposites already verifies the graph before publishing the model.
         summary = model!.Summarize();
         diagnostic = default;
         return ReadStatus.Done;
@@ -244,9 +243,10 @@ public readonly ref partial struct GlyfView
         // wire length (a REPEAT flag run describes many points in a few bytes).
         if (!budget.Work(_data.Length, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
-        var glyphs = new GlyfGlyph?[loca.NumGlyphs];
-        if (!budget.Buffer(8L * loca.NumGlyphs, Location, out diagnostic))
+        if (!budget.Buffer((long)IntPtr.Size * loca.NumGlyphs, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
+        var glyphs = new GlyfGlyph?[loca.NumGlyphs];
+        int componentEdges = 0;
         for (int gid = 0; gid < glyphs.Length; gid++)
         {
             status = loca.TryGetGlyphRange(gid, out var range, out diagnostic);
@@ -254,13 +254,22 @@ public readonly ref partial struct GlyfView
             status = TryDecodeGlyph(range, out var glyph, out diagnostic, strict,
                 loca.NumGlyphs, budget);
             if (status != ReadStatus.Done) return status;
+            // Enforce the graph-wide edge cap while decoding, rather than first
+            // materializing every composite of an already over-budget image.
+            componentEdges += glyph?.Composite?.ComponentCount ?? 0;
+            if (componentEdges > GlyfLayout.MaxComponentEdgesBudget)
+                return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
+                    Location.At(DataField.GlyphId, 0, gid), out diagnostic,
+                    (ulong)componentEdges, GlyfLayout.MaxComponentEdgesBudget);
             glyphs[gid] = glyph;
         }
+        if (!budget.Buffer(_data.Length, Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
         var candidate = new GlyfTable(glyphs, _data.ToArray(), Location, loca.Location);
         // The graph is verified before the model is handed to the caller, so a cyclic or
         // over-budget hierarchy can never be observed as a usable result.
-        if (new ComponentGraphBuilder(candidate).Build(out diagnostic) is null)
-            return ReadStatus.InvalidFormat;
+        status = new ComponentGraphBuilder(candidate).TryBuild(out _, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
         model = candidate;
         diagnostic = default;
         return ReadStatus.Done;
@@ -271,8 +280,7 @@ public readonly ref partial struct GlyfView
         out FontDiagnostic diagnostic)
     {
         ArgumentNullException.ThrowIfNull(model);
-        graph = new ComponentGraphBuilder(model).Build(out diagnostic);
-        return graph is null ? ReadStatus.InvalidFormat : ReadStatus.Done;
+        return new ComponentGraphBuilder(model).TryBuild(out graph, out diagnostic);
     }
 
     private static BuildBudget Budget() => new();
@@ -286,46 +294,91 @@ internal sealed class ComponentGraphBuilder
 
     internal ComponentGraphBuilder(GlyfTable model) => _model = model;
 
-    internal ComponentGraph? Build(out FontDiagnostic diagnostic)
+    internal ReadStatus TryBuild(out ComponentGraph? graph, out FontDiagnostic diagnostic,
+        BuildBudget? budget = null)
     {
+        graph = null;
         diagnostic = default;
+        budget ??= new();
         int count = _model.NumGlyphs;
-        var children = new int[count][];
+        if (!budget.Work(count, _model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
         int edges = 0;
+        // Admit the whole adjacency payload before allocating any graph arrays.
         for (int gid = 0; gid < count; gid++)
         {
             _ = _model.TryGetGlyph(gid, out var glyph, out _);
             if (glyph?.Composite is { } composite)
             {
-                var list = new int[composite.ComponentCount];
-                for (int i = 0; i < list.Length; i++)
-                {
-                    int child = composite[i].GlyphIndex;
-                    if (child >= count)
-                        return Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                            gid, out diagnostic, (ulong)child, (ulong)count);
-                    list[i] = child;
-                }
-                children[gid] = list;
-                edges += list.Length;
+                edges += composite.ComponentCount;
                 if (edges > GlyfLayout.MaxComponentEdgesBudget)
                     return Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
                         gid, out diagnostic, (ulong)edges,
                         GlyfLayout.MaxComponentEdgesBudget);
             }
-            else children[gid] = [];
         }
-        // Depth-first verification: a back edge is a cycle. Depth is computed post-order, so
-        // the result does not depend on the order glyphs happen to be visited in, and the
-        // budget is checked against that computed depth rather than against a DFS path
-        // counter (a path counter can be reset by the memoized `state == 2` early return,
-        // which made the limit depend on how the glyphs were numbered).
+        // References, adjacency entries, state, depth, two DFS-frame fields and visited.
+        long temporary = ((long)IntPtr.Size + 14) * count + 4L * edges;
+        if (!budget.Work(2L * count + 3L * edges, _model.Location, out diagnostic) ||
+            !budget.Buffer(temporary, _model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var children = new int[count][];
+        for (int gid = 0; gid < count; gid++)
+        {
+            _ = _model.TryGetGlyph(gid, out var glyph, out _);
+            int componentCount = glyph?.Composite?.ComponentCount ?? 0;
+            var list = componentCount == 0 ? Array.Empty<int>() : new int[componentCount];
+            for (int i = 0; i < list.Length; i++)
+            {
+                int child = glyph!.Composite![i].GlyphIndex;
+                if (child >= count)
+                    return Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                        gid, out diagnostic, (ulong)child, (ulong)count);
+                list[i] = child;
+            }
+            children[gid] = list;
+        }
+        // Iterative post-order DFS preserves memoized subtree depths without using the
+        // process stack. A bounded input can still have tens of thousands of levels;
+        // checking its resolved depth after a recursive walk would be too late.
         var state = new byte[count];
         var depth = new int[count];
+        var stack = new int[count];
+        var nextChild = new int[count];
         for (int gid = 0; gid < count; gid++)
         {
             if (state[gid] != 0) continue;
-            if (!Visit(gid, children, state, depth, out diagnostic)) return null;
+            int top = 0;
+            stack[top] = gid;
+            nextChild[top] = 0;
+            state[gid] = 1;
+            while (top >= 0)
+            {
+                int current = stack[top];
+                if (nextChild[top] == children[current].Length)
+                {
+                    state[current] = 2;
+                    top--;
+                    if (top >= 0)
+                    {
+                        int parent = stack[top];
+                        depth[parent] = Math.Max(depth[parent], depth[current] + 1);
+                    }
+                    continue;
+                }
+                int child = children[current][nextChild[top]++];
+                if (state[child] == 1)
+                    return Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                        child, out diagnostic, (ulong)child);
+                if (state[child] == 2)
+                {
+                    depth[current] = Math.Max(depth[current], depth[child] + 1);
+                    continue;
+                }
+                state[child] = 1;
+                stack[++top] = child;
+                nextChild[top] = 0;
+            }
         }
         int maxDepth = 0;
         for (int gid = 0; gid < count; gid++) maxDepth = Math.Max(maxDepth, depth[gid]);
@@ -335,45 +388,17 @@ internal sealed class ComponentGraphBuilder
             return Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded, offender,
                 out diagnostic, (ulong)maxDepth, GlyfLayout.MaxComponentDepthBudget);
         }
-        return new(children, depth, [.. state.Select(s => s != 0)], edges, maxDepth);
+        var visited = new bool[count];
+        Array.Fill(visited, true);
+        graph = new(children, depth, visited, edges, maxDepth);
+        return ReadStatus.Done;
     }
 
-    private static bool Visit(int gid, int[][] children, byte[] state, int[] depth,
-        out FontDiagnostic diagnostic)
-    {
-        diagnostic = default;
-        if (state[gid] == 1)
-        {
-            // The glyph is on the current DFS path, so this edge closes a cycle.
-            diagnostic = new(DiagnosticCode.InvalidValue,
-                DataLocation.Anonymous(GlyfLayout.Tag).At(DataField.GlyphId, 0, gid),
-                (ulong)gid, 0);
-            return false;
-        }
-        if (state[gid] == 2) return true;
-        state[gid] = 1;
-        // Depth follows the maxp definition: a glyph with no components has depth 0, and a
-        // composite is one level deeper than its deepest component.
-        depth[gid] = 0;
-        foreach (int child in children[gid])
-        {
-            if (!Visit(child, children, state, depth, out diagnostic))
-            {
-                state[gid] = 0;
-                return false;
-            }
-            depth[gid] = Math.Max(depth[gid], depth[child] + 1);
-        }
-        state[gid] = 2;
-        return true;
-    }
-
-    private static ComponentGraph? Fail(ReadStatus status, DiagnosticCode code, int gid,
+    private ReadStatus Fail(ReadStatus status, DiagnosticCode code, int gid,
         out FontDiagnostic diagnostic, ulong detail = 0, ulong expected = 0)
     {
-        _ = status;
-        diagnostic = new(code, DataLocation.Anonymous(GlyfLayout.Tag)
+        diagnostic = new(code, _model.Location
             .At(DataField.GlyphId, 0, gid), detail, expected);
-        return null;
+        return status;
     }
 }
