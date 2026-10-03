@@ -60,15 +60,60 @@ public readonly ref partial struct SingleSubstView
 
     internal ReadStatus TryRead(int numGlyphs, out SingleSubstTable? model,
         out FontDiagnostic diagnostic, BuildBudget budget)
+        => ReadOwned(numGlyphs, out model, out diagnostic, budget, null, 0, default);
+
+    // Cache scope is one Lookup span/source/glyph context. The key is a physical
+    // Lookup-local target, never a diagnostic coordinate or a global address.
+    internal ReadStatus TryRead(int numGlyphs, out SingleSubstTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget, Dictionary<int, CoverageTable> coverageCache,
+        int subtableStart, DataLocation lookupLocation)
+        => ReadOwned(numGlyphs, out model, out diagnostic, budget, coverageCache, subtableStart, lookupLocation);
+
+    private ReadStatus ReadOwned(int numGlyphs, out SingleSubstTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget, Dictionary<int, CoverageTable>? coverageCache,
+        int subtableStart, DataLocation lookupLocation)
     {
         model = null;
+        int coverageTarget = 0;
+        CoverageTable? coverageModel = null;
+        DataLocation? coverageOrigin = null;
+        if (coverageCache is not null)
+        {
+            ReadStatus offsetStatus = TryGetCoverageOffset(out ushort offset, out diagnostic);
+            if (offsetStatus != ReadStatus.Done) return offsetStatus;
+            if (subtableStart < 0 || subtableStart > int.MaxValue - _data.Length)
+                return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                    Location.AtLocal(DataField.Offset, SingleSubstLayout.CoverageOffsetField), out diagnostic,
+                    unchecked((ulong)(long)subtableStart), (ulong)(int.MaxValue - _data.Length));
+            // Invalid offsets retain Inspect's normal field/format diagnostic precedence.
+            // A valid suffix-local target also bounds this physical-parent addition.
+            if (offset < _data.Length)
+            {
+                coverageTarget = subtableStart + offset;
+                coverageOrigin = lookupLocation.AtLocal(DataField.None, (ulong)coverageTarget);
+                if (!budget.Work(1, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                coverageCache.TryGetValue(coverageTarget, out coverageModel);
+                if (coverageModel is not null &&
+                    (coverageModel.NumGlyphs != numGlyphs || coverageModel.Location != coverageOrigin.Value))
+                    return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
+                        coverageOrigin.Value, out diagnostic);
+            }
+        }
         ReadStatus status = Inspect(numGlyphs, out var coverage, out int count, out int consumed,
-            out diagnostic, budget);
+            out diagnostic, budget, coverageModel, coverageOrigin);
         if (status != ReadStatus.Done) return status;
         if (!budget.Work(count, Location, out diagnostic) ||
             !budget.Buffer(2L * count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        status = coverage.TryRead(numGlyphs, out var coverageModel, out diagnostic, budget);
-        if (status != ReadStatus.Done) return status;
+        if (coverageModel is null)
+        {
+            status = coverage.TryRead(numGlyphs, out coverageModel, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+            if (coverageCache is not null)
+            {
+                if (!budget.Buffer(16, coverageModel!.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                coverageCache.Add(coverageTarget, coverageModel!);
+            }
+        }
         var substitutes = new ushort[count];
         if (Format == 1)
         {
@@ -85,7 +130,8 @@ public readonly ref partial struct SingleSubstView
     }
 
     private ReadStatus Inspect(int numGlyphs, out CoverageView coverage, out int count, out int consumed,
-        out FontDiagnostic diagnostic, BuildBudget budget)
+        out FontDiagnostic diagnostic, BuildBudget budget, CoverageTable? cachedCoverage = null,
+        DataLocation? coverageOrigin = null)
     {
         coverage = default;
         count = consumed = 0;
@@ -129,11 +175,20 @@ public readonly ref partial struct SingleSubstView
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
                 Location.AtLocal(DataField.Offset, SingleSubstLayout.CoverageOffsetField),
                 out diagnostic, CoverageOffset, (ulong)bodyEnd);
-        status = CoverageView.TryOpen(_data.Slice(CoverageOffset), out coverage, out diagnostic,
-            Location.AtLocal(DataField.None, CoverageOffset));
-        if (status != ReadStatus.Done) return status;
-        status = coverage.Inspect(numGlyphs, out int coverageCount, out int coverageLength, out diagnostic, budget);
-        if (status != ReadStatus.Done) return status;
+        int coverageCount, coverageLength;
+        if (cachedCoverage is null)
+        {
+            status = CoverageView.TryOpen(_data.Slice(CoverageOffset), out coverage, out diagnostic,
+                coverageOrigin ?? Location.AtLocal(DataField.None, CoverageOffset));
+            if (status != ReadStatus.Done) return status;
+            status = coverage.Inspect(numGlyphs, out coverageCount, out coverageLength, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+        }
+        else
+        {
+            coverageCount = cachedCoverage.Glyphs.Length;
+            coverageLength = cachedCoverage.ConsumedLength;
+        }
         if (Format == 2 && coverageCount != count)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 Location.AtLocal(DataField.Count, SingleSubstLayout.BodyOffset),
@@ -142,7 +197,15 @@ public readonly ref partial struct SingleSubstView
         if (Format == 1)
         {
             if (!budget.Work(count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-            for (int i = 0; i < coverage.Count; i++)
+            if (cachedCoverage is not null)
+            {
+                foreach (ushort gid in cachedCoverage.Glyphs)
+                {
+                    ushort replacement = unchecked((ushort)(gid + delta));
+                    if (replacement >= numGlyphs) return InvalidDeltaResult(replacement, numGlyphs, out diagnostic);
+                }
+            }
+            else for (int i = 0; i < coverage.Count; i++)
             {
                 if (coverage.Format == 1)
                 {
