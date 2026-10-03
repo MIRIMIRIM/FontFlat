@@ -34,13 +34,16 @@ public sealed class GdefClassDefinitions
     /// <summary>Replaces the class consumers without silently substituting a model
     /// from another source face or glyph-count context. Does not rebuild the GDEF root.</summary>
     public ReadStatus TryWithClasses(ClassDefTable? glyphClasses, ClassDefTable? markAttachmentClasses,
-        out GdefClassDefinitions? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+        out GdefClassDefinitions? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        TryWithClasses(glyphClasses, markAttachmentClasses, out updated, out diagnostic, new BuildBudget(limits));
+
+    internal ReadStatus TryWithClasses(ClassDefTable? glyphClasses, ClassDefTable? markAttachmentClasses,
+        out GdefClassDefinitions? updated, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         updated = null;
         if (!Matches(glyphClasses) || !Matches(markAttachmentClasses))
             return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
                 Location.AtLocal(DataField.None, 0), out diagnostic);
-        var budget = new BuildBudget(limits);
         if (glyphClasses is not null)
         {
             if (!budget.Work(glyphClasses.Ranges.Length, glyphClasses.Location, out diagnostic))

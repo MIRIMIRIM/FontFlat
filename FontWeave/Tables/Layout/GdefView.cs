@@ -4,6 +4,44 @@ namespace FontWeave.Tables.Layout;
 
 public readonly ref partial struct GdefView
 {
+    /// <summary>Reads class definitions and MarkGlyphSets for Lookup-flag validation.
+    /// AttachList, LigCaretList and variation data remain untraversed raw observations.</summary>
+    public ReadStatus TryReadContext(int numGlyphs, out GdefLookupContext? context,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        context = null;
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        return TryReadContext(numGlyphs, out context, out diagnostic, budget);
+    }
+
+    internal ReadStatus TryReadContext(int numGlyphs, out GdefLookupContext? context,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        context = null;
+        ReadStatus status = TryReadClasses(numGlyphs, out var classes, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        MarkGlyphSetsTable? sets = null;
+        ushort offset = classes!.MarkGlyphSetsDefOffset;
+        if (offset != 0)
+        {
+            if (offset >= _data.Length)
+                return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                    Location.AtLocal(DataField.Offset, GdefLayout.MarkSetsAt), out diagnostic,
+                    offset, (ulong)_data.Length);
+            int header = classes.Version == GdefLayout.Version13 ? GdefLayout.Header13 : GdefLayout.Header12;
+            if (offset < header)
+                return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
+                    Location.AtLocal(DataField.Offset, GdefLayout.MarkSetsAt), out diagnostic, offset, (ulong)header);
+            status = MarkGlyphSetsView.TryOpen(_data.Slice(offset), out var child, out diagnostic,
+                Location.AtLocal(DataField.None, offset));
+            if (status != ReadStatus.Done) return status;
+            status = child.TryRead(numGlyphs, out sets, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+        }
+        return GdefLookupContext.TryCreate(classes, sets, out context, out diagnostic, budget);
+    }
+
     /// <summary>Reads the two class-definition consumers, not the complete GDEF table.
     /// Other header offsets are retained as raw values without traversing their targets.</summary>
     public ReadStatus TryReadClasses(int numGlyphs, out GdefClassDefinitions? model,
