@@ -1,0 +1,150 @@
+using FontWeave.Core;
+
+namespace FontWeave.Tables.Layout;
+
+public readonly ref partial struct CoverageView
+{
+    /// <summary>Local format-1 access; does not assert sorting or enclosing glyph validity.</summary>
+    public ReadStatus TryGetGlyph(int ordinal, out ushort glyphId, out FontDiagnostic diagnostic)
+    {
+        glyphId = 0;
+        ReadStatus status = RequireRecord(1, ordinal, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryReadGlyphRecordAt(CoverageLayout.HeaderLength + (ulong)ordinal * CoverageLayout.GlyphStride,
+            ordinal, out var record, out diagnostic);
+        if (status == ReadStatus.Done) glyphId = record.GlyphId;
+        return status;
+    }
+
+    /// <summary>Local format-2 access; coverage-index and range semantics are checked by Validate.</summary>
+    public ReadStatus TryGetRange(int ordinal, out RangeRecordData record, out FontDiagnostic diagnostic)
+    {
+        record = default;
+        ReadStatus status = RequireRecord(2, ordinal, out diagnostic);
+        return status == ReadStatus.Done
+            ? TryReadRangeRecordAt(CoverageLayout.HeaderLength + (ulong)ordinal * CoverageLayout.RangeStride,
+                ordinal, out record, out diagnostic) : status;
+    }
+
+    public ReadStatus Validate(int numGlyphs, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        return Validate(numGlyphs, out diagnostic, budget);
+    }
+
+    internal ReadStatus Validate(int numGlyphs, out FontDiagnostic diagnostic, BuildBudget budget) =>
+        Inspect(numGlyphs, out _, out _, out diagnostic, budget);
+
+    public ReadStatus TryRead(int numGlyphs, out CoverageTable? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        model = null;
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        return TryRead(numGlyphs, out model, out diagnostic, budget);
+    }
+
+    internal ReadStatus TryRead(int numGlyphs, out CoverageTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        ReadStatus status = Inspect(numGlyphs, out int expandedCount, out int consumed,
+            out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        if (!budget.Work(2L * expandedCount, Location, out diagnostic) ||
+            !budget.Buffer(2L * expandedCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ushort[] glyphs = new ushort[expandedCount];
+        int at = 0, rangeCount = 0;
+        for (int i = 0; i < Count; i++)
+        {
+            if (Format == 1)
+            {
+                _ = TryGetGlyph(i, out ushort gid, out _);
+                if (at == 0 || gid != glyphs[at - 1] + 1) rangeCount++;
+                glyphs[at++] = gid;
+            }
+            else
+            {
+                _ = TryGetRange(i, out var range, out _);
+                if (at == 0 || range.StartGlyph != glyphs[at - 1] + 1) rangeCount++;
+                for (int gid = range.StartGlyph; gid <= range.EndGlyph; gid++) glyphs[at++] = (ushort)gid;
+            }
+        }
+        model = new(glyphs, numGlyphs, Format, Location, consumed, rangeCount);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    // No length is encoded in Coverage. A valid leaf may be followed by other parent payloads.
+    internal ReadStatus Inspect(int numGlyphs, out int expandedCount, out int consumed,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        expandedCount = consumed = 0;
+        ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int stride = Format == 1 ? CoverageLayout.GlyphStride : CoverageLayout.RangeStride;
+        consumed = CoverageLayout.HeaderLength + Count * stride;
+        if (!budget.Work(consumed, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        int previous = -1;
+        for (int i = 0; i < Count; i++)
+        {
+            ulong row = CoverageLayout.HeaderLength + (ulong)i * (uint)stride;
+            if (Format == 1)
+            {
+                status = TryGetGlyph(i, out ushort gid, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                if (gid >= numGlyphs)
+                    return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                        Location.AtLocal(DataField.GlyphId, row, i), out diagnostic, gid, (ulong)numGlyphs);
+                if (gid <= previous)
+                    return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                        Location.AtLocal(DataField.GlyphId, row, i), out diagnostic, gid, unchecked((ulong)(long)previous));
+                previous = gid;
+                expandedCount++;
+            }
+            else
+            {
+                status = TryGetRange(i, out var range, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                if (range.EndGlyph < range.StartGlyph)
+                    return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                        Location.AtLocal(DataField.GlyphId, row + CoverageLayout.RangeEndOffset, i),
+                        out diagnostic, range.EndGlyph, range.StartGlyph);
+                if (range.StartGlyph <= previous)
+                    return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                        Location.AtLocal(DataField.GlyphId, row, i), out diagnostic,
+                        range.StartGlyph, unchecked((ulong)(long)previous));
+                if (range.EndGlyph >= numGlyphs)
+                    return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                        Location.AtLocal(DataField.GlyphId, row + CoverageLayout.RangeEndOffset, i),
+                        out diagnostic, range.EndGlyph, (ulong)numGlyphs);
+                if (range.StartCoverageIndex != expandedCount)
+                    return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                        Location.AtLocal(DataField.Payload, row + CoverageLayout.RangeIndexOffset, i),
+                        out diagnostic, range.StartCoverageIndex, (ulong)expandedCount);
+                expandedCount += range.EndGlyph - range.StartGlyph + 1;
+                previous = range.EndGlyph;
+            }
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus RequireRecord(ushort format, int ordinal, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (Format != format)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Version, 0), out diagnostic, Format, format);
+        if (ordinal < 0 || ordinal >= Count)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, CoverageLayout.CountOffset, ordinal),
+                out diagnostic, unchecked((ulong)(long)ordinal), Count);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+}
