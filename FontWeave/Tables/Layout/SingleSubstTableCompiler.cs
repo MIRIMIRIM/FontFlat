@@ -5,7 +5,7 @@ namespace FontWeave.Tables.Layout;
 public static class SingleSubstTableCompiler
 {
     private readonly record struct PartPlan(int Start, int Count, ushort Format, ushort CoverageFormat,
-        int CoverageRangeCount, int Length);
+        int CoverageRangeCount, int Length, ushort CoverageOffset);
 
     public static ReadStatus TryCreate(ReadOnlySpan<ushort> glyphs, ReadOnlySpan<ushort> substitutes,
         int numGlyphs, ushort format, out SingleSubstTable? model, out FontDiagnostic diagnostic,
@@ -112,9 +112,10 @@ public static class SingleSubstTableCompiler
             (count + SingleSubstLayout.MaximumFormat2Rows - 1) / SingleSubstLayout.MaximumFormat2Rows;
         if (!budget.Buffer(20L * partCount, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         var plans = new PartPlan[partCount];
+        ReadStatus status;
         if (partCount == 1)
         {
-            ReadStatus status = PlanSingle(model, out plans[0], out diagnostic);
+            status = PlanSingle(model, out plans[0], out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
         else if (partCount == 2)
@@ -125,7 +126,8 @@ public static class SingleSubstTableCompiler
             while (lo <= hi)
             {
                 int mid = lo + (hi - lo) / 2;
-                PartPlan candidate = PlanSplit(model, 0, mid);
+                status = PlanSplit(model, 0, mid, out var candidate, out diagnostic);
+                if (status != ReadStatus.Done) return status;
                 if (candidate.Length <= SingleSubstLayout.MaximumFirstSplitLength)
                 {
                     first = mid;
@@ -133,8 +135,10 @@ public static class SingleSubstTableCompiler
                 }
                 else hi = mid - 1;
             }
-            plans[0] = PlanSplit(model, 0, first);
-            plans[1] = PlanSplit(model, first, count - first);
+            status = PlanSplit(model, 0, first, out plans[0], out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = PlanSplit(model, first, count - first, out plans[1], out diagnostic);
+            if (status != ReadStatus.Done) return status;
             if (plans[0].Length > SingleSubstLayout.MaximumFirstSplitLength)
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                     model.Location.AtLocal(DataField.Offset, SingleSubstLayout.CoverageOffsetField),
@@ -146,7 +150,8 @@ public static class SingleSubstTableCompiler
             for (int i = 0; i < partCount; i++)
             {
                 int rows = (count - at) / (partCount - i);
-                plans[i] = PlanSplit(model, at, rows);
+                status = PlanSplit(model, at, rows, out plans[i], out diagnostic);
+                if (status != ReadStatus.Done) return status;
                 at += rows;
             }
         }
@@ -186,13 +191,20 @@ public static class SingleSubstTableCompiler
             format = 1;
         }
         int bodyEnd = SingleSubstLayout.HeaderLength + (format == 2 ? SingleSubstLayout.SubstituteStride * model.Glyphs.Length : 0);
+        ReadStatus status = SingleSubstView.TryGetCoverageOffsetValue(present: true, origin: 0UL,
+            target: (ulong)(SingleSubstLayout.HeaderLength +
+                (format == 2 ? SingleSubstLayout.SubstituteStride * model.Glyphs.Length : 0)),
+            out ushort coverageOffset, out diagnostic,
+            model.Location.AtLocal(DataField.Offset, SingleSubstLayout.CoverageOffsetField));
+        if (status != ReadStatus.Done) return status;
         plan = new(0, model.Glyphs.Length, format, model.Coverage.Format, model.Coverage.RangeCount,
-            bodyEnd + CoverageTableCompiler.Measure(model.Coverage));
+            bodyEnd + CoverageTableCompiler.Measure(model.Coverage), coverageOffset);
         diagnostic = default;
         return ReadStatus.Done;
     }
 
-    private static PartPlan PlanSplit(SingleSubstTable model, int start, int count)
+    private static ReadStatus PlanSplit(SingleSubstTable model, int start, int count, out PartPlan plan,
+        out FontDiagnostic diagnostic)
     {
         ReadOnlySpan<ushort> glyphs = model.Glyphs.Slice(start, count);
         int rangeCount = CoverageTableCompiler.CountRanges(glyphs);
@@ -201,7 +213,21 @@ public static class SingleSubstTableCompiler
         int bodyEnd = SingleSubstLayout.HeaderLength + SingleSubstLayout.SubstituteStride * count;
         int coverageLength = CoverageLayout.HeaderLength + (coverageFormat == 1
             ? CoverageLayout.GlyphStride * count : CoverageLayout.RangeStride * rangeCount);
-        return new(start, count, 2, coverageFormat, rangeCount, bodyEnd + coverageLength);
+        // The split coverage position is a plan invariant within the UInt16 field, so the
+        // generated fixup helper cannot fail here; refusing it formally retires the
+        // writer-side silent (ushort) narrowing.
+        ReadStatus status = SingleSubstView.TryGetCoverageOffsetValue(present: true, origin: 0UL,
+            target: (ulong)(SingleSubstLayout.HeaderLength + SingleSubstLayout.SubstituteStride * count),
+            out ushort coverageOffset, out diagnostic,
+            model.Location.AtLocal(DataField.Offset, SingleSubstLayout.CoverageOffsetField));
+        if (status != ReadStatus.Done)
+        {
+            plan = default;
+            return status;
+        }
+        plan = new(start, count, 2, coverageFormat, rangeCount, bodyEnd + coverageLength, coverageOffset);
+        diagnostic = default;
+        return ReadStatus.Done;
     }
 
     private static void WritePart(SingleSubstTable model, PartPlan plan, Span<byte> destination)
@@ -210,8 +236,10 @@ public static class SingleSubstTableCompiler
         ReadOnlySpan<ushort> substitutes = model.Substitutes.Slice(plan.Start, plan.Count);
         int coverageAt = SingleSubstLayout.HeaderLength + (plan.Format == 2 ? SingleSubstLayout.SubstituteStride * plan.Count : 0);
         CoverageTableCompiler.RequireWritten(SingleSubstView.TryWriteFormat(destination, plan.Format, out _, model.Location));
+        // The coverage offset comes from the plan's fixup-encoded value; the emission path
+        // no longer narrows anything silently.
         CoverageTableCompiler.RequireWritten(SingleSubstView.TryWriteCoverageOffset(destination,
-            (ushort)coverageAt, out _, model.Location));
+            plan.CoverageOffset, out _, model.Location));
         if (plan.Format == 1)
         {
             // The model or PlanSingle has already established the uniform-delta invariant.

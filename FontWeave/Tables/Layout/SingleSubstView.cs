@@ -167,19 +167,20 @@ public readonly ref partial struct SingleSubstView
                         out diagnostic, gid, (ulong)numGlyphs);
             }
         }
-        if (CoverageOffset == 0 || CoverageOffset >= _data.Length)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                Location.AtLocal(DataField.Offset, SingleSubstLayout.CoverageOffsetField),
-                out diagnostic, CoverageOffset, (ulong)_data.Length);
-        if (CoverageOffset < bodyEnd)
+        // OQ-1 ruling: the format-conditional body end is context the declared Minimum
+        // family cannot express, so this one storage-before pre-check stays in the semantic
+        // partial, ahead of the opener. bodyEnd <= _data.Length always holds at this point
+        // (both format bodies have been read), so the pre-check and the opener's zero/range
+        // branches cover disjoint states: 0 -> opener range; (0, bodyEnd) -> pre-check;
+        // [bodyEnd, len) -> opener.
+        if (CoverageOffset != 0 && CoverageOffset < bodyEnd)
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
                 Location.AtLocal(DataField.Offset, SingleSubstLayout.CoverageOffsetField),
                 out diagnostic, CoverageOffset, (ulong)bodyEnd);
         int coverageCount, coverageLength;
         if (cachedCoverage is null)
         {
-            status = CoverageView.TryOpen(_data.Slice(CoverageOffset), out coverage, out diagnostic,
-                coverageOrigin ?? Location.AtLocal(DataField.None, CoverageOffset));
+            status = TryOpenCoverage(out coverage, out _, out diagnostic);
             if (status != ReadStatus.Done) return status;
             status = coverage.Inspect(numGlyphs, out coverageCount, out coverageLength, out diagnostic, budget);
             if (status != ReadStatus.Done) return status;

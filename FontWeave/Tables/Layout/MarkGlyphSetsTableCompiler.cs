@@ -96,16 +96,21 @@ public static class MarkGlyphSetsTableCompiler
         long cursor = MarkGlyphSetsLayout.HeaderLength + MarkGlyphSetsLayout.OffsetStride * count;
         long expansionWork = 0;
         int distinct = 0;
+        ReadStatus status;
         for (int i = 0; i < count; i++)
         {
             CoverageTable set = model.Sets[i];
             if (!cache.TryGetValue(set, out uint target))
             {
-                if (cursor > uint.MaxValue)
-                    return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
-                        model.Location.AtLocal(DataField.Offset, MarkGlyphSetsLayout.HeaderLength +
-                            (ulong)i * MarkGlyphSetsLayout.OffsetStride, i), out diagnostic, (ulong)cursor, uint.MaxValue);
-                target = (uint)cursor;
+                // Plan-time fixup through the generated helper: the cursor overflow refusal
+                // and its diagnostic are the helper's narrow-value branch, byte-identical
+                // to the previous handwritten check (UnsupportedOperation at the row field,
+                // Detail=cursor, Expected=uint.MaxValue).
+                status = MarkGlyphSetsView.TryGetCoverageSetOffsetValue(present: true, origin: 0UL,
+                    target: (ulong)cursor, out target, out diagnostic,
+                    model.Location.AtLocal(DataField.Offset, MarkGlyphSetsLayout.HeaderLength +
+                        (ulong)i * MarkGlyphSetsLayout.OffsetStride, i));
+                if (status != ReadStatus.Done) return status;
                 if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
                 cache.Add(set, target);
                 targets[distinct] = target;

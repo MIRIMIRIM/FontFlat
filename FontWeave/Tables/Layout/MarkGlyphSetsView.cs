@@ -60,21 +60,17 @@ public readonly ref partial struct MarkGlyphSetsView
             status = TryGetCoverageOffsetRecord(i, out var record, out diagnostic);
             if (status != ReadStatus.Done) return status;
             uint offset = record.CoverageOffset;
-            ulong field = MarkGlyphSetsLayout.HeaderLength + (ulong)i * MarkGlyphSetsLayout.OffsetStride;
-            if (offset == 0 || offset >= (ulong)_data.Length)
-                return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                    Location.AtLocal(DataField.Offset, field, i), out diagnostic, offset, (ulong)_data.Length);
-            if (offset < prefix)
-                return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
-                    Location.AtLocal(DataField.Offset, field, i), out diagnostic, offset, (ulong)prefix);
             CoverageTable? cached = null;
             int length = 0;
             bool seen = materialize ? models!.TryGetValue(offset, out cached) : lengths.TryGetValue(offset, out length);
             if (seen && materialize) length = cached!.ConsumedLength;
             if (!seen)
             {
-                status = CoverageView.TryOpen(_data.Slice((int)offset), out var child, out diagnostic,
-                    Location.AtLocal(DataField.None, offset));
+                // The generated opener owns the whole declared envelope: zero policy,
+                // Minimum=SetsEnd storage floor, source bounds and the child TryOpen with
+                // the location translated exactly once. It re-reads the same 4-byte offset
+                // through the record accessor, unbilled and observationally identical.
+                status = TryOpenCoverageSet(i, out var child, out _, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 if (materialize)
                 {

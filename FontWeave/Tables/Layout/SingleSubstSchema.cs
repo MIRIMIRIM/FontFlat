@@ -13,10 +13,12 @@ internal static class SingleSubstLayout
     internal const int MaximumFirstSplitLength = ushort.MaxValue - 12;
 }
 
-[BinaryTable(SingleSubstLayout.Tag, SingleSubstLayout.MinimumHeader, VersionField = "Format", SupportedVersions = new uint[] { 1, 2 })]
+[BinaryTable(SingleSubstLayout.Tag, SingleSubstLayout.MinimumHeader, ContractVersion = 1, VersionField = "Format", SupportedVersions = new uint[] { 1, 2 })]
 [BinaryScalar("Format", WireType.UInt16, 0, DataField.Version)]
 [BinaryScalar("CoverageOffset", WireType.UInt16, SingleSubstLayout.CoverageOffsetField, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+[BinaryReference("Coverage", "CoverageOffset", typeof(CoverageView),
+    Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required)]
 [BinaryRecord("DeltaRecord", SingleSubstLayout.BodyRecordStride)]
 [BinaryElement("DeltaRecord", "DeltaGlyphId", WireType.Int16, 0, DataField.Payload)]
 [BinaryRecord("SubstituteHeader", SingleSubstLayout.BodyRecordStride)]
