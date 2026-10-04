@@ -79,35 +79,38 @@ internal sealed class ArrayModel
     public ImmutableArray<ScalarModel> Fields { get; set; } = ImmutableArray<ScalarModel>.Empty;
 }
 
-// Build-time node for a spec 2.3 structural computation. The hook itself is
-// handwritten C# in the same partial; this model feeds emission, bounds,
-// dependency checks and identity only.
-internal sealed class ComputedModel
-{
-    public string Name { get; set; } = "";
-    public string Method { get; set; } = "";
-    // Declared input order is semantic (hook parameter order) and part of identity.
-    public ImmutableArray<string> Inputs { get; set; } = ImmutableArray<string>.Empty;
-    public ulong Maximum { get; set; } = uint.MaxValue;
-    public NumberSemantic Semantic { get; set; }
-    public int DiagnosticFieldId { get; set; }
-    // Spec 2.3: a count computed must declare its diagnostic field explicitly, so the
-    // parser records whether the named argument was present at all.
-    public bool HasExplicitDiagnosticField { get; set; }
-    public string? DiagnosticSource { get; set; }
-    public ImmutableArray<uint> WhenVersions { get; set; } = ImmutableArray<uint>.Empty;
-}
+    // Build-time node for a spec 2.3 structural computation. The hook itself is
+    // handwritten C# in the same partial; this model feeds emission, bounds,
+    // dependency checks and identity only.
+    internal sealed class ComputedModel
+    {
+        public string Name { get; set; } = "";
+        public string Method { get; set; } = "";
+        // Declared input order is semantic (hook parameter order) and part of identity.
+        public ImmutableArray<string> Inputs { get; set; } = ImmutableArray<string>.Empty;
+        public ulong Maximum { get; set; } = uint.MaxValue;
+        public NumberSemantic Semantic { get; set; }
+        public int DiagnosticFieldId { get; set; }
+        // Spec 2.3: a count computed must declare its diagnostic field explicitly, so the
+        // parser records whether the named argument was present at all.
+        public bool HasExplicitDiagnosticField { get; set; }
+        public string? DiagnosticSource { get; set; }
+        public ImmutableArray<uint> WhenVersions { get; set; } = ImmutableArray<uint>.Empty;
+    }
 
-internal sealed class PayloadModel
-{
-    // Method: TryGet<Array>Payload. A null Base means a table-relative offset;
-    // Minimum refers to a table value, Offset/Length to array record fields.
-    public string Array { get; set; } = "";
-    public string Offset { get; set; } = "";
-    public string Length { get; set; } = "";
-    public string? Base { get; set; }
-    public string Minimum { get; set; } = "";
-}
+    internal sealed class PayloadModel
+    {
+        // Method: TryGet<Array>Payload. A null Base means a table-relative offset;
+        // Minimum refers to a table value, Offset/Length to array record fields.
+        public string Array { get; set; } = "";
+        public string Offset { get; set; } = "";
+        public string Length { get; set; } = "";
+        public string? Base { get; set; }
+        public string Minimum { get; set; } = "";
+        // The relation's position in the declared attribute order across both relation
+        // kinds (spec 6.1.1 step 4: Reference/Payload attribute order); 0 when unused.
+        public int ScanOrder { get; set; }
+    }
 
 // Build-time node for a spec 3 typed reference. Width/endian/position come only from the
 // offset scalar/element; Origin/Base/null policy/window are the relation's sole formal
@@ -137,11 +140,18 @@ internal sealed class ReferenceModel
     public long TargetRole { get; set; } = long.MinValue;
     public bool ForwardRole { get; set; }
     public ReferenceScan Scan { get; set; }
+    // The relation's position in the declared attribute order across both relation kinds
+    // (spec 6.1.1 step 4); 0 when unused. Payloads and references interleave by this.
+    public int ScanOrder { get; set; }
     // Resolved by the registry combine step; 0 when unresolved.
     public int TargetMinimumHeader { get; set; }
     public string TargetNamespace { get; set; } = "";
     public string TargetName { get; set; } = "";
     public string TargetIdentity { get; set; } = "";
+    // Folded by the registry like the other target contract fields: a role-bearing
+    // target's declared RoleType (null otherwise), which the scan core needs to run the
+    // child under the fixed TargetRole (spec 6.2 role/profile key dimension).
+    public string? TargetRoleType { get; set; }
 }
 
 internal sealed class TableModel
@@ -153,6 +163,9 @@ internal sealed class TableModel
     // 0 keeps the current contract; 1 opts into the ordered single-declaration
     // model with local array extent/ordinal and counted-writer contracts.
     public int ContractVersion { get; set; }
+    // Spec 2.1/6.1: default false; true opts the table into the generated finite
+    // structure scan family and its explicit scan-policy obligations.
+    public bool GenerateStructureScan { get; set; }
     public string? VersionField { get; set; }
     public ImmutableArray<uint> SupportedVersions { get; set; } = ImmutableArray<uint>.Empty;
     // Finite role dispatch (spec 4): the declared enum full name (null = roleless table),

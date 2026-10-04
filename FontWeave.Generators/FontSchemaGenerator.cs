@@ -96,6 +96,10 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
                 byName[model.Namespace.Length == 0 ? model.Name : model.Namespace + "." + model.Name] = model;
             var diagnostics = new List<Diagnostic>();
             var edges = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            // The conservative Follow graph (card 1.2-c, OQ-3): only Follow edges of
+            // scan-enabled contract-version-1 tables participate, and version/selector/role
+            // conditions never shrink the build-time graph (every declared edge enters).
+            var followEdges = new Dictionary<string, List<string>>(StringComparer.Ordinal);
             var unresolved = new HashSet<string>(StringComparer.Ordinal);
             foreach (var model in models)
             {
@@ -166,6 +170,24 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
                             "A reference to a role-bearing target specifies exactly one of TargetRole or ForwardRole: " + reference.Name));
                         failed = true;
                     }
+                    // Card 1.2-c (spec 6.1, FWG005): a Follow target must itself opt into
+                    // the contract-version-1 structure scan ("the target may be V0, Follow
+                    // may not"); only these declared edges join the conservative DAG.
+                    if (reference.Scan == ReferenceScan.Follow)
+                    {
+                        if (target.ContractVersion != 1 || !target.GenerateStructureScan)
+                        {
+                            diagnostics.Add(Diagnostic.Create(Condition, Location.None,
+                                "A Follow reference requires the target to enable GenerateStructureScan under contract version 1: " + reference.Name));
+                            failed = true;
+                        }
+                        else
+                        {
+                            if (!followEdges.TryGetValue(modelName, out var followTargets))
+                                followEdges[modelName] = followTargets = new List<string>();
+                            followTargets.Add(targetName);
+                        }
+                    }
                     targets.Add(targetName);
                 }
                 if (failed)
@@ -188,6 +210,41 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
                 if (Visit(start, edges, visiting, visited, cyclic, out var cyclePath))
                     diagnostics.Add(Diagnostic.Create(Cycle, Location.None,
                         "Reference target identity cycle: " + string.Join(" -> ", cyclePath)));
+            // Card 1.2-c (spec 6.1, FWG005): the maximum static Follow depth is 64 nodes
+            // including the root; deeper chains are refused at build time. Follow cycles
+            // need no extra check — every reference cycle is already terminated by the
+            // identity rule above (card OQ-5, registered coverage), so the memoized walk
+            // over the declared DAG terminates. The DAG summary is deliberately not folded
+            // into any identity: the graph is uniquely determined by the Follow
+            // declarations, which are already identity inputs.
+            var tooDeep = new HashSet<string>(StringComparer.Ordinal);
+            var followDepth = new Dictionary<string, int>(StringComparer.Ordinal);
+            var followStack = new HashSet<string>(StringComparer.Ordinal);
+            int DepthOf(string node)
+            {
+                cancellation.ThrowIfCancellationRequested();
+                if (followDepth.TryGetValue(node, out int cached)) return cached;
+                if (followStack.Contains(node)) return 0;
+                followStack.Add(node);
+                int depth = 1;
+                if (followEdges.TryGetValue(node, out var targets))
+                    foreach (var target in targets)
+                        depth = Math.Max(depth, 1 + DepthOf(target));
+                followStack.Remove(node);
+                followDepth[node] = depth;
+                return depth;
+            }
+            foreach (var model in models)
+            {
+                if (model.ContractVersion != 1 || !model.GenerateStructureScan) continue;
+                string fullName = model.Namespace.Length == 0 ? model.Name : model.Namespace + "." + model.Name;
+                if (DepthOf(fullName) > 64)
+                {
+                    diagnostics.Add(Diagnostic.Create(Condition, Location.None,
+                        "The Follow chain of " + fullName + " exceeds the maximum static depth of 64 nodes."));
+                    tooDeep.Add(fullName);
+                }
+            }
             var resolutions = ImmutableArray.CreateBuilder<(string FullName, TableModel Model, bool Suppressed)>();
             var canonical = new StringBuilder();
             foreach (var model in models)
@@ -195,7 +252,7 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
                 if (model.References.IsEmpty) continue;
                 cancellation.ThrowIfCancellationRequested();
                 string fullName = model.Namespace.Length == 0 ? model.Name : model.Namespace + "." + model.Name;
-                bool suppressed = unresolved.Contains(fullName) || cyclic.Contains(fullName);
+                bool suppressed = unresolved.Contains(fullName) || cyclic.Contains(fullName) || tooDeep.Contains(fullName);
                 var folded = new StringBuilder();
                 var references = model.References;
                 for (int i = 0; i < references.Length; i++)
@@ -213,6 +270,7 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
                         updated.TargetNamespace = target.Namespace;
                         updated.TargetName = target.Name;
                         updated.TargetIdentity = target.Identity;
+                        updated.TargetRoleType = target.RoleType;
                         folded.Append('|').Append(references[i].Name).Append('@').Append(target.Identity);
                     }
                     else
@@ -285,15 +343,17 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
             ZeroFailure = reference.ZeroFailure, AllowTargetAtEnd = reference.AllowTargetAtEnd,
             WhenRoles = reference.WhenRoles, Selector = reference.Selector, SelectorValues = reference.SelectorValues,
             DefaultRaw = reference.DefaultRaw, TargetRole = reference.TargetRole, ForwardRole = reference.ForwardRole,
-            Scan = reference.Scan,
+            Scan = reference.Scan, ScanOrder = reference.ScanOrder,
             TargetMinimumHeader = reference.TargetMinimumHeader, TargetNamespace = reference.TargetNamespace,
-            TargetName = reference.TargetName, TargetIdentity = reference.TargetIdentity
+            TargetName = reference.TargetName, TargetIdentity = reference.TargetIdentity,
+            TargetRoleType = reference.TargetRoleType
         };
 
         private static TableModel Clone(TableModel model, ImmutableArray<ReferenceModel> references) => new()
         {
             Namespace = model.Namespace, Name = model.Name, Tag = model.Tag,
             MinimumHeader = model.MinimumHeader, ContractVersion = model.ContractVersion,
+            GenerateStructureScan = model.GenerateStructureScan,
             VersionField = model.VersionField, SupportedVersions = model.SupportedVersions,
             RoleType = model.RoleType, RoleMembers = model.RoleMembers, SupportedRoles = model.SupportedRoles,
             Scalars = model.Scalars, Derived = model.Derived, Computed = model.Computed,

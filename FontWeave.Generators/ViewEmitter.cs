@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Globalization;
 using System.Linq;
@@ -116,6 +117,13 @@ internal static class ViewEmitter
         {
             writer.Line();
             EmitPayload(writer, model, payload);
+            if (model.ContractVersion == 1)
+            {
+                // Spec 5.1 (card OQ-7): the V1 location overload beside the untouched
+                // legacy overload; V0 payload tables keep their emitted text unchanged.
+                writer.Line();
+                EmitPayloadLocationOverload(writer, model, payload);
+            }
         }
 
         foreach (ReferenceModel reference in model.References)
@@ -126,6 +134,12 @@ internal static class ViewEmitter
             EmitReferenceOpener(writer, model, reference);
             writer.Line();
             EmitReferenceFixup(writer, model, reference);
+        }
+
+        if (ScanEnabled(model))
+        {
+            writer.Line();
+            EmitScanFamily(writer, model);
         }
 
         writer.Line();
@@ -1024,19 +1038,41 @@ internal static class ViewEmitter
         writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
     }
 
+    // The legacy payload getter: its signature and emitted statements stay byte for byte
+    // (spec 5.1). The V1 location overload shares the same statement stream; see below.
     private static void EmitPayload(CodeWriter writer, TableModel model, PayloadModel payload)
+    {
+        writer.Line($"public global::FontWeave.Core.ReadStatus TryGet{payload.Array}Payload(int ordinal,");
+        writer.Indent++;
+        writer.Line("out global::System.ReadOnlySpan<byte> payload, out global::FontWeave.Core.FontDiagnostic diagnostic)");
+        writer.Indent--;
+        EmitPayloadStatements(writer, model, payload, withLocation: false);
+    }
+
+    // Spec 5.1: the overload hands the payload's provenance to handwritten decoders
+    // without recomputing the source. Success locates at owner.AtLocal(Payload, target,
+    // ordinal) — an empty payload still has a real location; failure defaults both out.
+    private static void EmitPayloadLocationOverload(CodeWriter writer, TableModel model, PayloadModel payload)
+    {
+        writer.Line($"internal global::FontWeave.Core.ReadStatus TryGet{payload.Array}Payload(int ordinal,");
+        writer.Indent++;
+        writer.Line("out global::System.ReadOnlySpan<byte> payload, out global::FontWeave.Core.DataLocation payloadLocation,");
+        writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic)");
+        writer.Indent--;
+        EmitPayloadStatements(writer, model, payload, withLocation: true);
+    }
+
+    private static void EmitPayloadStatements(CodeWriter writer, TableModel model, PayloadModel payload, bool withLocation)
     {
         ArrayModel array = FindArray(model, payload.Array);
         ScalarModel offset = FindArrayField(array, payload.Offset);
         ScalarModel? baseScalar = payload.Base is null ? null : FindScalar(model, payload.Base);
 
-        writer.Line($"public global::FontWeave.Core.ReadStatus TryGet{payload.Array}Payload(int ordinal,");
-        writer.Indent++;
-        writer.Line("out global::System.ReadOnlySpan<byte> payload, out global::FontWeave.Core.FontDiagnostic diagnostic)");
-        writer.Indent--;
         writer.Line("{");
         writer.Indent++;
         writer.Line("payload = default;");
+        if (withLocation)
+            writer.Line("payloadLocation = default;");
         writer.Line($"global::FontWeave.Core.ReadStatus status = TryGet{payload.Array}(ordinal, out {array.Name}Data record, out diagnostic);");
         writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
         writer.Line($"status = TryGet{payload.Minimum}(out var minimumRaw, out diagnostic);");
@@ -1130,6 +1166,8 @@ internal static class ViewEmitter
         writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.Payload, absoluteOffset, ordinal),");
         writer.Line("out diagnostic, absoluteOffset + payloadLength, (ulong)_data.Length);");
         writer.Indent -= 2;
+        if (withLocation)
+            writer.Line("payloadLocation = Location.AtLocal(global::FontWeave.Core.DataField.Payload, absoluteOffset, ordinal);");
         writer.Line("diagnostic = default;");
         writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
         writer.Indent--;
@@ -1542,6 +1580,962 @@ internal static class ViewEmitter
         writer.Line("}");
     }
 
+    // ---- A5 finite structure scan family (spec 6, card 1.2-d/e) ----
+    // Emitted only for contract-version-1 tables that declare GenerateStructureScan, so
+    // every other view keeps byte-identical text (card 1.1 ③/1.7). The spec 6.1.1 steps
+    // keep their fixed order: version metadata, local preflight, node body charge,
+    // relation groups, then the facts-slot publication of completed non-root nodes.
+
+    internal static bool ScanEnabled(TableModel model) => model.ContractVersion == 1 && model.GenerateStructureScan;
+
+    // FNV-1a over the namespace-qualified name. Only in-operation kind separation is
+    // required (spec 6.2), so the hash needs no cross-compilation stability.
+    private static int ScanKindHash(TableModel model)
+    {
+        string fullName = model.Namespace.Length == 0 ? model.Name : model.Namespace + "." + model.Name;
+        unchecked
+        {
+            uint hash = 2166136261;
+            foreach (char c in fullName)
+            {
+                hash ^= c;
+                hash *= 16777619;
+            }
+            return (int)hash;
+        }
+    }
+
+    private static void EmitScanFamily(CodeWriter writer, TableModel model)
+    {
+        writer.Line("// The finite structure scan family (spec 6): the node kind identity, the two entry");
+        writer.Line("// wrappers and the per-node core with the fixed spec 6.1.1 execution order.");
+        // Internal, not private: referring views read the target's kind for their cache
+        // keys (spec 6.2), so the constant is part of the view's internal scan contract.
+        writer.Line($"internal const int ScanKindId = unchecked((int)0x{ScanKindHash(model):X8});");
+        writer.Line();
+        EmitScanWrapper(writer, model, withBudget: false);
+        writer.Line();
+        EmitScanWrapper(writer, model, withBudget: true);
+        writer.Line();
+        EmitScanCore(writer, model);
+    }
+
+    private static void EmitScanWrapper(CodeWriter writer, TableModel model, bool withBudget)
+    {
+        bool roleDispatch = model.RoleType is not null;
+        string roleLeading = roleDispatch ? ScanRoleType(model) + " role, " : "";
+        string roleArgument = roleDispatch ? "role, " : "";
+        if (withBudget)
+        {
+            writer.Line($"internal global::FontWeave.Core.ReadStatus TryScanStructure({roleLeading}global::FontWeave.Core.BuildBudget budget,");
+            writer.Indent++;
+            writer.Line("out global::FontWeave.Schema.StructuralScanCoverage coverage, out global::FontWeave.Core.FontDiagnostic diagnostic)");
+            writer.Indent--;
+        }
+        else
+        {
+            writer.Line($"internal global::FontWeave.Core.ReadStatus TryScanStructure({roleLeading}out global::FontWeave.Schema.StructuralScanCoverage coverage,");
+            writer.Indent++;
+            writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic, global::FontWeave.Core.BuildLimits? limits = null)");
+            writer.Indent--;
+        }
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("coverage = global::FontWeave.Schema.StructuralScanCoverage.NotEvaluated;");
+        writer.Line("diagnostic = default;");
+        writer.Line("if (!IsBound)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Uninitialized,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0UL), out diagnostic);");
+        writer.Indent -= 2;
+        if (roleDispatch)
+            EmitScanRoleGate(writer, model);
+        if (!withBudget)
+        {
+            // The limits wrapper builds one budget and admits the root window exactly
+            // once (spec 6.1); a negative BuildLimits keeps the CLR argument exception.
+            writer.Line("var budget = new global::FontWeave.Core.BuildBudget(limits);");
+            writer.Line("if (!budget.Input(_data.Length, Location, out diagnostic))");
+            writer.Indent++;
+            writer.Line("return global::FontWeave.Core.ReadStatus.ResourceLimit;");
+            writer.Indent--;
+        }
+        else
+        {
+            // The budget overload never calls Input nor touches Usage.InputBytes (spec
+            // 6.1): the owning flow has already admitted the root window.
+        }
+        writer.Line("var scope = new global::FontWeave.Core.StructureScanScope(Location);");
+        writer.Line($"return ScanStructureCore({roleArgument}budget, scope, false, out coverage, out diagnostic);");
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    private static string ScanRoleType(TableModel model) => "global::" + model.RoleType;
+
+    // Spec 6.1.1 step 1 (role form): an unknown role refuses at the owner start before
+    // any budget traffic, with the unchecked sign-extended value as its Detail.
+    private static void EmitScanRoleGate(CodeWriter writer, TableModel model)
+    {
+        string roleType = ScanRoleType(model);
+        writer.Line("switch (role)");
+        writer.Line("{");
+        writer.Indent++;
+        foreach (var supported in model.SupportedRoles)
+            writer.Line($"case {roleType}.{MemberName(model, supported)}:");
+        writer.Indent++;
+        writer.Line("break;");
+        writer.Indent--;
+        writer.Line("default:");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.UnsupportedFormat,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.UnsupportedOperation,");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0UL), out diagnostic,");
+        writer.Line("unchecked((ulong)(long)role), 0UL);");
+        writer.Indent -= 3;
+        writer.Line("}");
+    }
+
+    private static void EmitScanCore(CodeWriter writer, TableModel model)
+    {
+        bool roleDispatch = model.RoleType is not null;
+        string roleLeading = roleDispatch ? ScanRoleType(model) + " role, " : "";
+        string ownRoleProfile = roleDispatch ? "unchecked((long)role)" : "0L";
+        bool hasVersion = model.VersionField is not null;
+        bool needsVersion = hasVersion &&
+            (model.Scalars.Any(static s => s.WhenVersion >= 0) || model.Arrays.Any(static a => a.WhenVersions.Length != 0));
+
+        // The derived/computed values the scan may probe beyond the declared scalars:
+        // array counts, payload minimum/storage anchors and reference minimum/base/length
+        // sources. Unused derived/computed nodes never execute (spec 6.1.1 step 2).
+        var indirects = new HashSet<string>(StringComparer.Ordinal);
+        bool needsLengthFlag = false;
+        foreach (var array in model.Arrays)
+            if (!array.ExternallyPositioned)
+                CollectScanProbeTargets(model, array.Count, indirects, ref needsLengthFlag);
+        foreach (var payload in model.Payloads)
+        {
+            CollectScanProbeTargets(model, payload.Minimum, indirects, ref needsLengthFlag);
+            if (payload.Base is not null) CollectScanProbeTargets(model, payload.Base, indirects, ref needsLengthFlag);
+        }
+        foreach (var reference in model.References)
+        {
+            if (reference.Minimum is not null) CollectScanProbeTargets(model, reference.Minimum, indirects, ref needsLengthFlag);
+            if (reference.Base is not null) CollectScanProbeTargets(model, reference.Base, indirects, ref needsLengthFlag);
+            if (reference.Length is not null) CollectScanProbeTargets(model, reference.Length, indirects, ref needsLengthFlag);
+        }
+        // The per-core charge-text registry is separate from the flag-declaration set:
+        // every charge emits once, at its first use site; the flags deduplicate repeats.
+        var charges = new HashSet<string>(StringComparer.Ordinal);
+        bool usesStatus = hasVersion || model.Scalars.Length != 0 ||
+            model.Arrays.Any(static a => !a.ExternallyPositioned) || model.Payloads.Length != 0 ||
+            model.References.Any(r => (r.ArrayName is null || !FindArray(model, r.ArrayName).ExternallyPositioned) &&
+                (r.Scan != ReferenceScan.Manual || r.Selector is not null));
+
+        writer.Line($"internal global::FontWeave.Core.ReadStatus ScanStructureCore({roleLeading}global::FontWeave.Core.BuildBudget budget,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.StructureScanScope scope, bool publishSlot,");
+        writer.Line("out global::FontWeave.Schema.StructuralScanCoverage coverage, out global::FontWeave.Core.FontDiagnostic diagnostic)");
+        writer.Indent--;
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("coverage = global::FontWeave.Schema.StructuralScanCoverage.NotEvaluated;");
+        writer.Line("diagnostic = default;");
+        if (usesStatus)
+            writer.Line("global::FontWeave.Core.ReadStatus status;");
+        writer.Line("bool partial = false;");
+        foreach (var scalar in model.Scalars)
+            writer.Line($"bool probed{scalar.Name} = false;");
+        foreach (var name in indirects.Where(n => FindScalarOrNull(model, n) is null).OrderBy(n => n, StringComparer.Ordinal))
+            writer.Line($"bool probed{name} = false;");
+        if (needsLengthFlag)
+            writer.Line("bool probedLength = false;");
+        foreach (var array in model.Arrays)
+            if (!array.ExternallyPositioned)
+                writer.Line($"ulong start{array.Name} = 0UL, count{array.Name} = 0UL, end{array.Name} = 0UL;");
+        writer.Line($"ulong localExtent = {U((ulong)Math.Max(0, model.MinimumHeader))};");
+
+        // Step 1 (spec 6.1.1): the version field is metadata evaluated first — one probe
+        // at the node start, then the known-version gate whose failure propagates.
+        if (hasVersion)
+        {
+            var versionScalar = FindScalar(model, model.VersionField!);
+            EmitScanProbeCharge(writer, "probed" + versionScalar.Name);
+            writer.Line(needsVersion
+                ? "status = TryRequireKnownVersion(out ulong version, out diagnostic);"
+                : "status = TryRequireKnownVersion(out _, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        }
+
+        // Step 2: the bounded local preflight follows the declared attribute order —
+        // active scalars, active array extents, then the payload storage envelopes.
+        foreach (var scalar in model.Scalars)
+        {
+            bool conditional = scalar.WhenVersion >= 0;
+            if (conditional)
+            {
+                writer.Line($"if (version == {U((ulong)scalar.WhenVersion)})");
+                writer.Line("{");
+                writer.Indent++;
+            }
+            // The preflight charge owns the value's first probe text; later chains rely
+            // on the flag guard alone (the set doubles as the emitted-charge registry).
+            charges.Add(scalar.Name);
+            EmitScanProbeCharge(writer, "probed" + scalar.Name);
+            writer.Line($"status = TryGet{scalar.Name}(out _, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            if (scalar.Position.Base is null && scalar.Position.Count is null)
+            {
+                ulong end = scalar.Position.Constant + (ulong)scalar.Width;
+                writer.Line($"if ({U(end)} > localExtent) localExtent = {U(end)};");
+            }
+            else
+            {
+                writer.Line($"status = TryEvaluateScalar{scalar.Name}Position(out ulong position{scalar.Name}, out diagnostic);");
+                writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                writer.Line($"ulong end{scalar.Name} = position{scalar.Name} + {U((ulong)scalar.Width)};");
+                writer.Line($"if (end{scalar.Name} > localExtent) localExtent = end{scalar.Name};");
+            }
+            if (conditional)
+            {
+                writer.Indent--;
+                writer.Line("}");
+            }
+        }
+        foreach (var array in model.Arrays)
+        {
+            bool conditional = array.WhenVersions.Length != 0;
+            if (conditional)
+            {
+                EmitScanVersionGuard(writer, array.WhenVersions);
+                writer.Indent++;
+            }
+            if (array.ExternallyPositioned)
+            {
+                // Active record content is manual (spec 6.1): it marks the profile
+                // Partial; no extent exists and no ordinal is enumerable here.
+                writer.Line("partial = true;");
+            }
+            else
+            {
+                EmitScanProbeChain(writer, model, array.Count, charges);
+                writer.Line($"status = TryRequire{array.Name}Extent(out diagnostic);");
+                writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                writer.Line($"status = TryGet{array.Name}Extent(out start{array.Name}, out count{array.Name}, out end{array.Name}, out diagnostic);");
+                writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                writer.Line($"if (end{array.Name} > localExtent) localExtent = end{array.Name};");
+            }
+            if (conditional)
+            {
+                writer.Indent--;
+                writer.Line("}");
+            }
+        }
+        foreach (var payload in model.Payloads)
+        {
+            EmitScanPayloadEnvelope(writer, model, payload, charges);
+        }
+
+        // Step 3: only after every local source range passed does the node body charge,
+        // so the proven localExtent fits the window and 1+extent fits a long.
+        writer.Line("if (!budget.Work(1L + (long)localExtent, Location.AtLocal(global::FontWeave.Core.DataField.None, 0UL), out diagnostic))");
+        writer.Indent++;
+        writer.Line("return global::FontWeave.Core.ReadStatus.ResourceLimit;");
+        writer.Indent--;
+
+        // Step 4: relation groups in declared attribute order, counted arrays by ordinal.
+        foreach (var (_, payload, references) in OrderedRelationGroups(model))
+        {
+            if (payload is not null)
+                EmitScanPayloadSlot(writer, model, payload, charges);
+            else
+                EmitScanReferenceSlot(writer, model, references!, charges);
+        }
+
+        // Step 5 (spec 6.1.1): a completed non-root node pays its 40-byte facts slot at
+        // its own start and only then publishes; failures never publish. The initial
+        // root stores no entry of its own.
+        writer.Line("var finalCoverage = partial");
+        writer.Indent++;
+        writer.Line("? global::FontWeave.Schema.StructuralScanCoverage.Partial");
+        writer.Line(": global::FontWeave.Schema.StructuralScanCoverage.DeclaredClosure;");
+        writer.Indent--;
+        writer.Line("if (publishSlot)");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("if (!budget.Buffer(40, Location.AtLocal(global::FontWeave.Core.DataField.TemporaryBytes, 0UL), out diagnostic))");
+        writer.Indent++;
+        writer.Line("return global::FontWeave.Core.ReadStatus.ResourceLimit;");
+        writer.Indent--;
+        writer.Line($"scope.Publish(Location.Offset, _data.Length, ScanKindId, {ownRoleProfile}, finalCoverage);");
+        writer.Indent--;
+        writer.Line("}");
+        writer.Line("coverage = finalCoverage;");
+        writer.Line("diagnostic = default;");
+        writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    private static void CollectScanProbeTargets(TableModel model, string name,
+        HashSet<string> targets, ref bool needsLengthFlag)
+    {
+        if (!targets.Add(name)) return;
+        if (FindScalarOrNull(model, name) is not null) return;
+        if (FindDerivedOrNull(model, name) is { } derived)
+        {
+            if (derived.Expression.Base is not null) CollectScanProbeTargets(model, derived.Expression.Base, targets, ref needsLengthFlag);
+            if (derived.Expression.Count is not null) CollectScanProbeTargets(model, derived.Expression.Count, targets, ref needsLengthFlag);
+            return;
+        }
+        if (FindComputed(model, name) is { } computed)
+        {
+            foreach (var input in computed.Inputs)
+            {
+                if (input == "@length") needsLengthFlag = true;
+                else CollectScanProbeTargets(model, input, targets, ref needsLengthFlag);
+            }
+            return;
+        }
+        throw new InvalidOperationException($"Scan probe closure cannot resolve '{name}' in '{model.Name}'.");
+    }
+
+    // Charges one logical value probe at the node start (spec 6.3) behind its dedup flag.
+    private static void EmitScanProbeCharge(CodeWriter writer, string flag)
+    {
+        writer.Line($"if (!{flag})");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("if (!budget.Work(1, Location.AtLocal(global::FontWeave.Core.DataField.None, 0UL), out diagnostic))");
+        writer.Indent++;
+        writer.Line("return global::FontWeave.Core.ReadStatus.ResourceLimit;");
+        writer.Indent--;
+        writer.Line($"{flag} = true;");
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    // Emits the probe charges for one value's whole dependency chain, dependency first in
+    // declared reference order (spec 6.3). The per-core set keeps each charge's text at
+    // its first use site; the flags deduplicate every later evaluation at runtime.
+    private static void EmitScanProbeChain(CodeWriter writer, TableModel model, string name, HashSet<string> emitted)
+    {
+        if (!emitted.Add(name)) return;
+        if (FindScalarOrNull(model, name) is { })
+        {
+            EmitScanProbeCharge(writer, "probed" + name);
+            return;
+        }
+        if (FindDerivedOrNull(model, name) is { } derived)
+        {
+            if (derived.Expression.Base is not null) EmitScanProbeChain(writer, model, derived.Expression.Base, emitted);
+            if (derived.Expression.Count is not null) EmitScanProbeChain(writer, model, derived.Expression.Count, emitted);
+            EmitScanProbeCharge(writer, "probed" + name);
+            return;
+        }
+        if (FindComputed(model, name) is { } computed)
+        {
+            foreach (var input in computed.Inputs)
+            {
+                if (input == "@length") EmitScanProbeCharge(writer, "probedLength");
+                else EmitScanProbeChain(writer, model, input, emitted);
+            }
+            EmitScanProbeCharge(writer, "probed" + name);
+            return;
+        }
+        throw new InvalidOperationException($"Scan probe chain cannot resolve '{name}' in '{model.Name}'.");
+    }
+
+    private static void EmitScanVersionGuard(CodeWriter writer, ImmutableArray<uint> whenVersions)
+    {
+        var active = new StringBuilder();
+        for (int i = 0; i < whenVersions.Length; i++)
+        {
+            if (i != 0) active.Append(" || ");
+            active.Append("version == ").Append(U(whenVersions[i]));
+        }
+        writer.Line($"if ({active})");
+        writer.Line("{");
+    }
+
+    // The payload storage envelope of the preflight (spec 6.1.1 step 2): the declared
+    // minimum is probed and checked even for count 0, and a present base keeps the
+    // zero, storage-before and range checks of its declared contract.
+    private static void EmitScanPayloadEnvelope(CodeWriter writer, TableModel model, PayloadModel payload,
+        HashSet<string> emitted)
+    {
+        EmitScanProbeChain(writer, model, payload.Minimum, emitted);
+        int index = payload.ScanOrder;
+        writer.Line($"status = TryGet{payload.Minimum}(out var rawMinimum{index}, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line($"ulong minimum{index} = rawMinimum{index};");
+        writer.Line($"if (minimum{index} > (ulong)_data.Length)");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
+        writer.Line($"Location.AtLocal(global::FontWeave.Core.DataField.None, minimum{index}), out diagnostic,");
+        writer.Line($"(ulong)_data.Length, minimum{index});");
+        writer.Indent -= 2;
+        writer.Line("}");
+        if (payload.Base is not { } baseName) return;
+        var baseScalar = FindScalar(model, baseName);
+        EmitScanProbeChain(writer, model, baseName, emitted);
+        writer.Line($"status = TryGet{baseName}(out var rawStorageBase{index}, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line($"ulong storageBase{index} = rawStorageBase{index};");
+        writer.Line($"status = TryEvaluateScalar{baseScalar.Name}Position(out ulong basePosition{index}, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        if (!baseScalar.ZeroAllowed)
+        {
+            writer.Line($"if (storageBase{index} == 0UL)");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.InvalidValue,");
+            writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition{index}),");
+            writer.Line("out diagnostic, 0UL, 1UL);");
+            writer.Indent -= 2;
+        }
+        writer.Line($"if (storageBase{index} < minimum{index})");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.StorageBeforeRecords,");
+        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition{index}), out diagnostic,");
+        writer.Line($"storageBase{index}, minimum{index});");
+        writer.Indent -= 2;
+        writer.Line($"if (storageBase{index} > (ulong)_data.Length)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){baseScalar.FieldId}, basePosition{index}), out diagnostic,");
+        writer.Line($"storageBase{index}, (ulong)_data.Length);");
+        writer.Indent -= 2;
+    }
+
+    // Reference and payload groups merge into one list ordered by their declared
+    // attribute position (spec 6.1.1 step 4); same-slot branches travel together.
+    private static List<(int Order, PayloadModel? Payload, List<ReferenceModel>? References)> OrderedRelationGroups(
+        TableModel model)
+    {
+        var groups = new List<(int Order, PayloadModel? Payload, List<ReferenceModel>? References)>();
+        foreach (var payload in model.Payloads)
+            groups.Add((payload.ScanOrder, payload, null));
+        var slotGroups = new List<List<ReferenceModel>>();
+        var slotIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var reference in model.References)
+        {
+            string key = reference.ArrayName is null ? reference.OffsetField : reference.ArrayName + ":" + reference.OffsetField;
+            if (!slotIndex.TryGetValue(key, out int index))
+            {
+                index = slotGroups.Count;
+                slotIndex[key] = index;
+                slotGroups.Add(new List<ReferenceModel>());
+            }
+            slotGroups[index].Add(reference);
+        }
+        foreach (var group in slotGroups)
+            groups.Add((group.Min(static r => r.ScanOrder), null, group));
+        return groups.OrderBy(static group => group.Order).ToList();
+    }
+
+    private static void EmitScanReferenceSlot(CodeWriter writer, TableModel model, List<ReferenceModel> group,
+        HashSet<string> emitted)
+    {
+        var first = group[0];
+        ArrayModel? array = first.ArrayName is null ? null : FindArray(model, first.ArrayName);
+        ScalarModel offset = array is null ? FindScalar(model, first.OffsetField) : FindArrayField(array, first.OffsetField);
+
+        // The slot exists only while its source field physically exists (spec 4): an
+        // array-form slot follows the array's activation, a scalar-form slot the offset
+        // field's own version condition.
+        bool guarded = false;
+        if (array is not null && array.WhenVersions.Length != 0)
+        {
+            EmitScanVersionGuard(writer, array.WhenVersions);
+            writer.Indent++;
+            guarded = true;
+        }
+        else if (array is null && offset.WhenVersion >= 0)
+        {
+            writer.Line($"if (version == {U((ulong)offset.WhenVersion)})");
+            writer.Line("{");
+            writer.Indent++;
+            guarded = true;
+        }
+        if (array is { ExternallyPositioned: true })
+        {
+            // Extern record occurrences cannot be enumerated by the schema (spec 6.1):
+            // the slot marks the profile Partial without charging any edge or faking a
+            // walk, exactly like a Manual branch.
+            writer.Line("partial = true;");
+        }
+        else
+            EmitScanSlotSelection(writer, model, group, array, offset, emitted);
+        if (guarded)
+        {
+            writer.Indent--;
+            writer.Line("}");
+        }
+    }
+
+    // Card 1.2-b (OQ-2 ruling): the slot's branches are evaluated in declaration order
+    // as one group and the first condition-matching declaration is selected — the policy
+    // belongs to the selected branch, and exactly one branch runs per occurrence.
+    private static void EmitScanSlotSelection(CodeWriter writer, TableModel model, List<ReferenceModel> group,
+        ArrayModel? array, ScalarModel offset, HashSet<string> emitted)
+    {
+        var ordered = group.OrderBy(static r => r.ScanOrder).ToList();
+        var selector = ordered.FirstOrDefault(static r => r.Selector is not null);
+        string? selectorValue = null;
+        if (selector is not null)
+        {
+            var selectorScalar = FindScalar(model, selector.Selector!);
+            EmitScanProbeChain(writer, model, selectorScalar.Name, emitted);
+            writer.Line($"status = TryGet{selectorScalar.Name}(out {selectorScalar.CsType} rawSelector{selector.Name}, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            writer.Line($"ulong selectorValue{selector.Name} = rawSelector{selector.Name};");
+            selectorValue = $"selectorValue{selector.Name}";
+        }
+        if (ordered.Count == 1 && ordered[0].Selector is null && ordered[0].WhenRoles.Length == 0)
+        {
+            EmitScanBranchBody(writer, model, ordered[0], array, offset, emitted, selectorValue);
+            return;
+        }
+        for (int i = 0; i < ordered.Count; i++)
+        {
+            var branch = ordered[i];
+            string? condition = ScanBranchCondition(model, branch, selectorValue);
+            writer.Line(condition is null ? "else" : i == 0 ? $"if ({condition})" : $"else if ({condition})");
+            writer.Line("{");
+            writer.Indent++;
+            EmitScanBranchBody(writer, model, branch, array, offset, emitted, selectorValue);
+            writer.Indent--;
+            writer.Line("}");
+        }
+        if (ordered.Any(static r => r.DefaultRaw)) return;
+        // Spec 4: a physically present source slot must select a branch or the DefaultRaw
+        // remainder; an unmatched selector refuses exactly like the typed opener does.
+        // (Without a selector every branch carries WhenRoles, so the role axis remains.)
+        writer.Line("else");
+        writer.Line("{");
+        writer.Indent++;
+        if (selector is not null)
+        {
+            var selectorScalar = FindScalar(model, selector.Selector!);
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.UnsupportedFormat,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.UnsupportedOperation,");
+            writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){selectorScalar.FieldId}, {U(selectorScalar.Position.Constant)}), out diagnostic,");
+            writer.Line($"{selectorValue}, 0UL);");
+            writer.Indent--;
+        }
+        else
+        {
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.UnsupportedFormat,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.UnsupportedOperation,");
+            writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0UL), out diagnostic,");
+            writer.Line("unchecked((ulong)(long)role), 0UL);");
+            writer.Indent--;
+        }
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    private static string? ScanBranchCondition(TableModel model, ReferenceModel branch, string? selectorValue)
+    {
+        var parts = new List<string>();
+        if (branch.WhenRoles.Length != 0)
+        {
+            string roleType = ScanRoleType(model);
+            parts.Add(string.Join(" || ",
+                branch.WhenRoles.Select(role => $"role == {roleType}.{MemberName(model, role)}")));
+        }
+        if (branch.Selector is not null && selectorValue is not null && branch.SelectorValues.Length != 0)
+            parts.Add(string.Join(" || ",
+                branch.SelectorValues.Select(value => $"{selectorValue} == {value}UL")));
+        return parts.Count == 0 ? null : string.Join(" && ", parts);
+    }
+
+    private static void EmitScanBranchBody(CodeWriter writer, TableModel model, ReferenceModel branch,
+        ArrayModel? array, ScalarModel offset, HashSet<string> emitted, string? selectorValue)
+    {
+        switch (branch.Scan)
+        {
+            case ReferenceScan.Manual:
+                // Manual never enumerates and never charges a fictional edge (spec 6.3).
+                writer.Line("partial = true;");
+                return;
+            case ReferenceScan.Observe:
+                EmitScanEdge(writer, model, branch, array, offset, emitted, ScanEdgeMode.Observe);
+                return;
+            case ReferenceScan.OpenOnly:
+                EmitScanEdge(writer, model, branch, array, offset, emitted, ScanEdgeMode.OpenOnly);
+                return;
+            default:
+                EmitScanEdge(writer, model, branch, array, offset, emitted, ScanEdgeMode.Follow);
+                return;
+        }
+    }
+
+    private enum ScanEdgeMode { Follow, OpenOnly, Observe }
+
+    // One selected branch's edges. The edge attempt charges 1 Work at the ref/offset
+    // field (keeping the ordinal) before the edge's new element probes and opener
+    // (spec 6.3); zero policy precedes every base/minimum/length evaluation, and the
+    // cache is consulted only after the whole declared envelope passed (spec 6.2).
+    private static void EmitScanEdge(CodeWriter writer, TableModel model, ReferenceModel reference,
+        ArrayModel? array, ScalarModel offset, HashSet<string> emitted, ScanEdgeMode mode)
+    {
+        bool roleDispatch = model.RoleType is not null;
+        string targetView = reference.TargetNamespace.Length == 0
+            ? reference.TargetName
+            : "global::" + reference.TargetNamespace + "." + reference.TargetName;
+        string tag = reference.Name;
+        string ordinalArg = array is null ? "" : ", ordinal";
+        string fieldPosition = array is null
+            ? U(offset.Position.Constant)
+            : $"start{array.Name} + (ulong)ordinal * {U((ulong)array.Stride)} + {U(offset.Position.Constant)}";
+        string refLocation = $"Location.AtLocal((global::FontWeave.Core.DataField){offset.FieldId}, {fieldPosition}{ordinalArg})";
+        ScalarModel? lengthElement = reference.Length is not null && array is not null
+            ? FindArrayField(array, reference.Length) : null;
+        // The child core runs under the target's role; the key's role dimension must
+        // match on both the lookup and the published side (spec 6.2).
+        string childRoleArgument = "";
+        string childRoleProfile = "0L";
+        if (reference.TargetRoleType is not null)
+        {
+            if (reference.ForwardRole)
+            {
+                childRoleArgument = "role, ";
+                childRoleProfile = "unchecked((long)role)";
+            }
+            else
+            {
+                childRoleArgument = $"(global::{reference.TargetRoleType})({reference.TargetRole}L), ";
+                childRoleProfile = $"{reference.TargetRole}L";
+            }
+        }
+        string openCall = array is null
+            ? $"TryOpen{reference.Name}({(roleDispatch ? "role, " : "")}out {targetView} child{tag}, out {(mode == ScanEdgeMode.OpenOnly ? $"bool present{tag}" : "_")}, out diagnostic)"
+            : $"TryOpen{reference.Name}({(roleDispatch ? "role, " : "")}ordinal, out {targetView} child{tag}, out {(mode == ScanEdgeMode.OpenOnly ? $"bool present{tag}" : "_")}, out diagnostic)";
+        string windowLength = "";
+
+        void EmitEdge()
+        {
+            if (array is not null)
+            {
+                // Occurrence-scoped dedup flags: one probe per record occurrence.
+                writer.Line("bool probedOffsetOcc = false;");
+                if (lengthElement is not null)
+                    writer.Line("bool probedLengthOcc = false;");
+            }
+            writer.Line($"if (!budget.Work(1, {refLocation}, out diagnostic))");
+            writer.Indent++;
+            writer.Line("return global::FontWeave.Core.ReadStatus.ResourceLimit;");
+            writer.Indent--;
+            if (array is not null)
+            {
+                EmitScanProbeCharge(writer, "probedOffsetOcc");
+                if (lengthElement is not null)
+                    EmitScanProbeCharge(writer, "probedLengthOcc");
+                writer.Line($"status = TryGet{array.Name}(ordinal, out {array.Name}Data record{tag}, out diagnostic);");
+                writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                writer.Line($"ulong encodedOffset{tag} = (ulong)record{tag}.{offset.Name};");
+            }
+            else
+            {
+                EmitScanProbeChain(writer, model, offset.Name, emitted);
+                writer.Line($"status = TryGet{offset.Name}(out {offset.CsType} rawOffset{tag}, out diagnostic);");
+                writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                writer.Line($"ulong encodedOffset{tag} = rawOffset{tag};");
+            }
+
+            bool zeroProceeds = reference.NullPolicy == ReferenceNullPolicy.ZeroIsAddress;
+            if (!zeroProceeds)
+            {
+                writer.Line($"if (encodedOffset{tag} != 0UL)");
+                writer.Line("{");
+                writer.Indent++;
+            }
+            EmitEnvelopeAndTail();
+            if (!zeroProceeds)
+            {
+                writer.Indent--;
+                writer.Line("}");
+                if (reference.NullPolicy == ReferenceNullPolicy.Required)
+                {
+                    // A required zero refuses per its declared ZeroFailure; an optional
+                    // zero is a legal absence that marks nothing and evaluates nothing
+                    // (spec 3.4/6.1).
+                    writer.Line("else");
+                    writer.Line("{");
+                    writer.Indent++;
+                    if (reference.ZeroFailure == ReferenceZeroFailure.InvalidValue)
+                    {
+                        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidFormat,");
+                        writer.Indent++;
+                        writer.Line("global::FontWeave.Core.DiagnosticCode.InvalidValue,");
+                        writer.Line($"{refLocation}, out diagnostic, 0UL, 1UL);");
+                        writer.Indent--;
+                    }
+                    else
+                    {
+                        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+                        writer.Indent++;
+                        writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+                        writer.Line($"{refLocation}, out diagnostic, 0UL, (ulong)_data.Length);");
+                        writer.Indent--;
+                    }
+                    writer.Indent--;
+                    writer.Line("}");
+                }
+            }
+        }
+
+        void EmitEnvelopeAndTail()
+        {
+            string baseExpr = "0UL";
+            if (reference.Origin == ReferenceOrigin.NamedBase)
+            {
+                EmitScanProbeChain(writer, model, reference.Base!, emitted);
+                writer.Line($"status = TryGet{reference.Base}(out var rawRefBase{tag}, out diagnostic);");
+                writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                writer.Line($"ulong refBase{tag} = rawRefBase{tag};");
+                baseExpr = $"refBase{tag}";
+            }
+            else if (reference.Origin == ReferenceOrigin.RecordStart && array is not null)
+                baseExpr = $"start{array.Name} + (ulong)ordinal * {U((ulong)array.Stride)}";
+            if (baseExpr != "0UL" || offset.Scale != 1)
+            {
+                writer.Line($"if (encodedOffset{tag} > (ulong.MaxValue - {baseExpr}) / {U(offset.Scale)})");
+                writer.Line("{");
+                writer.Indent++;
+                writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+                writer.Indent++;
+                writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+                writer.Line($"{refLocation},");
+                writer.Line($"out diagnostic, encodedOffset{tag}, (ulong.MaxValue - {baseExpr}) / {U(offset.Scale)});");
+                writer.Indent -= 2;
+                writer.Line("}");
+            }
+            writer.Line($"ulong target{tag} = {baseExpr} + encodedOffset{tag} * {U(offset.Scale)};");
+            if (reference.Minimum is { } minimumName)
+            {
+                EmitScanProbeChain(writer, model, minimumName, emitted);
+                writer.Line($"status = TryGet{minimumName}(out var rawRefMinimum{tag}, out diagnostic);");
+                writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                writer.Line($"ulong refMinimum{tag} = rawRefMinimum{tag};");
+                writer.Line($"if (target{tag} < refMinimum{tag})");
+                writer.Line("{");
+                writer.Indent++;
+                writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+                writer.Indent++;
+                writer.Line("global::FontWeave.Core.DiagnosticCode.StorageBeforeRecords,");
+                writer.Line($"{refLocation}, out diagnostic, target{tag}, refMinimum{tag});");
+                writer.Indent -= 2;
+                writer.Line("}");
+            }
+            if (reference.Length is { } lengthName)
+            {
+                string lengthLocation;
+                if (array is not null)
+                {
+                    writer.Line($"ulong refWindowLength{tag} = (ulong)record{tag}.{lengthName};");
+                    lengthLocation = $"Location.AtLocal((global::FontWeave.Core.DataField){lengthElement!.FieldId}, {fieldPosition} - {U(offset.Position.Constant)} + {U(lengthElement.Position.Constant)}{ordinalArg})";
+                }
+                else
+                {
+                    EmitScanProbeChain(writer, model, lengthName, emitted);
+                    writer.Line($"status = TryGet{lengthName}(out var rawRefLength{tag}, out diagnostic);");
+                    writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                    writer.Line($"ulong refWindowLength{tag} = rawRefLength{tag};");
+                    var lengthScalar = FindScalar(model, lengthName);
+                    lengthLocation = $"Location.AtLocal((global::FontWeave.Core.DataField){lengthScalar.FieldId}, {U(lengthScalar.Position.Constant)})";
+                }
+                writer.Line($"if (refWindowLength{tag} > (ulong)_data.Length - target{tag})");
+                writer.Line("{");
+                writer.Indent++;
+                writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+                writer.Indent++;
+                writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+                writer.Line($"{lengthLocation}, out diagnostic, refWindowLength{tag}, (ulong)_data.Length - target{tag});");
+                writer.Indent -= 2;
+                writer.Line("}");
+                windowLength = $"(int)refWindowLength{tag}";
+            }
+            else
+                windowLength = $"_data.Length - (int)target{tag}";
+            writer.Line($"if (target{tag} {(reference.AllowTargetAtEnd ? ">" : ">=")} (ulong)_data.Length)");
+            writer.Line("{");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+            writer.Line($"{refLocation}, out diagnostic, target{tag}, (ulong)_data.Length);");
+            writer.Indent -= 2;
+            writer.Line("}");
+
+            switch (mode)
+            {
+                case ScanEdgeMode.Observe:
+                    writer.Line("partial = true;");
+                    return;
+                case ScanEdgeMode.OpenOnly:
+                    // The header check belongs to the edge: present marks Partial and no
+                    // Follow body or slot is formed (spec 6.3).
+                    writer.Line($"status = {openCall};");
+                    writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                    writer.Line($"if (present{tag}) partial = true;");
+                    return;
+                default:
+                    EmitFollowTail();
+                    return;
+            }
+        }
+
+        void EmitFollowTail()
+        {
+            writer.Line($"if (scope.TryGetCompleted(Location.Offset + target{tag}, {windowLength}, {targetView}.ScanKindId, {childRoleProfile}, out var cachedCoverage{tag}))");
+            writer.Line("{");
+            writer.Indent++;
+            // A hit merges the cached result: a cached Partial stays Partial at the root
+            // (spec 6.2) while the edge and its element occurrences stay billed above.
+            writer.Line($"if (cachedCoverage{tag} == global::FontWeave.Schema.StructuralScanCoverage.Partial) partial = true;");
+            writer.Indent--;
+            writer.Line("}");
+            writer.Line("else");
+            writer.Line("{");
+            writer.Indent++;
+            // The child core runs with publishSlot: it pays its own 40-byte facts slot at
+            // its own start and publishes the completed fact; the header binding of the
+            // opener stays inside the edge fee (spec 6.3).
+            writer.Line($"status = {openCall};");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            writer.Line($"status = child{tag}.ScanStructureCore({childRoleArgument}budget, scope, true, out var childCoverage{tag}, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            writer.Line($"if (childCoverage{tag} == global::FontWeave.Schema.StructuralScanCoverage.Partial) partial = true;");
+            writer.Indent--;
+            writer.Line("}");
+        }
+
+        if (array is not null)
+        {
+            writer.Line($"for (int ordinal = 0; ordinal < (int)count{array.Name}; ordinal++)");
+            writer.Line("{");
+            writer.Indent++;
+            EmitEdge();
+            writer.Indent--;
+            writer.Line("}");
+        }
+        else
+            EmitEdge();
+    }
+
+    // Payload edges (spec 6.1.1 step 4): one Work per attempt, the record's offset and
+    // length elements probed per occurrence, then the complete envelope (offset scale,
+    // storage minimum, full source range) without reading any payload content. A legal
+    // envelope never forces Partial; a broken one fails the scan (spec V1-07).
+    private static void EmitScanPayloadSlot(CodeWriter writer, TableModel model, PayloadModel payload,
+        HashSet<string> emitted)
+    {
+        var array = FindArray(model, payload.Array);
+        var offset = FindArrayField(array, payload.Offset);
+        var lengthElement = FindArrayField(array, payload.Length);
+        ScalarModel? baseScalar = payload.Base is null ? null : FindScalar(model, payload.Base);
+        bool guarded = array.WhenVersions.Length != 0;
+        if (guarded)
+        {
+            EmitScanVersionGuard(writer, array.WhenVersions);
+            writer.Indent++;
+        }
+        writer.Line($"for (int ordinal = 0; ordinal < (int)count{array.Name}; ordinal++)");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("bool probedOffsetOcc = false;");
+        writer.Line("bool probedLengthOcc = false;");
+        string fieldPosition = $"start{array.Name} + (ulong)ordinal * {U((ulong)array.Stride)} + {U(offset.Position.Constant)}";
+        writer.Line($"if (!budget.Work(1, Location.AtLocal((global::FontWeave.Core.DataField){offset.FieldId}, {fieldPosition}, ordinal), out diagnostic))");
+        writer.Indent++;
+        writer.Line("return global::FontWeave.Core.ReadStatus.ResourceLimit;");
+        writer.Indent--;
+        EmitScanProbeCharge(writer, "probedOffsetOcc");
+        EmitScanProbeCharge(writer, "probedLengthOcc");
+        writer.Line($"status = TryGet{array.Name}(ordinal, out {array.Name}Data record, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line($"ulong encodedOffset = (ulong)record.{payload.Offset};");
+        if (!offset.ZeroAllowed)
+        {
+            writer.Line("if (encodedOffset == 0UL)");
+            writer.Line("{");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidFormat,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.InvalidValue,");
+            writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){offset.FieldId}, {fieldPosition}, ordinal),");
+            writer.Line("out diagnostic, 0UL, 1UL);");
+            writer.Indent -= 2;
+            writer.Line("}");
+        }
+        EmitScanProbeChain(writer, model, payload.Minimum, emitted);
+        writer.Line($"status = TryGet{payload.Minimum}(out var rawEdgeMinimum, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line("ulong edgeMinimum = rawEdgeMinimum;");
+        string baseValue = "";
+        if (baseScalar is not null)
+        {
+            EmitScanProbeChain(writer, model, payload.Base!, emitted);
+            writer.Line($"status = TryGet{payload.Base}(out var rawEdgeBase, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            writer.Line("ulong edgeBase = rawEdgeBase;");
+            baseValue = "edgeBase + ";
+        }
+        writer.Line($"ulong absoluteOffset = {baseValue}encodedOffset * {U(offset.Scale)};");
+        if (baseScalar is null)
+        {
+            writer.Line("if (absoluteOffset < edgeMinimum)");
+            writer.Line("{");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.StorageBeforeRecords,");
+            writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){offset.FieldId}, {fieldPosition}, ordinal),");
+            writer.Line("out diagnostic, absoluteOffset, edgeMinimum);");
+            writer.Indent -= 2;
+            writer.Line("}");
+        }
+        writer.Line($"ulong payloadLength = (ulong)record.{payload.Length};");
+        writer.Line("if (!TrySlice(_data, absoluteOffset, payloadLength, out _))");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.Payload, absoluteOffset, ordinal),");
+        writer.Line("out diagnostic, absoluteOffset + payloadLength, (ulong)_data.Length);");
+        writer.Indent -= 2;
+        writer.Indent--;
+        writer.Line("}");
+        if (guarded)
+        {
+            writer.Indent--;
+            writer.Line("}");
+        }
+    }
+
+    private static DerivedModel? FindDerivedOrNull(TableModel model, string name)
+    {
+        foreach (var derived in model.Derived)
+            if (derived.Name == name) return derived;
+        return null;
+    }
+
     private static ulong RawBound(ScalarModel value) => value.Type switch
     {
         WireType.UInt8 => byte.MaxValue, WireType.Int8 => (ulong)sbyte.MaxValue,
@@ -1783,12 +2777,19 @@ internal static class ViewEmitter
     private sealed class CodeWriter
     {
         private readonly StringBuilder _builder = new();
+        private string _previous = "";
         public int Indent { get; set; }
 
         public void Line(string text = "")
         {
+            // Emission functions must leave the indent as they found it (A2 lesson); a
+            // negative indent is always an unbalanced ++/-- and fails here with context.
+            if (Indent < 0)
+                throw new InvalidOperationException(
+                    $"CodeWriter indent went negative after line: {_previous}\n--- partial output ---\n{_builder}");
             if (text.Length != 0) _builder.Append(' ', Indent * 4).Append(text);
             _builder.Append('\n');
+            _previous = text;
         }
 
         public override string ToString() => _builder.ToString();

@@ -15,6 +15,10 @@ namespace FontWeave.Schema
     internal enum ReferenceNullPolicy { Required, Optional, ZeroIsAddress }
     internal enum ReferenceZeroFailure { OffsetRange, InvalidValue }
     internal enum ReferenceScan { Unspecified, Follow, OpenOnly, Observe, Manual }
+    // Frozen names and values (spec 6.1, card OQ-1): emitted with the schema attributes
+    // (same namespace and mechanism as the reference scan), so producers and the internal
+    // contract probe share one declaration surface with no per-namespace duplication.
+    internal enum StructuralScanCoverage { NotEvaluated = 0, DeclaredClosure = 1, Partial = 2 }
 
     [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]
     [global::System.AttributeUsage(global::System.AttributeTargets.Struct | global::System.AttributeTargets.Class)]
@@ -22,6 +26,9 @@ namespace FontWeave.Schema
     {
         public BinaryTableAttribute(uint tag, int minimumHeader) { }
         public int ContractVersion { get; set; }
+        // A5 (spec 2.1/6.1): default false; enabling requires contract version 1 and makes
+        // an explicit scan policy on every reference a build-time obligation.
+        public bool GenerateStructureScan { get; set; }
         public string? VersionField { get; set; }
         public uint[] SupportedVersions { get; set; } = new uint[0];
         public global::System.Type? RoleType { get; set; }

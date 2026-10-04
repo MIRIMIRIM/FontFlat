@@ -34,6 +34,9 @@ internal sealed class SchemaParser
     private readonly HashSet<string> _visiting = new(StringComparer.Ordinal);
     private readonly List<ReferenceModel> _references = new();
     private readonly HashSet<string> _referenceNames = new(StringComparer.Ordinal);
+    // The declared order across both relation kinds (spec 6.1.1 step 4); the scan core
+    // processes Reference/Payload groups in this interleaved attribute order.
+    private int _scanOrder;
     // Slot keys "name" (scalars) / "array:element" (elements) mapped to the legacy
     // Origin/ZeroAllowed values the declaration stated explicitly (card 1.2-f: only
     // explicit legacy values participate in the consistency check).
@@ -79,6 +82,14 @@ internal sealed class SchemaParser
             Error(FontSchemaGenerator.Shape, "ContractVersion " + _model.ContractVersion +
                 " is not supported; only 0 (the current contract) and 1 are defined.");
             return Finish();
+        }
+        // Card 1.7: a GenerateStructureScan declaration under contract version 0 is the
+        // explicit ContractVersion=1 rejection, never a silent V0 reinterpretation.
+        if (table.NamedArguments.Any(static p => p.Key == "GenerateStructureScan"))
+        {
+            _model.GenerateStructureScan = Boolean(table, "GenerateStructureScan", false);
+            if (_model.ContractVersion != 1)
+                Error(FontSchemaGenerator.Shape, "BinaryTable GenerateStructureScan requires ContractVersion=1.");
         }
         if (_model.MinimumHeader < 0) Error(FontSchemaGenerator.Layout, "minimumHeader cannot be negative.");
         if (_fieldIds.Count == 0) Error(FontSchemaGenerator.Reference, "FontWeave.Core.DataField is required; no second diagnostic contract is generated.");
@@ -202,13 +213,16 @@ internal sealed class SchemaParser
                         Error(FontSchemaGenerator.Shape, "BinaryReference requires ContractVersion=1.");
                         break;
                     }
+                    reference.ScanOrder = _scanOrder++;
                     _references.Add(reference);
                     break;
                 case "BinaryPayloadAttribute":
-                    payloads.Add(new PayloadModel { Array = Text(attribute, 0), Offset = Text(attribute, 1),
+                    var payload = new PayloadModel { Array = Text(attribute, 0), Offset = Text(attribute, 1),
                         Length = Text(attribute, 2),
                         Base = attribute.ConstructorArguments.Length == 5 ? Text(attribute, 3) : null,
-                        Minimum = Text(attribute, attribute.ConstructorArguments.Length - 1) });
+                        Minimum = Text(attribute, attribute.ConstructorArguments.Length - 1) };
+                    payload.ScanOrder = _scanOrder++;
+                    payloads.Add(payload);
                     break;
                 case "BinaryTableAttribute":
                     // Parsed from context.Attributes above; listed so the unknown
@@ -358,9 +372,16 @@ internal sealed class SchemaParser
         }
 
         ValidateReferences();
+        ValidateScanOffsetCoverage();
 
         var generated = new HashSet<string>(StringComparer.Ordinal)
             { "IsBound", "RawBytes", "TryOpen", "_data", "_location", "_bound", "Location", "NormalizeLocation", "TrySlice", "Fail", "TryRequireKnownVersion" };
+        if (_model.ContractVersion == 1 && _model.GenerateStructureScan)
+        {
+            // The emitted scan family (spec 6.1); handwritten collisions stay FWG002.
+            GeneratedName(generated, "TryScanStructure");
+            GeneratedName(generated, "ScanStructureCore");
+        }
         GeneratedName(generated, _model.Name);
         foreach (var scalar in _model.Scalars)
         {
@@ -569,6 +590,30 @@ internal sealed class SchemaParser
         ValidateRoleContracts();
     }
 
+    // Card 1.1 ④ (spec 6.1): in a scan-enabled table every declared Semantic=Offset
+    // scalar/element slot must be covered by a reference slot, a payload slot or a
+    // payload storage anchor; uncovered declared offsets are FWG005. Undeclared bytes
+    // and relations are never endorsed by this check.
+    private void ValidateScanOffsetCoverage()
+    {
+        if (_model.ContractVersion != 1 || !_model.GenerateStructureScan) return;
+        var covered = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var reference in _model.References)
+            covered.Add(reference.ArrayName is null ? reference.OffsetField : reference.ArrayName + ":" + reference.OffsetField);
+        foreach (var payload in _model.Payloads)
+        {
+            covered.Add(payload.Array + ":" + payload.Offset);
+            if (payload.Base is not null) covered.Add(payload.Base);
+        }
+        foreach (var scalar in _model.Scalars)
+            if (scalar.Semantic == NumberSemantic.Offset && !covered.Contains(scalar.Name))
+                Error(FontSchemaGenerator.Condition, "A declared Offset field is not covered by a reference, payload or payload anchor: " + scalar.Name);
+        foreach (var array in _model.Arrays)
+            foreach (var field in array.Fields)
+                if (field.Semantic == NumberSemantic.Offset && !covered.Contains(array.Name + ":" + field.Name))
+                    Error(FontSchemaGenerator.Condition, "A declared Offset field is not covered by a reference, payload or payload anchor: " + field.Name);
+    }
+
     // Card 1.2-a (spec 4): RoleType resolves through typeof like an A3 registry target and
     // must be an actual non-Flags C# enum whose underlying type is at most 32 bits, with a
     // non-empty SupportedRoles set of declared member values (FWG003 shapes). The declared
@@ -651,14 +696,23 @@ internal sealed class SchemaParser
 
     // Card 1.2-g (spec 4): the whole A4 dispatch contract is FWG005 with no new diagnostic
     // IDs — the Scan value domain, WhenRoles validity, the selector shape, per-slot branch
-    // consistency and intersection, and the DefaultRaw remainder-set shape.
+    // consistency and intersection, and the DefaultRaw remainder-set shape. A5 (spec 6.1,
+    // card 1.2-a) unlocks the Follow/OpenOnly/Manual values for tables that enable
+    // GenerateStructureScan and obliges every reference of such a table to declare an
+    // explicit policy; the numeric shape check keeps its A4-pinned FWG005 home.
     private void ValidateRoleContracts()
     {
+        bool scanCapable = _model.ContractVersion == 1 && _model.GenerateStructureScan;
         foreach (var reference in _model.References)
         {
-            if ((int)reference.Scan is < 0 or > 4 ||
-                reference.Scan is ReferenceScan.Follow or ReferenceScan.OpenOnly or ReferenceScan.Manual)
-                Error(FontSchemaGenerator.Condition, "ReferenceScan " + reference.Scan + " is outside the A4 value domain {Unspecified, Observe}; the rest follows the A5 structure-scan slice: " + reference.Name);
+            if ((int)reference.Scan is < 0 or > 4)
+                Error(FontSchemaGenerator.Condition, "ReferenceScan " + reference.Scan + " is not a declared ReferenceScan value: " + reference.Name);
+            else if (reference.Scan is ReferenceScan.Follow or ReferenceScan.OpenOnly or ReferenceScan.Manual && !scanCapable)
+                Error(FontSchemaGenerator.Condition, "ReferenceScan " + reference.Scan + " requires the table to enable GenerateStructureScan: " + reference.Name);
+            else if (reference.Scan == ReferenceScan.Follow && reference.TargetFullName is null)
+                Error(FontSchemaGenerator.Condition, "A Follow reference requires a declared target: " + reference.Name);
+            else if (reference.Scan == ReferenceScan.Unspecified && scanCapable)
+                Error(FontSchemaGenerator.Condition, "A table with GenerateStructureScan must declare an explicit scan policy on every reference: " + reference.Name);
             if (reference.WhenRoles.Length != 0)
             {
                 if (_model.RoleType is null)
@@ -1127,7 +1181,7 @@ internal sealed class SchemaParser
             Value(field.WhenVersion); Value(field.Otherwise);
         }
         Value(_model.Namespace); Value(_model.Name); Value(_model.Tag); Value(_model.MinimumHeader);
-        Value(_model.ContractVersion); Value(_model.VersionField);
+        Value(_model.ContractVersion); Value(_model.GenerateStructureScan); Value(_model.VersionField);
         Value(_model.SupportedVersions.Length); foreach (uint version in _model.SupportedVersions) Value(version);
         // The role contract is identity: enum full name, declared member snapshot and the
         // normalized supported set (card 1.2-f, spec 8.2).
@@ -1163,7 +1217,7 @@ internal sealed class SchemaParser
         }
         Value(_model.Payloads.Length);
         for (int i = 0; i < _model.Payloads.Length; i++)
-        { Value(i); Value(_model.Payloads[i].Array); Value(_model.Payloads[i].Offset); Value(_model.Payloads[i].Length); Value(_model.Payloads[i].Base); Value(_model.Payloads[i].Minimum); }
+        { Value(i); Value(_model.Payloads[i].Array); Value(_model.Payloads[i].Offset); Value(_model.Payloads[i].Length); Value(_model.Payloads[i].Base); Value(_model.Payloads[i].Minimum); Value(_model.Payloads[i].ScanOrder); }
         Value(_model.References.Length);
         for (int i = 0; i < _model.References.Length; i++)
         {
@@ -1174,7 +1228,7 @@ internal sealed class SchemaParser
             Value(reference.WhenRoles.Length); foreach (long role in reference.WhenRoles) Value(role);
             Value(reference.Selector);
             Value(reference.SelectorValues.Length); foreach (uint value in reference.SelectorValues) Value(value);
-            Value(reference.DefaultRaw); Value(reference.TargetRole); Value(reference.ForwardRole); Value(reference.Scan);
+            Value(reference.DefaultRaw); Value(reference.TargetRole); Value(reference.ForwardRole); Value(reference.Scan); Value(reference.ScanOrder);
         }
         return key.ToString();
     }
