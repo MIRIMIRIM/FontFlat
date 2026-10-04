@@ -2,16 +2,20 @@ using FontWeave.Core;
 
 namespace FontWeave.Tables.Layout;
 
+// Immutable leaf fragment plan (card A6 1.1-①): source slice, wire shape, placed
+// coverage target, placed device leaves with their emission target map and the
+// emission work total. Emission is WritePlanned; the plan carries no payload bytes.
+internal sealed record SinglePosPartPlan(int Start, int Count, ushort Format, ushort CoverageFormat,
+    int RangeCount, int CoverageTarget, int Length, SinglePosTableCompiler.DeviceLeaf[] Devices,
+    Dictionary<StaticDeviceTable, int> DeviceTargets, long EmissionWork);
+
 public static partial class SinglePosTableCompiler
 {
-    private sealed class DeviceLeaf(StaticDeviceTable model, int position)
+    internal sealed class DeviceLeaf(StaticDeviceTable model, int position)
     {
         internal StaticDeviceTable Model { get; } = model;
         internal int Position { get; set; } = position;
     }
-    private sealed record PartPlan(int Start, int Count, ushort Format, ushort CoverageFormat,
-        int RangeCount, int CoverageTarget, int Length, DeviceLeaf[] Devices,
-        Dictionary<StaticDeviceTable, int> DeviceTargets, long EmissionWork);
 
     public static ReadStatus TryCompile(SinglePosTable model, out byte[]? output,
         out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
@@ -27,7 +31,7 @@ public static partial class SinglePosTableCompiler
         if (!budget.Output(plan!.Length, model.Location, out diagnostic) ||
             !budget.Work(plan.EmissionWork, model.Location, out diagnostic) ||
             !budget.Buffer(plan.Length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        byte[] bytes = new byte[plan.Length]; WritePart(model, plan, bytes);
+        byte[] bytes = new byte[plan.Length]; WritePlanned(model, plan, bytes);
         budget.RecordCompiledTable(bytes.Length); output = bytes;
         diagnostic = default; return ReadStatus.Done;
     }
@@ -45,7 +49,7 @@ public static partial class SinglePosTableCompiler
                 (ulong)destination.Length, (ulong)plan.Length);
         if (!budget.Output(plan.Length, model.Location, out diagnostic) ||
             !budget.Work(plan.EmissionWork, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        WritePart(model, plan, destination); diagnostic = default; return ReadStatus.Done;
+        WritePlanned(model, plan, destination); diagnostic = default; return ReadStatus.Done;
     }
 
     public static ReadStatus TryCompileSubtables(SinglePosTable model, out byte[][]? output,
@@ -57,10 +61,35 @@ public static partial class SinglePosTableCompiler
     {
         ArgumentNullException.ThrowIfNull(model);
         output = null;
+        ReadStatus status = TryPlanSubtables(model, out var plans, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        long length = 0;
+        foreach (var plan in plans!) length += plan.Length;
+        // The per-part arrays are this call's published output and are admitted here;
+        // the plan surface no longer admits them (card A6 1.1-② deletion point).
+        if (!budget.Buffer(length + 8L * plans.Length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        byte[][] bytes = new byte[plans.Length][];
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            bytes[i] = new byte[plans[i].Length]; WritePlanned(model, plans[i], bytes[i]);
+            budget.RecordCompiledTable(bytes[i].Length);
+        }
+        output = bytes; diagnostic = default; return ReadStatus.Done;
+    }
+
+    // Terminal fragment planning: the whole/single fall-back, the two-part and greedy
+    // prefix candidate searches all settle here (card A6: the candidate search
+    // algorithm itself is frozen; only its result becomes a reusable plan). The former
+    // trailing Buffer(length + 8*plans.Count) admission of the per-part output arrays
+    // is not part of the plan surface.
+    internal static ReadStatus TryPlanSubtables(SinglePosTable model, out SinglePosPartPlan[]? plans,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        plans = null;
         ReadStatus status = SinglePlan(model, out var whole, out diagnostic, budget);
         if (status != ReadStatus.Done && status != ReadStatus.UnsupportedFormat) return status;
-        var plans = new List<PartPlan>();
-        if (status == ReadStatus.Done) plans.Add(whole!);
+        var fragments = new List<SinglePosPartPlan>();
+        if (status == ReadStatus.Done) fragments.Add(whole!);
         else
         {
             if (model.Format == 1 || model.Glyphs.IsEmpty) return status;
@@ -71,7 +100,7 @@ public static partial class SinglePosTableCompiler
                 status = TwoParts(model, true, out first, out second, out diagnostic, budget);
                 if (status != ReadStatus.Done && status != ReadStatus.UnsupportedFormat) return status;
             }
-            if (status == ReadStatus.Done) { plans.Add(first!); plans.Add(second!); }
+            if (status == ReadStatus.Done) { fragments.Add(first!); fragments.Add(second!); }
             else
             {
                 int start = 0;
@@ -85,25 +114,19 @@ public static partial class SinglePosTableCompiler
                     if (count == 0) return OffsetFailure(model, ushort.MaxValue + 1L, out diagnostic);
                     status = MeasurePart(model, start, count, 2, true, out var part, out diagnostic, budget);
                     if (status != ReadStatus.Done) return status;
-                    plans.Add(part!); start += count;
+                    fragments.Add(part!); start += count;
                 }
             }
         }
         long length = 0, work = 0;
-        foreach (var plan in plans) { length += plan.Length; work += plan.EmissionWork; }
+        foreach (var plan in fragments) { length += plan.Length; work += plan.EmissionWork; }
         if (!budget.Output(length, model.Location, out diagnostic) ||
-            !budget.Work(work, model.Location, out diagnostic) ||
-            !budget.Buffer(length + 8L * plans.Count, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        byte[][] bytes = new byte[plans.Count][];
-        for (int i = 0; i < bytes.Length; i++)
-        {
-            bytes[i] = new byte[plans[i].Length]; WritePart(model, plans[i], bytes[i]);
-            budget.RecordCompiledTable(bytes[i].Length);
-        }
-        output = bytes; diagnostic = default; return ReadStatus.Done;
+            !budget.Work(work, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        plans = fragments.ToArray();
+        diagnostic = default; return ReadStatus.Done;
     }
 
-    private static ReadStatus SinglePlan(SinglePosTable model, out PartPlan? plan,
+    private static ReadStatus SinglePlan(SinglePosTable model, out SinglePosPartPlan? plan,
         out FontDiagnostic diagnostic, BuildBudget budget)
     {
         ReadStatus status = MeasurePart(model, 0, model.Glyphs.Length, model.Format, false,
@@ -118,7 +141,7 @@ public static partial class SinglePosTableCompiler
     }
 
     private static ReadStatus TwoParts(SinglePosTable model, bool suffixShort,
-        out PartPlan? first, out PartPlan? second, out FontDiagnostic diagnostic, BuildBudget budget)
+        out SinglePosPartPlan? first, out SinglePosPartPlan? second, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         first = second = null;
         int count = model.Glyphs.Length;
@@ -157,7 +180,7 @@ public static partial class SinglePosTableCompiler
     }
 
     private static ReadStatus MeasurePart(SinglePosTable model, int start, int count, ushort format,
-        bool canonicalCoverage, out PartPlan? plan, out FontDiagnostic diagnostic, BuildBudget budget)
+        bool canonicalCoverage, out SinglePosPartPlan? plan, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         plan = null;
         int rows = format == 1 ? 1 : count;
@@ -218,7 +241,11 @@ public static partial class SinglePosTableCompiler
             model.Location.AtLocal(DataField.Offset, SinglePosLayout.CoverageField), out diagnostic,
             (ulong)detail, ushort.MaxValue);
 
-    private static void WritePart(SinglePosTable model, PartPlan plan, Span<byte> destination)
+    // The former private WritePart, published for direct emission into the caller's
+    // final destination (Lookup payloads or a published part array); byte-for-byte
+    // identical output. Coverage/device offsets are plan values written directly,
+    // guarded at plan time as before (card A6 OQ-F: no new fixup helpers).
+    internal static void WritePlanned(SinglePosTable model, SinglePosPartPlan plan, Span<byte> destination)
     {
         CoverageTableCompiler.RequireWritten(SinglePosView.TryWriteFormat(destination, plan.Format, out _, model.Location));
         CoverageTableCompiler.RequireWritten(SinglePosView.TryWriteCoverageOffset(destination, (ushort)plan.CoverageTarget, out _, model.Location));
