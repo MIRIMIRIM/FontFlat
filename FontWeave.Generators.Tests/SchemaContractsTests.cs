@@ -11,7 +11,7 @@ namespace FontWeave.Generators.Tests;
 
 public sealed class SchemaContractsTests
 {
-    private static readonly CSharpParseOptions Parse = new(LanguageVersion.CSharp12);
+    private static readonly CSharpParseOptions Parse = new(LanguageVersion.CSharp14);
     private static readonly MetadataReference[] References =
         ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator)
         .Append(typeof(FontSource).Assembly.Location).Distinct(StringComparer.OrdinalIgnoreCase)
@@ -186,6 +186,38 @@ public sealed class SchemaContractsTests
                     var status = view.Read(16, out var first);
                     var last = view.Read(ulong.MaxValue, out var overflow);
                     return $"{status}|{first.Location.Offset}|{first.Location.AbsoluteOffset}|{first.Location.SourceId}|{last}|{overflow.Location.Basis}|{overflow.Location.AbsoluteOffset}|{overflow.Location.SourceId}";
+                }
+            }
+            """));
+    }
+
+    // The dynamic Driver's parse options, not the test project's LangVersion, parse the probe
+    // source: `sink?.Field = bytes[1];` is null-conditional assignment, a C# 14 parser gate.
+    // Roslyn reports CS9202 ("feature 'null-conditional assignment' is not available in
+    // C# 12.0; please use language version 14.0 or greater") when the input tree is parsed
+    // with LanguageVersion.CSharp12, so Emit fails before any generator code runs; only a
+    // CSharp14 Driver parse lets the generated table and the probe compile and execute.
+    // Gate basis verified against the SDK 10.0.401 compiler: -langversion:12 -> error CS9202,
+    // -langversion:14 -> clean compile.
+    [Fact]
+    public void DriverParsesCSharp14GatedNullConditionalAssignment()
+    {
+        Assert.Equal("Done|1234|0034", Execute("""
+            using System;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x74657374, 2)]
+            [BinaryScalar("Tag", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct GatedView { }
+            public sealed class Sink { public ushort Field; }
+            public static class Entry {
+                public static string Run() {
+                    byte[] bytes = new byte[2];
+                    var status = GatedView.TryWriteTag(bytes, 0x1234, out _);
+                    Sink sink = new();
+                    sink?.Field = bytes[1];
+                    return $"{status}|{Convert.ToHexString(bytes)}|{sink.Field:X4}";
                 }
             }
             """));
