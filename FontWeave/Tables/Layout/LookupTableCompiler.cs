@@ -241,12 +241,21 @@ public static class LookupTableCompiler
         ref long cursor, out ushort target, out FontDiagnostic diagnostic)
     {
         target = 0;
-        if (cursor > ushort.MaxValue)
-            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
-                model.Location.AtLocal(DataField.Offset, LookupLayout.HeaderLength +
-                    (ulong)sourceOrdinal * LookupLayout.OffsetStride, sourceOrdinal),
-                out diagnostic, (ulong)cursor, ushort.MaxValue);
-        target = (ushort)cursor;
+        // Plan-time fixup through the generated per-reference helper (card 1.3-c). With
+        // origin=0 the encoded value equals the cursor, so the too-narrow refusal carries
+        // Detail=cursor and Expected=65535 at the same field location as the previous
+        // hand-written guard; target<origin and a present delta of 0 are unreachable
+        // inside the plan invariants (cursor starts at the header length and grows).
+        DataLocation fieldLocation = model.Location.AtLocal(DataField.Offset,
+            LookupLayout.HeaderLength + (ulong)sourceOrdinal * LookupLayout.OffsetStride, sourceOrdinal);
+        ReadStatus status;
+        if (model.Kind == LayoutLookupKind.Gsub)
+            status = LookupView.TryGetSingleSubstOffsetValue(true, 0UL, (ulong)cursor,
+                out target, out diagnostic, fieldLocation);
+        else
+            status = LookupView.TryGetSinglePosOffsetValue(true, 0UL, (ulong)cursor,
+                out target, out diagnostic, fieldLocation);
+        if (status != ReadStatus.Done) return status;
         cursor += length;
         diagnostic = default;
         return ReadStatus.Done;

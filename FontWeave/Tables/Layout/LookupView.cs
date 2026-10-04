@@ -68,8 +68,10 @@ public readonly ref partial struct LookupView
             ushort offset = parsed.SourceSubtableOffsets[i];
             if (!cache.TryGetValue(offset, out SingleSubstTable? subtable))
             {
-                status = SingleSubstView.TryOpen(_data.Slice(offset), out var child, out diagnostic,
-                    Location.AtLocal(DataField.None, offset));
+                // The generated role/selector opener re-reads the offset field itself, so
+                // the cache key and the child location stay byte-identical to the previous
+                // hand-written Slice+TryOpen pair (no billing, no behavior difference).
+                status = TryOpenSingleSubst(kind, i, out var child, out _, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 status = child.TryRead(numGlyphs, out subtable, out diagnostic, budget,
                     coverageCache, offset, Location);
@@ -99,8 +101,8 @@ public readonly ref partial struct LookupView
             ushort offset = header.SourceSubtableOffsets[i];
             if (!children.TryGetValue(offset, out var childModel))
             {
-                ReadStatus status = SinglePosView.TryOpen(_data.Slice(offset), out var child,
-                    out diagnostic, Location.AtLocal(DataField.None, offset));
+                ReadStatus status = TryOpenSinglePos(header.Kind, i, out var child,
+                    out _, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 status = child.TryRead(header.NumGlyphs, out childModel, out diagnostic, budget, state, offset);
                 if (status != ReadStatus.Done) return status;
@@ -128,8 +130,12 @@ public readonly ref partial struct LookupView
                 Location.AtLocal(DataField.Flags, LookupLayout.FlagsAt), out diagnostic, Flags, 0xFF1F);
         int offsetsEnd = LookupLayout.HeaderLength + LookupLayout.OffsetStride * SubtableCount;
         bool useSet = (Flags & LookupLayout.UseMarkFilteringSet) != 0;
-        int prefix = offsetsEnd + (useSet ? 2 : 0);
-        if (!budget.Work(prefix, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        // The declared computed replaces the hand-written prefix arithmetic; the value fed
+        // to Work is identical (6 + 2*count + useSet), so the billing stays byte-identical.
+        status = TryGetSubtablePrefix(out ulong prefixValue, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (!budget.Work((long)prefixValue, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        int prefix = (int)prefixValue;
         if (_data.Length < offsetsEnd)
         {
             int firstIncomplete = (_data.Length - LookupLayout.HeaderLength) / LookupLayout.OffsetStride;

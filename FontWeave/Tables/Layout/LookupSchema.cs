@@ -10,7 +10,9 @@ internal static class LookupLayout
         UseMarkFilteringSet = 0x0010, ReservedMask = 0x00E0, AttachmentMask = 0xFF00;
 }
 
-[BinaryTable(0, LookupLayout.HeaderLength)]
+[BinaryTable(0, LookupLayout.HeaderLength, ContractVersion = 1,
+    RoleType = typeof(LayoutLookupKind),
+    SupportedRoles = new long[] { (long)LayoutLookupKind.Gsub, (long)LayoutLookupKind.Gpos })]
 [BinaryScalar("LookupType", WireType.UInt16, LookupLayout.TypeAt, DataField.Tag)]
 [BinaryScalar("Flags", WireType.UInt16, LookupLayout.FlagsAt, DataField.Flags)]
 [BinaryScalar("SubtableCount", WireType.UInt16, LookupLayout.CountAt, DataField.Count, Semantic = NumberSemantic.Count)]
@@ -19,4 +21,28 @@ internal static class LookupLayout
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
 [BinaryRecord("FilterWord", 2)]
 [BinaryElement("FilterWord", "MarkFilteringSet", WireType.UInt16, 0, DataField.Count)]
-public readonly ref partial struct LookupView { }
+[BinaryComputed("SubtablePrefix", "SubtablePrefixOf",
+    Inputs = new[] { "Flags", "SubtableCount" }, Maximum = 131078ul,
+    Semantic = NumberSemantic.Offset, DiagnosticField = DataField.Offset,
+    DiagnosticSource = "SubtableCount")]
+[BinaryReference("SingleSubst", "SubtableOffset", typeof(SingleSubstView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gsub },
+    Selector = "LookupType", SelectorValues = new uint[] { 1 }, Minimum = "SubtablePrefix")]
+[BinaryReference("SinglePos", "SubtableOffset", typeof(SinglePosView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gpos },
+    Selector = "LookupType", SelectorValues = new uint[] { 1 }, Minimum = "SubtablePrefix")]
+[BinaryReference("UnknownTypeRaw", "SubtableOffset", Array = "SubtableOffsetRecord",
+    Selector = "LookupType", DefaultRaw = true, Scan = ReferenceScan.Observe)]
+public readonly ref partial struct LookupView
+{
+    // 6 + 2*count + (useSet ? 2 : 0): the mask test plus conditional addition is one of
+    // the explicitly allowed bounded computations (spec 2.3). The worst case
+    // 6 + 2*65535 + 2 = 131078 matches the declared static Maximum.
+    private static ReadStatus SubtablePrefixOf(ushort flags, ushort subtableCount,
+        DataLocation diagnosticLocation, out ulong value, out FontDiagnostic diagnostic)
+    {
+        value = 6UL + 2UL * subtableCount + ((flags & LookupLayout.UseMarkFilteringSet) != 0 ? 2UL : 0UL);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+}
