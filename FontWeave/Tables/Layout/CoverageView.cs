@@ -8,23 +8,14 @@ public readonly ref partial struct CoverageView
     public ReadStatus TryGetGlyph(int ordinal, out ushort glyphId, out FontDiagnostic diagnostic)
     {
         glyphId = 0;
-        ReadStatus status = RequireRecord(1, ordinal, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = TryReadGlyphRecordAt(CoverageLayout.HeaderLength + (ulong)ordinal * CoverageLayout.GlyphStride,
-            ordinal, out var record, out diagnostic);
+        ReadStatus status = TryGetGlyphRecord(ordinal, out var record, out diagnostic);
         if (status == ReadStatus.Done) glyphId = record.GlyphId;
         return status;
     }
 
     /// <summary>Local format-2 access; coverage-index and range semantics are checked by Validate.</summary>
-    public ReadStatus TryGetRange(int ordinal, out RangeRecordData record, out FontDiagnostic diagnostic)
-    {
-        record = default;
-        ReadStatus status = RequireRecord(2, ordinal, out diagnostic);
-        return status == ReadStatus.Done
-            ? TryReadRangeRecordAt(CoverageLayout.HeaderLength + (ulong)ordinal * CoverageLayout.RangeStride,
-                ordinal, out record, out diagnostic) : status;
-    }
+    public ReadStatus TryGetRange(int ordinal, out RangeRecordData record, out FontDiagnostic diagnostic) =>
+        TryGetRangeRecord(ordinal, out record, out diagnostic);
 
     public ReadStatus Validate(int numGlyphs, out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
@@ -86,12 +77,21 @@ public readonly ref partial struct CoverageView
         status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
         int stride = Format == 1 ? CoverageLayout.GlyphStride : CoverageLayout.RangeStride;
-        consumed = CoverageLayout.HeaderLength + Count * stride;
+        // The active format's extent owns the consumed arithmetic; the extent getter
+        // deliberately does not prove the trailing rows lie inside the source.
+        status = Format == 1
+            ? TryGetGlyphRecordExtent(out _, out _, out ulong end, out diagnostic)
+            : TryGetRangeRecordExtent(out _, out _, out end, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        consumed = (int)end;
         if (!budget.Work(consumed, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ulong start = CoverageLayout.HeaderLength;
         int previous = -1;
         for (int i = 0; i < Count; i++)
         {
-            ulong row = CoverageLayout.HeaderLength + (ulong)i * (uint)stride;
+            // Row provenance for semantic refusals; the record access itself is the
+            // generated accessor's wide-arithmetic start + ordinal * stride.
+            ulong row = start + (ulong)i * (uint)stride;
             if (Format == 1)
             {
                 status = TryGetGlyph(i, out ushort gid, out diagnostic);
@@ -129,21 +129,6 @@ public readonly ref partial struct CoverageView
                 previous = range.EndGlyph;
             }
         }
-        diagnostic = default;
-        return ReadStatus.Done;
-    }
-
-    private ReadStatus RequireRecord(ushort format, int ordinal, out FontDiagnostic diagnostic)
-    {
-        ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        if (Format != format)
-            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
-                Location.AtLocal(DataField.Version, 0), out diagnostic, Format, format);
-        if (ordinal < 0 || ordinal >= Count)
-            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.AtLocal(DataField.Count, CoverageLayout.CountOffset, ordinal),
-                out diagnostic, unchecked((ulong)(long)ordinal), Count);
         diagnostic = default;
         return ReadStatus.Done;
     }

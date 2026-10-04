@@ -104,8 +104,7 @@ public static class CoverageTableCompiler
         if (format == 1)
         {
             for (int i = 0; i < glyphs.Length; i++)
-                RequireWritten(CoverageView.TryWriteGlyphRecordAt(destination,
-                    CoverageLayout.HeaderLength + (ulong)i * CoverageLayout.GlyphStride,
+                RequireWritten(CoverageView.TryWriteGlyphRecord(destination, (ulong)glyphs.Length,
                     new CoverageView.GlyphRecordData(i, glyphs[i]), out _, location));
         }
         else
@@ -115,8 +114,7 @@ public static class CoverageTableCompiler
             {
                 int end = start;
                 while (end + 1 < glyphs.Length && glyphs[end + 1] == glyphs[end] + 1) end++;
-                RequireWritten(CoverageView.TryWriteRangeRecordAt(destination,
-                    CoverageLayout.HeaderLength + (ulong)ordinal * CoverageLayout.RangeStride,
+                RequireWritten(CoverageView.TryWriteRangeRecord(destination, (ulong)rangeCount,
                     new CoverageView.RangeRecordData(ordinal, glyphs[start], glyphs[end], (ushort)start),
                     out _, location));
                 ordinal++;

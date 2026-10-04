@@ -4,22 +4,46 @@ namespace FontWeave.Tables.Layout;
 
 public readonly ref partial struct StaticDeviceView
 {
+    // Contract-version-1 computed hooks (card 1.3-c). The generated accessors own the
+    // version gate, the 0x8000 known-inactive refusal and the underflow diagnostics;
+    // unpacking, tail-bit strictness and per-word semantics stay in this partial.
+
+    private static ReadStatus DeltaValueCountOf(ushort startSize, ushort endSize,
+        DataLocation diagnosticLocation, out ulong value, out FontDiagnostic diagnostic)
+    {
+        value = 0;
+        if (endSize < startSize)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                diagnosticLocation, out diagnostic, endSize, startSize);
+        value = (ulong)endSize - startSize + 1; // Inclusive UInt16 bounds span up to 65536 values.
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus PackedWordCountOf(ulong deltaValueCount, ushort deltaFormat,
+        DataLocation diagnosticLocation, out ulong value, out FontDiagnostic diagnostic)
+    {
+        value = 0;
+        // The conditional activation domain already restricts the generated path to
+        // formats 1..3; the refusal only guards direct calls of this private hook.
+        int bits = deltaFormat switch
+        {
+            1 => 2, 2 => 4, 3 => 8,
+            _ => -1
+        };
+        if (bits < 0)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                diagnosticLocation, out diagnostic, deltaFormat, 3);
+        value = (deltaValueCount * (ulong)bits + 15) / 16;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
     /// <summary>Reads one declared packed word without validating unused tail bits.</summary>
     public ReadStatus TryGetPackedWord(int ordinal, out ushort word, out FontDiagnostic diagnostic)
     {
         word = 0;
-        ReadStatus status = TryGetDeltaFormat(out ushort format, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = StaticDeviceLayout.CheckHeader(StartSize, EndSize, format, Location,
-            out int count, out int bits, out _, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        int words = StaticDeviceLayout.WordCount(count, bits);
-        if (ordinal < 0 || ordinal >= words)
-            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.AtLocal(DataField.Count, StaticDeviceLayout.EndAt, ordinal),
-                out diagnostic, unchecked((ulong)(long)ordinal), (ulong)words);
-        status = TryReadPackedWordAt(StaticDeviceLayout.HeaderLength +
-            (ulong)ordinal * StaticDeviceLayout.WordStride, ordinal, out var record, out diagnostic);
+        ReadStatus status = TryGetWord(ordinal, out var record, out diagnostic);
         if (status == ReadStatus.Done) word = record.Value;
         return status;
     }
@@ -63,8 +87,7 @@ public readonly ref partial struct StaticDeviceView
             ushort word = lastWord;
             if (i != words - 1)
             {
-                status = TryReadPackedWordAt(StaticDeviceLayout.HeaderLength +
-                    (ulong)i * StaticDeviceLayout.WordStride, i, out var record, out diagnostic);
+                status = TryGetWord(i, out var record, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 word = record.Value;
             }
@@ -82,24 +105,28 @@ public readonly ref partial struct StaticDeviceView
     private ReadStatus InspectWords(out int count, out int bits, out int consumed, out ushort lastWord,
         out FontDiagnostic diagnostic, BuildBudget budget)
     {
-        count = bits = consumed = 0;
+        count = bits = 0;
+        consumed = 0;
         lastWord = 0;
-        ReadStatus status = TryGetDeltaFormat(out ushort format, out diagnostic);
+        // The generated computed chain runs the version gate, the 0x8000 known-inactive
+        // refusal and the end<start underflow refusal before any charging, matching the
+        // former CheckHeader order at the same diagnostic locations.
+        ReadStatus status = TryGetDeltaValueCount(out ulong deltaCount, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = StaticDeviceLayout.CheckHeader(StartSize, EndSize, format, Location,
-            out count, out bits, out consumed, out diagnostic);
+        count = (int)deltaCount;
+        status = TryGetDeltaFormat(out ushort format, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        bits = 1 << format;
+        status = TryGetWordExtent(out _, out ulong wordCount, out ulong end, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        consumed = (int)end;
         if (!budget.Work(consumed, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        int words = StaticDeviceLayout.WordCount(count, bits);
         if (_data.Length < consumed)
-        {
-            int firstIncomplete = (_data.Length - StaticDeviceLayout.HeaderLength) / StaticDeviceLayout.WordStride;
-            return TryReadPackedWordAt(StaticDeviceLayout.HeaderLength +
-                (ulong)firstIncomplete * StaticDeviceLayout.WordStride, firstIncomplete, out _, out diagnostic);
-        }
-        int last = words - 1;
-        status = TryReadPackedWordAt(StaticDeviceLayout.HeaderLength +
-            (ulong)last * StaticDeviceLayout.WordStride, last, out var tail, out diagnostic);
+            // The first incomplete word and its field provenance come from the generated
+            // require-extent contract (spec 5 rule 3).
+            return TryRequireWordExtent(out diagnostic);
+        int last = (int)wordCount - 1;
+        status = TryGetWord(last, out var tail, out diagnostic);
         if (status != ReadStatus.Done) return status;
         lastWord = tail.Value;
         int used = count * bits % 16;

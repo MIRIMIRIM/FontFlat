@@ -91,9 +91,8 @@ public static class StaticDeviceTableCompiler
             int packed = 0;
             for (int j = 0; j < perWord && at < model.Deltas.Length; j++)
                 packed |= (model.Deltas[at++] & mask) << (16 - bits - j * bits);
-            CoverageTableCompiler.RequireWritten(StaticDeviceView.TryWritePackedWordAt(destination,
-                StaticDeviceLayout.HeaderLength + (ulong)i * StaticDeviceLayout.WordStride,
-                new StaticDeviceView.PackedWordData(i, (ushort)packed), out _, model.Location));
+            CoverageTableCompiler.RequireWritten(StaticDeviceView.TryWriteWord(destination,
+                (ulong)words, new StaticDeviceView.WordData(i, (ushort)packed), out _, model.Location));
         }
     }
 }
