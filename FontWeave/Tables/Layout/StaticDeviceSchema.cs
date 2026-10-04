@@ -35,7 +35,7 @@ internal static class StaticDeviceLayout
 // 0x8000 is a known version whose structures stay conditionally inactive, so every
 // entry point reports the same UnsupportedOperation; other unknown formats stay
 // UnsupportedVersion at the version gate (card 1.3-b, main-agent adjudication).
-[BinaryTable(0, StaticDeviceLayout.HeaderLength, ContractVersion = 1,
+[BinaryTable(0, StaticDeviceLayout.HeaderLength, ContractVersion = 1, GenerateStructureScan = true,
     VersionField = "DeltaFormat", SupportedVersions = new uint[] { 1, 2, 3, 0x8000 })]
 [BinaryScalar("StartSize", WireType.UInt16, StaticDeviceLayout.StartAt, DataField.Count)]
 [BinaryScalar("EndSize", WireType.UInt16, StaticDeviceLayout.EndAt, DataField.Count)]

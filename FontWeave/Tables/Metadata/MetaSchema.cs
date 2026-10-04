@@ -9,7 +9,8 @@ internal static class MetaLayout
     internal const int HeaderLength = 16, RecordStride = 12;
 }
 
-[BinaryTable(MetaLayout.Tag, MetaLayout.HeaderLength, VersionField = "Version", SupportedVersions = new uint[] { 1 })]
+[BinaryTable(MetaLayout.Tag, MetaLayout.HeaderLength, ContractVersion = 1, GenerateStructureScan = true,
+    VersionField = "Version", SupportedVersions = new uint[] { 1 })]
 [BinaryScalar("Version", WireType.UInt32, 0, DataField.Version)]
 [BinaryScalar("Flags", WireType.UInt32, 4, DataField.Flags)]
 [BinaryScalar("Reserved", WireType.UInt32, 8, DataField.None)]
