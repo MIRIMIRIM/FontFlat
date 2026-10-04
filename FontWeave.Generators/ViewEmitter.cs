@@ -87,7 +87,21 @@ internal static class ViewEmitter
             {
                 EmitArrayStart(writer, array);
                 writer.Line();
-                EmitArray(writer, model, array);
+                if (model.ContractVersion == 1)
+                {
+                    EmitArrayV1(writer, model, array);
+                    writer.Line();
+                    EmitArrayExtent(writer, model, array);
+                    writer.Line();
+                    EmitRequireArrayExtent(writer, model, array);
+                    if (HasCountedWriter(model, array))
+                    {
+                        writer.Line();
+                        EmitCountedRecordWrite(writer, model, array);
+                    }
+                }
+                else
+                    EmitArray(writer, model, array);
             }
         }
 
@@ -472,6 +486,267 @@ internal static class ViewEmitter
         writer.Line("{");
         writer.Indent++;
         EmitPosition(writer, array.Start, "start");
+        writer.Line("diagnostic = default;");
+        writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    // Contract version 1 rewrites the local array contract (spec 5): wide arithmetic
+    // first, then the declared relation against the source, with field-level
+    // truncation provenance. The V0 emission above stays byte-identical for tables
+    // that have not opted in.
+    private static void EmitArrayV1(CodeWriter writer, TableModel model, ArrayModel array)
+    {
+        ScalarModel count = FindScalar(model, array.Count);
+        writer.Line($"public global::FontWeave.Core.ReadStatus TryGet{array.Name}(int ordinal,");
+        writer.Indent++;
+        writer.Line($"out {array.Name}Data record, out global::FontWeave.Core.FontDiagnostic diagnostic)");
+        writer.Indent--;
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("record = default;");
+        writer.Line("if (!IsBound)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Uninitialized,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0, ordinal), out diagnostic);");
+        writer.Indent -= 2;
+        writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line($"status = TryGet{array.Count}(out var countRaw, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line("ulong count = (ulong)countRaw;");
+        writer.Line("if (ordinal < 0 || (ulong)ordinal >= count)");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line($"status = TryEvaluateScalar{count.Name}Position(out ulong countPosition, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidIndex,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.IndexOutOfRange,");
+        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){count.FieldId}, countPosition, ordinal),");
+        writer.Line("out diagnostic, unchecked((ulong)ordinal), count);");
+        writer.Indent -= 2;
+        writer.Line("}");
+        writer.Line($"status = TryEvaluateArray{array.Name}Start(out ulong start, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        // Defensive: schema worst-case bounds prove this unreachable at build time.
+        writer.Line($"if (count > (ulong.MaxValue - start) / {U(array.Stride)})");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line($"status = TryEvaluateScalar{count.Name}Position(out ulong countPosition, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){count.FieldId}, countPosition, ordinal),");
+        writer.Line($"out diagnostic, count, (ulong.MaxValue - start) / {U(array.Stride)});");
+        writer.Indent -= 2;
+        writer.Line("}");
+        writer.Line($"ulong rowPosition = start + (ulong)ordinal * {U(array.Stride)};");
+        writer.Line("if (start > (ulong)_data.Length)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, start, ordinal), out diagnostic,");
+        writer.Line("(ulong)_data.Length, start);");
+        writer.Indent -= 2;
+        writer.Line($"if (!TrySlice(_data, rowPosition, {U(array.Stride)}, out global::System.ReadOnlySpan<byte> row))");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("ulong available = rowPosition > (ulong)_data.Length ? 0UL : (ulong)_data.Length - rowPosition;");
+        EmitFieldTruncationChain(writer, array, "available", "rowPosition", "ordinal");
+        writer.Indent--;
+        writer.Line("}");
+        EmitRecordFields(writer, array);
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    // Get publishes the declared extent without proving it lies inside the source;
+    // start beyond the source is still refused (spec 5 rule 2, card OQ-1 ruling).
+    private static void EmitArrayExtent(CodeWriter writer, TableModel model, ArrayModel array)
+    {
+        ScalarModel count = FindScalar(model, array.Count);
+        writer.Line($"internal global::FontWeave.Core.ReadStatus TryGet{array.Name}Extent(out ulong start, out ulong count, out ulong end,");
+        writer.Indent++;
+        writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic)");
+        writer.Indent--;
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("start = 0; count = 0; end = 0;");
+        writer.Line("if (!IsBound)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Uninitialized,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0), out diagnostic);");
+        writer.Indent -= 2;
+        writer.Line($"global::FontWeave.Core.ReadStatus status = TryGet{array.Count}(out var countRaw, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line("ulong countValue = (ulong)countRaw;");
+        writer.Line($"status = TryEvaluateArray{array.Name}Start(out ulong startValue, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line($"if (countValue > (ulong.MaxValue - startValue) / {U(array.Stride)})");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line($"status = TryEvaluateScalar{count.Name}Position(out ulong countPosition, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){count.FieldId}, countPosition),");
+        writer.Line($"out diagnostic, countValue, (ulong.MaxValue - startValue) / {U(array.Stride)});");
+        writer.Indent -= 2;
+        writer.Line("}");
+        writer.Line("if (startValue > (ulong)_data.Length)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, startValue), out diagnostic,");
+        writer.Line("(ulong)_data.Length, startValue);");
+        writer.Indent -= 2;
+        writer.Line($"start = startValue; count = countValue; end = startValue + countValue * {U(array.Stride)};");
+        writer.Line("diagnostic = default;");
+        writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    // Require additionally proves the full [start, end) range against the source and
+    // names the first incomplete row's first incomplete field (spec 5 rule 3).
+    private static void EmitRequireArrayExtent(CodeWriter writer, TableModel model, ArrayModel array)
+    {
+        ScalarModel count = FindScalar(model, array.Count);
+        writer.Line($"internal global::FontWeave.Core.ReadStatus TryRequire{array.Name}Extent(out global::FontWeave.Core.FontDiagnostic diagnostic)");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("if (!IsBound)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Uninitialized,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0), out diagnostic);");
+        writer.Indent -= 2;
+        writer.Line($"global::FontWeave.Core.ReadStatus status = TryGet{array.Count}(out var countRaw, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line("ulong count = (ulong)countRaw;");
+        writer.Line($"status = TryEvaluateArray{array.Name}Start(out ulong start, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line($"if (count > (ulong.MaxValue - start) / {U(array.Stride)})");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line($"status = TryEvaluateScalar{count.Name}Position(out ulong countPosition, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){count.FieldId}, countPosition),");
+        writer.Line($"out diagnostic, count, (ulong.MaxValue - start) / {U(array.Stride)});");
+        writer.Indent -= 2;
+        writer.Line("}");
+        writer.Line("if (start > (ulong)_data.Length)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, start), out diagnostic,");
+        writer.Line("(ulong)_data.Length, start);");
+        writer.Indent -= 2;
+        writer.Line($"ulong end = start + count * {U(array.Stride)};");
+        writer.Line("if (end > (ulong)_data.Length)");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line($"ulong firstRow = ((ulong)_data.Length - start) / {U(array.Stride)};");
+        writer.Line($"ulong rowStart = start + firstRow * {U(array.Stride)};");
+        writer.Line("ulong rowAvailable = (ulong)_data.Length - rowStart;");
+        EmitFieldTruncationChain(writer, array, "rowAvailable", "rowStart", "unchecked((int)firstRow)");
+        writer.Indent--;
+        writer.Line("}");
+        writer.Line("diagnostic = default;");
+        writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    // Reports each incomplete field in row-position order; the fallthrough is the
+    // padding-only case: None at the row start with the full row end expected.
+    private static void EmitFieldTruncationChain(CodeWriter writer, ArrayModel array,
+        string available, string rowPosition, string ordinal)
+    {
+        foreach (ScalarModel field in array.Fields.OrderBy(static field => field.Position.Constant))
+        {
+            ulong fieldEnd = field.Position.Constant + (ulong)field.Width;
+            writer.Line($"if ({available} < {U(fieldEnd)})");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
+            string position = field.Position.Constant == 0 ? rowPosition : $"{rowPosition} + {U(field.Position.Constant)}";
+            writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){field.FieldId}, {position}, {ordinal}),");
+            writer.Line($"out diagnostic, (ulong)_data.Length, {rowPosition} + {U(fieldEnd)});");
+            writer.Indent -= 2;
+        }
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Truncated,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.TruncatedData,");
+        writer.Line($"Location.AtLocal(global::FontWeave.Core.DataField.None, {rowPosition}, {ordinal}),");
+        writer.Line($"out diagnostic, (ulong)_data.Length, {rowPosition} + {U(array.Stride)});");
+        writer.Indent--;
+    }
+
+    private static bool HasCountedWriter(TableModel model, ArrayModel array)
+    {
+        if (array.ExternallyPositioned || array.Start.Base is not null) return false;
+        ScalarModel count = FindScalar(model, array.Count);
+        return count.WhenVersion < 0 && count.Position.Base is null;
+    }
+
+    // Spec 7.1 fixed-start counted writer: record.Ordinal is the only row index and
+    // count comes from the selected plan; the destination header count is neither
+    // read nor written. Check order: destination row range, ordinal versus count,
+    // every narrow value, and only then the declared fields.
+    private static void EmitCountedRecordWrite(CodeWriter writer, TableModel model, ArrayModel array)
+    {
+        ScalarModel count = FindScalar(model, array.Count);
+        writer.Line($"internal static global::FontWeave.Core.ReadStatus TryWrite{array.Name}(global::System.Span<byte> destination, ulong count, in {array.Name}Data record,");
+        writer.Indent++;
+        writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic, global::FontWeave.Core.DataLocation location = default)");
+        writer.Indent--;
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("location = NormalizeLocation(location);");
+        writer.Line($"ulong rowPosition = unchecked({U(array.Start.Constant)} + (ulong)record.Ordinal * {U(array.Stride)});");
+        writer.Line($"if (!TrySlice(destination, rowPosition, {U(array.Stride)}, out _))");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.DestinationTooSmall, global::FontWeave.Core.DiagnosticCode.DestinationTooSmall,");
+        writer.Indent++;
+        writer.Line("location.AtLocal(global::FontWeave.Core.DataField.OutputBytes, rowPosition, record.Ordinal), out diagnostic,");
+        writer.Line($"(ulong)destination.Length, rowPosition > ulong.MaxValue - {U(array.Stride)} ? ulong.MaxValue : rowPosition + {U(array.Stride)});");
+        writer.Indent -= 2;
+        writer.Line("if (record.Ordinal < 0 || (ulong)record.Ordinal >= count)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidIndex,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.IndexOutOfRange,");
+        writer.Line($"location.AtLocal((global::FontWeave.Core.DataField){count.FieldId}, {U(count.Position.Constant)}, record.Ordinal), out diagnostic,");
+        writer.Line("unchecked((ulong)record.Ordinal), count);");
+        writer.Indent -= 2;
+        // Check every narrow value before touching a row, even when the invalid value
+        // follows valid fields. Padding is not a declared field and is left untouched.
+        foreach (ScalarModel field in array.Fields)
+            if (field.Type == WireType.UInt24)
+            {
+                string position = field.Position.Constant == 0 ? "rowPosition" : $"rowPosition + {U(field.Position.Constant)}";
+                EmitUInt24Guard(writer, field, "record." + field.Name, position, "record.Ordinal");
+            }
+        writer.Line($"global::System.Span<byte> row = destination.Slice((int)rowPosition, {array.Stride});");
+        foreach (ScalarModel field in array.Fields)
+            EmitWriteValue(writer, field, "row", "record." + field.Name, field.Position.Constant);
         writer.Line("diagnostic = default;");
         writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
         writer.Indent--;

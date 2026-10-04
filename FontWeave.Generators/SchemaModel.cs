@@ -75,6 +75,9 @@ internal sealed class TableModel
     public string Name { get; set; } = "";
     public uint Tag { get; set; }
     public int MinimumHeader { get; set; }
+    // 0 keeps the current contract; 1 opts into the ordered single-declaration
+    // model with local array extent/ordinal and counted-writer contracts.
+    public int ContractVersion { get; set; }
     public string? VersionField { get; set; }
     public ImmutableArray<uint> SupportedVersions { get; set; } = ImmutableArray<uint>.Empty;
     public ImmutableArray<ScalarModel> Scalars { get; set; } = ImmutableArray<ScalarModel>.Empty;

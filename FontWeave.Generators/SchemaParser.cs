@@ -62,6 +62,14 @@ internal sealed class SchemaParser
         _model.MinimumHeader = (int)Number(table, 1);
         _model.VersionField = Text(table, "VersionField");
         _model.SupportedVersions = Versions(table);
+        _model.ContractVersion = (int)Number(table, "ContractVersion", 0);
+        if (_model.ContractVersion is < 0 or > 1)
+        {
+            _location = table.ApplicationSyntaxReference?.GetSyntax(_cancellation).GetLocation() ?? declaration.GetLocation();
+            Error(FontSchemaGenerator.Shape, "ContractVersion " + _model.ContractVersion +
+                " is not supported; only 0 (the current contract) and 1 are defined.");
+            return Finish();
+        }
         if (_model.MinimumHeader < 0) Error(FontSchemaGenerator.Layout, "minimumHeader cannot be negative.");
         if (_fieldIds.Count == 0) Error(FontSchemaGenerator.Reference, "FontWeave.Core.DataField is required; no second diagnostic contract is generated.");
 
@@ -76,6 +84,31 @@ internal sealed class SchemaParser
             Error(FontSchemaGenerator.Layout, "The R2 schema limit is 256 declarations per table.");
             return Finish();
         }
+        // Attribute document order is the declared semantic order of the structural
+        // model (spec 2.1): sort by the attribute syntax position, keeping the symbol
+        // order for anything without a syntax reference. The owning declaration of
+        // each attribute also feeds the V1 single-declaration rule.
+        var ordered = new List<(AttributeData Attribute, int Start, TypeDeclarationSyntax? Owner)>(attributes.Length);
+        foreach (var attribute in attributes)
+        {
+            int start = int.MaxValue;
+            TypeDeclarationSyntax? owner = null;
+            if (attribute.ApplicationSyntaxReference?.GetSyntax(_cancellation) is AttributeSyntax syntax)
+            {
+                start = syntax.SpanStart;
+                for (SyntaxNode? node = syntax; node is not null; node = node.Parent)
+                    if (node is TypeDeclarationSyntax typeDeclaration) { owner = typeDeclaration; break; }
+            }
+            ordered.Add((attribute, start, owner));
+        }
+        if (_model.ContractVersion == 1)
+            foreach (var entry in ordered)
+                if (entry.Owner is not null && !ReferenceEquals(entry.Owner, declaration))
+                {
+                    _location = entry.Attribute.ApplicationSyntaxReference?.GetSyntax(_cancellation).GetLocation() ?? declaration.GetLocation();
+                    Error(FontSchemaGenerator.Shape, "Contract version 1 requires all FontWeave.Schema attributes on the single attributed partial declaration.");
+                }
+        attributes = ordered.OrderBy(static entry => entry.Start).Select(static entry => entry.Attribute).ToArray();
         foreach (var attribute in attributes)
         {
             _cancellation.ThrowIfCancellationRequested();
@@ -108,6 +141,15 @@ internal sealed class SchemaParser
                         Length = Text(attribute, 2),
                         Base = attribute.ConstructorArguments.Length == 5 ? Text(attribute, 3) : null,
                         Minimum = Text(attribute, attribute.ConstructorArguments.Length - 1) });
+                    break;
+                case "BinaryTableAttribute":
+                    // Parsed from context.Attributes above; listed so the unknown
+                    // declaration check below cannot reject the table attribute itself.
+                    break;
+                default:
+                    // Unknown FontWeave.Schema declarations fail loudly instead of being
+                    // silently ignored, so future capabilities cannot degrade unnoticed.
+                    Error(FontSchemaGenerator.Shape, "Unknown FontWeave.Schema attribute: " + attribute.AttributeClass!.Name);
                     break;
             }
         }
@@ -245,6 +287,18 @@ internal sealed class SchemaParser
             if (array.ExternallyPositioned) GeneratedName(generated, "TryRead" + array.Name + "At");
             else { GeneratedName(generated, "TryGet" + array.Name); GeneratedName(generated, "TryEvaluateArray" + array.Name + "Start"); }
         }
+        if (_model.ContractVersion == 1)
+            foreach (var array in _model.Arrays)
+            {
+                if (array.ExternallyPositioned) continue;
+                GeneratedName(generated, "TryGet" + array.Name + "Extent");
+                GeneratedName(generated, "TryRequire" + array.Name + "Extent");
+                // The static counted writer is only emitted for fixed constant starts
+                // driven by an unconditional, fixed-position count scalar.
+                if (array.Start.Base is null && _scalars.TryGetValue(array.Count, out var count) &&
+                    count.WhenVersion < 0 && count.Position.Base is null)
+                    GeneratedName(generated, "TryWrite" + array.Name);
+            }
         foreach (var payload in _model.Payloads) GeneratedName(generated, "TryGet" + payload.Array + "Payload");
         foreach (var member in symbol.GetMembers())
             if (!member.IsImplicitlyDeclared && generated.Contains(member.Name))
@@ -405,15 +459,25 @@ internal sealed class SchemaParser
             Value(field.FieldId); Value(field.Scale); Value(field.ZeroAllowed); Position(field.Position);
             Value(field.WhenVersion); Value(field.Otherwise);
         }
-        Value(_model.Namespace); Value(_model.Name); Value(_model.Tag); Value(_model.MinimumHeader); Value(_model.VersionField);
+        Value(_model.Namespace); Value(_model.Name); Value(_model.Tag); Value(_model.MinimumHeader);
+        Value(_model.ContractVersion); Value(_model.VersionField);
         Value(_model.SupportedVersions.Length); foreach (uint version in _model.SupportedVersions) Value(version);
-        Value(_model.Scalars.Length); foreach (var field in _model.Scalars) Field(field);
-        Value(_model.Derived.Length); foreach (var value in _model.Derived)
-        { Value(value.Name); Position(value.Expression); Value(value.WhenVersion); Value(value.Otherwise); }
-        Value(_model.Arrays.Length); foreach (var array in _model.Arrays)
-        { Value(array.Name); Value(array.Count); Position(array.Start); Value(array.Stride); Value(array.ExternallyPositioned); Value(array.Fields.Length); foreach (var field in array.Fields) Field(field); }
-        Value(_model.Payloads.Length); foreach (var payload in _model.Payloads)
-        { Value(payload.Array); Value(payload.Offset); Value(payload.Length); Value(payload.Base); Value(payload.Minimum); }
+        Value(_model.Scalars.Length);
+        for (int i = 0; i < _model.Scalars.Length; i++) { Value(i); Field(_model.Scalars[i]); }
+        Value(_model.Derived.Length);
+        for (int i = 0; i < _model.Derived.Length; i++)
+        { Value(i); Value(_model.Derived[i].Name); Position(_model.Derived[i].Expression); Value(_model.Derived[i].WhenVersion); Value(_model.Derived[i].Otherwise); }
+        Value(_model.Arrays.Length);
+        for (int i = 0; i < _model.Arrays.Length; i++)
+        {
+            var array = _model.Arrays[i];
+            Value(i); Value(array.Name); Value(array.Count); Position(array.Start); Value(array.Stride); Value(array.ExternallyPositioned);
+            Value(array.Fields.Length);
+            for (int j = 0; j < array.Fields.Length; j++) { Value(j); Field(array.Fields[j]); }
+        }
+        Value(_model.Payloads.Length);
+        for (int i = 0; i < _model.Payloads.Length; i++)
+        { Value(i); Value(_model.Payloads[i].Array); Value(_model.Payloads[i].Offset); Value(_model.Payloads[i].Length); Value(_model.Payloads[i].Base); Value(_model.Payloads[i].Minimum); }
         return key.ToString();
     }
 }

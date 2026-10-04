@@ -17,6 +17,7 @@ namespace FontWeave.Schema
     internal sealed class BinaryTableAttribute : global::System.Attribute
     {
         public BinaryTableAttribute(uint tag, int minimumHeader) { }
+        public int ContractVersion { get; set; }
         public string? VersionField { get; set; }
         public uint[] SupportedVersions { get; set; } = new uint[0];
     }
