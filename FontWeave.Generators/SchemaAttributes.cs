@@ -14,6 +14,7 @@ namespace FontWeave.Schema
     internal enum ReferenceOrigin { ViewStart, RecordStart, NamedBase }
     internal enum ReferenceNullPolicy { Required, Optional, ZeroIsAddress }
     internal enum ReferenceZeroFailure { OffsetRange, InvalidValue }
+    internal enum ReferenceScan { Unspecified, Follow, OpenOnly, Observe, Manual }
 
     [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]
     [global::System.AttributeUsage(global::System.AttributeTargets.Struct | global::System.AttributeTargets.Class)]
@@ -23,6 +24,8 @@ namespace FontWeave.Schema
         public int ContractVersion { get; set; }
         public string? VersionField { get; set; }
         public uint[] SupportedVersions { get; set; } = new uint[0];
+        public global::System.Type? RoleType { get; set; }
+        public long[] SupportedRoles { get; set; } = new long[0];
     }
 
     [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]
@@ -110,6 +113,13 @@ namespace FontWeave.Schema
         public ReferenceNullPolicy NullPolicy { get; set; }
         public ReferenceZeroFailure ZeroFailure { get; set; }
         public bool AllowTargetAtEnd { get; set; }
+        public long[] WhenRoles { get; set; } = new long[0];
+        public string? Selector { get; set; }
+        public uint[] SelectorValues { get; set; } = new uint[0];
+        public bool DefaultRaw { get; set; }
+        public long TargetRole { get; set; } = long.MinValue;
+        public bool ForwardRole { get; set; }
+        public ReferenceScan Scan { get; set; }
     }
 
     [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]

@@ -39,6 +39,7 @@ internal sealed class SchemaParser
     // explicit legacy values participate in the consistency check).
     private readonly Dictionary<string, (WireOrigin? Origin, bool? ZeroAllowed)> _explicitMetadata = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ScalarModel> _elements = new(StringComparer.Ordinal);
+    private readonly HashSet<long> _supportedRoleValues = new();
 
     private SchemaParser(GeneratorAttributeSyntaxContext context, CancellationToken cancellation)
     {
@@ -81,6 +82,7 @@ internal sealed class SchemaParser
         }
         if (_model.MinimumHeader < 0) Error(FontSchemaGenerator.Layout, "minimumHeader cannot be negative.");
         if (_fieldIds.Count == 0) Error(FontSchemaGenerator.Reference, "FontWeave.Core.DataField is required; no second diagnostic contract is generated.");
+        ParseTableRoles(table);
 
         var scalars = new List<ScalarModel>();
         var derived = new List<DerivedModel>();
@@ -184,7 +186,12 @@ internal sealed class SchemaParser
                         Base = Text(attribute, "Base"), Minimum = Text(attribute, "Minimum"), Length = Text(attribute, "Length"),
                         NullPolicy = (ReferenceNullPolicy)Number(attribute, "NullPolicy", 0),
                         ZeroFailure = (ReferenceZeroFailure)Number(attribute, "ZeroFailure", 0),
-                        AllowTargetAtEnd = Boolean(attribute, "AllowTargetAtEnd", false) };
+                        AllowTargetAtEnd = Boolean(attribute, "AllowTargetAtEnd", false),
+                        WhenRoles = Longs(attribute, "WhenRoles"), Selector = Text(attribute, "Selector"),
+                        SelectorValues = SelectorValues(attribute), DefaultRaw = Boolean(attribute, "DefaultRaw", false),
+                        TargetRole = Number(attribute, "TargetRole", long.MinValue),
+                        ForwardRole = Boolean(attribute, "ForwardRole", false),
+                        Scan = (ReferenceScan)Number(attribute, "Scan", 0) };
                     if (attribute.ConstructorArguments.Length > 2 &&
                         attribute.ConstructorArguments[2].Value is ITypeSymbol target && target.TypeKind != TypeKind.Error)
                         reference.TargetFullName = target.ToDisplayString();
@@ -559,6 +566,185 @@ internal sealed class SchemaParser
                 (_scalars.ContainsKey(minimumName) || _derived.ContainsKey(minimumName) || _computeds.ContainsKey(minimumName)))
                 Add(Bound(minimumName), worstLength);
         }
+        ValidateRoleContracts();
+    }
+
+    // Card 1.2-a (spec 4): RoleType resolves through typeof like an A3 registry target and
+    // must be an actual non-Flags C# enum whose underlying type is at most 32 bits, with a
+    // non-empty SupportedRoles set of declared member values (FWG003 shapes). The declared
+    // member snapshot joins the identity (card 1.2-f); a V0 declaration of the capability
+    // is the explicit ContractVersion=1 rejection (card 1.7).
+    private void ParseTableRoles(AttributeData table)
+    {
+        bool hasRoleType = table.NamedArguments.Any(static p => p.Key == "RoleType");
+        bool hasSupported = table.NamedArguments.Any(static p => p.Key == "SupportedRoles");
+        if (!hasRoleType && !hasSupported) return;
+        if (_model.ContractVersion != 1)
+        {
+            Error(FontSchemaGenerator.Shape, "BinaryTable RoleType/SupportedRoles requires ContractVersion=1.");
+            return;
+        }
+        if (!hasRoleType)
+        {
+            Error(FontSchemaGenerator.Condition, "SupportedRoles requires a declared RoleType: no role domain exists.");
+            return;
+        }
+        if (table.NamedArguments.First(static p => p.Key == "RoleType").Value.Value is not INamedTypeSymbol roleType ||
+            roleType.TypeKind == TypeKind.Error)
+        {
+            Error(FontSchemaGenerator.Layout, "RoleType must name a resolvable enum type.");
+            return;
+        }
+        if (roleType.TypeKind != TypeKind.Enum)
+        {
+            Error(FontSchemaGenerator.Layout, "RoleType must be an actual C# enum: " + roleType.ToDisplayString());
+            return;
+        }
+        if (roleType.GetAttributes().Any(static attribute => attribute.AttributeClass is { } flags &&
+            (flags.Name == "FlagsAttribute" || flags.Name == "Flags") &&
+            (flags.ContainingNamespace?.ToDisplayString() ?? "") == "System"))
+        {
+            Error(FontSchemaGenerator.Layout, "RoleType must not be a Flags enum: " + roleType.ToDisplayString());
+            return;
+        }
+        if (roleType.EnumUnderlyingType is not { } underlying ||
+            underlying.SpecialType is not (SpecialType.System_Byte or SpecialType.System_SByte or
+                SpecialType.System_Int16 or SpecialType.System_UInt16 or SpecialType.System_Int32 or SpecialType.System_UInt32))
+        {
+            Error(FontSchemaGenerator.Layout, "The RoleType underlying type must not exceed 32 bits: " + roleType.ToDisplayString());
+            return;
+        }
+        var members = roleType.GetMembers().OfType<IFieldSymbol>()
+            .Where(static field => field.HasConstantValue)
+            .Select(static field => new RoleMemberModel(field.Name,
+                Convert.ToInt64(field.ConstantValue, CultureInfo.InvariantCulture)))
+            .ToArray();
+        if (members.Length == 0)
+        {
+            Error(FontSchemaGenerator.Layout, "RoleType declares no members: " + roleType.ToDisplayString());
+            return;
+        }
+        var argument = table.NamedArguments.First(static p => p.Key == "SupportedRoles").Value;
+        var declared = new HashSet<long>(members.Select(static member => member.Value));
+        if (argument.Kind != TypedConstantKind.Array || argument.IsNull || argument.Values.IsDefaultOrEmpty ||
+            argument.Values.Any(static value => value.Value is not long))
+        {
+            Error(FontSchemaGenerator.Layout, "SupportedRoles must be a non-empty array of declared enum member values.");
+            return;
+        }
+        var supported = new List<long>();
+        foreach (var value in argument.Values)
+        {
+            long role = (long)value.Value!;
+            if (!declared.Contains(role))
+            {
+                Error(FontSchemaGenerator.Layout, "SupportedRoles must be a non-empty array of declared enum member values.");
+                return;
+            }
+            supported.Add(role);
+        }
+        _model.RoleType = roleType.ToDisplayString();
+        _model.RoleMembers = members.ToImmutableArray();
+        _model.SupportedRoles = supported.Distinct().OrderBy(static value => value).ToImmutableArray();
+        foreach (long role in _model.SupportedRoles) _supportedRoleValues.Add(role);
+    }
+
+    // Card 1.2-g (spec 4): the whole A4 dispatch contract is FWG005 with no new diagnostic
+    // IDs — the Scan value domain, WhenRoles validity, the selector shape, per-slot branch
+    // consistency and intersection, and the DefaultRaw remainder-set shape.
+    private void ValidateRoleContracts()
+    {
+        foreach (var reference in _model.References)
+        {
+            if ((int)reference.Scan is < 0 or > 4 ||
+                reference.Scan is ReferenceScan.Follow or ReferenceScan.OpenOnly or ReferenceScan.Manual)
+                Error(FontSchemaGenerator.Condition, "ReferenceScan " + reference.Scan + " is outside the A4 value domain {Unspecified, Observe}; the rest follows the A5 structure-scan slice: " + reference.Name);
+            if (reference.WhenRoles.Length != 0)
+            {
+                if (_model.RoleType is null)
+                    Error(FontSchemaGenerator.Condition, "WhenRoles requires a declared table RoleType: " + reference.Name);
+                else if (reference.WhenRoles.Any(role => !_supportedRoleValues.Contains(role)))
+                    Error(FontSchemaGenerator.Condition, "A WhenRoles value is not a supported role of the table: " + reference.Name);
+            }
+            if (reference.DefaultRaw && reference.TargetFullName is not null)
+                Error(FontSchemaGenerator.Condition, "A DefaultRaw reference declares no target: " + reference.Name);
+            if (reference.DefaultRaw && reference.Scan != ReferenceScan.Observe)
+                Error(FontSchemaGenerator.Condition, "A DefaultRaw reference must declare ReferenceScan.Observe: " + reference.Name);
+            if (reference.DefaultRaw && reference.SelectorValues.Length != 0)
+                Error(FontSchemaGenerator.Condition, "A DefaultRaw reference declares no selector values of its own: " + reference.Name);
+            ValidateSelector(reference);
+        }
+        var slots = new Dictionary<string, List<ReferenceModel>>(StringComparer.Ordinal);
+        foreach (var reference in _model.References)
+        {
+            string key = reference.ArrayName is null ? reference.OffsetField : reference.ArrayName + ":" + reference.OffsetField;
+            if (!slots.TryGetValue(key, out var group)) slots[key] = group = new List<ReferenceModel>();
+            group.Add(reference);
+        }
+        foreach (var slot in slots)
+        {
+            string key = slot.Key;
+            var group = slot.Value;
+            // Only branches that use a selector declare one; those must agree on the name
+            // (spec 4), while a selector-less branch carries no selector axis at all.
+            var declaredSelectors = group.Where(static reference => reference.Selector is not null)
+                .Select(static reference => reference.Selector!).Distinct().ToList();
+            if (declaredSelectors.Count > 1)
+                Error(FontSchemaGenerator.Condition, "Branches of a source slot must share one selector name: " + key);
+            string? selector = declaredSelectors.Count == 0 ? null : declaredSelectors[0];
+            var defaults = group.Where(static reference => reference.DefaultRaw).ToList();
+            var branches = group.Where(static reference => !reference.DefaultRaw).ToList();
+            if (defaults.Count > 1)
+                Error(FontSchemaGenerator.Condition, "A source slot declares at most one DefaultRaw branch: " + key);
+            if (defaults.Count != 0)
+            {
+                // Spec 4: the remainder branch writes the slot's common selector; a slot
+                // without any selector cannot host a DefaultRaw branch at all.
+                if (selector is null)
+                    Error(FontSchemaGenerator.Condition, "A slot without a common selector cannot declare a DefaultRaw branch: " + key);
+                else if (defaults.Any(reference => reference.Selector is null))
+                    Error(FontSchemaGenerator.Condition, "A DefaultRaw branch must declare the common selector of its slot: " + key);
+                if (branches.Count == 0)
+                    Error(FontSchemaGenerator.Condition, "A DefaultRaw branch requires at least one non-default explicit branch in its slot: " + key);
+            }
+            if (branches.Any(reference => reference.Selector is not null && reference.SelectorValues.Length == 0))
+                Error(FontSchemaGenerator.Condition, "An explicit branch declares a non-empty selector value set: " + key);
+            for (int i = 0; i < branches.Count; i++)
+                for (int j = 0; j < i; j++)
+                    if (BranchesIntersect(branches[i], branches[j]))
+                        Error(FontSchemaGenerator.Condition, "Branches of a source slot overlap on the version, role and selector intersection: " + key);
+        }
+    }
+
+    // Spec 4: a selector is exactly one unconditional unsigned fixed-position scalar of
+    // this view; unknown names stay FWG002, every other shape is FWG005 (card 1.2-g).
+    private void ValidateSelector(ReferenceModel reference)
+    {
+        if (reference.Selector is not { } name) return;
+        if (_scalars.TryGetValue(name, out var selector))
+        {
+            if (!selector.IsUnsigned || selector.WhenVersion >= 0 ||
+                selector.Position.Base is not null || selector.Position.Count is not null)
+                Error(FontSchemaGenerator.Condition, "A selector must be one unconditional unsigned fixed-position scalar: " + name);
+        }
+        else if (_derived.ContainsKey(name) || _computeds.ContainsKey(name))
+            Error(FontSchemaGenerator.Condition, "A selector must be one unconditional unsigned fixed-position scalar: " + name);
+        else
+            Error(FontSchemaGenerator.Reference, "Unknown selector reference: " + name);
+    }
+
+    // The A4 intersection rule (spec 4): A4 references declare no version conditions
+    // (OQ-6), so two branches overlap when their effective role sets (empty = every
+    // supported role) and selector value sets both intersect. DefaultRaw branches never
+    // participate (card 1.2-d). Without a table RoleType the role axis is empty and two
+    // condition-free branches stay non-overlapping, preserving existing schemas.
+    private bool BranchesIntersect(ReferenceModel left, ReferenceModel right)
+    {
+        var leftRoles = left.WhenRoles.Length == 0 ? _model.SupportedRoles : left.WhenRoles;
+        var rightRoles = right.WhenRoles.Length == 0 ? _model.SupportedRoles : right.WhenRoles;
+        if (!leftRoles.Any(rightRoles.Contains)) return false;
+        if (left.Selector is null || right.Selector is null) return true;
+        return left.SelectorValues.Any(right.SelectorValues.Contains);
     }
 
     // WhenVersions domains (spec 2.1/4, card 1.2-b, FWG005): a finite activation domain
@@ -884,6 +1070,24 @@ internal sealed class SchemaParser
         return values;
     }
 
+    // Role/value condition arrays are stored normalized the same way (card 1.2-f): a
+    // reordering of WhenRoles or SelectorValues is one identity, not a contract change.
+    private static ImmutableArray<long> Longs(AttributeData attribute, string name)
+    {
+        var argument = attribute.NamedArguments.FirstOrDefault(p => p.Key == name).Value;
+        if (argument.Kind != TypedConstantKind.Array || argument.IsNull) return ImmutableArray<long>.Empty;
+        return argument.Values.Where(static v => v.Value is long)
+            .Select(static v => (long)v.Value!).Distinct().OrderBy(static v => v).ToImmutableArray();
+    }
+
+    private static ImmutableArray<uint> SelectorValues(AttributeData attribute)
+    {
+        var argument = attribute.NamedArguments.FirstOrDefault(p => p.Key == "SelectorValues").Value;
+        if (argument.Kind != TypedConstantKind.Array || argument.IsNull) return ImmutableArray<uint>.Empty;
+        return argument.Values.Where(static v => v.Value is uint)
+            .Select(static v => (uint)v.Value!).Distinct().OrderBy(static v => v).ToImmutableArray();
+    }
+
     // Spec 1.7: new capability arguments on a V0 declaration are an explicit
     // ContractVersion=1 rejection; the capability is not reinterpreted under V0.
     private ImmutableArray<uint> Gate(ImmutableArray<uint> whenVersions)
@@ -925,6 +1129,13 @@ internal sealed class SchemaParser
         Value(_model.Namespace); Value(_model.Name); Value(_model.Tag); Value(_model.MinimumHeader);
         Value(_model.ContractVersion); Value(_model.VersionField);
         Value(_model.SupportedVersions.Length); foreach (uint version in _model.SupportedVersions) Value(version);
+        // The role contract is identity: enum full name, declared member snapshot and the
+        // normalized supported set (card 1.2-f, spec 8.2).
+        Value(_model.RoleType);
+        Value(_model.RoleMembers.Length);
+        for (int i = 0; i < _model.RoleMembers.Length; i++)
+        { Value(_model.RoleMembers[i].Name); Value(_model.RoleMembers[i].Value); }
+        Value(_model.SupportedRoles.Length); foreach (long role in _model.SupportedRoles) Value(role);
         Value(_model.Scalars.Length);
         for (int i = 0; i < _model.Scalars.Length; i++) { Value(i); Field(_model.Scalars[i]); }
         Value(_model.Derived.Length);
@@ -960,6 +1171,10 @@ internal sealed class SchemaParser
             Value(i); Value(reference.Name); Value(reference.OffsetField); Value(reference.ArrayName);
             Value(reference.TargetFullName); Value(reference.Origin); Value(reference.Base); Value(reference.Minimum);
             Value(reference.Length); Value(reference.NullPolicy); Value(reference.ZeroFailure); Value(reference.AllowTargetAtEnd);
+            Value(reference.WhenRoles.Length); foreach (long role in reference.WhenRoles) Value(role);
+            Value(reference.Selector);
+            Value(reference.SelectorValues.Length); foreach (uint value in reference.SelectorValues) Value(value);
+            Value(reference.DefaultRaw); Value(reference.TargetRole); Value(reference.ForwardRole); Value(reference.Scan);
         }
         return key.ToString();
     }

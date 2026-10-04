@@ -11,6 +11,17 @@ internal enum WireOrigin { None = 0, Table = 1, NameStorage = 2 }
 internal enum ReferenceOrigin { ViewStart = 0, RecordStart = 1, NamedBase = 2 }
 internal enum ReferenceNullPolicy { Required = 0, Optional = 1, ZeroIsAddress = 2 }
 internal enum ReferenceZeroFailure { OffsetRange = 0, InvalidValue = 1 }
+// Frozen scan policy names (spec 6.1); A4 accepts only Unspecified and Observe.
+internal enum ReferenceScan { Unspecified = 0, Follow = 1, OpenOnly = 2, Observe = 3, Manual = 4 }
+
+// One declared enum member of a table's RoleType; the (name, value) snapshot is the
+// member-set identity (card 1.2-a: adding, removing or renaming a member re-emits).
+internal readonly struct RoleMemberModel
+{
+    public RoleMemberModel(string name, long value) { Name = name; Value = value; }
+    public string Name { get; }
+    public long Value { get; }
+}
 
 // A finite affine node: (Base ?? 0) + Constant + (Count ?? 0) * Stride.
 // A version branch selects this node or Otherwise. References are resolved and
@@ -115,6 +126,17 @@ internal sealed class ReferenceModel
     public ReferenceNullPolicy NullPolicy { get; set; }
     public ReferenceZeroFailure ZeroFailure { get; set; }
     public bool AllowTargetAtEnd { get; set; }
+    // Finite dispatch conditions (spec 4): empty WhenRoles means every supported role;
+    // SelectorValues empty on a DefaultRaw branch is the remainder set. Both stored
+    // normalized (distinct, ordered) so identity and emission share one canonical set.
+    public ImmutableArray<long> WhenRoles { get; set; } = ImmutableArray<long>.Empty;
+    public string? Selector { get; set; }
+    public ImmutableArray<uint> SelectorValues { get; set; } = ImmutableArray<uint>.Empty;
+    public bool DefaultRaw { get; set; }
+    // long.MinValue is the unspecified fixed target role (spec 3.1).
+    public long TargetRole { get; set; } = long.MinValue;
+    public bool ForwardRole { get; set; }
+    public ReferenceScan Scan { get; set; }
     // Resolved by the registry combine step; 0 when unresolved.
     public int TargetMinimumHeader { get; set; }
     public string TargetNamespace { get; set; } = "";
@@ -133,6 +155,11 @@ internal sealed class TableModel
     public int ContractVersion { get; set; }
     public string? VersionField { get; set; }
     public ImmutableArray<uint> SupportedVersions { get; set; } = ImmutableArray<uint>.Empty;
+    // Finite role dispatch (spec 4): the declared enum full name (null = roleless table),
+    // its declared member snapshot and the normalized supported values.
+    public string? RoleType { get; set; }
+    public ImmutableArray<RoleMemberModel> RoleMembers { get; set; } = ImmutableArray<RoleMemberModel>.Empty;
+    public ImmutableArray<long> SupportedRoles { get; set; } = ImmutableArray<long>.Empty;
     public ImmutableArray<ScalarModel> Scalars { get; set; } = ImmutableArray<ScalarModel>.Empty;
     public ImmutableArray<DerivedModel> Derived { get; set; } = ImmutableArray<DerivedModel>.Empty;
     public ImmutableArray<ComputedModel> Computed { get; set; } = ImmutableArray<ComputedModel>.Empty;

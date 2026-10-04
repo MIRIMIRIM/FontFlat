@@ -2321,4 +2321,735 @@ public sealed class SchemaContractsTests
         Assert.DoesNotContain(sources, s => s.HintName == "Probe.CycleView.g.cs");
         Assert.DoesNotContain(sources, s => s.HintName == "Probe.PeerView.g.cs");
     }
+
+    // ---- A4 generator contracts (card 2.4, GA1-GA9) ----
+
+    private const string WireKindEnum = "public enum WireKind : byte { Sub = 1, Pos = 2 }";
+    private const string WideKindEnum = "public enum WideKind : long { Wide = 1 }";
+    private const string FlagKindEnum = "[global::System.Flags] public enum FlagKind : byte { Flag = 1 }";
+    private const string FullRoles = "(long)WireKind.Sub, (long)WireKind.Pos";
+
+    // A role-bearing slot: selector Kind@0, count SetCount@2, counted array Row of two-byte
+    // rows holding the offset field SetAt. WhenRoles restricts the branch to Sub.
+    private const string RoleSlotFields = """
+        [BinaryScalar("Kind", WireType.UInt16, 0, DataField.Tag)]
+        [BinaryScalar("SetCount", WireType.UInt16, 2, DataField.Count, Semantic = NumberSemantic.Count)]
+        [BinaryArray("Row", "SetCount", 6, 2)]
+        [BinaryElement("Row", "SetAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+        """;
+
+    private const string SingleBranch = "[BinaryReference(\"Leaf\", \"SetAt\", typeof(LeafView), Array = \"Row\", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = \"Kind\", SelectorValues = new uint[] { 1 })]";
+
+    // The enum stays in the referrer tree, so a role-bearing target and its referrer share
+    // one declared WireKind per compilation.
+    private static SyntaxTree RoleLeaf(string roles, string path = "RoleLeaf.cs") => Tree($$"""
+        using FontWeave.Core;
+        using FontWeave.Schema;
+        namespace Probe;
+        [BinaryTable(0x11111111, 2, ContractVersion = 1, RoleType = typeof(WireKind), SupportedRoles = new long[] { {{roles}} })]
+        [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+        public readonly ref partial struct RoleLeafView { }
+        """, path);
+
+    private static SyntaxTree RoleReferrer(string tableTail, string references, string path = "RoleReferrer.cs") => Tree($$"""
+        using FontWeave.Core;
+        using FontWeave.Schema;
+        namespace Probe;
+        {{WireKindEnum}}
+        {{LeafSchema}}
+        [BinaryTable(0x74657374, 6, ContractVersion = 1, RoleType = typeof(WireKind){{tableTail}})]
+        {{RoleSlotFields}}
+        {{references}}
+        public readonly ref partial struct RoleView { }
+        """, path);
+
+    // GA1 (card 1.2-a/1.2-g, spec 4): RoleType must be an actual non-Flags C# enum with a
+    // backing type of at most 32 bits, and SupportedRoles must be a non-empty set of its
+    // declared members (FWG003).
+    [Theory]
+    [InlineData("plainStruct")]
+    [InlineData("flagsEnum")]
+    [InlineData("longBacking")]
+    [InlineData("emptySupported")]
+    [InlineData("undeclaredValue")]
+    public void RoleTypeDeclarationsAreShapeChecked(string defect)
+    {
+        string table = defect switch
+        {
+            "plainStruct" => "ContractVersion = 1, RoleType = typeof(PlainShape), SupportedRoles = new long[] { 1 }",
+            "flagsEnum" => "ContractVersion = 1, RoleType = typeof(FlagKind), SupportedRoles = new long[] { 1 }",
+            "longBacking" => "ContractVersion = 1, RoleType = typeof(WideKind), SupportedRoles = new long[] { 1 }",
+            "emptySupported" => "ContractVersion = 1, RoleType = typeof(WireKind), SupportedRoles = new long[] { }",
+            _ => "ContractVersion = 1, RoleType = typeof(WireKind), SupportedRoles = new long[] { 7 }"
+        };
+        string shapes = defect == "plainStruct" ? "public struct PlainShape { }" : "";
+        var (driver, _) = Generate(Driver(), Input(Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{WireKindEnum}}
+            {{WideKindEnum}}
+            {{FlagKindEnum}}
+            {{shapes}}
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 6, {{table}})]
+            {{RoleSlotFields}}
+            {{SingleBranch}}
+            public readonly ref partial struct RoleView { }
+            """)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG003" && d.Location.IsInSource);
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+    }
+
+    // GA1 (spec 4): a role set or WhenRoles without a declared RoleType has no member
+    // domain and is a dispatch contract violation (FWG005).
+    [Theory]
+    [InlineData("supportedRoles")]
+    [InlineData("whenRoles")]
+    public void RoleSetsWithoutRoleTypeAreDispatchContractErrors(string shape)
+    {
+        string table = shape == "supportedRoles"
+            ? "[BinaryTable(0x74657374, 6, ContractVersion = 1, SupportedRoles = new long[] { 1 })]"
+            : "[BinaryTable(0x74657374, 6, ContractVersion = 1)]";
+        string reference = shape == "supportedRoles" ? SingleBranch
+            : "[BinaryReference(\"Leaf\", \"SetAt\", typeof(LeafView), Array = \"Row\", WhenRoles = new long[] { 1 })]";
+        var (driver, _) = Generate(Driver(), Input(Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            {{table}}
+            {{RoleSlotFields}}
+            {{reference}}
+            public readonly ref partial struct RoleView { }
+            """)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG005" && d.Location.IsInSource);
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+    }
+
+    // GA1 legal counterpart: the role-bearing schema with two role-disjoint branches emits.
+    [Fact]
+    public void RoleDispatchSchemaGeneratesInTheLegalForm()
+    {
+        var (driver, _) = Generate(Driver(), Input(RoleReferrer(
+            $", SupportedRoles = new long[] {{ {FullRoles} }}",
+            $$"""
+            {{SingleBranch}}
+            [BinaryReference("PosLeaf", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Pos })]
+            """)));
+        Assert.Empty(driver.GetRunResult().Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error));
+        Assert.Contains(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+    }
+
+    // GA2 (card 1.2-g, spec 4): branches of one source slot must not overlap on the
+    // version x role x selector intersection (FWG005); empty WhenRoles means the full
+    // supported role domain.
+    [Theory]
+    [InlineData("roleOverlap")]
+    [InlineData("roleSelectorCross")]
+    [InlineData("selectorOverlapFullRole")]
+    public void BranchIntersectionsOfOneSlotAreDispatchErrors(string defect)
+    {
+        string branches = defect switch
+        {
+            "roleOverlap" => """
+                [BinaryReference("First", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub })]
+                [BinaryReference("Second", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub })]
+                """,
+            "roleSelectorCross" => """
+                [BinaryReference("First", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = "Kind", SelectorValues = new uint[] { 1 })]
+                [BinaryReference("Second", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub, (long)WireKind.Pos }, Selector = "Kind", SelectorValues = new uint[] { 1, 2 })]
+                """,
+            _ => """
+                [BinaryReference("First", "SetAt", typeof(LeafView), Array = "Row", Selector = "Kind", SelectorValues = new uint[] { 1 })]
+                [BinaryReference("Second", "SetAt", typeof(LeafView), Array = "Row", Selector = "Kind", SelectorValues = new uint[] { 1, 2 })]
+                """
+        };
+        var (driver, _) = Generate(Driver(), Input(RoleReferrer(
+            $", SupportedRoles = new long[] {{ {FullRoles} }}", branches)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG005" && d.Location.IsInSource);
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+    }
+
+    // GA2 legal counterparts: role-disjoint, selector-disjoint and orthogonal branches.
+    [Theory]
+    [InlineData("roleDisjoint")]
+    [InlineData("selectorDisjoint")]
+    [InlineData("orthogonal")]
+    public void BranchIntersectionsCompileInTheLegalForms(string form)
+    {
+        string branches = form switch
+        {
+            "selectorDisjoint" => """
+                [BinaryReference("First", "SetAt", typeof(LeafView), Array = "Row", Selector = "Kind", SelectorValues = new uint[] { 1 })]
+                [BinaryReference("Second", "SetAt", typeof(LeafView), Array = "Row", Selector = "Kind", SelectorValues = new uint[] { 2 })]
+                """,
+            "orthogonal" => """
+                [BinaryReference("First", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = "Kind", SelectorValues = new uint[] { 1 })]
+                [BinaryReference("Second", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Pos }, Selector = "Kind", SelectorValues = new uint[] { 2 })]
+                """,
+            _ => """
+                [BinaryReference("First", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub })]
+                [BinaryReference("Second", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Pos })]
+                """
+        };
+        var (driver, _) = Generate(Driver(), Input(RoleReferrer(
+            $", SupportedRoles = new long[] {{ {FullRoles} }}", branches)));
+        Assert.Empty(driver.GetRunResult().Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error));
+        Assert.Contains(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+    }
+
+    // GA2 (card 1.2-f, spec 8.2/4): condition sets join the identity normalized, so a
+    // reordering of SupportedRoles, WhenRoles or SelectorValues stays cached.
+    [Fact]
+    public void RoleConditionSetsAreNormalizedInIdentity()
+    {
+        var one = RoleReferrer($", SupportedRoles = new long[] {{ {FullRoles} }}", $$"""
+            [BinaryReference("First", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = "Kind", SelectorValues = new uint[] { 1, 2 })]
+            [BinaryReference("Second", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Pos }, Selector = "Kind", SelectorValues = new uint[] { 3 })]
+            """);
+        var initial = Generate(Driver(), Input(one));
+        var reordered = RoleReferrer($", SupportedRoles = new long[] {{ (long)WireKind.Pos, (long)WireKind.Sub }}", $$"""
+            [BinaryReference("First", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = "Kind", SelectorValues = new uint[] { 2, 1 })]
+            [BinaryReference("Second", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Pos }, Selector = "Kind", SelectorValues = new uint[] { 3 })]
+            """, "RoleReferrer2.cs");
+        var (driver, _) = Generate(initial.Driver, Input(one).ReplaceSyntaxTree(one, reordered));
+        Assert.All(driver.GetRunResult().Results.Single().TrackedSteps["EmittedTables"]
+            .SelectMany(static s => s.Outputs), s => Assert.Equal(IncrementalStepRunReason.Cached, s.Reason));
+    }
+
+    // GA3 (card 1.2-g, spec 4): a selector must resolve to one unconditional unsigned
+    // fixed-position scalar of the view (FWG002 for unknown names, FWG005 for every other
+    // shape), branches of one slot must share its name, and explicit branches need a
+    // non-empty selector value set.
+    [Theory]
+    [InlineData("unknownName")]
+    [InlineData("conditionalScalar")]
+    [InlineData("signedScalar")]
+    [InlineData("mixedNames")]
+    [InlineData("emptyValues")]
+    [InlineData("derivedSource")]
+    [InlineData("computedSource")]
+    public void SelectorDeclarationsAreShapeChecked(string defect)
+    {
+        string scalars = defect switch
+        {
+            "mixedNames" => """
+                [BinaryScalar("Kind", WireType.UInt16, 0, DataField.Tag)]
+                [BinaryScalar("Other", WireType.UInt16, 4, DataField.Tag)]
+                [BinaryScalar("SetCount", WireType.UInt16, 2, DataField.Count, Semantic = NumberSemantic.Count)]
+                """,
+            "conditionalScalar" => """
+                [BinaryScalar("Kind", WireType.UInt16, 0, DataField.Tag, WhenVersion = 1, Otherwise = 0)]
+                [BinaryScalar("SetCount", WireType.UInt16, 2, DataField.Count, Semantic = NumberSemantic.Count)]
+                [BinaryScalar("Version", WireType.UInt16, 4, DataField.Version)]
+                """,
+            "signedScalar" => """
+                [BinaryScalar("Kind", WireType.Int16, 0, DataField.Tag)]
+                [BinaryScalar("SetCount", WireType.UInt16, 2, DataField.Count, Semantic = NumberSemantic.Count)]
+                """,
+            "derivedSource" or "computedSource" => """
+                [BinaryScalar("Kind", WireType.UInt16, 0, DataField.Tag)]
+                [BinaryScalar("SetCount", WireType.UInt16, 2, DataField.Count, Semantic = NumberSemantic.Count)]
+                """,
+            _ => """
+                [BinaryScalar("Kind", WireType.UInt16, 0, DataField.Tag)]
+                [BinaryScalar("SetCount", WireType.UInt16, 2, DataField.Count, Semantic = NumberSemantic.Count)]
+                """
+        };
+        string derived = defect == "derivedSource" ? "[BinaryDerived(\"SelectorValue\", Constant = 1)]" : "";
+        string computed = defect == "computedSource" ? "[BinaryComputed(\"SelectorValue\", \"SelectorOf\", Maximum = 16ul)]" : "";
+        string hook = defect == "computedSource"
+            ? """
+            {
+                private static ReadStatus SelectorOf(DataLocation diagnosticLocation, out ulong value, out FontDiagnostic diagnostic)
+                { value = 1; diagnostic = default; return ReadStatus.Done; }
+            }
+            """
+            : " { }";
+        string versionField = defect == "conditionalScalar"
+            ? ", VersionField = \"Version\", SupportedVersions = new uint[] { 1 }" : "";
+        (string selector, string values) branch = defect switch
+        {
+            "unknownName" => ("Missing", "1"),
+            "emptyValues" => ("Kind", ""),
+            _ => ("Kind", "1")
+        };
+        string values = branch.values.Length == 0 ? "" : $", SelectorValues = new uint[] {{ {branch.values} }}";
+        // Two branches of one slot disagreeing on the selector name are the mixed-names
+        // defect; every other shape uses the single branch above.
+        string reference = defect == "mixedNames"
+            ? """
+            [BinaryReference("First", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = "Kind", SelectorValues = new uint[] { 1 })]
+            [BinaryReference("Second", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Pos }, Selector = "Other", SelectorValues = new uint[] { 2 })]
+            """
+            : defect == "derivedSource" || defect == "computedSource"
+            ? """[BinaryReference("Leaf", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = "SelectorValue", SelectorValues = new uint[] { 1 })]"""
+            : $$"""[BinaryReference("Leaf", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = "{{branch.selector}}"{{values}})]""";
+        var (driver, _) = Generate(Driver(), Input(Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{WireKindEnum}}
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 6, ContractVersion = 1, RoleType = typeof(WireKind), SupportedRoles = new long[] { {{FullRoles}} }{{versionField}})]
+            {{scalars}}
+            [BinaryArray("Row", "SetCount", 6, 2)]
+            [BinaryElement("Row", "SetAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            {{derived}}
+            {{computed}}
+            {{reference}}
+            public readonly ref partial struct SelectorView{{hook}}
+            """)));
+        string expected = defect == "unknownName" ? "FWG002" : "FWG005";
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == expected && d.Location.IsInSource);
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.SelectorView.g.cs");
+    }
+
+    // GA4 (card 1.2-d, spec 4): a DefaultRaw branch declares no target, no selector values
+    // of its own, Scan=Observe, at most one per slot, and only on a slot with a common
+    // selector and at least one explicit branch; the legal form emits no typed opener or
+    // fixup for the remainder-set branch.
+    [Theory]
+    [InlineData("withTarget")]
+    [InlineData("nonEmptyValues")]
+    [InlineData("missingSelector")]
+    [InlineData("noExplicitBranch")]
+    [InlineData("scanUnspecified")]
+    [InlineData("twoDefaults")]
+    public void DefaultRawDeclarationsAreShapeChecked(string defect)
+    {
+        string raw = defect switch
+        {
+            "withTarget" => "[BinaryReference(\"Raw\", \"SetAt\", typeof(LeafView), Array = \"Row\", Selector = \"Kind\", DefaultRaw = true, Scan = ReferenceScan.Observe)]",
+            "nonEmptyValues" => "[BinaryReference(\"Raw\", \"SetAt\", Array = \"Row\", Selector = \"Kind\", SelectorValues = new uint[] { 1 }, DefaultRaw = true, Scan = ReferenceScan.Observe)]",
+            "missingSelector" => "[BinaryReference(\"Raw\", \"SetAt\", Array = \"Row\", DefaultRaw = true, Scan = ReferenceScan.Observe)]",
+            "noExplicitBranch" => "[BinaryReference(\"Raw\", \"SetAt\", Array = \"Row\", Selector = \"Kind\", DefaultRaw = true, Scan = ReferenceScan.Observe)]",
+            "scanUnspecified" => "[BinaryReference(\"Raw\", \"SetAt\", Array = \"Row\", Selector = \"Kind\", DefaultRaw = true)]",
+            _ => """
+                [BinaryReference("Raw", "SetAt", Array = "Row", Selector = "Kind", DefaultRaw = true, Scan = ReferenceScan.Observe)]
+                [BinaryReference("RawTwo", "SetAt", Array = "Row", Selector = "Kind", DefaultRaw = true, Scan = ReferenceScan.Observe)]
+                """
+        };
+        string explicitBranch = defect == "noExplicitBranch" ? "" : SingleBranch + "\n";
+        var (driver, _) = Generate(Driver(), Input(RoleReferrer(
+            $", SupportedRoles = new long[] {{ {FullRoles} }}", explicitBranch + raw)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG005" && d.Location.IsInSource);
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+    }
+
+    // GA4 legal counterpart: the remainder-set registration emits no members of its own;
+    // even an overlap with the explicit branch's selector values stays legal (remainder
+    // semantics), and a WhenRoles restriction on the raw branch is accepted (OQ-4).
+    [Fact]
+    public void DefaultRawEmitsNoTypedMembersInTheLegalForm()
+    {
+        var (driver, _) = Generate(Driver(), Input(RoleReferrer(
+            $", SupportedRoles = new long[] {{ {FullRoles} }}", $$"""
+            {{SingleBranch}}
+            [BinaryReference("Raw", "SetAt", Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = "Kind", DefaultRaw = true, Scan = ReferenceScan.Observe)]
+            """)));
+        Assert.Empty(driver.GetRunResult().Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error));
+        string text = driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources)
+            .Single(static s => s.HintName == "Probe.RoleView.g.cs").SourceText!.ToString();
+        Assert.Contains("TryOpenLeaf", text);
+        Assert.DoesNotContain("TryOpenRaw", text);
+        Assert.DoesNotContain("TryGetRawOffsetValue", text);
+    }
+
+    // GA5 (card 1.2-c, OQ-1): A4 accepts only Unspecified and Observe; the frozen
+    // Follow/OpenOnly/Manual names are refused until the A5 structure-scan slice.
+    [Theory]
+    [InlineData("ReferenceScan.Follow")]
+    [InlineData("ReferenceScan.OpenOnly")]
+    [InlineData("ReferenceScan.Manual")]
+    public void ScanValuesOutsideTheA4DomainAreRefused(string scan)
+    {
+        var (driver, _) = Generate(Driver(), Input(RoleReferrer(
+            $", SupportedRoles = new long[] {{ {FullRoles} }}",
+            $"""[BinaryReference("Leaf", "SetAt", typeof(LeafView), Array = "Row", Scan = {scan})]""")));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG005" && d.Location.IsInSource);
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ScanValuesInTheA4DomainCompile(bool declared)
+    {
+        string scan = declared ? ", Scan = ReferenceScan.Observe" : "";
+        var (driver, _) = Generate(Driver(), Input(RoleReferrer(
+            $", SupportedRoles = new long[] {{ {FullRoles} }}",
+            $"""[BinaryReference("Leaf", "SetAt", typeof(LeafView), Array = "Row"{scan})]""")));
+        Assert.Empty(driver.GetRunResult().Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error));
+        Assert.Contains(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+    }
+
+    // GA6 (card 1.2-e, spec 4): a role-bearing target demands exactly one of TargetRole or
+    // ForwardRole, the value must be a supported target role, ForwardRole demands the same
+    // enum on both sides with the source covered values inside the target's support, and a
+    // roleless target carries neither (all FWG005, registry combine step).
+    [Theory]
+    [InlineData("rolelessTargetRole")]
+    [InlineData("rolelessTargetForward")]
+    [InlineData("missingBoth")]
+    [InlineData("bothSet")]
+    [InlineData("targetRoleOutside")]
+    [InlineData("forwardEnumMismatch")]
+    [InlineData("forwardCoverageGap")]
+    public void TargetRoleContractsAreDispatchErrors(string defect)
+    {
+        bool roleTarget = defect is not ("rolelessTargetRole" or "rolelessTargetForward");
+        string target = roleTarget ? "typeof(RoleLeafView)" : "typeof(LeafView)";
+        string contract = defect switch
+        {
+            "rolelessTargetRole" => ", TargetRole = 1",
+            "rolelessTargetForward" => ", ForwardRole = true",
+            "missingBoth" => "",
+            "bothSet" => ", TargetRole = (long)WireKind.Sub, ForwardRole = true",
+            "targetRoleOutside" => ", TargetRole = 7",
+            _ => ", ForwardRole = true"
+        };
+        string referrerType = defect == "forwardEnumMismatch" ? "typeof(ReferrerKind)" : "typeof(WireKind)";
+        string referrerEnum = defect == "forwardEnumMismatch"
+            ? WireKindEnum + "\npublic enum ReferrerKind : byte { Sub = 1, Pos = 2 }" : WireKindEnum;
+        // The coverage gap narrows the target's support below the referrer's full domain
+        // (OQ-3: the source covered values are the whole source SupportedRoles set).
+        string targetRoles = defect == "forwardCoverageGap" ? "(long)WireKind.Sub" : FullRoles;
+        string reference = $"""[BinaryReference("Leaf", "SetAt", {target}, Array = "Row"{contract})]""";
+        var (driver, _) = Generate(Driver(), Input(Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            {{referrerEnum}}
+            [BinaryTable(0x11111111, 2, ContractVersion = 1, RoleType = typeof(WireKind), SupportedRoles = new long[] { {{targetRoles}} })]
+            [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct RoleLeafView { }
+            [BinaryTable(0x74657374, 6, ContractVersion = 1, RoleType = {{referrerType}}, SupportedRoles = new long[] { {{FullRoles}} })]
+            {{RoleSlotFields}}
+            {{reference}}
+            public readonly ref partial struct RoleView { }
+            """)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG005");
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+    }
+
+    // GA6 legal counterparts: a fixed role inside the target support and a forward whose
+    // source support is a subset of the target's both compile and emit.
+    [Theory]
+    [InlineData("fixed")]
+    [InlineData("forward")]
+    public void TargetRoleContractsCompileInTheLegalForms(string form)
+    {
+        string contract = form == "fixed"
+            ? ", TargetRole = (long)WireKind.Sub"
+            : ", ForwardRole = true";
+        string referrerRoles = form == "fixed" ? FullRoles : "(long)WireKind.Sub";
+        var (driver, _) = Generate(Driver(), Input(Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{WireKindEnum}}
+            {{LeafSchema}}
+            [BinaryTable(0x11111111, 2, ContractVersion = 1, RoleType = typeof(WireKind), SupportedRoles = new long[] { {{FullRoles}} })]
+            [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct RoleLeafView { }
+            [BinaryTable(0x74657374, 6, ContractVersion = 1, RoleType = typeof(WireKind), SupportedRoles = new long[] { {{referrerRoles}} })]
+            {{RoleSlotFields}}
+            [BinaryReference("Leaf", "SetAt", typeof(RoleLeafView), Array = "Row"{{contract}})]
+            public readonly ref partial struct RoleView { }
+            """)));
+        Assert.Empty(driver.GetRunResult().Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error));
+        Assert.Contains(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+    }
+
+    // GA7 (card 1.2-b/1.5, spec 3.4/4): the opener runtime matrix — unknown role,
+    // inapplicable role, unknown selector, and the minimum gate all fail with restored out
+    // values; applicability and the selector precede the ordinal and zero checks.
+    [Fact]
+    public void RoleOpenerRuntimeMatrixFollowsTheSpecifiedOrder()
+    {
+        Assert.Equal("Done|True|9," +
+            "UnsupportedFormat|UnsupportedOperation|None|0|9|0|False|False," +
+            "UnsupportedFormat|UnsupportedOperation|None|0|2|0|False|False," +
+            "UnsupportedFormat|UnsupportedOperation|None|0|2|0|False|False," +
+            "UnsupportedFormat|UnsupportedOperation|Tag|0|7|0|False|False," +
+            "InvalidOffset|StorageBeforeRecords|Offset|6|4|6|False|False", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{WireKindEnum}}
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 6, ContractVersion = 1, RoleType = typeof(WireKind), SupportedRoles = new long[] { {{FullRoles}} })]
+            [BinaryScalar("Kind", WireType.UInt16, 0, DataField.Tag)]
+            [BinaryScalar("SetCount", WireType.UInt16, 2, DataField.Count, Semantic = NumberSemantic.Count)]
+            [BinaryScalar("Floor", WireType.UInt16, 4, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
+            [BinaryArray("Row", "SetCount", 6, 2)]
+            [BinaryElement("Row", "SetAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("Leaf", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = "Kind", SelectorValues = new uint[] { 1 }, Minimum = "Floor")]
+            public readonly ref partial struct RoleView { }
+            public static class Entry
+            {
+                private static string Describe(ReadStatus status, bool present, LeafView child, FontDiagnostic d) =>
+                    $"{status}|{d.Code}|{d.Location.Field}|{d.Location.Offset}|{d.Detail}|{d.Expected}|{child.IsBound}|{present}";
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    byte[] ok = { 0, 1, 0, 1, 0, 6, 0, 8, 0, 9 };
+                    RoleView.TryOpen(ok, out var view, out _);
+                    ReadStatus done = view.TryOpenLeaf(WireKind.Sub, 0, out var child, out var present, out _);
+                    results.Add($"{done}|{present}|{child.Seed}");
+                    byte[] hollow = { 0, 1, 0, 1, 0, 6, 0, 0, 0, 0 };
+                    RoleView.TryOpen(hollow, out var empty, out _);
+                    results.Add(Describe(empty.TryOpenLeaf((WireKind)9, 0, out var unknown, out var unknownPresent, out var unknownDiagnostic),
+                        unknownPresent, unknown, unknownDiagnostic));
+                    results.Add(Describe(view.TryOpenLeaf(WireKind.Pos, 0, out var other, out var otherPresent, out var otherDiagnostic),
+                        otherPresent, other, otherDiagnostic));
+                    results.Add(Describe(view.TryOpenLeaf(WireKind.Pos, 5, out var late, out var latePresent, out var lateDiagnostic),
+                        latePresent, late, lateDiagnostic));
+                    byte[] stranger = { 0, 7, 0, 1, 0, 6, 0, 8, 0, 9 };
+                    RoleView.TryOpen(stranger, out var outsider, out _);
+                    results.Add(Describe(outsider.TryOpenLeaf(WireKind.Sub, 0, out var selector, out var selectorPresent, out var selectorDiagnostic),
+                        selectorPresent, selector, selectorDiagnostic));
+                    byte[] early = { 0, 1, 0, 1, 0, 6, 0, 4, 0, 9 };
+                    RoleView.TryOpen(early, out var before, out _);
+                    results.Add(Describe(before.TryOpenLeaf(WireKind.Sub, 0, out var minimum, out var minimumPresent, out var minimumDiagnostic),
+                        minimumPresent, minimum, minimumDiagnostic));
+                    return string.Join(",", results);
+                }
+            }
+            """));
+    }
+
+    // GA7 (card 1.2-b, spec 4): a negative role uses the unchecked sign-extended ulong in
+    // the Detail, exactly like a negative ordinal; only reachable on a signed-backed enum.
+    [Fact]
+    public void NegativeRoleDetailIsSignExtended()
+    {
+        Assert.Equal("Done|True|9," +
+            "UnsupportedFormat|UnsupportedOperation|None|0|18446744073709551614|0|False|False", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            public enum SignedKind : int { Neg = -1 }
+            {{LeafSchema}}
+            [BinaryTable(0x23456789, 4, ContractVersion = 1, RoleType = typeof(SignedKind), SupportedRoles = new long[] { (long)SignedKind.Neg })]
+            [BinaryScalar("LeafAt", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("Leaf", "LeafAt", typeof(LeafView))]
+            public readonly ref partial struct SignedView { }
+            public static class Entry
+            {
+                private static string Describe(ReadStatus status, bool present, LeafView child, FontDiagnostic d) =>
+                    $"{status}|{d.Code}|{d.Location.Field}|{d.Location.Offset}|{d.Detail}|{d.Expected}|{child.IsBound}|{present}";
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    byte[] ok = { 0, 0, 0, 4, 0, 9 };
+                    SignedView.TryOpen(ok, out var view, out _);
+                    ReadStatus done = view.TryOpenLeaf(SignedKind.Neg, out var child, out var present, out _);
+                    results.Add($"{done}|{present}|{child.Seed}");
+                    results.Add(Describe(view.TryOpenLeaf((SignedKind)(-2), out var refused, out var refusedPresent, out var diagnostic),
+                        refusedPresent, refused, diagnostic));
+                    return string.Join(",", results);
+                }
+            }
+            """));
+    }
+
+    // GA8 (card 1.2-f, spec 8.2): every role-contract declaration field joins the identity,
+    // so changing it re-emits the table. TargetRole/ForwardRole run against the
+    // role-bearing target as the reference target.
+    [Theory]
+    [InlineData("supportedRoles")]
+    [InlineData("whenRoles")]
+    [InlineData("selectorValues")]
+    [InlineData("scan")]
+    [InlineData("defaultRaw")]
+    [InlineData("targetRole")]
+    [InlineData("forwardRole")]
+    public void RoleContractChangesReemitTheTable(string change)
+    {
+        var leaf = RoleLeaf(FullRoles);
+        var one = RoleReferrer($", SupportedRoles = new long[] {{ {FullRoles} }}", SingleBranch);
+        var plainInput = Input(leaf, one);
+        var plainInitial = Generate(Driver(), plainInput);
+        Assert.Contains(plainInitial.Driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+        var roleAwareOne = RoleReferrer($", SupportedRoles = new long[] {{ {FullRoles} }}", $$"""
+            [BinaryReference("Leaf", "SetAt", typeof(RoleLeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = "Kind", SelectorValues = new uint[] { 1 }, TargetRole = (long)WireKind.Sub)]
+            """);
+        var roleAwareInput = Input(leaf, roleAwareOne);
+        var roleAwareInitial = Generate(Driver(), roleAwareInput);
+        (string tail, string references) changed = change switch
+        {
+            "supportedRoles" => (", SupportedRoles = new long[] { (long)WireKind.Sub }", SingleBranch),
+            "whenRoles" => ($", SupportedRoles = new long[] {{ {FullRoles} }}",
+                "[BinaryReference(\"Leaf\", \"SetAt\", typeof(LeafView), Array = \"Row\", WhenRoles = new long[] { (long)WireKind.Sub, (long)WireKind.Pos }, Selector = \"Kind\", SelectorValues = new uint[] { 1 })]"),
+            "selectorValues" => ($", SupportedRoles = new long[] {{ {FullRoles} }}",
+                "[BinaryReference(\"Leaf\", \"SetAt\", typeof(LeafView), Array = \"Row\", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = \"Kind\", SelectorValues = new uint[] { 1, 2 })]"),
+            "scan" => ($", SupportedRoles = new long[] {{ {FullRoles} }}",
+                "[BinaryReference(\"Leaf\", \"SetAt\", typeof(LeafView), Array = \"Row\", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = \"Kind\", SelectorValues = new uint[] { 1 }, Scan = ReferenceScan.Observe)]"),
+            "defaultRaw" => ($", SupportedRoles = new long[] {{ {FullRoles} }}",
+                SingleBranch + "\n[BinaryReference(\"Raw\", \"SetAt\", Array = \"Row\", Selector = \"Kind\", DefaultRaw = true, Scan = ReferenceScan.Observe)]"),
+            "targetRole" => ($", SupportedRoles = new long[] {{ {FullRoles} }}",
+                "[BinaryReference(\"Leaf\", \"SetAt\", typeof(RoleLeafView), Array = \"Row\", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = \"Kind\", SelectorValues = new uint[] { 1 }, TargetRole = (long)WireKind.Pos)]"),
+            _ => ($", SupportedRoles = new long[] {{ (long)WireKind.Sub }}",
+                "[BinaryReference(\"Leaf\", \"SetAt\", typeof(RoleLeafView), Array = \"Row\", WhenRoles = new long[] { (long)WireKind.Sub }, Selector = \"Kind\", SelectorValues = new uint[] { 1 }, ForwardRole = true)]")
+        };
+        var changedTree = RoleReferrer(changed.tail, changed.references, "RoleReferrer2.cs");
+        var (driver, _) = change is "targetRole" or "forwardRole"
+            ? Generate(roleAwareInitial.Driver, roleAwareInput.ReplaceSyntaxTree(roleAwareOne, changedTree))
+            : Generate(plainInitial.Driver, plainInput.ReplaceSyntaxTree(one, changedTree));
+        var outputs = driver.GetRunResult().Results.Single().TrackedSteps["EmittedTables"]
+            .SelectMany(static s => s.Outputs).ToArray();
+        Assert.Equal(1, outputs.Count(o => o.Reason == IncrementalStepRunReason.Modified));
+    }
+
+    // GA8 (card 1.2-f, spec 8.2): the target's role contract rides the A3 registry
+    // summary — a comment stays cached while SupportedRoles, the RoleType spelling and the
+    // enum member set each re-emit the referrer.
+    [Fact]
+    public void TargetRoleContractChangesReemitTheReferrer()
+    {
+        var leaf = RoleLeaf(FullRoles);
+        var referrer = RoleReferrer($", SupportedRoles = new long[] {{ {FullRoles} }}",
+            "[BinaryReference(\"Leaf\", \"SetAt\", typeof(RoleLeafView), Array = \"Row\", TargetRole = (long)WireKind.Sub)]");
+        var input = Input(leaf, referrer);
+        var initial = Generate(Driver(), input);
+        Assert.Contains(initial.Driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+        var commentedLeaf = Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x11111111, 2, ContractVersion = 1, RoleType = typeof(WireKind), SupportedRoles = new long[] { {{FullRoles}} })]
+            [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct RoleLeafView
+            {
+                // provenance comment only; the declared contract is unchanged.
+            }
+            """, "RoleLeaf.cs");
+        var commentedInput = input.ReplaceSyntaxTree(leaf, commentedLeaf);
+        var commented = Generate(initial.Driver, commentedInput);
+        Assert.All(commented.Driver.GetRunResult().Results.Single().TrackedSteps["EmittedTables"]
+            .SelectMany(static s => s.Outputs), s => Assert.Equal(IncrementalStepRunReason.Cached, s.Reason));
+        var narrowerLeaf = Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x11111111, 2, ContractVersion = 1, RoleType = typeof(WireKind), SupportedRoles = new long[] { (long)WireKind.Sub })]
+            [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct RoleLeafView { }
+            """, "RoleLeaf.cs");
+        var narrowedInput = commentedInput.ReplaceSyntaxTree(commentedLeaf, narrowerLeaf);
+        var narrowed = Generate(commented.Driver, narrowedInput);
+        Assert.Equal(["Modified"], NarrowedReasons(narrowed.Driver.GetRunResult()));
+        var renamedLeaf = Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            public enum RenamedKind : byte { Sub = 1, Pos = 2 }
+            [BinaryTable(0x11111111, 2, ContractVersion = 1, RoleType = typeof(RenamedKind), SupportedRoles = new long[] { (long)RenamedKind.Sub })]
+            [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct RoleLeafView { }
+            """, "RoleLeaf.cs");
+        var renamedInput = narrowedInput.ReplaceSyntaxTree(narrowerLeaf, renamedLeaf);
+        var renamed = Generate(narrowed.Driver, renamedInput);
+        Assert.Equal(["Modified"], NarrowedReasons(renamed.Driver.GetRunResult()));
+        var extendedLeaf = Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            public enum RenamedKind : byte { Sub = 1, Pos = 2, Extra = 3 }
+            [BinaryTable(0x11111111, 2, ContractVersion = 1, RoleType = typeof(RenamedKind), SupportedRoles = new long[] { (long)RenamedKind.Sub })]
+            [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct RoleLeafView { }
+            """, "RoleLeaf.cs");
+        var extendedInput = renamedInput.ReplaceSyntaxTree(renamedLeaf, extendedLeaf);
+        var extended = Generate(renamed.Driver, extendedInput);
+        Assert.Equal(["Modified"], NarrowedReasons(extended.Driver.GetRunResult()));
+    }
+
+    private static string[] NarrowedReasons(GeneratorDriverRunResult runResult) =>
+        runResult.Results.Single().TrackedSteps["EmittedTables"]
+            .SelectMany(static s => s.Outputs)
+            .Select(static o => (Output: ((string, string, string?))o.Value, Reason: o.Reason))
+            .Where(static o => o.Output.Item1 == "Probe.RoleView.g.cs")
+            .Select(static o => $"{o.Reason}").ToArray();
+
+    // GA8 (card 1.2-f): an invalid dispatch contract drops the output and the restored
+    // declaration recovers emission on the round trip.
+    [Fact]
+    public void InvalidRoleContractRecoversOnRoundTrip()
+    {
+        var leaf = RoleLeaf(FullRoles);
+        var brokenSchema = RoleReferrer($", SupportedRoles = new long[] {{ {FullRoles} }}", $$"""
+            [BinaryReference("First", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub })]
+            [BinaryReference("Second", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub })]
+            """);
+        var input = Input(leaf, brokenSchema);
+        var broken = Generate(Driver(), input);
+        Assert.Contains(broken.Driver.GetRunResult().Diagnostics, static d => d.Id == "FWG005");
+        Assert.DoesNotContain(broken.Driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+        var restored = RoleReferrer($", SupportedRoles = new long[] {{ {FullRoles} }}", $$"""
+            [BinaryReference("First", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Sub })]
+            [BinaryReference("Second", "SetAt", typeof(LeafView), Array = "Row", WhenRoles = new long[] { (long)WireKind.Pos })]
+            """, "RoleReferrer2.cs");
+        var recovered = Generate(broken.Driver, input.ReplaceSyntaxTree(brokenSchema, restored));
+        Assert.DoesNotContain(recovered.Driver.GetRunResult().Diagnostics, static d => d.Severity == DiagnosticSeverity.Error);
+        Assert.Contains(recovered.Driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RoleView.g.cs");
+    }
+
+    // GA9 (card 1.7, G9 pin): every A4 capability attribute is V1-only; a V0 declaration
+    // is the explicit ContractVersion=1 rejection, never silent reinterpretation.
+    [Theory]
+    [InlineData("roleType")]
+    [InlineData("supportedRoles")]
+    [InlineData("referenceScan")]
+    public void VersionZeroRejectsRoleCapabilityDeclarations(string capability)
+    {
+        string table = capability switch
+        {
+            "roleType" => "[BinaryTable(0x74657374, 6, RoleType = typeof(WireKind))]",
+            "supportedRoles" => "[BinaryTable(0x74657374, 6, SupportedRoles = new long[] { 1 })]",
+            _ => "[BinaryTable(0x74657374, 6)]"
+        };
+        string reference = capability == "referenceScan"
+            ? "[BinaryReference(\"Leaf\", \"SetAt\", typeof(LeafView), Array = \"Row\", Scan = ReferenceScan.Observe)]"
+            : "";
+        var (driver, _) = Generate(Driver(), Input(Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{WireKindEnum}}
+            {{LeafSchema}}
+            {{table}}
+            [BinaryScalar("SetCount", WireType.UInt16, 2, DataField.Count, Semantic = NumberSemantic.Count)]
+            [BinaryArray("Row", "SetCount", 6, 2)]
+            [BinaryElement("Row", "SetAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            {{reference}}
+            public readonly ref partial struct LegacyView { }
+            """)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG001" && d.Location.IsInSource);
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.LegacyView.g.cs");
+    }
 }

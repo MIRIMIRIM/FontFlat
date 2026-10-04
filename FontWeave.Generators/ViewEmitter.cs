@@ -1153,24 +1153,30 @@ internal static class ViewEmitter
         string refField = $"(global::FontWeave.Core.DataField){offset.FieldId}";
         string declare = "global::FontWeave.Core.ReadStatus status";
         string ordinalArgument = array is null ? "-1" : "ordinal";
+        // Spec 3.3/6.1: a table that declares a RoleType opens its typed references through
+        // a concrete RoleEnum parameter leading the value parameters ahead of the out
+        // values; views without a RoleType keep the A1-A3 signatures byte for byte.
+        bool roleDispatch = model.RoleType is not null;
+        string roleType = "global::" + model.RoleType;
+        string roleParameter = roleDispatch ? roleType + " role, " : "";
 
         if (externForm)
         {
-            writer.Line($"internal global::FontWeave.Core.ReadStatus TryOpen{reference.Name}At(ulong rowPosition, int ordinal,");
+            writer.Line($"internal global::FontWeave.Core.ReadStatus TryOpen{reference.Name}At({roleParameter}ulong rowPosition, int ordinal,");
             writer.Indent++;
             writer.Line($"out {targetView} child, out bool present, out global::FontWeave.Core.FontDiagnostic diagnostic)");
             writer.Indent--;
         }
         else if (array is not null)
         {
-            writer.Line($"internal global::FontWeave.Core.ReadStatus TryOpen{reference.Name}(int ordinal, out {targetView} child, out bool present,");
+            writer.Line($"internal global::FontWeave.Core.ReadStatus TryOpen{reference.Name}({roleParameter}int ordinal, out {targetView} child, out bool present,");
             writer.Indent++;
             writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic)");
             writer.Indent--;
         }
         else
         {
-            writer.Line($"internal global::FontWeave.Core.ReadStatus TryOpen{reference.Name}(out {targetView} child, out bool present,");
+            writer.Line($"internal global::FontWeave.Core.ReadStatus TryOpen{reference.Name}({roleParameter}out {targetView} child, out bool present,");
             writer.Indent++;
             writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic)");
             writer.Indent--;
@@ -1193,8 +1199,79 @@ internal static class ViewEmitter
         writer.Line(unboundLocation + ", out diagnostic);");
         writer.Indent -= 2;
 
+        // Spec 3.4 check order: role validity first, then the known version, then the
+        // applicability conditions. An unknown role refuses at the owner start with the
+        // unchecked sign-extended value as its Detail (card 1.2-b, spec 4).
+        if (roleDispatch)
+        {
+            writer.Line("switch (role)");
+            writer.Line("{");
+            writer.Indent++;
+            foreach (var supported in model.SupportedRoles)
+                writer.Line($"case {roleType}.{MemberName(model, supported)}:");
+            writer.Indent++;
+            writer.Line("break;");
+            writer.Indent--;
+            writer.Line("default:");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.UnsupportedFormat,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.UnsupportedOperation,");
+            writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0UL), out diagnostic,");
+            writer.Line("unchecked((ulong)(long)role), 0UL);");
+            writer.Indent -= 3;
+            writer.Line("}");
+        }
+
         writer.Line($"{declare} = TryRequireKnownVersion(out _, out diagnostic);");
         writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+
+        if (reference.WhenRoles.Length != 0)
+        {
+            // An inapplicable role refuses exactly like an unknown one (card 1.2-b): same
+            // status/code at the owner start, Detail=role, Expected=0.
+            var inapplicable = new StringBuilder();
+            for (int i = 0; i < reference.WhenRoles.Length; i++)
+            {
+                if (i != 0) inapplicable.Append(" && ");
+                inapplicable.Append("role != ").Append(roleType).Append('.').Append(MemberName(model, reference.WhenRoles[i]));
+            }
+            writer.Line($"if ({inapplicable})");
+            writer.Line("{");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.UnsupportedFormat,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.UnsupportedOperation,");
+            writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0UL), out diagnostic,");
+            writer.Line("unchecked((ulong)(long)role), 0UL);");
+            writer.Indent -= 2;
+            writer.Line("}");
+        }
+        if (reference.Selector is { } selectorName && reference.SelectorValues.Length != 0)
+        {
+            // The selector is re-read through its own accessor ahead of the ordinal and
+            // offset fields (no billing); an unmatched value refuses at the selector field
+            // with Detail=value and Expected=0 (spec 4).
+            ScalarModel selector = FindScalar(model, selectorName);
+            writer.Line($"status = TryGet{selectorName}(out {selector.CsType} selectorValue, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            var unmatched = new StringBuilder();
+            for (int i = 0; i < reference.SelectorValues.Length; i++)
+            {
+                if (i != 0) unmatched.Append(" && ");
+                unmatched.Append("selectorValue != ").Append(reference.SelectorValues[i]).Append('U');
+            }
+            writer.Line($"if ({unmatched})");
+            writer.Line("{");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.UnsupportedFormat,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.UnsupportedOperation,");
+            writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){selector.FieldId}, {U(selector.Position.Constant)}), out diagnostic,");
+            writer.Line("selectorValue, 0UL);");
+            writer.Indent -= 2;
+            writer.Line("}");
+        }
 
         string offsetValue;
         string fieldPosition;
@@ -1524,7 +1601,9 @@ internal static class ViewEmitter
 
     private static void EmitRuntimeHelpers(CodeWriter writer, TableModel model)
     {
-        writer.Line("private global::FontWeave.Core.DataLocation Location => NormalizeLocation(_location);");
+        // Internal so the sanctioned source-closure validation mode can observe the
+        // bound view's location; spec section 0 keeps mechanical helpers internal.
+        writer.Line("internal global::FontWeave.Core.DataLocation Location => NormalizeLocation(_location);");
         writer.Line();
         writer.Line("private static global::FontWeave.Core.DataLocation NormalizeLocation(global::FontWeave.Core.DataLocation location) =>");
         writer.Indent++;
@@ -1627,6 +1706,15 @@ internal static class ViewEmitter
         foreach (ScalarModel scalar in model.Scalars)
             if (scalar.Name == name) return scalar;
         throw new InvalidOperationException($"Scalar '{name}' was not found in '{model.Name}'.");
+    }
+
+    // The declared member name of a supported role value; the parser only accepts values
+    // the RoleType declares, so the lookup cannot fail for an emitting model.
+    private static string MemberName(TableModel model, long value)
+    {
+        foreach (RoleMemberModel member in model.RoleMembers)
+            if (member.Value == value) return member.Name;
+        throw new InvalidOperationException($"Role value {value} has no declared member in '{model.Name}'.");
     }
 
     private static ScalarModel? FindScalarOrNull(TableModel model, string name)

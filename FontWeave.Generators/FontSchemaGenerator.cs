@@ -119,6 +119,53 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
                             "AllowTargetAtEnd requires a target with a zero minimum header: " + targetName));
                         failed = true;
                     }
+                    // Card 1.2-e (spec 4, FWG005): the target-role binding contract. A
+                    // role-bearing target demands exactly one of TargetRole or ForwardRole;
+                    // a roleless target carries neither; the fixed role must be supported by
+                    // the target; forwarding demands the same RoleType and — conservatively
+                    // per OQ-3 — the whole source SupportedRoles set inside the target's.
+                    if (reference.TargetRole != long.MinValue || reference.ForwardRole)
+                    {
+                        if (target.RoleType is null)
+                        {
+                            diagnostics.Add(Diagnostic.Create(Condition, Location.None,
+                                "A roleless target cannot carry TargetRole or ForwardRole: " + reference.Name));
+                            failed = true;
+                        }
+                        else if (reference.ForwardRole)
+                        {
+                            if (reference.TargetRole != long.MinValue)
+                            {
+                                diagnostics.Add(Diagnostic.Create(Condition, Location.None,
+                                    "A reference specifies at most one of TargetRole and ForwardRole: " + reference.Name));
+                                failed = true;
+                            }
+                            else if (target.RoleType != model.RoleType)
+                            {
+                                diagnostics.Add(Diagnostic.Create(Condition, Location.None,
+                                    "ForwardRole requires the same RoleType on both sides: " + reference.Name));
+                                failed = true;
+                            }
+                            else if (!model.SupportedRoles.All(role => target.SupportedRoles.Contains(role)))
+                            {
+                                diagnostics.Add(Diagnostic.Create(Condition, Location.None,
+                                    "ForwardRole requires the source covered roles inside the target support: " + reference.Name));
+                                failed = true;
+                            }
+                        }
+                        else if (!target.SupportedRoles.Contains(reference.TargetRole))
+                        {
+                            diagnostics.Add(Diagnostic.Create(Condition, Location.None,
+                                "TargetRole is not a supported role of the target: " + reference.Name));
+                            failed = true;
+                        }
+                    }
+                    else if (target.RoleType is not null)
+                    {
+                        diagnostics.Add(Diagnostic.Create(Condition, Location.None,
+                            "A reference to a role-bearing target specifies exactly one of TargetRole or ForwardRole: " + reference.Name));
+                        failed = true;
+                    }
                     targets.Add(targetName);
                 }
                 if (failed)
@@ -236,6 +283,9 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
             TargetFullName = reference.TargetFullName, Origin = reference.Origin, Base = reference.Base,
             Minimum = reference.Minimum, Length = reference.Length, NullPolicy = reference.NullPolicy,
             ZeroFailure = reference.ZeroFailure, AllowTargetAtEnd = reference.AllowTargetAtEnd,
+            WhenRoles = reference.WhenRoles, Selector = reference.Selector, SelectorValues = reference.SelectorValues,
+            DefaultRaw = reference.DefaultRaw, TargetRole = reference.TargetRole, ForwardRole = reference.ForwardRole,
+            Scan = reference.Scan,
             TargetMinimumHeader = reference.TargetMinimumHeader, TargetNamespace = reference.TargetNamespace,
             TargetName = reference.TargetName, TargetIdentity = reference.TargetIdentity
         };
@@ -245,6 +295,7 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
             Namespace = model.Namespace, Name = model.Name, Tag = model.Tag,
             MinimumHeader = model.MinimumHeader, ContractVersion = model.ContractVersion,
             VersionField = model.VersionField, SupportedVersions = model.SupportedVersions,
+            RoleType = model.RoleType, RoleMembers = model.RoleMembers, SupportedRoles = model.SupportedRoles,
             Scalars = model.Scalars, Derived = model.Derived, Computed = model.Computed,
             Arrays = model.Arrays, Payloads = model.Payloads, References = references,
             Identity = model.Identity
