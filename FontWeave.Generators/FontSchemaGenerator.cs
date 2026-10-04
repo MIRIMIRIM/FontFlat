@@ -1,5 +1,10 @@
+using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Globalization;
+using System.Linq;
 using System.Text;
+using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
@@ -33,13 +38,224 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
         var schemas = parsed.Where(static result => result.Model is not null)
             .Select(static (result, _) => result.Model!)
             .WithComparer(TableEquality.Instance).WithTrackingName("ValidatedSchemas");
-        var emitted = schemas.Select(static (schema, cancellation) =>
+        // Spec 8.2 target registry: resolve every reference's typeof target against the
+        // same round's BinaryTable models, fold the target contract summary into the
+        // referrer identity and refuse reference cycles (card 1.2-g, OQ-5).
+        var resolved = schemas.Collect()
+            .Select(static (models, cancellation) => TargetRegistry.Resolve(models, cancellation))
+            .WithComparer(ResolvedEquality.Instance).WithTrackingName("ResolvedTargets");
+        context.RegisterSourceOutput(resolved, static (output, resolved) =>
+        {
+            foreach (var diagnostic in resolved.Diagnostics) output.ReportDiagnostic(diagnostic);
+        });
+        var emitted = schemas.Combine(resolved).Select(static (pair, cancellation) =>
         {
             cancellation.ThrowIfCancellationRequested();
-            return new EmittedTable(schema.HintName, ViewEmitter.Emit(schema));
+            var (model, suppressed) = pair.Right.Resolve(pair.Left);
+            // The folded identity rides with the output so a target contract change marks
+            // the referrer's emission step Modified even when its emitted text is stable.
+            return (model.HintName, Identity: model.Identity, Text: suppressed ? null : ViewEmitter.Emit(model));
         }).WithTrackingName("EmittedTables");
         context.RegisterSourceOutput(emitted, static (output, source) =>
-            output.AddSource(source.HintName, SourceText.From(source.Text, Encoding.UTF8)));
+        {
+            if (source.Text is { } text) output.AddSource(source.HintName, SourceText.From(text, Encoding.UTF8));
+        });
+    }
+
+    // The combine-step result: per-referrer resolved models (identity folded with target
+    // summaries), per-referrer suppression for unresolvable targets and cycles, and the
+    // registry diagnostics. Compared through a canonical string so unrelated table edits
+    // leave the value — and every downstream emission node — cached.
+    internal sealed class ResolvedSchemas
+    {
+        internal ResolvedSchemas(ImmutableArray<(string FullName, TableModel Model, bool Suppressed)> resolutions,
+            ImmutableArray<Diagnostic> diagnostics, string canonical)
+        { Resolutions = resolutions; Diagnostics = diagnostics; Canonical = canonical; }
+
+        internal ImmutableArray<(string FullName, TableModel Model, bool Suppressed)> Resolutions { get; }
+        internal ImmutableArray<Diagnostic> Diagnostics { get; }
+        internal string Canonical { get; }
+
+        internal (TableModel Model, bool Suppressed) Resolve(TableModel model)
+        {
+            string fullName = model.Namespace.Length == 0 ? model.Name : model.Namespace + "." + model.Name;
+            foreach (var entry in Resolutions)
+                if (entry.FullName == fullName)
+                    return (entry.Model, entry.Suppressed);
+            return (model, false);
+        }
+    }
+
+    internal sealed class TargetRegistry
+    {
+        internal static ResolvedSchemas Resolve(ImmutableArray<TableModel> models, CancellationToken cancellation)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            var byName = new Dictionary<string, TableModel>(StringComparer.Ordinal);
+            foreach (var model in models)
+                byName[model.Namespace.Length == 0 ? model.Name : model.Namespace + "." + model.Name] = model;
+            var diagnostics = new List<Diagnostic>();
+            var edges = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            var unresolved = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var model in models)
+            {
+                if (model.References.IsEmpty) continue;
+                string modelName = model.Namespace.Length == 0 ? model.Name : model.Namespace + "." + model.Name;
+                var targets = new List<string>();
+                bool failed = false;
+                foreach (var reference in model.References)
+                {
+                    if (reference.TargetFullName is not { } targetName) continue;
+                    if (!byName.TryGetValue(targetName, out var target))
+                    {
+                        diagnostics.Add(Diagnostic.Create(Reference, Location.None,
+                            "Unknown reference target schema: " + targetName));
+                        failed = true;
+                        continue;
+                    }
+                    if (reference.AllowTargetAtEnd && target.MinimumHeader != 0)
+                    {
+                        diagnostics.Add(Diagnostic.Create(Layout, Location.None,
+                            "AllowTargetAtEnd requires a target with a zero minimum header: " + targetName));
+                        failed = true;
+                    }
+                    targets.Add(targetName);
+                }
+                if (failed)
+                {
+                    // An unresolved or inconsistent reference is a build error; the stale
+                    // output of the referrer must not survive (spec 8.1).
+                    diagnostics.Add(Diagnostic.Create(Reference, Location.None,
+                        "The references of " + modelName + " did not resolve; its stale output is cleared."));
+                    unresolved.Add(modelName);
+                    continue;
+                }
+                if (targets.Count != 0) edges[modelName] = targets;
+            }
+            // Reference identity must terminate (card OQ-5): a referrer->target cycle would
+            // make the folded canonical identity recursive, so it is refused at build time.
+            var cyclic = new HashSet<string>(StringComparer.Ordinal);
+            var visiting = new HashSet<string>(StringComparer.Ordinal);
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var start in edges.Keys)
+                if (Visit(start, edges, visiting, visited, cyclic, out var cyclePath))
+                    diagnostics.Add(Diagnostic.Create(Cycle, Location.None,
+                        "Reference target identity cycle: " + string.Join(" -> ", cyclePath)));
+            var resolutions = ImmutableArray.CreateBuilder<(string FullName, TableModel Model, bool Suppressed)>();
+            var canonical = new StringBuilder();
+            foreach (var model in models)
+            {
+                if (model.References.IsEmpty) continue;
+                cancellation.ThrowIfCancellationRequested();
+                string fullName = model.Namespace.Length == 0 ? model.Name : model.Namespace + "." + model.Name;
+                bool suppressed = unresolved.Contains(fullName) || cyclic.Contains(fullName);
+                var folded = new StringBuilder();
+                var references = model.References;
+                for (int i = 0; i < references.Length; i++)
+                {
+                    var updated = Clone(references[i]);
+                    if (updated.TargetFullName is null)
+                    {
+                        // A targetless reference declares no typed opener (spec 3.3); it is
+                        // legal and participates in no registry resolution.
+                        updated.TargetMinimumHeader = model.MinimumHeader;
+                    }
+                    else if (byName.TryGetValue(updated.TargetFullName, out var target))
+                    {
+                        updated.TargetMinimumHeader = target.MinimumHeader;
+                        updated.TargetNamespace = target.Namespace;
+                        updated.TargetName = target.Name;
+                        updated.TargetIdentity = target.Identity;
+                        folded.Append('|').Append(references[i].Name).Append('@').Append(target.Identity);
+                    }
+                    else
+                        suppressed = true;
+                    references = references.SetItem(i, updated);
+                }
+                if (cyclic.Contains(fullName))
+                {
+                    suppressed = true;
+                    folded.Clear().Append("|cycle");
+                }
+                var resolvedModel = Clone(model, references);
+                resolvedModel.Identity = model.Identity + "#refs" + folded;
+                resolutions.Add((fullName, resolvedModel, suppressed));
+                canonical.Append(fullName).Append('#').Append(suppressed ? '!' : ' ').Append(resolvedModel.Identity).Append(';');
+            }
+            canonical.Append('#').Append(diagnostics.Count);
+            foreach (var diagnostic in diagnostics)
+                canonical.Append(';').Append(diagnostic.Id).Append(':').Append(diagnostic.GetMessage());
+            return new ResolvedSchemas(resolutions.ToImmutable(), diagnostics.ToImmutableArray(), canonical.ToString());
+        }
+
+        private static bool Visit(string start, Dictionary<string, List<string>> edges,
+            HashSet<string> visiting, HashSet<string> visited, HashSet<string> cyclic, out List<string> cyclePath)
+        {
+            cyclePath = new List<string>();
+            if (cyclic.Contains(start)) return false;
+            var stack = new List<(string Node, int Edge)>();
+            var path = new List<string>();
+            visiting.Clear();
+            path.Clear();
+            stack.Add((start, 0));
+            visiting.Add(start);
+            path.Add(start);
+            while (stack.Count != 0)
+            {
+                int last = stack.Count - 1;
+                var (node, edgeIndex) = stack[last];
+                if (edgeIndex >= (edges.TryGetValue(node, out var targets) ? targets.Count : 0))
+                {
+                    stack.RemoveAt(last);
+                    visiting.Remove(node);
+                    path.RemoveAt(path.Count - 1);
+                    visited.Add(node);
+                    continue;
+                }
+                stack[last] = (node, edgeIndex + 1);
+                string next = edges[node][edgeIndex];                if (visiting.Contains(next))
+                {
+                    cyclePath.AddRange(path);
+                    cyclePath.Add(next);
+                    int from = path.IndexOf(next);
+                    for (int i = 0; i < from && cyclePath.Count != 0; i++) cyclePath.RemoveAt(0);
+                    foreach (var cyclicNode in cyclePath) cyclic.Add(cyclicNode);
+                    return true;
+                }
+                if (visited.Contains(next)) continue;
+                visiting.Add(next);
+                path.Add(next);
+                stack.Add((next, 0));
+            }
+            return false;
+        }
+
+        private static ReferenceModel Clone(ReferenceModel reference) => new()
+        {
+            Name = reference.Name, OffsetField = reference.OffsetField, ArrayName = reference.ArrayName,
+            TargetFullName = reference.TargetFullName, Origin = reference.Origin, Base = reference.Base,
+            Minimum = reference.Minimum, Length = reference.Length, NullPolicy = reference.NullPolicy,
+            ZeroFailure = reference.ZeroFailure, AllowTargetAtEnd = reference.AllowTargetAtEnd,
+            TargetMinimumHeader = reference.TargetMinimumHeader, TargetNamespace = reference.TargetNamespace,
+            TargetName = reference.TargetName, TargetIdentity = reference.TargetIdentity
+        };
+
+        private static TableModel Clone(TableModel model, ImmutableArray<ReferenceModel> references) => new()
+        {
+            Namespace = model.Namespace, Name = model.Name, Tag = model.Tag,
+            MinimumHeader = model.MinimumHeader, ContractVersion = model.ContractVersion,
+            VersionField = model.VersionField, SupportedVersions = model.SupportedVersions,
+            Scalars = model.Scalars, Derived = model.Derived, Computed = model.Computed,
+            Arrays = model.Arrays, Payloads = model.Payloads, References = references,
+            Identity = model.Identity
+        };
+    }
+
+    private sealed class ResolvedEquality : IEqualityComparer<ResolvedSchemas>
+    {
+        internal static readonly ResolvedEquality Instance = new();
+        public bool Equals(ResolvedSchemas? x, ResolvedSchemas? y) => x?.Canonical == y?.Canonical;
+        public int GetHashCode(ResolvedSchemas value) => value.Canonical.GetHashCode();
     }
 
     private sealed class TableEquality : IEqualityComparer<TableModel>
@@ -47,11 +263,5 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
         internal static readonly TableEquality Instance = new();
         public bool Equals(TableModel? x, TableModel? y) => x?.Identity == y?.Identity;
         public int GetHashCode(TableModel value) => value.Identity.GetHashCode();
-    }
-    private sealed class EmittedTable
-    {
-        internal EmittedTable(string hintName, string text) { HintName = hintName; Text = text; }
-        internal string HintName { get; }
-        internal string Text { get; }
     }
 }

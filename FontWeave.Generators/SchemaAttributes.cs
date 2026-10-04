@@ -11,6 +11,9 @@ namespace FontWeave.Schema
     internal enum WireEndian { Big, Little }
     internal enum NumberSemantic { Plain, Count, Offset, FixedPoint }
     internal enum WireOrigin { None, Table, NameStorage }
+    internal enum ReferenceOrigin { ViewStart, RecordStart, NamedBase }
+    internal enum ReferenceNullPolicy { Required, Optional, ZeroIsAddress }
+    internal enum ReferenceZeroFailure { OffsetRange, InvalidValue }
 
     [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]
     [global::System.AttributeUsage(global::System.AttributeTargets.Struct | global::System.AttributeTargets.Class)]
@@ -92,6 +95,21 @@ namespace FontWeave.Schema
         public WireOrigin Origin { get; set; }
         public uint Scale { get; set; } = 1;
         public bool ZeroAllowed { get; set; } = true;
+    }
+
+    [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]
+    [global::System.AttributeUsage(global::System.AttributeTargets.Struct, AllowMultiple = true)]
+    internal sealed class BinaryReferenceAttribute : global::System.Attribute
+    {
+        public BinaryReferenceAttribute(string name, string offset, global::System.Type? target = null) { }
+        public string? Array { get; set; }
+        public ReferenceOrigin Origin { get; set; }
+        public string? Base { get; set; }
+        public string? Minimum { get; set; }
+        public string? Length { get; set; }
+        public ReferenceNullPolicy NullPolicy { get; set; }
+        public ReferenceZeroFailure ZeroFailure { get; set; }
+        public bool AllowTargetAtEnd { get; set; }
     }
 
     [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]

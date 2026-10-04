@@ -8,6 +8,9 @@ internal enum WireType { UInt16 = 0, UInt32 = 1, Int16 = 2, Int32 = 3, Int64 = 4
 internal enum WireEndian { Big = 0, Little = 1 }
 internal enum NumberSemantic { Plain = 0, Count = 1, Offset = 2, FixedPoint = 3 }
 internal enum WireOrigin { None = 0, Table = 1, NameStorage = 2 }
+internal enum ReferenceOrigin { ViewStart = 0, RecordStart = 1, NamedBase = 2 }
+internal enum ReferenceNullPolicy { Required = 0, Optional = 1, ZeroIsAddress = 2 }
+internal enum ReferenceZeroFailure { OffsetRange = 0, InvalidValue = 1 }
 
 // A finite affine node: (Base ?? 0) + Constant + (Count ?? 0) * Stride.
 // A version branch selects this node or Otherwise. References are resolved and
@@ -95,6 +98,30 @@ internal sealed class PayloadModel
     public string Minimum { get; set; } = "";
 }
 
+// Build-time node for a spec 3 typed reference. Width/endian/position come only from the
+// offset scalar/element; Origin/Base/null policy/window are the relation's sole formal
+// definition. TargetNamespace/TargetName/TargetMinimumHeader/TargetIdentity are filled by
+// the generator's target-registry combine step (spec 8.2), never parsed from syntax.
+internal sealed class ReferenceModel
+{
+    public string Name { get; set; } = "";
+    public string OffsetField { get; set; } = "";
+    public string? ArrayName { get; set; }
+    public string? TargetFullName { get; set; }
+    public ReferenceOrigin Origin { get; set; }
+    public string? Base { get; set; }
+    public string? Minimum { get; set; }
+    public string? Length { get; set; }
+    public ReferenceNullPolicy NullPolicy { get; set; }
+    public ReferenceZeroFailure ZeroFailure { get; set; }
+    public bool AllowTargetAtEnd { get; set; }
+    // Resolved by the registry combine step; 0 when unresolved.
+    public int TargetMinimumHeader { get; set; }
+    public string TargetNamespace { get; set; } = "";
+    public string TargetName { get; set; } = "";
+    public string TargetIdentity { get; set; } = "";
+}
+
 internal sealed class TableModel
 {
     public string Namespace { get; set; } = "";
@@ -111,6 +138,7 @@ internal sealed class TableModel
     public ImmutableArray<ComputedModel> Computed { get; set; } = ImmutableArray<ComputedModel>.Empty;
     public ImmutableArray<ArrayModel> Arrays { get; set; } = ImmutableArray<ArrayModel>.Empty;
     public ImmutableArray<PayloadModel> Payloads { get; set; } = ImmutableArray<PayloadModel>.Empty;
+    public ImmutableArray<ReferenceModel> References { get; set; } = ImmutableArray<ReferenceModel>.Empty;
     // Canonical typed-model encoding; used only for incremental equality.
     public string Identity { get; set; } = "";
     public string HintName => (Namespace.Length == 0 ? "" : Namespace + ".") + Name + ".g.cs";

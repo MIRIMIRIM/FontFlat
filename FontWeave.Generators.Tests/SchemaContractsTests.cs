@@ -1406,4 +1406,919 @@ public sealed class SchemaContractsTests
         Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
             s => s.HintName == "Probe.LegacyView.g.cs");
     }
+
+    // ---- A3 generator contracts (card 2.4, GA1-GA12) ----
+
+    private const string LeafSchema = """
+        [BinaryTable(0x11111111, 2)]
+        [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+        public readonly ref partial struct LeafView { }
+        """;
+
+    // GA1 (card 1.2-b, spec 3.4): the scalar opener succeeds through the child, refuses an
+    // unbound owner, applies the Required zero policy at the ref field, and keeps the
+    // unknown-version gate ahead of the offset field read.
+    [Fact]
+    public void ReferenceOpenerFollowsTheScalarContractWithVersionAndNullGates()
+    {
+        Assert.Equal("Done|True|9," +
+            "InvalidOffset|False|False|RangeOutsideSource|Offset|2|0|4," +
+            "Uninitialized|False|UnboundView|None|0|0|0," +
+            "UnsupportedFormat|False|UnsupportedVersion|Version|0|9|0", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 4, ContractVersion = 1, VersionField = "Version", SupportedVersions = new uint[] { 1 })]
+            [BinaryScalar("Version", WireType.UInt16, 0, DataField.Version)]
+            [BinaryScalar("LeafAt", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("Leaf", "LeafAt", typeof(LeafView), Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required)]
+            public readonly ref partial struct ReferrerView { }
+            public static class Entry
+            {
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    byte[] ok = { 0, 1, 0, 4, 0, 9 };
+                    ReferrerView.TryOpen(ok, out var view, out _);
+                    ReadStatus done = view.TryOpenLeaf(out var child, out var present, out _);
+                    results.Add($"{done}|{present}|{child.Seed}");
+                    byte[] absent = { 0, 1, 0, 0 };
+                    ReferrerView.TryOpen(absent, out var hollow, out _);
+                    ReadStatus zero = hollow.TryOpenLeaf(out var none, out var zeroPresent, out var zeroDiagnostic);
+                    results.Add($"{zero}|{zeroPresent}|{none.IsBound}|{zeroDiagnostic.Code}|{zeroDiagnostic.Location.Field}|{zeroDiagnostic.Location.Offset}|{zeroDiagnostic.Detail}|{zeroDiagnostic.Expected}");
+                    ReferrerView missing = default;
+                    ReadStatus unbound = missing.TryOpenLeaf(out _, out var unboundPresent, out var unboundDiagnostic);
+                    results.Add($"{unbound}|{unboundPresent}|{unboundDiagnostic.Code}|{unboundDiagnostic.Location.Field}|{unboundDiagnostic.Location.Offset}|{unboundDiagnostic.Detail}|{unboundDiagnostic.Expected}");
+                    byte[] stranger = { 0, 9, 0, 4, 0, 9 };
+                    ReferrerView.TryOpen(stranger, out var outsider, out _);
+                    ReadStatus versioned = outsider.TryOpenLeaf(out _, out var versionPresent, out var versionDiagnostic);
+                    results.Add($"{versioned}|{versionPresent}|{versionDiagnostic.Code}|{versionDiagnostic.Location.Field}|{versionDiagnostic.Location.Offset}|{versionDiagnostic.Detail}|{versionDiagnostic.Expected}");
+                    return string.Join(",", results);
+                }
+            }
+            """));
+    }
+
+    // GA2 (card 1.2-b, spec 3.4/5): the counted-array opener keeps A1 ordinal semantics at
+    // the declared count source, and the Minimum=derived storage-before, zero policy,
+    // source bounds and target-at-end refusals at the ref field with per-row positions.
+    [Fact]
+    public void ReferenceArrayOpenerEnforcesWindowOrdinalAndCountGates()
+    {
+        Assert.Equal("Done|True|9,Done|True|11," +
+            "InvalidIndex|IndexOutOfRange|Count|0|18446744073709551615|2," +
+            "InvalidIndex|IndexOutOfRange|Count|0|2|2," +
+            "InvalidOffset|RangeOutsideSource|Offset|4|0|8," +
+            "InvalidOffset|StorageBeforeRecords|Offset|4|4|12," +
+            "InvalidOffset|RangeOutsideSource|Offset|4|8|8", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+            [BinaryScalar("SetCount", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
+            [BinaryDerived("SetsEnd", Constant = 4, Count = "SetCount", Stride = 4)]
+            [BinaryArray("Row", "SetCount", 4, 4)]
+            [BinaryElement("Row", "SetAt", WireType.UInt32, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("Set", "SetAt", typeof(LeafView), Array = "Row", Minimum = "SetsEnd")]
+            public readonly ref partial struct SetsView { }
+            public static class Entry
+            {
+                private static string Describe(ReadStatus status, FontDiagnostic d) =>
+                    $"{status}|{d.Code}|{d.Location.Field}|{d.Location.Offset}|{d.Detail}|{d.Expected}";
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    byte[] ok = { 0, 2, 0, 0, 0, 0, 0, 12, 0, 0, 0, 14, 0, 9, 0, 11 };
+                    SetsView.TryOpen(ok, out var view, out _);
+                    ReadStatus first = view.TryOpenSet(0, out var one, out var onePresent, out _);
+                    results.Add($"{first}|{onePresent}|{one.Seed}");
+                    ReadStatus second = view.TryOpenSet(1, out var two, out var twoPresent, out _);
+                    results.Add($"{second}|{twoPresent}|{two.Seed}");
+                    results.Add(Describe(view.TryOpenSet(-1, out _, out _, out var negative), negative));
+                    results.Add(Describe(view.TryOpenSet(2, out _, out _, out var excessive), excessive));
+                    byte[] zero = { 0, 1, 0, 0, 0, 0, 0, 0 };
+                    SetsView.TryOpen(zero, out var hollow, out _);
+                    results.Add(Describe(hollow.TryOpenSet(0, out _, out _, out var zeroDiagnostic), zeroDiagnostic));
+                    byte[] backwards = { 0, 2, 0, 0, 0, 0, 0, 4, 0, 0, 0, 4 };
+                    SetsView.TryOpen(backwards, out var early, out _);
+                    results.Add(Describe(early.TryOpenSet(0, out _, out _, out var beforeDiagnostic), beforeDiagnostic));
+                    byte[] ending = { 0, 1, 0, 0, 0, 0, 0, 8 };
+                    SetsView.TryOpen(ending, out var endingView, out _);
+                    results.Add(Describe(endingView.TryOpenSet(0, out _, out _, out var endDiagnostic), endDiagnostic));
+                    return string.Join(",", results);
+                }
+            }
+            """));
+    }
+
+    // GA2 (spec 3.4): an explicit Length window is bounds-checked at the length field; a
+    // length-omitted reference opens the whole suffix; only AllowTargetAtEnd=true with a
+    // zero-minimum-header target may bind the empty end window.
+    [Fact]
+    public void ReferenceWindowHonorsExplicitLengthAndBoundEmpty()
+    {
+        Assert.Equal("Done|True|6," +
+            "Done|True|2," +
+            "InvalidOffset|False|False|RangeOutsideSource|Length|6|7|6," +
+            "Done|True|0," +
+            "InvalidOffset|False|False|RangeOutsideSource|Offset|4|8|8", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x33333333, 0, ContractVersion = 1)]
+            public readonly ref partial struct EmptyView { }
+            [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+            [BinaryScalar("RowCount", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
+            [BinaryArray("Row", "RowCount", 4, 4)]
+            [BinaryElement("Row", "At", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("End", "At", typeof(EmptyView), Array = "Row")]
+            public readonly ref partial struct EndView { }
+            [BinaryTable(0x45678912, 4, ContractVersion = 1)]
+            [BinaryScalar("RowCount", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
+            [BinaryArray("Row", "RowCount", 4, 4)]
+            [BinaryElement("Row", "At", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryElement("Row", "Span", WireType.UInt16, 2, DataField.Length, Semantic = NumberSemantic.Count)]
+            [BinaryReference("Piece", "At", typeof(EmptyView), Array = "Row", Length = "Span", AllowTargetAtEnd = true)]
+            public readonly ref partial struct WindowView { }
+            public static class Entry
+            {
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    byte[] suffix = { 0, 1, 0, 0, 0, 2, 0, 0 };
+                    EndView.TryOpen(suffix, out var endView, out _);
+                    ReadStatus opened = endView.TryOpenEnd(0, out var suffixChild, out var suffixPresent, out _);
+                    results.Add($"{opened}|{suffixPresent}|{suffixChild.RawBytes.Length}");
+                    byte[] windowed = { 0, 1, 0, 0, 0, 2, 0, 2 };
+                    WindowView.TryOpen(windowed, out var windowView, out _);
+                    ReadStatus piece = windowView.TryOpenPiece(0, out var pieceChild, out var piecePresent, out _);
+                    results.Add($"{piece}|{piecePresent}|{pieceChild.RawBytes.Length}");
+                    byte[] overlong = { 0, 1, 0, 0, 0, 2, 0, 7 };
+                    WindowView.TryOpen(overlong, out var overlongView, out _);
+                    ReadStatus refused = overlongView.TryOpenPiece(0, out _, out var refusedPresent, out var refusedDiagnostic);
+                    results.Add($"{refused}|{refusedPresent}|False|{refusedDiagnostic.Code}|{refusedDiagnostic.Location.Field}|{refusedDiagnostic.Location.Offset}|{refusedDiagnostic.Detail}|{refusedDiagnostic.Expected}");
+                    byte[] atEnd = { 0, 1, 0, 0, 0, 8, 0, 0 };
+                    WindowView.TryOpen(atEnd, out var endBound, out _);
+                    ReadStatus bound = endBound.TryOpenPiece(0, out var boundChild, out var boundPresent, out _);
+                    results.Add($"{bound}|{boundPresent}|{boundChild.RawBytes.Length}");
+                    byte[] unallowed = { 0, 1, 0, 0, 0, 8, 0, 0 };
+                    EndView.TryOpen(unallowed, out var strict, out _);
+                    ReadStatus strictStatus = strict.TryOpenEnd(0, out _, out _, out var strictDiagnostic);
+                    results.Add($"{strictStatus}|False|False|{strictDiagnostic.Code}|{strictDiagnostic.Location.Field}|{strictDiagnostic.Location.Offset}|{strictDiagnostic.Detail}|{strictDiagnostic.Expected}");
+                    return string.Join(",", results);
+                }
+            }
+            """));
+    }
+
+    // GA3 (V1-02 via card 1.2-b): the three null policies stay separate — Optional absence
+    // succeeds without evaluating Minimum, a malformed present child is never swallowed,
+    // and ZeroIsAddress opens base+0 like any present target.
+    [Fact]
+    public void ReferenceNullPoliciesSeparateAbsentMalformedAndAddressStates()
+    {
+        Assert.Equal("Done|False|0," +
+            "Done|True|7," +
+            "Truncated|TruncatedData|Payload|2|1|2," +
+            "Done|True|0,2", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 2, ContractVersion = 1)]
+            [BinaryScalar("Opt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
+            [BinaryComputed("Gate", "GateOf", Maximum = 1024ul)]
+            [BinaryReference("OptLeaf", "Opt", typeof(LeafView), NullPolicy = ReferenceNullPolicy.Optional, Minimum = "Gate")]
+            public readonly ref partial struct OptionalView
+            {
+                public static int GateCalls;
+                private static ReadStatus GateOf(DataLocation diagnosticLocation, out ulong value, out FontDiagnostic diagnostic)
+                { GateCalls++; value = 1; diagnostic = default; return ReadStatus.Done; }
+            }
+            [BinaryTable(0x55555555, 2, ContractVersion = 1)]
+            [BinaryScalar("Zia", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
+            [BinaryReference("ZiaLeaf", "Zia", typeof(LeafView), NullPolicy = ReferenceNullPolicy.ZeroIsAddress)]
+            public readonly ref partial struct ZiaView { }
+            public static class Entry
+            {
+                private static string Describe(ReadStatus status, FontDiagnostic d) =>
+                    $"{status}|{d.Code}|{d.Location.Field}|{d.Location.Offset}|{d.Detail}|{d.Expected}";
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    byte[] absent = { 0, 0 };
+                    OptionalView.TryOpen(absent, out var optional, out _);
+                    ReadStatus absentStatus = optional.TryOpenOptLeaf(out _, out var absentPresent, out _);
+                    results.Add($"{absentStatus}|{absentPresent}|{OptionalView.GateCalls}");
+                    byte[] good = { 0, 2, 0, 7 };
+                    OptionalView.TryOpen(good, out var goodView, out _);
+                    ReadStatus goodStatus = goodView.TryOpenOptLeaf(out var goodChild, out var goodPresent, out _);
+                    results.Add($"{goodStatus}|{goodPresent}|{goodChild.Seed}");
+                    byte[] malformed = { 0, 2, 0 };
+                    OptionalView.TryOpen(malformed, out var broken, out _);
+                    results.Add(Describe(broken.TryOpenOptLeaf(out _, out _, out var brokenDiagnostic), brokenDiagnostic));
+                    byte[] zero = { 0, 0, 1, 2 };
+                    ZiaView.TryOpen(zero, out var ziaView, out _);
+                    ReadStatus ziaStatus = ziaView.TryOpenZiaLeaf(out var ziaChild, out var ziaPresent, out _);
+                    results.Add($"{ziaStatus}|{ziaPresent}|{ziaChild.Seed}");
+                    results.Add(OptionalView.GateCalls.ToString());
+                    return string.Join(",", results);
+                }
+            }
+            """));
+    }
+
+    // GA4 (card 1.2-c, spec 3.2): every origin form computes base + encoded exactly once in
+    // owner coordinates — the child diagnostic position is owner.AtLocal(target), the
+    // record row is never mistaken for the wire parent, and the window is the owner suffix.
+    [Fact]
+    public void ReferenceOriginsTranslateThePhysicalBaseOnce()
+    {
+        Assert.Equal("Truncated|TruncatedData|Payload|6|2|4," +
+            "Done|True|42," +
+            "Truncated|TruncatedData|Payload|12|2|4," +
+            "Truncated|TruncatedData|Payload|12|2|4," +
+            "Done|True|42", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x11111111, 4, VersionField = "Format", SupportedVersions = new uint[] { 9 })]
+            [BinaryScalar("Format", WireType.UInt16, 0, DataField.Version)]
+            [BinaryScalar("Seed", WireType.UInt16, 2, DataField.Payload)]
+            public readonly ref partial struct LeafView { }
+            [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+            [BinaryScalar("DirectAt", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("Direct", "DirectAt", typeof(LeafView), Origin = ReferenceOrigin.ViewStart)]
+            public readonly ref partial struct DirectView { }
+            [BinaryTable(0x23456789, 8, ContractVersion = 1)]
+            [BinaryScalar("RowCount", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
+            [BinaryArray("Row", "RowCount", 8, 4)]
+            [BinaryElement("Row", "RowAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("RowLeaf", "RowAt", typeof(LeafView), Array = "Row", Origin = ReferenceOrigin.RecordStart)]
+            public readonly ref partial struct RowView { }
+            [BinaryTable(0x34567890, 12, ContractVersion = 1)]
+            [BinaryScalar("Anchor", WireType.UInt16, 0, DataField.Offset)]
+            [BinaryScalar("BaseAt", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.NameStorage, ZeroAllowed = false)]
+            [BinaryReference("Anchored", "BaseAt", typeof(LeafView), Origin = ReferenceOrigin.NamedBase, Base = "Anchor")]
+            public readonly ref partial struct BasedView { }
+            [BinaryTable(0x45678901, 12, ContractVersion = 1)]
+            [BinaryRecord("Ext", 4)]
+            [BinaryElement("Ext", "ExtAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("ExtLeaf", "ExtAt", typeof(LeafView), Array = "Ext", Origin = ReferenceOrigin.RecordStart)]
+            public readonly ref partial struct ExtView { }
+            public static class Entry
+            {
+                private static string Describe(ReadStatus status, FontDiagnostic d) =>
+                    $"{status}|{d.Code}|{d.Location.Field}|{d.Location.Offset}|{d.Detail}|{d.Expected}";
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    byte[] direct = { 0, 0, 0, 4, 0, 3 };
+                    DirectView.TryOpen(direct, out var directView, out _);
+                    results.Add(Describe(directView.TryOpenDirect(out _, out _, out var directDiagnostic), directDiagnostic));
+                    byte[] rowWindow = { 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 9, 0, 42, 0, 0 };
+                    RowView.TryOpen(rowWindow, out var rowView, out _);
+                    ReadStatus row = rowView.TryOpenRowLeaf(0, out var rowChild, out var rowPresent, out _);
+                    results.Add($"{row}|{rowPresent}|{rowChild.Seed}");
+                    byte[] rowPosition = { 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 3 };
+                    RowView.TryOpen(rowPosition, out var pinned, out _);
+                    results.Add(Describe(pinned.TryOpenRowLeaf(0, out _, out _, out var pinnedDiagnostic), pinnedDiagnostic));
+                    byte[] based = { 0, 6, 0, 4, 0, 0, 0, 0, 0, 0, 0, 3 };
+                    BasedView.TryOpen(based, out var basedView, out _);
+                    results.Add(Describe(basedView.TryOpenAnchored(out _, out _, out var basedDiagnostic), basedDiagnostic));
+                    byte[] external = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 9, 0, 42, 0, 0 };
+                    ExtView.TryOpen(external, out var extView, out _);
+                    ReadStatus ext = extView.TryOpenExtLeafAt(8, 0, out var extChild, out var extPresent, out _);
+                    results.Add($"{ext}|{extPresent}|{extChild.Seed}");
+                    return string.Join(",", results);
+                }
+            }
+            """));
+    }
+
+    // GA5 (spec 3.4, card 1.2-e): base + encoded*Scale overflow is refused with wide
+    // arithmetic (Detail=encoded, Expected=(max-base)/Scale) before any narrow math.
+    [Fact]
+    public void ReferenceWindowOverflowIsRefusedWithWideArithmetic()
+    {
+        Assert.Equal("InvalidOffset|RangeOutsideSource|Offset|2|4294967295|2147483648," +
+            "InvalidOffset|RangeOutsideSource|Offset|2|9223372045444710398|8", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 8, ContractVersion = 1)]
+            [BinaryScalar("WideAt", WireType.UInt32, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.NameStorage, ZeroAllowed = false, Scale = 0xFFFFFFFFu)]
+            [BinaryComputed("Big", "BigOf", Maximum = 18446744073709551615ul)]
+            [BinaryReference("Wide", "WideAt", typeof(LeafView), Origin = ReferenceOrigin.NamedBase, Base = "Big")]
+            public readonly ref partial struct WideView
+            {
+                private static ReadStatus BigOf(DataLocation diagnosticLocation, out ulong value, out FontDiagnostic diagnostic)
+                { value = 9223372036854775808ul; diagnostic = default; return ReadStatus.Done; }
+            }
+            public static class Entry
+            {
+                private static string Describe(ReadStatus status, FontDiagnostic d) =>
+                    $"{status}|{d.Code}|{d.Location.Field}|{d.Location.Offset}|{d.Detail}|{d.Expected}";
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    byte[] overflow = { 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0, 9 };
+                    WideView.TryOpen(overflow, out var view, out _);
+                    results.Add(Describe(view.TryOpenWide(out _, out _, out var overflowDiagnostic), overflowDiagnostic));
+                    byte[] outside = { 0, 0, 0, 0, 0, 2, 0, 9 };
+                    WideView.TryOpen(outside, out var bounded, out _);
+                    results.Add(Describe(bounded.TryOpenWide(out _, out _, out var boundsDiagnostic), boundsDiagnostic));
+                    return string.Join(",", results);
+                }
+            }
+            """));
+    }
+
+    // GA5 (card 1.2-h): a Minimum/Length pair whose worst-case values overflow UInt64 is
+    // refused at build time (FWG003) without emitting the table.
+    [Fact]
+    public void UnrepresentableReferenceBoundsAreRejectedAtBuildTime()
+    {
+        var (driver, _) = Generate(Driver(), Input(Tree("""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+            [BinaryScalar("At", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryComputed("MaxGate", "MaxGateOf", Maximum = 18446744073709551615ul)]
+            [BinaryComputed("LenGate", "LenGateOf", Maximum = 18446744073709551615ul)]
+            [BinaryReference("Leaf", "At", typeof(LeafView), Minimum = "MaxGate", Length = "LenGate")]
+            public readonly ref partial struct WideView { }
+            [BinaryTable(0x11111111, 2)]
+            [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct LeafView { }
+            """)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG003");
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            s => s.HintName == "Probe.WideView.g.cs");
+    }
+
+    // GA6 (card 1.2-d, spec 7.2): the plan-time fixup helper matrix — absent legality by
+    // null policy, target<origin, scale divisibility, narrow-value overflow, the
+    // present-delta=0 rule, zeroed outputs on failure, and a pass-through field location
+    // that is never shifted a second time.
+    [Fact]
+    public void ReferenceFixupHelperFollowsThePlanMatrix()
+    {
+        Assert.Equal("Done|None|0|0|0," +
+            "InvalidFormat|InvalidValue|0|1|0," +
+            "UnsupportedFormat|UnsupportedOperation|4|10|0," +
+            "UnsupportedFormat|UnsupportedOperation|5|2|0," +
+            "UnsupportedFormat|UnsupportedOperation|4294967296|4294967295|0," +
+            "UnsupportedFormat|UnsupportedOperation|0|1|0," +
+            "Done|None|0|0|0," +
+            "100|Offset|UnsupportedFormat|UnsupportedOperation|4|10|0", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x74657374, 2, ContractVersion = 1)]
+            [BinaryScalar("Opt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
+            [BinaryReference("OptLeaf", "Opt", typeof(LeafView), NullPolicy = ReferenceNullPolicy.Optional)]
+            public readonly ref partial struct OptView { }
+            [BinaryTable(0x23456789, 2, ContractVersion = 1)]
+            [BinaryScalar("ReqAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("ReqLeaf", "ReqAt", typeof(LeafView), NullPolicy = ReferenceNullPolicy.Required)]
+            public readonly ref partial struct ReqView { }
+            [BinaryTable(0x34567890, 2, ContractVersion = 1)]
+            [BinaryScalar("Zia", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
+            [BinaryReference("ZiaLeaf", "Zia", typeof(LeafView), NullPolicy = ReferenceNullPolicy.ZeroIsAddress)]
+            public readonly ref partial struct ZiaView { }
+            [BinaryTable(0x45678901, 4, ContractVersion = 1)]
+            [BinaryScalar("SclAt", WireType.UInt32, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false, Scale = 2)]
+            [BinaryReference("Scaled", "SclAt", typeof(LeafView), NullPolicy = ReferenceNullPolicy.Required)]
+            public readonly ref partial struct SclView { }
+            [BinaryTable(0x11111111, 2)]
+            [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct LeafView { }
+            public static class Entry
+            {
+                private static string Describe(ReadStatus status, FontDiagnostic d, ulong encoded) =>
+                    $"{status}|{d.Code}|{d.Detail}|{d.Expected}|{encoded}";
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    ReadStatus absent = OptView.TryGetOptLeafOffsetValue(false, 0, 0, out ushort absentEncoded, out var absentDiagnostic);
+                    results.Add(Describe(absent, absentDiagnostic, absentEncoded));
+                    ReadStatus missing = ReqView.TryGetReqLeafOffsetValue(false, 0, 0, out ushort missingEncoded, out var missingDiagnostic);
+                    results.Add(Describe(missing, missingDiagnostic, missingEncoded));
+                    ReadStatus backwards = ReqView.TryGetReqLeafOffsetValue(true, 10, 4, out ushort backwardsEncoded, out var backwardsDiagnostic);
+                    results.Add(Describe(backwards, backwardsDiagnostic, backwardsEncoded));
+                    ReadStatus indivisible = SclView.TryGetScaledOffsetValue(true, 0, 5, out uint indivisibleEncoded, out var indivisibleDiagnostic);
+                    results.Add(Describe(indivisible, indivisibleDiagnostic, indivisibleEncoded));
+                    ReadStatus narrow = SclView.TryGetScaledOffsetValue(true, 0, 8589934592, out uint narrowEncoded, out var narrowDiagnostic);
+                    results.Add(Describe(narrow, narrowDiagnostic, narrowEncoded));
+                    ReadStatus stationary = ReqView.TryGetReqLeafOffsetValue(true, 7, 7, out ushort stationaryEncoded, out var stationaryDiagnostic);
+                    results.Add(Describe(stationary, stationaryDiagnostic, stationaryEncoded));
+                    ReadStatus addressed = ZiaView.TryGetZiaLeafOffsetValue(true, 7, 7, out ushort addressedEncoded, out var addressedDiagnostic);
+                    results.Add(Describe(addressed, addressedDiagnostic, addressedEncoded));
+                    var location = DataLocation.Anonymous(0x74657374) with { Field = DataField.Offset, Offset = 100 };
+                    ReadStatus passed = ReqView.TryGetReqLeafOffsetValue(true, 10, 4, out ushort passedEncoded, out var passedDiagnostic, location);
+                    results.Add($"{passedDiagnostic.Location.Offset}|{passedDiagnostic.Location.Field}|{Describe(passed, passedDiagnostic, passedEncoded)}");
+                    return string.Join(",", results);
+                }
+            }
+            """));
+    }
+
+    // GA7 (card 1.2-f, spec 3.1): an explicit legacy Origin/ZeroAllowed pair consistent with
+    // the reference normalizes into one relation — the raw getter stays a raw getter and the
+    // opener keeps the zero policy; inconsistent explicit values are FWG005.
+    [Fact]
+    public void ConsistentLegacyMetadataNormalizesIntoOneRelation()
+    {
+        Assert.Equal("Done|0|None,InvalidOffset|RangeOutsideSource|Offset|2|0|4", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+            [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("Leaf", "At", typeof(LeafView), Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required)]
+            public readonly ref partial struct ConsistentView { }
+            public static class Entry
+            {
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    byte[] zero = { 0, 0, 0, 0 };
+                    ConsistentView.TryOpen(zero, out var view, out _);
+                    ReadStatus raw = view.TryGetAt(out ushort encoded, out var rawDiagnostic);
+                    results.Add($"{raw}|{encoded}|{rawDiagnostic.Code}");                    results.Add(Describe(view.TryOpenLeaf(out _, out _, out var openerDiagnostic), openerDiagnostic));
+                    return string.Join(",", results);
+                }
+                private static string Describe(ReadStatus status, FontDiagnostic d) =>
+                    $"{status}|{d.Code}|{d.Location.Field}|{d.Location.Offset}|{d.Detail}|{d.Expected}";
+            }
+            """));
+    }
+
+    [Theory]
+    [InlineData("originMismatch")]
+    [InlineData("zeroMismatch")]
+    [InlineData("nameStorageWithoutBase")]
+    public void InconsistentLegacyMetadataIsRejected(string defect)
+    {
+        string field = defect switch
+        {
+            "originMismatch" => "[BinaryScalar(\"At\", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]",
+            "zeroMismatch" => "[BinaryScalar(\"At\", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = true)]",
+            _ => "[BinaryScalar(\"At\", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.NameStorage, ZeroAllowed = false)]"
+        };
+        string reference = defect switch
+        {
+            "originMismatch" => "[BinaryReference(\"Leaf\", \"At\", typeof(LeafView), Origin = ReferenceOrigin.NamedBase, Base = \"Anchor\")]",
+            // Required against an explicit ZeroAllowed=true is the zero-policy mismatch.
+            "zeroMismatch" => "[BinaryReference(\"Leaf\", \"At\", typeof(LeafView), Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required)]",
+            "nameStorageWithoutBase" => "[BinaryReference(\"Leaf\", \"At\", typeof(LeafView), Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required)]",
+            _ => "[BinaryReference(\"Leaf\", \"At\", typeof(LeafView), Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Optional)]"
+        };
+        var (driver, _) = Generate(Driver(), Input(Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+            [BinaryScalar("Anchor", WireType.UInt16, 0, DataField.Offset)]
+            {{field}}
+            {{reference}}
+            public readonly ref partial struct LegacyView { }
+            """)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG005" && d.Location.IsInSource);
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            s => s.HintName == "Probe.LegacyView.g.cs");
+    }
+
+    // GA8 (card 1.2-a/1.2-g, spec 3.1): targets must be registered BinaryTable schemas of
+    // this compilation, reference names are unique, Base/Minimum must name declared values,
+    // and a slot cannot carry both a payload and a reference.
+    [Theory]
+    [InlineData("plainStructTarget", "FWG002")]
+    [InlineData("duplicateName", "FWG002")]
+    [InlineData("unknownBase", "FWG002")]
+    [InlineData("unknownMinimum", "FWG002")]
+    [InlineData("payloadConflict", "FWG005")]
+    public void RegistryAndSlotContractsAreEnforced(string defect, string code)
+    {
+        string schema = defect switch
+        {
+            "plainStructTarget" => """
+                [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+                [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryReference("Leaf", "At", typeof(NotASchema))]
+                public readonly ref partial struct RefView { }
+                public readonly struct NotASchema { }
+                """,
+            "duplicateName" => """
+                [BinaryTable(0x74657374, 6, ContractVersion = 1)]
+                [BinaryScalar("First", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryScalar("Second", WireType.UInt16, 4, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryReference("Leaf", "First", typeof(LeafView))]
+                [BinaryReference("Leaf", "Second", typeof(LeafView))]
+                public readonly ref partial struct RefView { }
+                """,
+            "unknownBase" => """
+                [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+                [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryReference("Leaf", "At", typeof(LeafView), Origin = ReferenceOrigin.NamedBase, Base = "Missing")]
+                public readonly ref partial struct RefView { }
+                """,
+            "unknownMinimum" => """
+                [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+                [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryReference("Leaf", "At", typeof(LeafView), Minimum = "Missing")]
+                public readonly ref partial struct RefView { }
+                """,
+            _ => """
+                [BinaryTable(0x74657374, 8, ContractVersion = 1)]
+                [BinaryScalar("Count", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
+                [BinaryDerived("DirectoryEnd", Constant = 4, Count = "Count", Stride = 4)]
+                [BinaryArray("Rec", "Count", 4, 4)]
+                [BinaryElement("Rec", "Off", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryElement("Rec", "Len", WireType.UInt16, 2, DataField.Length, Semantic = NumberSemantic.Count)]
+                [BinaryPayload("Rec", "Off", "Len", "DirectoryEnd")]
+                [BinaryReference("Leaf", "Off", typeof(LeafView), Array = "Rec")]
+                public readonly ref partial struct RefView { }
+                """
+        };
+        var (driver, _) = Generate(Driver(), Input(Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            {{schema}}
+            """)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == code);
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            s => s.HintName == "Probe.RefView.g.cs");
+    }
+
+    // GA8 (card 1.2-a): a V0 target is legal to local-open — the opener only calls the
+    // target's TryOpen and never demands scan support.
+    [Fact]
+    public void VersionZeroTargetSupportsLocalOpen()
+    {
+        Assert.Equal("Done|True|9", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+            [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("Leaf", "At", typeof(LeafView), Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required)]
+            public readonly ref partial struct RefView { }
+            public static class Entry
+            {
+                public static string Run()
+                {
+                    byte[] bytes = { 0, 0, 0, 4, 0, 9 };
+                    RefView.TryOpen(bytes, out var view, out _);
+                    ReadStatus status = view.TryOpenLeaf(out var child, out var present, out _);
+                    return $"{status}|{present}|{child.Seed}";
+                }
+            }
+            """));
+    }
+
+    // GA9 (card 1.1/1.2-h, FWG003): the offset field shape, the Array/Length scoping rules,
+    // scaled base references and the AllowTargetAtEnd x target-minimum-header mismatch are
+    // each build errors; the legal counterpart compiles and emits.
+    [Theory]
+    [InlineData("signedOffset")]
+    [InlineData("scaleZero")]
+    [InlineData("plainSemanticOffsetField")]
+    [InlineData("arrayNotDeclared")]
+    [InlineData("recordScalarUsage")]
+    [InlineData("lengthCrossScope")]
+    [InlineData("baseScaled")]
+    [InlineData("allowTargetAtEndMismatch")]
+    public void ReferenceDeclarationShapesAreValueChecked(string defect)
+    {
+        string schema = defect switch
+        {
+            "signedOffset" => """
+                [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+                [BinaryScalar("At", WireType.Int16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryReference("Leaf", "At", typeof(LeafView))]
+                public readonly ref partial struct ShapeView { }
+                """,
+            "scaleZero" => """
+                [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+                [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false, Scale = 0)]
+                [BinaryReference("Leaf", "At", typeof(LeafView))]
+                public readonly ref partial struct ShapeView { }
+                """,
+            "plainSemanticOffsetField" => """
+                [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+                [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset)]
+                [BinaryReference("Leaf", "At", typeof(LeafView))]
+                public readonly ref partial struct ShapeView { }
+                """,
+            "arrayNotDeclared" => """
+                [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+                [BinaryScalar("Version", WireType.UInt16, 0, DataField.Version)]
+                [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryReference("Leaf", "At", typeof(LeafView), Array = "Version")]
+                public readonly ref partial struct ShapeView { }
+                """,
+            "recordScalarUsage" => """
+                [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+                [BinaryRecord("Ext", 4)]
+                [BinaryElement("Ext", "ExtAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryReference("Leaf", "ExtAt", typeof(LeafView))]
+                public readonly ref partial struct ShapeView { }
+                """,
+            "lengthCrossScope" => """
+                [BinaryTable(0x74657374, 6, ContractVersion = 1)]
+                [BinaryScalar("Count", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
+                [BinaryArray("Row", "Count", 6, 4)]
+                [BinaryElement("Row", "RowAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryArray("Other", "Count", 4, 4)]
+                [BinaryElement("Other", "OtherLen", WireType.UInt16, 0, DataField.Length, Semantic = NumberSemantic.Count)]
+                [BinaryReference("Leaf", "RowAt", typeof(LeafView), Array = "Row", Length = "OtherLen")]
+                public readonly ref partial struct ShapeView { }
+                """,
+            "baseScaled" => """
+                [BinaryTable(0x74657374, 6, ContractVersion = 1)]
+                [BinaryScalar("Anchor", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false, Scale = 2)]
+                [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryReference("Leaf", "At", typeof(LeafView), Origin = ReferenceOrigin.NamedBase, Base = "Anchor")]
+                public readonly ref partial struct ShapeView { }
+                """,
+            _ => """
+                [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+                [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryReference("Leaf", "At", typeof(LeafView), AllowTargetAtEnd = true)]
+                public readonly ref partial struct ShapeView { }
+                """
+        };
+        var (driver, _) = Generate(Driver(), Input(Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            {{schema}}
+            """)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG003");
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            s => s.HintName == "Probe.ShapeView.g.cs");
+    }
+
+    // GA9 legal counterpart: Minimum=derived, Length=element and ZeroIsAddress combine into
+    // one emitted, compiling contract.
+    [Fact]
+    public void ReferenceDeclarationShapesCompileInTheLegalForm()
+    {
+        Assert.Equal("Done|True|7", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+            [BinaryScalar("Count", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
+            [BinaryDerived("Floor", Constant = 2)]
+            [BinaryArray("Row", "Count", 4, 4)]
+            [BinaryElement("Row", "At", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
+            [BinaryElement("Row", "Span", WireType.UInt16, 2, DataField.Length, Semantic = NumberSemantic.Count)]
+            [BinaryReference("Leaf", "At", typeof(LeafView), Array = "Row", Minimum = "Floor", Length = "Span", NullPolicy = ReferenceNullPolicy.ZeroIsAddress)]
+            public readonly ref partial struct ShapeView { }
+            public static class Entry
+            {
+                public static string Run()
+                {
+                    byte[] bytes = { 0, 1, 0, 0, 0, 8, 0, 2, 0, 7 };
+                    ShapeView.TryOpen(bytes, out var view, out _);
+                    ReadStatus status = view.TryOpenLeaf(0, out var child, out var present, out _);
+                    return $"{status}|{present}|{child.Seed}";
+                }
+            }
+            """));
+    }
+
+    private static SyntaxTree A3Leaf(string path = "Leaf.cs") => Tree("""
+        using FontWeave.Core;
+        using FontWeave.Schema;
+        namespace Probe;
+        [BinaryTable(0x11111111, 2)]
+        [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+        public readonly ref partial struct LeafView { }
+        """, path);
+
+    private static SyntaxTree A3Referrer(string reference, string path = "Referrer.cs") => Tree($$"""
+        using FontWeave.Core;
+        using FontWeave.Schema;
+        namespace Probe;
+        [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+        [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+        {{reference}}
+        public readonly ref partial struct RefView { }
+        """, path);
+
+    private static string[] HintNames(GeneratorDriverRunResult runResult) =>
+        runResult.Results.SelectMany(static r => r.TrackedSteps["EmittedTables"])
+            .SelectMany(static s => s.Outputs)
+            .Select(static o => (Output: ((string, string, string?))o.Value, Reason: o.Reason))
+            .Where(static o => o.Output.Item1 == "Probe.RefView.g.cs")
+            .Select(static o => $"{o.Reason}").ToArray();
+
+    // GA10 (card 1.2-g, spec 8.2): the target dimension of the incremental contract — a
+    // target layout change re-emits the referrer while a comment change stays cached.
+    [Fact]
+    public void TargetContractChangesReemitTheReferrerWhileCommentsStayCached()
+    {
+        var leaf = A3Leaf();
+        var referrer = A3Referrer("[BinaryReference(\"Leaf\", \"At\", typeof(LeafView))]");
+        var firstInput = Input(leaf, referrer);
+        var initial = Generate(Driver(), firstInput);
+        Assert.Contains(initial.Driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RefView.g.cs");
+        // A comment inside the target declaration does not change the target contract.
+        var commentedLeaf = Tree("""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x11111111, 2)]
+            [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct LeafView
+            {
+                // provenance comment only; the declared contract is unchanged.
+            }
+            """, "Leaf.cs");
+        var commentedInput = firstInput.ReplaceSyntaxTree(leaf, commentedLeaf);
+        var commented = Generate(initial.Driver, commentedInput);
+        Assert.Equal(["Cached"], HintNames(commented.Driver.GetRunResult()));
+        // A target layout change folds into the referrer identity and re-emits it.
+        var widerLeaf = Tree("""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x11111111, 2)]
+            [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+            [BinaryScalar("Extra", WireType.UInt16, 2, DataField.Flags)]
+            public readonly ref partial struct LeafView { }
+            """, "Leaf.cs");
+        var wider = Generate(commented.Driver, commentedInput.ReplaceSyntaxTree(commentedLeaf, widerLeaf));
+        Assert.Equal(["Modified"], HintNames(wider.Driver.GetRunResult()));
+    }
+
+    [Fact]
+    public void RemovedTargetClearsStaleOutputAndRecoversOnRoundTrip()
+    {
+        var leaf = A3Leaf();
+        var referrer = A3Referrer("[BinaryReference(\"Leaf\", \"At\", typeof(LeafView))]");
+        var input = Input(leaf, referrer);
+        var initial = Generate(Driver(), input);
+        Assert.Contains(initial.Driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RefView.g.cs");
+        // The target stops being a registered schema: the referrer must report FWG002 and
+        // drop its stale output.
+        var removedLeaf = Tree("""
+            namespace Probe;
+            public readonly ref partial struct LeafView { }
+            """, "Leaf.cs");
+        var removedInput = input.ReplaceSyntaxTree(leaf, removedLeaf);
+        var removed = Generate(initial.Driver, removedInput);
+        Assert.Contains(removed.Driver.GetRunResult().Diagnostics, static d => d.Id == "FWG002");
+        Assert.DoesNotContain(removed.Driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RefView.g.cs");
+        var restoredInput = removedInput.ReplaceSyntaxTree(removedLeaf, leaf);
+        var restored = Generate(removed.Driver, restoredInput);
+        Assert.DoesNotContain(restored.Driver.GetRunResult().Diagnostics, static d => d.Severity == DiagnosticSeverity.Error);
+        Assert.Contains(restored.Driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RefView.g.cs");
+    }
+
+    [Fact]
+    public void TargetVersionAndReferenceDeclarationChangesReemitTheReferrer()
+    {
+        static SyntaxTree ReferrerWithGates(string minimum, string path) => Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+            [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryComputed("GateA", "GateOf", Maximum = 1024ul)]
+            [BinaryComputed("GateB", "GateOf", Maximum = 2048ul)]
+            [BinaryReference("Leaf", "At", typeof(LeafView), Minimum = "{{minimum}}")]
+            public readonly ref partial struct RefView
+            {
+                private static ReadStatus GateOf(DataLocation diagnosticLocation, out ulong value, out FontDiagnostic diagnostic)
+                { value = 2; diagnostic = default; return ReadStatus.Done; }
+            }
+            """, path);
+        var leaf = A3Leaf();
+        var referrer = ReferrerWithGates("GateA", "Referrer.cs");
+        var input = Input(leaf, referrer);
+        var initial = Generate(Driver(), input);
+        // Flipping the target's ContractVersion changes the target contract: Modified.
+        var flippedLeaf = Tree("""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x11111111, 2, ContractVersion = 1)]
+            [BinaryScalar("Seed", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct LeafView { }
+            """, "Leaf.cs");
+        var flipped = Generate(initial.Driver, input.ReplaceSyntaxTree(leaf, flippedLeaf));
+        Assert.Equal(["Modified"], HintNames(flipped.Driver.GetRunResult()));
+        // Changing a declared reference field (Minimum) re-emits the referrer; the target
+        // tree is held at the flipped variant so only the referrer changes.
+        var flippedInput = input.ReplaceSyntaxTree(leaf, flippedLeaf);
+        var renamedTree = ReferrerWithGates("GateB", "Referrer.cs");
+        var renamedInput = flippedInput.ReplaceSyntaxTree(referrer, renamedTree);
+        var renamed = Generate(flipped.Driver, renamedInput);
+        Assert.Equal(["Modified"], HintNames(renamed.Driver.GetRunResult()));
+        // An invalid reference declaration drops the output; fixing it recovers emission.
+        var broken = A3Referrer("[BinaryReference(\"Leaf\", \"At\", typeof(LeafView), Minimum = \"Missing\")]", "Referrer.cs");
+        var brokenInput = renamedInput.ReplaceSyntaxTree(renamedTree, broken);
+        var brokenRun = Generate(renamed.Driver, brokenInput);
+        Assert.Contains(brokenRun.Driver.GetRunResult().Diagnostics, static d => d.Id == "FWG002");
+        Assert.DoesNotContain(brokenRun.Driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RefView.g.cs");
+        var restoredRun = Generate(brokenRun.Driver, brokenInput.ReplaceSyntaxTree(broken, ReferrerWithGates("GateB", "Referrer.cs")));
+        Assert.DoesNotContain(restoredRun.Driver.GetRunResult().Diagnostics, static d => d.Severity == DiagnosticSeverity.Error);
+        Assert.Contains(restoredRun.Driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.RefView.g.cs");
+    }
+
+    // GA11 (card 1.2-h/1.7, G11 pin): BinaryReference on a V0 table is an explicit
+    // ContractVersion=1 rejection for every declaration shape.
+    [Theory]
+    [InlineData("scalar")]
+    [InlineData("array")]
+    public void VersionZeroRejectsBinaryReferenceDeclarations(string shape)
+    {
+        string reference = shape == "scalar"
+            ? "[BinaryReference(\"Leaf\", \"At\", typeof(LeafView))]"
+            : """
+                [BinaryArray("Row", "Count", 6, 4)]
+                [BinaryElement("Row", "RowAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+                [BinaryReference("Leaf", "RowAt", typeof(LeafView), Array = "Row")]
+                """;
+        var (driver, _) = Generate(Driver(), Input(Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 6)]
+            [BinaryScalar("Count", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
+            [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            {{reference}}
+            public readonly ref partial struct LegacyView { }
+            """)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG001" && d.Location.IsInSource);
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            s => s.HintName == "Probe.LegacyView.g.cs");
+    }
+
+    // GA12 (card 1.2-g, OQ-5): a reference identity cycle A->B->A cannot terminate the
+    // canonical identity fold and is refused at build time (FWG004) for both participants.
+    [Fact]
+    public void ReferenceIdentityCyclesAreRejectedAtBuildTime()
+    {
+        var (driver, _) = Generate(Driver(), Input(Tree("""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+            [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("Peer", "At", typeof(PeerView))]
+            public readonly ref partial struct CycleView { }
+            [BinaryTable(0x23456789, 4, ContractVersion = 1)]
+            [BinaryScalar("At", WireType.UInt16, 2, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("Cycle", "At", typeof(CycleView))]
+            public readonly ref partial struct PeerView { }
+            """)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG004");
+        var sources = driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources).ToList();
+        Assert.DoesNotContain(sources, s => s.HintName == "Probe.CycleView.g.cs");
+        Assert.DoesNotContain(sources, s => s.HintName == "Probe.PeerView.g.cs");
+    }
 }

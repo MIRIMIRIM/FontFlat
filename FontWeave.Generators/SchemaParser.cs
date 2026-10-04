@@ -32,6 +32,13 @@ internal sealed class SchemaParser
     private readonly Dictionary<string, ComputedModel> _computeds = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ulong> _bounds = new(StringComparer.Ordinal);
     private readonly HashSet<string> _visiting = new(StringComparer.Ordinal);
+    private readonly List<ReferenceModel> _references = new();
+    private readonly HashSet<string> _referenceNames = new(StringComparer.Ordinal);
+    // Slot keys "name" (scalars) / "array:element" (elements) mapped to the legacy
+    // Origin/ZeroAllowed values the declaration stated explicitly (card 1.2-f: only
+    // explicit legacy values participate in the consistency check).
+    private readonly Dictionary<string, (WireOrigin? Origin, bool? ZeroAllowed)> _explicitMetadata = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ScalarModel> _elements = new(StringComparer.Ordinal);
 
     private SchemaParser(GeneratorAttributeSyntaxContext context, CancellationToken cancellation)
     {
@@ -119,7 +126,9 @@ internal sealed class SchemaParser
             switch (attribute.AttributeClass!.Name)
             {
                 case "BinaryScalarAttribute":
-                    scalars.Add(Scalar(attribute, 0));
+                    var parsedScalar = Scalar(attribute, 0);
+                    scalars.Add(parsedScalar);
+                    RecordExplicitMetadata(parsedScalar.Name, attribute);
                     break;
                 case "BinaryDerivedAttribute":
                     var derivedModel = new DerivedModel {
@@ -164,7 +173,29 @@ internal sealed class SchemaParser
                         computeds.Add(computed);
                     break;
                 case "BinaryElementAttribute":
-                    elements.Add((Text(attribute, 0), Scalar(attribute, 1)));
+                    var parsedElement = Scalar(attribute, 1);
+                    elements.Add((Text(attribute, 0), parsedElement));
+                    RecordExplicitMetadata(Text(attribute, 0) + ":" + parsedElement.Name, attribute);
+                    break;
+                case "BinaryReferenceAttribute":
+                    var reference = new ReferenceModel {
+                        Name = Text(attribute, 0), OffsetField = Text(attribute, 1),
+                        ArrayName = Text(attribute, "Array"), Origin = (ReferenceOrigin)Number(attribute, "Origin", 0),
+                        Base = Text(attribute, "Base"), Minimum = Text(attribute, "Minimum"), Length = Text(attribute, "Length"),
+                        NullPolicy = (ReferenceNullPolicy)Number(attribute, "NullPolicy", 0),
+                        ZeroFailure = (ReferenceZeroFailure)Number(attribute, "ZeroFailure", 0),
+                        AllowTargetAtEnd = Boolean(attribute, "AllowTargetAtEnd", false) };
+                    if (attribute.ConstructorArguments.Length > 2 &&
+                        attribute.ConstructorArguments[2].Value is ITypeSymbol target && target.TypeKind != TypeKind.Error)
+                        reference.TargetFullName = target.ToDisplayString();
+                    if (_model.ContractVersion != 1)
+                    {
+                        // Spec 1.7: a V0 declaration of a V1 capability is an explicit
+                        // ContractVersion=1 rejection, not silent reinterpretation.
+                        Error(FontSchemaGenerator.Shape, "BinaryReference requires ContractVersion=1.");
+                        break;
+                    }
+                    _references.Add(reference);
                     break;
                 case "BinaryPayloadAttribute":
                     payloads.Add(new PayloadModel { Array = Text(attribute, 0), Offset = Text(attribute, 1),
@@ -189,8 +220,12 @@ internal sealed class SchemaParser
         _model.Computed = computeds.ToImmutableArray();
         _model.Arrays = arrays.ToImmutableArray();
         _model.Payloads = payloads.ToImmutableArray();
+        _model.References = _references.ToImmutableArray();
         foreach (var array in arrays)
             array.Fields = elements.Where(e => e.Array == array.Name).Select(static e => e.Field).ToImmutableArray();
+        foreach (var array in arrays)
+            foreach (var field in array.Fields)
+                _elements[array.Name + ":" + field.Name] = field;
         foreach (var element in elements)
             if (!arrays.Any(a => a.Name == element.Array)) Error(FontSchemaGenerator.Reference, "Unknown element array: " + element.Array);
         Validate(symbol);
@@ -315,6 +350,8 @@ internal sealed class SchemaParser
             UnsignedReference(payload.Minimum);
         }
 
+        ValidateReferences();
+
         var generated = new HashSet<string>(StringComparer.Ordinal)
             { "IsBound", "RawBytes", "TryOpen", "_data", "_location", "_bound", "Location", "NormalizeLocation", "TrySlice", "Fail", "TryRequireKnownVersion" };
         GeneratedName(generated, _model.Name);
@@ -350,6 +387,14 @@ internal sealed class SchemaParser
                     GeneratedName(generated, "TryWrite" + array.Name);
             }
         foreach (var payload in _model.Payloads) GeneratedName(generated, "TryGet" + payload.Array + "Payload");
+        foreach (var reference in _model.References)
+        {
+            GeneratedName(generated, "TryOpen" + reference.Name);
+            GeneratedName(generated, "TryGet" + reference.Name + "OffsetValue");
+            if (reference.ArrayName is { } openArray &&
+                _model.Arrays.FirstOrDefault(a => a.Name == openArray) is { ExternallyPositioned: true })
+                GeneratedName(generated, "TryOpen" + reference.Name + "At");
+        }
         foreach (var member in symbol.GetMembers())
             if (!member.IsImplicitlyDeclared && generated.Contains(member.Name))
                 Error(FontSchemaGenerator.Reference, "A handwritten member collides with generated API: " + member.Name);
@@ -370,6 +415,150 @@ internal sealed class SchemaParser
             Error(FontSchemaGenerator.Layout, "A conditional scalar requires a representable unsigned fallback.");
         if (value.WhenVersion < 0 && value.Otherwise != 0)
             Error(FontSchemaGenerator.Layout, "Otherwise requires WhenVersion.");
+    }
+
+    // Card 1.2-f: only explicitly stated legacy Origin/ZeroAllowed values join the
+    // reference consistency check; defaults and None are never asserted.
+    private void RecordExplicitMetadata(string slotKey, AttributeData attribute)
+    {
+        _explicitMetadata[slotKey] = (
+            attribute.NamedArguments.Any(static p => p.Key == "Origin")
+                ? (WireOrigin?)(WireOrigin)Number(attribute, "Origin", 0) : null,
+            attribute.NamedArguments.Any(static p => p.Key == "ZeroAllowed")
+                ? (bool?)Boolean(attribute, "ZeroAllowed", true) : null);
+    }
+
+    // Spec 3 typed references (card 1.1): slot identity, offset-field shape, name
+    // resolution, record scope and legacy-metadata consistency. Target registration and
+    // the AllowTargetAtEnd x minimum-header match are the registry combine step's job.
+    private void ValidateReferences()
+    {
+        var payloadSlots = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var payload in _model.Payloads)
+            payloadSlots.Add(payload.Array + ":" + payload.Offset);
+        foreach (var reference in _model.References)
+        {
+            Name(reference.Name);
+            if (!_referenceNames.Add(reference.Name))
+                Error(FontSchemaGenerator.Reference, "Duplicate reference name: " + reference.Name);
+            if ((int)reference.Origin is < 0 or > 2 || (int)reference.NullPolicy is < 0 or > 2 ||
+                (int)reference.ZeroFailure is < 0 or > 1)
+                Error(FontSchemaGenerator.Layout, "Invalid reference origin, null policy or zero failure: " + reference.Name);
+            if (reference.Origin == ReferenceOrigin.NamedBase && reference.Base is null)
+                Error(FontSchemaGenerator.Layout, "A NamedBase reference requires an explicit Base: " + reference.Name);
+            if (reference.Origin != ReferenceOrigin.NamedBase && reference.Base is not null)
+                Error(FontSchemaGenerator.Layout, "Only a NamedBase reference takes a Base: " + reference.Name);
+
+            ScalarModel? offset;
+            ArrayModel? array = null;
+            if (reference.ArrayName is { } arrayName)
+            {
+                array = _model.Arrays.FirstOrDefault(a => a.Name == arrayName);
+                if (array is null)
+                {
+                    if (_scalars.ContainsKey(arrayName) || _derived.ContainsKey(arrayName) || _computeds.ContainsKey(arrayName))
+                        Error(FontSchemaGenerator.Layout, "A reference Array must name a declared array or record: " + arrayName);
+                    else
+                        Error(FontSchemaGenerator.Reference, "Unknown reference array: " + arrayName);
+                    continue;
+                }
+                offset = array.Fields.FirstOrDefault(f => f.Name == reference.OffsetField);
+                if (offset is null)
+                {
+                    if (_elements.ContainsKey(arrayName + ":" + reference.OffsetField))
+                        Error(FontSchemaGenerator.Layout, "The reference offset field belongs to another array: " + reference.OffsetField);
+                    else if (!_scalars.ContainsKey(reference.OffsetField))
+                        Error(FontSchemaGenerator.Reference, "Unknown reference offset field: " + reference.OffsetField);
+                    else
+                        Error(FontSchemaGenerator.Layout, "The reference offset field must be an element of the array: " + reference.OffsetField);
+                    continue;
+                }
+            }
+            else
+            {
+                if (_scalars.TryGetValue(reference.OffsetField, out var scalarOffset))
+                {
+                    offset = scalarOffset;
+                }
+                else
+                {
+                    if (_elements.Values.Any(e => e.Name == reference.OffsetField))
+                        Error(FontSchemaGenerator.Layout, "An array-element offset requires the reference Array: " + reference.OffsetField);
+                    else
+                        Error(FontSchemaGenerator.Reference, "Unknown reference offset field: " + reference.OffsetField);
+                    continue;
+                }
+            }
+            if (!offset.IsUnsigned || offset.Semantic != NumberSemantic.Offset || offset.Scale == 0)
+                Error(FontSchemaGenerator.Layout, "A reference offset field must be an unsigned Offset value with a positive scale: " + reference.OffsetField);
+
+            string slotKey = reference.ArrayName is null ? reference.OffsetField : reference.ArrayName + ":" + reference.OffsetField;
+            if (payloadSlots.Contains(slotKey))
+                Error(FontSchemaGenerator.Condition, "A source slot cannot declare both a payload and a reference: " + slotKey);
+            if (_explicitMetadata.TryGetValue(slotKey, out var legacy))
+            {
+                if (legacy.Origin is { } declaredOrigin)
+                {
+                    // Card 1.2-f (spec 3.1): explicit legacy Origin and the reference Origin
+                    // normalize into one relation. Table anchors the table window, which
+                    // covers both the ViewStart and RecordStart bases; NameStorage only
+                    // pairs with an explicit NamedBase Base.
+                    bool originConsistent = declaredOrigin == WireOrigin.NameStorage
+                        ? reference.Origin == ReferenceOrigin.NamedBase
+                        : reference.Origin != ReferenceOrigin.NamedBase;
+                    if (!originConsistent)
+                        Error(FontSchemaGenerator.Condition, "The declared field origin conflicts with the reference origin: " + reference.OffsetField);
+                }
+                if (legacy.ZeroAllowed is { } declaredZero &&
+                    reference.NullPolicy == ReferenceNullPolicy.Required == declaredZero)
+                    Error(FontSchemaGenerator.Condition, "The declared zero policy conflicts with the reference null policy: " + reference.OffsetField);
+            }
+
+            foreach (var (valueName, role) in new[] { (reference.Base, "Base"), (reference.Minimum, "Minimum") })
+            {
+                if (valueName is null) continue;
+                if (_scalars.TryGetValue(valueName, out var referenced))
+                {
+                    if (referenced.Scale != 1)
+                        Error(FontSchemaGenerator.Layout, "Reference " + role + " must reference an unscaled scalar: " + valueName);
+                }
+                else if (!_derived.ContainsKey(valueName) && !_computeds.ContainsKey(valueName))
+                    Error(FontSchemaGenerator.Reference, "Unknown reference " + role + ": " + valueName);
+            }
+            ulong worstLength = 0;
+            if (reference.Length is { } lengthName)
+            {
+                if (array is { } scope)
+                {
+                    var lengthElement = scope.Fields.FirstOrDefault(f => f.Name == lengthName);
+                    if (lengthElement is null)
+                    {
+                        if (_elements.Values.Any(e => e.Name == lengthName) || !_scalars.ContainsKey(lengthName))
+                            Error(FontSchemaGenerator.Layout, "A reference Length must share the offset field's record scope: " + lengthName);
+                        else
+                            Error(FontSchemaGenerator.Layout, "A record-scoped reference Length must be an element of the array: " + lengthName);
+                    }
+                    else worstLength = RawBound(lengthElement);
+                }
+                else if (_scalars.TryGetValue(lengthName, out var lengthScalar))
+                {
+                    if (lengthScalar.Scale != 1)
+                        Error(FontSchemaGenerator.Layout, "Reference Length must reference an unscaled scalar: " + lengthName);
+                    worstLength = Bound(lengthName);
+                }
+                else if (_derived.ContainsKey(lengthName) || _computeds.ContainsKey(lengthName))
+                {
+                    worstLength = Bound(lengthName);
+                }
+                else
+                    Error(FontSchemaGenerator.Reference, "Unknown reference Length: " + lengthName);
+            }
+            // Card 1.2-h: the worst-case Minimum+Length sum must stay representable (FWG003).
+            // Unknown names stay FWG002 and are excluded from the sum check.
+            if (reference.Minimum is { } minimumName &&
+                (_scalars.ContainsKey(minimumName) || _derived.ContainsKey(minimumName) || _computeds.ContainsKey(minimumName)))
+                Add(Bound(minimumName), worstLength);
+        }
     }
 
     // WhenVersions domains (spec 2.1/4, card 1.2-b, FWG005): a finite activation domain
@@ -764,6 +953,14 @@ internal sealed class SchemaParser
         Value(_model.Payloads.Length);
         for (int i = 0; i < _model.Payloads.Length; i++)
         { Value(i); Value(_model.Payloads[i].Array); Value(_model.Payloads[i].Offset); Value(_model.Payloads[i].Length); Value(_model.Payloads[i].Base); Value(_model.Payloads[i].Minimum); }
+        Value(_model.References.Length);
+        for (int i = 0; i < _model.References.Length; i++)
+        {
+            var reference = _model.References[i];
+            Value(i); Value(reference.Name); Value(reference.OffsetField); Value(reference.ArrayName);
+            Value(reference.TargetFullName); Value(reference.Origin); Value(reference.Base); Value(reference.Minimum);
+            Value(reference.Length); Value(reference.NullPolicy); Value(reference.ZeroFailure); Value(reference.AllowTargetAtEnd);
+        }
         return key.ToString();
     }
 }

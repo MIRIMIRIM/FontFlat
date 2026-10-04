@@ -118,6 +118,16 @@ internal static class ViewEmitter
             EmitPayload(writer, model, payload);
         }
 
+        foreach (ReferenceModel reference in model.References)
+        {
+            // A targetless reference declares no typed opener or fixup helper (spec 3.3).
+            if (reference.TargetFullName is null) continue;
+            writer.Line();
+            EmitReferenceOpener(writer, model, reference);
+            writer.Line();
+            EmitReferenceFixup(writer, model, reference);
+        }
+
         writer.Line();
         EmitKnownVersion(writer, model);
         writer.Line();
@@ -1125,6 +1135,343 @@ internal static class ViewEmitter
         writer.Indent--;
         writer.Line("}");
     }
+
+    // Spec 3 typed reference opener family (card 1.2-b/c): fixed check order — unbound,
+    // known version, applicability (A3 references carry no condition and always apply),
+    // ordinal/count (counted-array form, A1 semantics), the offset field through its own
+    // accessor (truncation propagates), zero policy, base/minimum/length with wide
+    // arithmetic, source bounds, and finally the child TryOpen with the child location
+    // translated exactly once via Location.AtLocal. Any failure restores every out value.
+    private static void EmitReferenceOpener(CodeWriter writer, TableModel model, ReferenceModel reference)
+    {
+        ArrayModel? array = reference.ArrayName is null ? null : FindArray(model, reference.ArrayName);
+        bool externForm = array is { ExternallyPositioned: true };
+        ScalarModel offset = array is null ? FindScalar(model, reference.OffsetField) : FindArrayField(array, reference.OffsetField);
+        string targetView = reference.TargetNamespace.Length == 0
+            ? reference.TargetName
+            : "global::" + reference.TargetNamespace + "." + reference.TargetName;
+        string refField = $"(global::FontWeave.Core.DataField){offset.FieldId}";
+        string declare = "global::FontWeave.Core.ReadStatus status";
+        string ordinalArgument = array is null ? "-1" : "ordinal";
+
+        if (externForm)
+        {
+            writer.Line($"internal global::FontWeave.Core.ReadStatus TryOpen{reference.Name}At(ulong rowPosition, int ordinal,");
+            writer.Indent++;
+            writer.Line($"out {targetView} child, out bool present, out global::FontWeave.Core.FontDiagnostic diagnostic)");
+            writer.Indent--;
+        }
+        else if (array is not null)
+        {
+            writer.Line($"internal global::FontWeave.Core.ReadStatus TryOpen{reference.Name}(int ordinal, out {targetView} child, out bool present,");
+            writer.Indent++;
+            writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic)");
+            writer.Indent--;
+        }
+        else
+        {
+            writer.Line($"internal global::FontWeave.Core.ReadStatus TryOpen{reference.Name}(out {targetView} child, out bool present,");
+            writer.Indent++;
+            writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic)");
+            writer.Indent--;
+        }
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("child = default;");
+        writer.Line("present = false;");
+        // Every generated accessor family reports the unbound contract at the owner
+        // start (A1/A2 convention); the scalar opener form matches the array form
+        // minus the ordinal so consumers can predict unbound locations uniformly.
+        string unboundLocation = externForm
+            ? "Location.AtLocal(global::FontWeave.Core.DataField.None, rowPosition, ordinal)"
+            : "Location.AtLocal(global::FontWeave.Core.DataField.None, 0UL" + (array is null ? "" : ", ordinal") + ")";
+        writer.Line("if (!IsBound)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Uninitialized,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
+        writer.Line(unboundLocation + ", out diagnostic);");
+        writer.Indent -= 2;
+
+        writer.Line($"{declare} = TryRequireKnownVersion(out _, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+
+        string offsetValue;
+        string fieldPosition;
+        if (externForm)
+        {
+            // An externally positioned record declares no count, so there is no ordinal
+            // gate; the record reader reports row truncation with the passed ordinal.
+            writer.Line($"status = TryRead{array!.Name}At(rowPosition, ordinal, out var record, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            offsetValue = $"(ulong)record.{offset.Name}";
+            fieldPosition = $"rowPosition > ulong.MaxValue - {U(offset.Position.Constant)} ? ulong.MaxValue : rowPosition + {U(offset.Position.Constant)}";
+        }
+        else if (array is not null)
+        {
+            writer.Line($"status = TryGet{array.Count}(out var countRaw, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            writer.Line("ulong count = (ulong)countRaw;");
+            writer.Line("if (ordinal < 0 || (ulong)ordinal >= count)");
+            writer.Line("{");
+            writer.Indent++;
+            string countLocation = EmitCountLocation(writer, model, array, "ordinal");
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidIndex,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.IndexOutOfRange,");
+            writer.Line(countLocation + ",");
+            writer.Line("out diagnostic, unchecked((ulong)ordinal), count);");
+            writer.Indent -= 2;
+            writer.Line("}");
+            writer.Line($"status = TryGet{array.Name}(ordinal, out var record, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            writer.Line($"status = TryEvaluateArray{array.Name}Start(out ulong arrayStart, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            offsetValue = $"(ulong)record.{offset.Name}";
+            fieldPosition = $"arrayStart + (ulong)ordinal * {U(array.Stride)} + {U(offset.Position.Constant)}";
+        }
+        else
+        {
+            writer.Line($"status = TryGet{offset.Name}(out {offset.CsType} raw, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            offsetValue = "(ulong)raw";
+            fieldPosition = U(offset.Position.Constant);
+        }
+        string refLocation = $"Location.AtLocal({refField}, {fieldPosition}, {ordinalArgument})";
+
+        if (reference.NullPolicy != ReferenceNullPolicy.ZeroIsAddress)
+        {
+            writer.Line($"if ({offsetValue} == 0UL)");
+            writer.Line("{");
+            writer.Indent++;
+            if (reference.NullPolicy == ReferenceNullPolicy.Optional)
+            {
+                // Spec 3.4: a nullable absence neither opens the child nor evaluates the
+                // declared Minimum/Length values.
+                writer.Line("diagnostic = default;");
+                writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
+            }
+            else if (reference.ZeroFailure == ReferenceZeroFailure.InvalidValue)
+            {
+                writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidFormat,");
+                writer.Indent++;
+                writer.Line("global::FontWeave.Core.DiagnosticCode.InvalidValue,");
+                writer.Line($"{refLocation}, out diagnostic, 0UL, 1UL);");
+                writer.Indent--;
+            }
+            else
+            {
+                writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+                writer.Indent++;
+                writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+                writer.Line($"{refLocation}, out diagnostic, 0UL, (ulong)_data.Length);");
+                writer.Indent--;
+            }
+            writer.Indent--;
+            writer.Line("}");
+        }
+
+        string baseValue;
+        if (reference.Origin == ReferenceOrigin.NamedBase)
+        {
+            writer.Line($"status = TryGet{reference.Base}(out var baseRaw, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            baseValue = "(ulong)baseRaw";
+        }
+        else if (reference.Origin == ReferenceOrigin.RecordStart && array is { ExternallyPositioned: false })
+        {
+            writer.Line($"ulong rowPosition = arrayStart + (ulong)ordinal * {U(array.Stride)};");
+            baseValue = "rowPosition";
+        }
+        else if (reference.Origin == ReferenceOrigin.RecordStart)
+        {
+            baseValue = "rowPosition";
+        }
+        else
+            baseValue = "0UL";
+        if (baseValue != "0UL" || offset.Scale != 1)
+        {
+            // Spec 3.4: base+offset*Scale overflow refuses with wide arithmetic before any
+            // narrow conversion; the guard is unreachable for schemas whose worst case was
+            // proven at build time but stays defensive at runtime.
+            writer.Line($"if ({offsetValue} > (ulong.MaxValue - {baseValue}) / {U(offset.Scale)})");
+            writer.Line("{");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+            writer.Line($"{refLocation},");
+            writer.Line($"out diagnostic, {offsetValue}, (ulong.MaxValue - {baseValue}) / {U(offset.Scale)});");
+            writer.Indent -= 2;
+            writer.Line("}");
+        }
+        writer.Line($"ulong target = {baseValue} + {offsetValue} * {U(offset.Scale)};");
+
+        if (reference.Minimum is { } minimumName)
+        {
+            writer.Line($"status = TryGet{minimumName}(out var minimumRaw, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            writer.Line("ulong minimum = (ulong)minimumRaw;");
+            writer.Line("if (target < minimum)");
+            writer.Line("{");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.StorageBeforeRecords,");
+            writer.Line($"{refLocation}, out diagnostic, target, minimum);");
+            writer.Indent -= 2;
+            writer.Line("}");
+        }
+
+        string window;
+        if (reference.Length is { } lengthName)
+        {
+            string lengthField;
+            if (array is not null)
+            {
+                writer.Line($"ulong windowLength = (ulong)record.{lengthName};");
+                ScalarModel lengthElement = FindArrayField(array, lengthName);
+                lengthField = $"(global::FontWeave.Core.DataField){lengthElement.FieldId}";
+            }
+            else
+            {
+                writer.Line($"status = TryGet{lengthName}(out var lengthRaw, out diagnostic);");
+                writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                writer.Line("ulong windowLength = (ulong)lengthRaw;");
+                ScalarModel lengthScalar = FindScalar(model, lengthName);
+                lengthField = $"(global::FontWeave.Core.DataField){lengthScalar.FieldId}";
+            }
+            string lengthLocation = array is null
+                ? $"Location.AtLocal({lengthField}, {U(FindScalar(model, lengthName).Position.Constant)})"
+                : $"Location.AtLocal({lengthField}, {fieldPosition} - {U(offset.Position.Constant)} + {U(FindArrayField(array, lengthName).Position.Constant)}, {ordinalArgument})";
+            writer.Line("if (windowLength > (ulong)_data.Length - target)");
+            writer.Line("{");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+            writer.Line($"{lengthLocation}, out diagnostic, windowLength, (ulong)_data.Length - target);");
+            writer.Indent -= 2;
+            writer.Line("}");
+            window = "_data.Slice((int)target, (int)windowLength)";
+        }
+        else
+            window = "_data.Slice((int)target)";
+
+        writer.Line($"if (target {(reference.AllowTargetAtEnd ? ">" : ">=")} (ulong)_data.Length)");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+        writer.Line($"{refLocation}, out diagnostic, target, (ulong)_data.Length);");
+        writer.Indent -= 2;
+        writer.Line("}");
+
+        writer.Line($"status = {targetView}.TryOpen({window}, out child, out diagnostic,");
+        writer.Indent++;
+        // The child location is translated exactly once (spec 3.2); the target TryOpen
+        // failure propagates verbatim with child/present restored.
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, target));");
+        writer.Indent--;
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line("present = true;");
+        writer.Line("diagnostic = default;");
+        writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    // Spec 7.2 plan-time fixup helper (card 1.2-d): the planner has already chosen the
+    // branch and target; the helper only validates and encodes. fieldLocation arrives
+    // qualified and is never shifted again. Every failure leaves encoded at 0.
+    private static void EmitReferenceFixup(CodeWriter writer, TableModel model, ReferenceModel reference)
+    {
+        ScalarModel offset = reference.ArrayName is null
+            ? FindScalar(model, reference.OffsetField)
+            : FindArrayField(FindArray(model, reference.ArrayName), reference.OffsetField);
+        writer.Line($"internal static global::FontWeave.Core.ReadStatus TryGet{reference.Name}OffsetValue(bool present, ulong origin, ulong target,");
+        writer.Indent++;
+        writer.Line($"out {offset.CsType} encoded, out global::FontWeave.Core.FontDiagnostic diagnostic,");
+        writer.Line("global::FontWeave.Core.DataLocation fieldLocation = default)");
+        writer.Indent--;
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("encoded = default;");
+        writer.Line("fieldLocation = NormalizeLocation(fieldLocation);");
+        writer.Line("if (!present)");
+        writer.Line("{");
+        writer.Indent++;
+        if (reference.NullPolicy == ReferenceNullPolicy.Optional)
+        {
+            writer.Line("diagnostic = default;");
+            writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
+        }
+        else
+        {
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidFormat,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.InvalidValue,");
+            writer.Line("fieldLocation, out diagnostic, 0UL, 1UL);");
+            writer.Indent--;
+        }
+        writer.Indent--;
+        writer.Line("}");
+        writer.Line("if (target < origin)");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.UnsupportedFormat,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.UnsupportedOperation,");
+        writer.Line("fieldLocation, out diagnostic, target, origin);");
+        writer.Indent -= 2;
+        writer.Line("}");
+        writer.Line("ulong delta = target - origin;");
+        writer.Line($"if (delta % {U(offset.Scale)} != 0UL)");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.UnsupportedFormat,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.UnsupportedOperation,");
+        writer.Line($"fieldLocation, out diagnostic, delta, {U(offset.Scale)});");
+        writer.Indent -= 2;
+        writer.Line("}");
+        writer.Line($"ulong wide = delta / {U(offset.Scale)};");
+        writer.Line($"if (wide > {U(RawBound(offset))})");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.UnsupportedFormat,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.UnsupportedOperation,");
+        writer.Line($"fieldLocation, out diagnostic, wide, {U(RawBound(offset))});");
+        writer.Indent -= 2;
+        writer.Line("}");
+        if (reference.NullPolicy != ReferenceNullPolicy.ZeroIsAddress)
+        {
+            writer.Line("if (wide == 0UL)");
+            writer.Line("{");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.UnsupportedFormat,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.UnsupportedOperation,");
+            writer.Line("fieldLocation, out diagnostic, 0UL, 1UL);");
+            writer.Indent -= 2;
+            writer.Line("}");
+        }
+        writer.Line($"encoded = ({offset.CsType})wide;");
+        writer.Line("diagnostic = default;");
+        writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    private static ulong RawBound(ScalarModel value) => value.Type switch
+    {
+        WireType.UInt8 => byte.MaxValue, WireType.Int8 => (ulong)sbyte.MaxValue,
+        WireType.UInt16 => ushort.MaxValue, WireType.UInt24 => 0xFFFFFF,
+        WireType.UInt32 => uint.MaxValue, WireType.Int16 => (ulong)short.MaxValue,
+        WireType.Int64 => long.MaxValue, _ => int.MaxValue
+    };
 
     private static void EmitKnownVersion(CodeWriter writer, TableModel model)
     {
