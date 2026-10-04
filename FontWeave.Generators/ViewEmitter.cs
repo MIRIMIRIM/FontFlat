@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Immutable;
 using System.Globalization;
 using System.Linq;
 using System.Text;
@@ -74,6 +75,12 @@ internal static class ViewEmitter
             EmitDerived(writer, model, derived);
         }
 
+        foreach (ComputedModel computed in model.Computed)
+        {
+            writer.Line();
+            EmitComputed(writer, model, computed);
+        }
+
         foreach (ArrayModel array in model.Arrays)
         {
             writer.Line();
@@ -82,7 +89,7 @@ internal static class ViewEmitter
             EmitRecordWrite(writer, array);
             writer.Line();
             if (array.ExternallyPositioned)
-                EmitExternallyPositionedRecord(writer, array);
+                EmitExternallyPositionedRecord(writer, model, array);
             else
             {
                 EmitArrayStart(writer, array);
@@ -412,10 +419,132 @@ internal static class ViewEmitter
             writer.Line("}");
         }
 
-        EmitPosition(writer, derived.Expression, "value");
+        EmitPosition(writer, derived.Expression, "value", derived.CountSubtract,
+            derived.Expression.Count is { } countName ? FindScalarOrNull(model, countName)?.FieldId ?? 0 : 0);
         writer.Line("diagnostic = default;");
         writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
         writer.Indent--;
+        writer.Line("}");
+    }
+
+    // Spec 2.3 computed contract (card 1.2-a/1.5): unbound → known version → condition →
+    // inputs in declared order (each through its own getter, failures propagate) → hook →
+    // Maximum. The diagnostic location is the declared DiagnosticSource position (or the
+    // owner start) carrying the declared DiagnosticField; failures leave value at 0.
+    private static void EmitComputed(CodeWriter writer, TableModel model, ComputedModel computed)
+    {
+        writer.Line($"public global::FontWeave.Core.ReadStatus TryGet{computed.Name}(out ulong value,");
+        writer.Indent++;
+        writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic)");
+        writer.Indent--;
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("value = default;");
+        writer.Line("if (!IsBound)");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.Uninitialized,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
+        writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0), out diagnostic);");
+        writer.Indent -= 2;
+
+        bool statusDeclared = false;
+        if (model.VersionField is not null)
+        {
+            statusDeclared = true;
+            if (computed.WhenVersions.Length != 0)
+            {
+                writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);");
+                writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                EmitCondition(writer, model, computed.WhenVersions);
+            }
+            else
+            {
+                writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);");
+                writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            }
+        }
+        var arguments = new StringBuilder();
+        for (int i = 0; i < computed.Inputs.Length; i++)
+        {
+            string input = computed.Inputs[i];
+            if (i != 0) arguments.Append(", ");
+            if (input == "@length")
+            {
+                writer.Line($"int length{i} = _data.Length;");
+                arguments.Append("length").Append(i);
+                continue;
+            }
+            string csType = FindScalarOrNull(model, input)?.CsType ?? "ulong";
+            if (statusDeclared)
+                writer.Line($"status = TryGet{input}(out {csType} input{i}, out diagnostic);");
+            else
+            {
+                statusDeclared = true;
+                writer.Line($"global::FontWeave.Core.ReadStatus status = TryGet{input}(out {csType} input{i}, out diagnostic);");
+            }
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            arguments.Append("input").Append(i);
+        }
+        string location;
+        if (computed.DiagnosticSource is { } source)
+        {
+            if (statusDeclared)
+                writer.Line($"status = TryEvaluateScalar{source}Position(out ulong sourcePosition, out diagnostic);");
+            else
+            {
+                statusDeclared = true;
+                writer.Line($"global::FontWeave.Core.ReadStatus status = TryEvaluateScalar{source}Position(out ulong sourcePosition, out diagnostic);");
+            }
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            location = $"Location.AtLocal((global::FontWeave.Core.DataField){computed.DiagnosticFieldId}, sourcePosition)";
+        }
+        else
+            location = $"Location.AtLocal((global::FontWeave.Core.DataField){computed.DiagnosticFieldId}, 0)";
+        writer.Line($"var diagnosticLocation = {location};");
+        string hookStatus = statusDeclared ? "status" : "global::FontWeave.Core.ReadStatus status";
+        string hookArguments = arguments.Length == 0 ? "" : arguments + ", ";
+        writer.Line($"{hookStatus} = {computed.Method}({hookArguments}diagnosticLocation, out ulong hookValue, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line($"if (hookValue > {U(computed.Maximum)})");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidFormat,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.InvalidValue,");
+        writer.Line($"diagnosticLocation, out diagnostic, hookValue, {U(computed.Maximum)});");
+        writer.Indent -= 2;
+        writer.Line("}");
+        writer.Line("value = hookValue;");
+        writer.Line("diagnostic = default;");
+        writer.Line("return global::FontWeave.Core.ReadStatus.Done;");
+        writer.Indent--;
+        writer.Line("}");
+    }
+
+    // A declared WhenVersions domain refuses known-but-inactive versions before any
+    // count, ordinal or extent evaluation (card 1.2-b/1.5, OQ-2): UnsupportedOperation
+    // located at the version field with Detail=version and Expected=0.
+    private static void EmitCondition(CodeWriter writer, TableModel model, ImmutableArray<uint> whenVersions)
+    {
+        var inactive = new StringBuilder();
+        for (int i = 0; i < whenVersions.Length; i++)
+        {
+            if (i != 0) inactive.Append(" && ");
+            inactive.Append("version != ").Append(U(whenVersions[i]));
+        }
+        ScalarModel versionField = FindScalar(model, model.VersionField!);
+        writer.Line($"if ({inactive})");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line($"status = TryEvaluateScalar{versionField.Name}Position(out ulong versionPosition, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.UnsupportedFormat,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.UnsupportedOperation,");
+        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){versionField.FieldId}, versionPosition),");
+        writer.Line("out diagnostic, version, 0);");
+        writer.Indent -= 2;
         writer.Line("}");
     }
 
@@ -427,7 +556,7 @@ internal static class ViewEmitter
         writer.Line($"public readonly record struct {array.Name}Data({parameters});");
     }
 
-    private static void EmitExternallyPositionedRecord(CodeWriter writer, ArrayModel array)
+    private static void EmitExternallyPositionedRecord(CodeWriter writer, TableModel model, ArrayModel array)
     {
         writer.Line($"private global::FontWeave.Core.ReadStatus TryRead{array.Name}At(ulong rowPosition, int ordinal,");
         writer.Indent++;
@@ -443,8 +572,17 @@ internal static class ViewEmitter
         writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
         writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, rowPosition, ordinal), out diagnostic);");
         writer.Indent -= 2;
-        writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);");
-        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        if (array.WhenVersions.Length != 0)
+        {
+            writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            EmitCondition(writer, model, array.WhenVersions);
+        }
+        else
+        {
+            writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        }
         writer.Line($"if (!TrySlice(_data, rowPosition, {U(array.Stride)}, out global::System.ReadOnlySpan<byte> row))");
         writer.Line("{");
         writer.Indent++;
@@ -498,7 +636,6 @@ internal static class ViewEmitter
     // that have not opted in.
     private static void EmitArrayV1(CodeWriter writer, TableModel model, ArrayModel array)
     {
-        ScalarModel count = FindScalar(model, array.Count);
         writer.Line($"public global::FontWeave.Core.ReadStatus TryGet{array.Name}(int ordinal,");
         writer.Indent++;
         writer.Line($"out {array.Name}Data record, out global::FontWeave.Core.FontDiagnostic diagnostic)");
@@ -513,20 +650,29 @@ internal static class ViewEmitter
         writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
         writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0, ordinal), out diagnostic);");
         writer.Indent -= 2;
-        writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);");
-        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        if (array.WhenVersions.Length != 0)
+        {
+            // Inactive conditions refuse before the count, ordinal and extent checks.
+            writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            EmitCondition(writer, model, array.WhenVersions);
+        }
+        else
+        {
+            writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        }
         writer.Line($"status = TryGet{array.Count}(out var countRaw, out diagnostic);");
         writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
         writer.Line("ulong count = (ulong)countRaw;");
         writer.Line("if (ordinal < 0 || (ulong)ordinal >= count)");
         writer.Line("{");
         writer.Indent++;
-        writer.Line($"status = TryEvaluateScalar{count.Name}Position(out ulong countPosition, out diagnostic);");
-        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        string countLocation = EmitCountLocation(writer, model, array, "ordinal");
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidIndex,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.IndexOutOfRange,");
-        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){count.FieldId}, countPosition, ordinal),");
+        writer.Line(countLocation + ",");
         writer.Line("out diagnostic, unchecked((ulong)ordinal), count);");
         writer.Indent -= 2;
         writer.Line("}");
@@ -536,12 +682,11 @@ internal static class ViewEmitter
         writer.Line($"if (count > (ulong.MaxValue - start) / {U(array.Stride)})");
         writer.Line("{");
         writer.Indent++;
-        writer.Line($"status = TryEvaluateScalar{count.Name}Position(out ulong countPosition, out diagnostic);");
-        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        countLocation = EmitCountLocation(writer, model, array, "ordinal");
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
-        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){count.FieldId}, countPosition, ordinal),");
+        writer.Line(countLocation + ",");
         writer.Line($"out diagnostic, count, (ulong.MaxValue - start) / {U(array.Stride)});");
         writer.Indent -= 2;
         writer.Line("}");
@@ -570,7 +715,6 @@ internal static class ViewEmitter
     // start beyond the source is still refused (spec 5 rule 2, card OQ-1 ruling).
     private static void EmitArrayExtent(CodeWriter writer, TableModel model, ArrayModel array)
     {
-        ScalarModel count = FindScalar(model, array.Count);
         writer.Line($"internal global::FontWeave.Core.ReadStatus TryGet{array.Name}Extent(out ulong start, out ulong count, out ulong end,");
         writer.Indent++;
         writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic)");
@@ -585,7 +729,20 @@ internal static class ViewEmitter
         writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
         writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0), out diagnostic);");
         writer.Indent -= 2;
-        writer.Line($"global::FontWeave.Core.ReadStatus status = TryGet{array.Count}(out var countRaw, out diagnostic);");
+        bool statusDeclared = false;
+        if (array.WhenVersions.Length != 0)
+        {
+            // Extents gain version + condition prechecks only for conditional arrays, so
+            // unconditioned V1 tables keep their emitted text unchanged (card 1.2-b).
+            statusDeclared = true;
+            writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            EmitCondition(writer, model, array.WhenVersions);
+        }
+        if (statusDeclared)
+            writer.Line($"status = TryGet{array.Count}(out var countRaw, out diagnostic);");
+        else
+            writer.Line($"global::FontWeave.Core.ReadStatus status = TryGet{array.Count}(out var countRaw, out diagnostic);");
         writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
         writer.Line("ulong countValue = (ulong)countRaw;");
         writer.Line($"status = TryEvaluateArray{array.Name}Start(out ulong startValue, out diagnostic);");
@@ -593,12 +750,11 @@ internal static class ViewEmitter
         writer.Line($"if (countValue > (ulong.MaxValue - startValue) / {U(array.Stride)})");
         writer.Line("{");
         writer.Indent++;
-        writer.Line($"status = TryEvaluateScalar{count.Name}Position(out ulong countPosition, out diagnostic);");
-        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        string countLocation = EmitCountLocation(writer, model, array, null);
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
-        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){count.FieldId}, countPosition),");
+        writer.Line(countLocation + ",");
         writer.Line($"out diagnostic, countValue, (ulong.MaxValue - startValue) / {U(array.Stride)});");
         writer.Indent -= 2;
         writer.Line("}");
@@ -621,7 +777,6 @@ internal static class ViewEmitter
     // names the first incomplete row's first incomplete field (spec 5 rule 3).
     private static void EmitRequireArrayExtent(CodeWriter writer, TableModel model, ArrayModel array)
     {
-        ScalarModel count = FindScalar(model, array.Count);
         writer.Line($"internal global::FontWeave.Core.ReadStatus TryRequire{array.Name}Extent(out global::FontWeave.Core.FontDiagnostic diagnostic)");
         writer.Line("{");
         writer.Indent++;
@@ -632,7 +787,18 @@ internal static class ViewEmitter
         writer.Line("global::FontWeave.Core.DiagnosticCode.UnboundView,");
         writer.Line("Location.AtLocal(global::FontWeave.Core.DataField.None, 0), out diagnostic);");
         writer.Indent -= 2;
-        writer.Line($"global::FontWeave.Core.ReadStatus status = TryGet{array.Count}(out var countRaw, out diagnostic);");
+        bool statusDeclared = false;
+        if (array.WhenVersions.Length != 0)
+        {
+            statusDeclared = true;
+            writer.Line("global::FontWeave.Core.ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            EmitCondition(writer, model, array.WhenVersions);
+        }
+        if (statusDeclared)
+            writer.Line($"status = TryGet{array.Count}(out var countRaw, out diagnostic);");
+        else
+            writer.Line($"global::FontWeave.Core.ReadStatus status = TryGet{array.Count}(out var countRaw, out diagnostic);");
         writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
         writer.Line("ulong count = (ulong)countRaw;");
         writer.Line($"status = TryEvaluateArray{array.Name}Start(out ulong start, out diagnostic);");
@@ -640,12 +806,11 @@ internal static class ViewEmitter
         writer.Line($"if (count > (ulong.MaxValue - start) / {U(array.Stride)})");
         writer.Line("{");
         writer.Indent++;
-        writer.Line($"status = TryEvaluateScalar{count.Name}Position(out ulong countPosition, out diagnostic);");
-        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        string countLocation = EmitCountLocation(writer, model, array, null);
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
-        writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){count.FieldId}, countPosition),");
+        writer.Line(countLocation + ",");
         writer.Line($"out diagnostic, count, (ulong.MaxValue - start) / {U(array.Stride)});");
         writer.Indent -= 2;
         writer.Line("}");
@@ -702,8 +867,40 @@ internal static class ViewEmitter
     private static bool HasCountedWriter(TableModel model, ArrayModel array)
     {
         if (array.ExternallyPositioned || array.Start.Base is not null) return false;
-        ScalarModel count = FindScalar(model, array.Count);
-        return count.WhenVersion < 0 && count.Position.Base is null;
+        // Card 1.2-f (OQ-4): the writer's count is a plan parameter and is never read
+        // from the source, so an unconditional fixed scalar or an unconditional/same-domain
+        // computed count keeps the row addresses unambiguous; the writer itself never
+        // checks versions (the consumed layout is already selected).
+        if (FindScalarOrNull(model, array.Count) is { } scalar)
+            return scalar.WhenVersion < 0 && scalar.Position.Base is null;
+        if (FindComputed(model, array.Count) is { } computed)
+            return computed.WhenVersions.Length == 0 || SameVersions(computed.WhenVersions, array.WhenVersions);
+        return false;
+    }
+
+    private static bool SameVersions(ImmutableArray<uint> left, ImmutableArray<uint> right)
+    {
+        if (left.Length != right.Length) return false;
+        for (int i = 0; i < left.Length; i++)
+            if (left[i] != right[i]) return false;
+        return true;
+    }
+
+    // The counted writer's ordinal diagnostic keeps the declared count provenance:
+    // scalars at their own fixed position, computed counts at the DiagnosticSource
+    // position with the computed's DiagnosticField (card 1.2-e, OQ-5).
+    private static (int FieldId, ulong Position) CountProvenance(TableModel model, ArrayModel array)
+    {
+        if (FindScalarOrNull(model, array.Count) is { } scalar)
+            return (scalar.FieldId, scalar.Position.Constant);
+        if (FindComputed(model, array.Count) is { } computed)
+        {
+            var source = computed.DiagnosticSource is null ? null : FindScalarOrNull(model, computed.DiagnosticSource);
+            return (computed.DiagnosticFieldId, source?.Position.Constant ?? 0);
+        }
+        var derived = model.Derived.First(d => d.Name == array.Count);
+        var raw = FindScalarOrNull(model, derived.Expression.Count ?? "");
+        return raw is null ? (0, 0) : (raw.FieldId, raw.Position.Constant);
     }
 
     // Spec 7.1 fixed-start counted writer: record.Ordinal is the only row index and
@@ -712,7 +909,7 @@ internal static class ViewEmitter
     // every narrow value, and only then the declared fields.
     private static void EmitCountedRecordWrite(CodeWriter writer, TableModel model, ArrayModel array)
     {
-        ScalarModel count = FindScalar(model, array.Count);
+        (int countFieldId, ulong countPosition) = CountProvenance(model, array);
         writer.Line($"internal static global::FontWeave.Core.ReadStatus TryWrite{array.Name}(global::System.Span<byte> destination, ulong count, in {array.Name}Data record,");
         writer.Indent++;
         writer.Line("out global::FontWeave.Core.FontDiagnostic diagnostic, global::FontWeave.Core.DataLocation location = default)");
@@ -733,7 +930,7 @@ internal static class ViewEmitter
         writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidIndex,");
         writer.Indent++;
         writer.Line("global::FontWeave.Core.DiagnosticCode.IndexOutOfRange,");
-        writer.Line($"location.AtLocal((global::FontWeave.Core.DataField){count.FieldId}, {U(count.Position.Constant)}, record.Ordinal), out diagnostic,");
+        writer.Line($"location.AtLocal((global::FontWeave.Core.DataField){countFieldId}, {U(countPosition)}, record.Ordinal), out diagnostic,");
         writer.Line("unchecked((ulong)record.Ordinal), count);");
         writer.Indent -= 2;
         // Check every narrow value before touching a row, even when the invalid value
@@ -1013,7 +1210,8 @@ internal static class ViewEmitter
         writer.Line("}");
     }
 
-    private static void EmitPosition(CodeWriter writer, PositionModel position, string target)
+    private static void EmitPosition(CodeWriter writer, PositionModel position, string target,
+        uint subtract = 0, int countFieldId = 0)
     {
         writer.Line($"{target} = default;");
         writer.Line($"ulong computedPosition = {U(position.Constant)};");
@@ -1027,7 +1225,26 @@ internal static class ViewEmitter
         {
             writer.Line($"global::FontWeave.Core.ReadStatus countStatus = TryGet{position.Count}(out var countValue, out diagnostic);");
             writer.Line("if (countStatus != global::FontWeave.Core.ReadStatus.Done) return countStatus;");
-            writer.Line($"computedPosition += (ulong)countValue * {U(position.Stride)};");
+            if (subtract != 0)
+            {
+                // Affine subtraction happens before the stride multiplication (spec 2.2);
+                // a runtime underflow is refused at the raw count source and never wraps.
+                writer.Line($"if ((ulong)countValue < {U(subtract)})");
+                writer.Line("{");
+                writer.Indent++;
+                writer.Line($"global::FontWeave.Core.ReadStatus underflowStatus = TryEvaluateScalar{position.Count}Position(out ulong countPosition, out diagnostic);");
+                writer.Line("if (underflowStatus != global::FontWeave.Core.ReadStatus.Done) return underflowStatus;");
+                writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidFormat,");
+                writer.Indent++;
+                writer.Line("global::FontWeave.Core.DiagnosticCode.InvalidValue,");
+                writer.Line($"Location.AtLocal((global::FontWeave.Core.DataField){countFieldId}, countPosition),");
+                writer.Line($"out diagnostic, (ulong)countValue, {U(subtract)});");
+                writer.Indent -= 2;
+                writer.Line("}");
+                writer.Line($"computedPosition += ((ulong)countValue - {U(subtract)}) * {U(position.Stride)};");
+            }
+            else
+                writer.Line($"computedPosition += (ulong)countValue * {U(position.Stride)};");
         }
         writer.Line($"{target} = computedPosition;");
     }
@@ -1063,6 +1280,52 @@ internal static class ViewEmitter
         foreach (ScalarModel scalar in model.Scalars)
             if (scalar.Name == name) return scalar;
         throw new InvalidOperationException($"Scalar '{name}' was not found in '{model.Name}'.");
+    }
+
+    private static ScalarModel? FindScalarOrNull(TableModel model, string name)
+    {
+        foreach (ScalarModel scalar in model.Scalars)
+            if (scalar.Name == name) return scalar;
+        return null;
+    }
+
+    private static ComputedModel? FindComputed(TableModel model, string name)
+    {
+        foreach (ComputedModel computed in model.Computed)
+            if (computed.Name == name) return computed;
+        return null;
+    }
+
+    // Emits the statements evaluating the declared diagnostic provenance of the array's
+    // count source and returns the AtLocal expression (with the optional ordinal, when
+    // the caller reports one). Scalar counts keep their own position and field; derived
+    // counts locate the unique raw scalar source; computed counts use the declared
+    // DiagnosticSource position with the computed's DiagnosticField (card 1.2-c/e).
+    private static string EmitCountLocation(CodeWriter writer, TableModel model, ArrayModel array, string? ordinal)
+    {
+        string tail = ordinal is null ? ")" : $", {ordinal})";
+        if (FindScalarOrNull(model, array.Count) is { } scalar)
+        {
+            writer.Line($"status = TryEvaluateScalar{scalar.Name}Position(out ulong countPosition, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            return $"Location.AtLocal((global::FontWeave.Core.DataField){scalar.FieldId}, countPosition{tail}";
+        }
+        if (FindComputed(model, array.Count) is { } computed)
+        {
+            if (computed.DiagnosticSource is { } source)
+            {
+                writer.Line($"status = TryEvaluateScalar{source}Position(out ulong countPosition, out diagnostic);");
+                writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                return $"Location.AtLocal((global::FontWeave.Core.DataField){computed.DiagnosticFieldId}, countPosition{tail}";
+            }
+            return $"Location.AtLocal((global::FontWeave.Core.DataField){computed.DiagnosticFieldId}, 0{tail}";
+        }
+        var derived = model.Derived.First(d => d.Name == array.Count);
+        if (FindScalarOrNull(model, derived.Expression.Count ?? "") is not { } raw)
+            return $"Location.AtLocal(global::FontWeave.Core.DataField.None, 0{tail}";
+        writer.Line($"status = TryEvaluateScalar{raw.Name}Position(out ulong countPosition, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        return $"Location.AtLocal((global::FontWeave.Core.DataField){raw.FieldId}, countPosition{tail}";
     }
 
     private static ArrayModel FindArray(TableModel model, string name)

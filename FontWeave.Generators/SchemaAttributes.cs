@@ -48,6 +48,8 @@ namespace FontWeave.Schema
         public uint Stride { get; set; } = 1;
         public long WhenVersion { get; set; } = -1;
         public string? Otherwise { get; set; }
+        public uint CountSubtract { get; set; }
+        public NumberSemantic Semantic { get; set; }
     }
 
     [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]
@@ -56,6 +58,7 @@ namespace FontWeave.Schema
     {
         public BinaryArrayAttribute(string name, string count, int start, int stride) { }
         public string? Start { get; set; }
+        public uint[] WhenVersions { get; set; } = new uint[0];
     }
 
     [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]
@@ -63,6 +66,20 @@ namespace FontWeave.Schema
     internal sealed class BinaryRecordAttribute : global::System.Attribute
     {
         public BinaryRecordAttribute(string name, int stride) { }
+        public uint[] WhenVersions { get; set; } = new uint[0];
+    }
+
+    [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]
+    [global::System.AttributeUsage(global::System.AttributeTargets.Struct, AllowMultiple = true)]
+    internal sealed class BinaryComputedAttribute : global::System.Attribute
+    {
+        public BinaryComputedAttribute(string name, string method) { }
+        public string[] Inputs { get; set; } = new string[0];
+        public ulong Maximum { get; set; } = uint.MaxValue;
+        public NumberSemantic Semantic { get; set; }
+        public global::FontWeave.Core.DataField DiagnosticField { get; set; }
+        public string? DiagnosticSource { get; set; }
+        public uint[] WhenVersions { get; set; } = new uint[0];
     }
 
     [global::System.Diagnostics.Conditional("FONTWEAVE_EMIT_SCHEMA_ATTRIBUTES")]

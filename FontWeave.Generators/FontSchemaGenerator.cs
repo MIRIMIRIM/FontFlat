@@ -13,6 +13,8 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
     internal static readonly DiagnosticDescriptor Reference = Rule("FWG002", "Invalid schema name or reference");
     internal static readonly DiagnosticDescriptor Layout = Rule("FWG003", "Invalid wire layout or value");
     internal static readonly DiagnosticDescriptor Cycle = Rule("FWG004", "Cyclic schema expression");
+    internal static readonly DiagnosticDescriptor Condition = Rule("FWG005", "Invalid schema condition or dependency path");
+    internal static readonly DiagnosticDescriptor Hook = Rule("FWG006", "Invalid computed hook binding");
     private static DiagnosticDescriptor Rule(string id, string title) =>
         new(id, title, "{0}", "FontWeave.Schema", DiagnosticSeverity.Error, isEnabledByDefault: true);
 

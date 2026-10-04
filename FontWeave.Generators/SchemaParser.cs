@@ -26,8 +26,10 @@ internal sealed class SchemaParser
     private readonly CancellationToken _cancellation;
     private Location _location;
     private readonly TableModel _model = new();
+    private INamedTypeSymbol _symbol = null!;
     private readonly Dictionary<string, ScalarModel> _scalars = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DerivedModel> _derived = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ComputedModel> _computeds = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ulong> _bounds = new(StringComparer.Ordinal);
     private readonly HashSet<string> _visiting = new(StringComparer.Ordinal);
 
@@ -75,6 +77,7 @@ internal sealed class SchemaParser
 
         var scalars = new List<ScalarModel>();
         var derived = new List<DerivedModel>();
+        var computeds = new List<ComputedModel>();
         var arrays = new List<ArrayModel>();
         var elements = new List<(string Array, ScalarModel Field)>();
         var payloads = new List<PayloadModel>();
@@ -119,19 +122,46 @@ internal sealed class SchemaParser
                     scalars.Add(Scalar(attribute, 0));
                     break;
                 case "BinaryDerivedAttribute":
-                    derived.Add(new DerivedModel { Name = Text(attribute, 0), Expression = new PositionModel {
-                        Base = Text(attribute, "Base"), Constant = (ulong)Number(attribute, "Constant", 0),
-                        Count = Text(attribute, "Count"), Stride = (ulong)Number(attribute, "Stride", 1) },
-                        WhenVersion = Number(attribute, "WhenVersion", -1), Otherwise = Text(attribute, "Otherwise") });
+                    var derivedModel = new DerivedModel {
+                        Name = Text(attribute, 0), Expression = new PositionModel {
+                            Base = Text(attribute, "Base"), Constant = (ulong)Number(attribute, "Constant", 0),
+                            Count = Text(attribute, "Count"), Stride = (ulong)Number(attribute, "Stride", 1) },
+                        WhenVersion = Number(attribute, "WhenVersion", -1), Otherwise = Text(attribute, "Otherwise"),
+                        CountSubtract = (uint)Number(attribute, "CountSubtract", 0),
+                        Semantic = (NumberSemantic)Number(attribute, "Semantic", 0) };
+                    if ((derivedModel.CountSubtract != 0 || derivedModel.Semantic != NumberSemantic.Plain) &&
+                        _model.ContractVersion != 1)
+                    {
+                        // Spec 1.7: a V0 declaration of a V1 capability is an explicit
+                        // ContractVersion=1 rejection, not silent reinterpretation.
+                        Error(FontSchemaGenerator.Shape, "Derived CountSubtract/Semantic requires ContractVersion=1.");
+                        derivedModel.CountSubtract = 0;
+                        derivedModel.Semantic = NumberSemantic.Plain;
+                    }
+                    derived.Add(derivedModel);
                     break;
                 case "BinaryArrayAttribute":
                     arrays.Add(new ArrayModel { Name = Text(attribute, 0), Count = Text(attribute, 1),
                         Start = new PositionModel { Constant = Unsigned(Number(attribute, 2)), Base = Text(attribute, "Start") },
-                        Stride = (int)Number(attribute, 3) });
+                        Stride = (int)Number(attribute, 3), WhenVersions = Gate(WhenVersions(attribute)) });
                     break;
                 case "BinaryRecordAttribute":
                     arrays.Add(new ArrayModel { Name = Text(attribute, 0), Stride = (int)Number(attribute, 1),
-                        ExternallyPositioned = true });
+                        ExternallyPositioned = true, WhenVersions = Gate(WhenVersions(attribute)) });
+                    break;
+                case "BinaryComputedAttribute":
+                    var computed = new ComputedModel {
+                        Name = Text(attribute, 0), Method = Text(attribute, 1), Inputs = Inputs(attribute),
+                        Maximum = Maximum(attribute),
+                        Semantic = (NumberSemantic)Number(attribute, "Semantic", 0),
+                        DiagnosticFieldId = (int)Number(attribute, "DiagnosticField", 0),
+                        HasExplicitDiagnosticField = attribute.NamedArguments.Any(static p => p.Key == "DiagnosticField"),
+                        DiagnosticSource = Text(attribute, "DiagnosticSource"),
+                        WhenVersions = Gate(WhenVersions(attribute)) };
+                    if (_model.ContractVersion != 1)
+                        Error(FontSchemaGenerator.Shape, "BinaryComputed requires ContractVersion=1.");
+                    else
+                        computeds.Add(computed);
                     break;
                 case "BinaryElementAttribute":
                     elements.Add((Text(attribute, 0), Scalar(attribute, 1)));
@@ -156,6 +186,7 @@ internal sealed class SchemaParser
         _location = declaration.GetLocation();
         _model.Scalars = scalars.ToImmutableArray();
         _model.Derived = derived.ToImmutableArray();
+        _model.Computed = computeds.ToImmutableArray();
         _model.Arrays = arrays.ToImmutableArray();
         _model.Payloads = payloads.ToImmutableArray();
         foreach (var array in arrays)
@@ -184,6 +215,7 @@ internal sealed class SchemaParser
 
     private void Validate(INamedTypeSymbol symbol)
     {
+        _symbol = symbol;
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var scalar in _model.Scalars)
         {
@@ -200,6 +232,22 @@ internal sealed class SchemaParser
                 Error(FontSchemaGenerator.Reference, "A conditional derived field requires an Otherwise value reference.");
             if (value.WhenVersion < 0 && value.Otherwise is not null)
                 Error(FontSchemaGenerator.Layout, "Otherwise requires WhenVersion.");
+            if ((int)value.Semantic is < 0 or > 1)
+                Error(FontSchemaGenerator.Layout, "A derived semantic must be Plain or Count: " + value.Name);
+            if (value.CountSubtract != 0)
+            {
+                // Spec 2.2: CountSubtract needs a count and must not provably underflow it.
+                if (value.Expression.Count is null)
+                    Error(FontSchemaGenerator.Layout, "CountSubtract requires a Count reference: " + value.Name);
+                else if (Bound(value.Expression.Count) < value.CountSubtract)
+                    Error(FontSchemaGenerator.Layout, "CountSubtract provably underflows the raw count: " + value.Name);
+            }
+        }
+        foreach (var computed in _model.Computed)
+        {
+            Unique(names, computed.Name);
+            if (!_computeds.ContainsKey(computed.Name)) _computeds.Add(computed.Name, computed);
+            ValidateComputed(computed);
         }
         if (_model.VersionField is null)
         {
@@ -218,9 +266,10 @@ internal sealed class SchemaParser
         {
             Unique(arrayNames, array.Name);
             if (array.Stride <= 0) Error(FontSchemaGenerator.Layout, "Array stride must be positive.");
-            if (!array.ExternallyPositioned &&
-                (!_scalars.TryGetValue(array.Count, out var count) || !count.IsUnsigned || count.Semantic != NumberSemantic.Count))
-                Error(FontSchemaGenerator.Reference, "Array count must reference an unsigned Count scalar: " + array.Count);
+            if (array.WhenVersions.Length != 0)
+                ValidateConditionDomain(array.WhenVersions, "Array " + array.Name);
+            if (!array.ExternallyPositioned)
+                ValidateArrayCount(array);
             var fieldNames = new HashSet<string>(StringComparer.Ordinal)
                 { "Ordinal", "Equals", "ToString", "GetHashCode", "PrintMembers", "Deconstruct", array.Name + "Data" };
             foreach (var field in array.Fields)
@@ -280,6 +329,7 @@ internal sealed class SchemaParser
                 GeneratedName(generated, scalar.Name);
         }
         foreach (var value in _model.Derived) GeneratedName(generated, "TryGet" + value.Name);
+        foreach (var computed in _model.Computed) GeneratedName(generated, "TryGet" + computed.Name);
         foreach (var array in _model.Arrays)
         {
             GeneratedName(generated, array.Name + "Data");
@@ -322,6 +372,170 @@ internal sealed class SchemaParser
             Error(FontSchemaGenerator.Layout, "Otherwise requires WhenVersion.");
     }
 
+    // WhenVersions domains (spec 2.1/4, card 1.2-b, FWG005): a finite activation domain
+    // needs a declared version field and stays inside its supported versions.
+    private void ValidateConditionDomain(ImmutableArray<uint> whenVersions, string owner)
+    {
+        if (_model.VersionField is null || _model.SupportedVersions.IsEmpty)
+            Error(FontSchemaGenerator.Condition, owner + " declares WhenVersions but the table has no supported version field.");
+        else if (whenVersions.Any(v => !_model.SupportedVersions.Contains(v)))
+            Error(FontSchemaGenerator.Condition, owner + " declares a WhenVersions value outside the supported versions.");
+    }
+
+    // Spec 2.2: an array count is an unsigned Count scalar, a Semantic=Count derived in
+    // the exact rawCount-CountSubtract form, or a Semantic=Count computed. A conditional
+    // count source cannot coexist with the array's own WhenVersions domain.
+    private void ValidateArrayCount(ArrayModel array)
+    {
+        if (_scalars.TryGetValue(array.Count, out var scalar))
+        {
+            if (!scalar.IsUnsigned || scalar.Semantic != NumberSemantic.Count)
+                Error(FontSchemaGenerator.Reference, "Array count must reference an unsigned Count scalar: " + array.Count);
+            if (array.WhenVersions.Length != 0 && scalar.WhenVersion >= 0)
+                Error(FontSchemaGenerator.Condition, "Array " + array.Name + " cannot combine WhenVersions with a WhenVersion-conditioned count.");
+            return;
+        }
+        if (_derived.TryGetValue(array.Count, out var derived))
+        {
+            if (derived.Semantic != NumberSemantic.Count)
+                Error(FontSchemaGenerator.Reference, "Array count must reference an unsigned Count scalar: " + array.Count);
+            else if (derived.Expression.Base is not null || derived.Expression.Constant != 0 ||
+                derived.Expression.Stride != 1 || derived.Expression.Count is null)
+                Error(FontSchemaGenerator.Layout, "A declarative derived count must be the rawCount-CountSubtract form: " + array.Count);
+            if (array.WhenVersions.Length != 0 && derived.WhenVersion >= 0)
+                Error(FontSchemaGenerator.Condition, "Array " + array.Name + " cannot combine WhenVersions with a WhenVersion-conditioned count.");
+            return;
+        }
+        if (_computeds.TryGetValue(array.Count, out var computed))
+        {
+            if (computed.Semantic != NumberSemantic.Count)
+                Error(FontSchemaGenerator.Reference, "Array count must reference an unsigned Count scalar: " + array.Count);
+            return;
+        }
+        Error(FontSchemaGenerator.Reference, "Array count must reference an unsigned Count scalar: " + array.Count);
+    }
+
+    // Spec 2.3/2.2 and card 1.2-c: input existence (FWG002), dependency paths (FWG005),
+    // value-shape rules (FWG003) and hook binding (FWG006).
+    private void ValidateComputed(ComputedModel computed)
+    {
+        if ((int)computed.Semantic is < 0 or > 3 || !_fieldIds.Contains(computed.DiagnosticFieldId))
+            Error(FontSchemaGenerator.Layout, "Invalid computed semantic or FieldId: " + computed.Name);
+        if (computed.Semantic == NumberSemantic.FixedPoint)
+            Error(FontSchemaGenerator.Layout, "A computed semantic must be Plain, Count or Offset: " + computed.Name);
+        if (computed.Semantic == NumberSemantic.Count && (!computed.HasExplicitDiagnosticField || computed.DiagnosticFieldId == 0))
+            Error(FontSchemaGenerator.Layout, "A count computed requires an explicit non-None diagnostic field: " + computed.Name);
+        if (computed.WhenVersions.Length != 0)
+            ValidateConditionDomain(computed.WhenVersions, "Computed " + computed.Name);
+        foreach (var input in computed.Inputs)
+        {
+            if (input == "@length") continue;
+            if (!_scalars.ContainsKey(input) && !_derived.ContainsKey(input) && !_computeds.ContainsKey(input))
+            {
+                Error(FontSchemaGenerator.Reference, "Unknown computed input: " + input);
+                continue;
+            }
+            // A conditional input must carry its real value on every version where the
+            // referring computed is active (card 1.2-c: dependencies on the use path).
+            if (computed.WhenVersions.Length != 0 && ConditionalDomain(input) is { Length: > 0 } domain &&
+                !computed.WhenVersions.All(domain.Contains))
+                Error(FontSchemaGenerator.Condition, "Computed " + computed.Name + " uses an input outside its activation path: " + input);
+        }
+        if (computed.DiagnosticSource is { } source)
+        {
+            if (_scalars.TryGetValue(source, out var origin))
+            {
+                if (origin.WhenVersion >= 0 || origin.Position.Base is not null || origin.Position.Count is not null)
+                    Error(FontSchemaGenerator.Condition, "DiagnosticSource must be an unconditional fixed-position scalar: " + source);
+            }
+            else if (_derived.ContainsKey(source) || _computeds.ContainsKey(source))
+                // Known but not a scalar: derived/computed sources are refused as
+                // FWG005 (card 1.2-c), while unknown names stay FWG002.
+                Error(FontSchemaGenerator.Condition, "DiagnosticSource must be an unconditional fixed-position scalar: " + source);
+            else
+                Error(FontSchemaGenerator.Reference, "Unknown DiagnosticSource reference: " + source);
+        }
+        ValidateHook(computed);
+    }
+
+    // The versions where the named value carries its declared (non-fallback) value,
+    // or null when it is unconditional. Empty conditional sets cannot occur.
+    private uint[]? ConditionalDomain(string name)
+    {
+        if (_scalars.TryGetValue(name, out var scalar))
+            return scalar.WhenVersion >= 0 ? new[] { (uint)scalar.WhenVersion } : null;
+        if (_derived.TryGetValue(name, out var derived))
+            return derived.WhenVersion >= 0 ? new[] { (uint)derived.WhenVersion } : null;
+        if (_computeds.TryGetValue(name, out var computed))
+            return computed.WhenVersions.IsEmpty ? null : computed.WhenVersions.ToArray();
+        return null;
+    }
+
+    // Spec 2.3: the hook is one private static non-generic method in the same partial
+    // with the frozen signature (inputs in declared order, DataLocation, out ulong,
+    // out FontDiagnostic, ReadStatus return).
+    private void ValidateHook(ComputedModel computed)
+    {
+        var methods = _symbol.GetMembers().OfType<IMethodSymbol>()
+            .Where(m => m.Name == computed.Method).ToArray();
+        if (methods.Length != 1)
+        {
+            Error(FontSchemaGenerator.Hook, "A computed hook must bind to exactly one method: " + computed.Method);
+            return;
+        }
+        var method = methods[0];
+        if (method.IsGenericMethod || method.TypeParameters.Length != 0 ||
+            method.DeclaredAccessibility != Accessibility.Private || !method.IsStatic ||
+            !IsCoreType(method.ReturnType, "ReadStatus"))
+        {
+            Error(FontSchemaGenerator.Hook, "A computed hook must be a private static ReadStatus method: " + computed.Method);
+            return;
+        }
+        if (method.Parameters.Length != computed.Inputs.Length + 3)
+        {
+            Error(FontSchemaGenerator.Hook, "A computed hook must take its inputs, a DataLocation and two out values: " + computed.Method);
+            return;
+        }
+        for (int i = 0; i < computed.Inputs.Length; i++)
+        {
+            var parameter = method.Parameters[i];
+            if (parameter.RefKind != RefKind.None || !IsInputType(parameter.Type, computed.Inputs[i]))
+            {
+                Error(FontSchemaGenerator.Hook, "A computed hook input must match the declared input type: " + computed.Method);
+                return;
+            }
+        }
+        var location = method.Parameters[computed.Inputs.Length];
+        var value = method.Parameters[computed.Inputs.Length + 1];
+        var diagnostic = method.Parameters[computed.Inputs.Length + 2];
+        if (location.RefKind != RefKind.None || !IsCoreType(location.Type, "DataLocation") ||
+            value.RefKind != RefKind.Out || value.Type.SpecialType != SpecialType.System_UInt64 ||
+            diagnostic.RefKind != RefKind.Out || !IsCoreType(diagnostic.Type, "FontDiagnostic"))
+            Error(FontSchemaGenerator.Hook, "A computed hook must take a DataLocation and out ulong/out FontDiagnostic: " + computed.Method);
+    }
+
+    private bool IsInputType(ITypeSymbol type, string input)
+    {
+        if (input == "@length") return type.SpecialType == SpecialType.System_Int32;
+        if (_scalars.TryGetValue(input, out var scalar))
+            return scalar.CsType switch
+            {
+                "byte" => type.SpecialType == SpecialType.System_Byte,
+                "sbyte" => type.SpecialType == SpecialType.System_SByte,
+                "ushort" => type.SpecialType == SpecialType.System_UInt16,
+                "uint" => type.SpecialType == SpecialType.System_UInt32,
+                "short" => type.SpecialType == SpecialType.System_Int16,
+                "int" => type.SpecialType == SpecialType.System_Int32,
+                "long" => type.SpecialType == SpecialType.System_Int64,
+                _ => false
+            };
+        return type.SpecialType == SpecialType.System_UInt64;
+    }
+
+    private static bool IsCoreType(ITypeSymbol type, string name) =>
+        type is INamedTypeSymbol named && named.Name == name &&
+        (named.ContainingNamespace?.ToDisplayString() ?? "") == "FontWeave.Core";
+
     private void VersionBranch(long version)
     {
         if (version < -1 || version > uint.MaxValue || (version >= 0 &&
@@ -358,6 +572,15 @@ internal sealed class SchemaParser
                 if (_model.VersionField is not null) Bound(_model.VersionField);
                 if (derived.Otherwise is not null) bound = Math.Max(bound, UnsignedReference(derived.Otherwise));
             }
+        }
+        else if (_computeds.TryGetValue(name, out var computed))
+        {
+            // Spec 2.3: Maximum is the static upper bound of a computed (the emitted
+            // boundary enforces it at runtime); inputs join the dependency graph so
+            // cycles through computed inputs are rejected like positional cycles.
+            bound = computed.Maximum;
+            foreach (var input in computed.Inputs)
+                if (input != "@length") Bound(input);
         }
         else
         {
@@ -433,6 +656,57 @@ internal sealed class SchemaParser
     private static long Number(AttributeData attribute, string name, long fallback) =>
         attribute.NamedArguments.FirstOrDefault(p => p.Key == name).Value.Value is object value
             ? Convert.ToInt64(value, CultureInfo.InvariantCulture) : fallback;
+
+    // Maximum is declared ulong; converting through Int64 would overflow above
+    // long.MaxValue (assessment §4), so the boxed value is read in its own width.
+    private ulong Maximum(AttributeData attribute)
+    {
+        var argument = attribute.NamedArguments.FirstOrDefault(p => p.Key == "Maximum").Value;
+        switch (argument.Value)
+        {
+            case null: return uint.MaxValue;
+            case ulong value: return value;
+            case long value when value >= 0: return (ulong)value;
+            case uint value: return value;
+            case int value when value >= 0: return (ulong)value;
+            default:
+                Error(FontSchemaGenerator.Layout, "Maximum must be an unsigned value.");
+                return uint.MaxValue;
+        }
+    }
+
+    private static ImmutableArray<string> Inputs(AttributeData attribute)
+    {
+        var argument = attribute.NamedArguments.FirstOrDefault(p => p.Key == "Inputs").Value;
+        if (argument.Kind != TypedConstantKind.Array || argument.IsNull) return ImmutableArray<string>.Empty;
+        return argument.Values.Select(static v => v.Value as string ?? "").ToImmutableArray();
+    }
+
+    // WhenVersions is stored normalized (distinct, ordered) so activation semantics,
+    // identity and emission share one canonical set (card 1.2-b).
+    private ImmutableArray<uint> WhenVersions(AttributeData attribute)
+    {
+        var argument = attribute.NamedArguments.FirstOrDefault(p => p.Key == "WhenVersions").Value;
+        if (argument.Kind != TypedConstantKind.Array || argument.IsNull) return ImmutableArray<uint>.Empty;
+        var values = argument.Values.Where(static v => v.Value is uint)
+            .Select(static v => (uint)v.Value!).Distinct().OrderBy(static v => v).ToImmutableArray();
+        if (values.Length != 0 && attribute.NamedArguments.Any(static p => p.Key == "WhenVersion"))
+            Error(FontSchemaGenerator.Condition, "WhenVersion and WhenVersions are mutually exclusive.");
+        return values;
+    }
+
+    // Spec 1.7: new capability arguments on a V0 declaration are an explicit
+    // ContractVersion=1 rejection; the capability is not reinterpreted under V0.
+    private ImmutableArray<uint> Gate(ImmutableArray<uint> whenVersions)
+    {
+        if (whenVersions.Length != 0 && _model.ContractVersion != 1)
+        {
+            Error(FontSchemaGenerator.Shape, "WhenVersions requires ContractVersion=1.");
+            return ImmutableArray<uint>.Empty;
+        }
+        return whenVersions;
+    }
+
     private string Text(AttributeData attribute, int index)
     {
         if (index < attribute.ConstructorArguments.Length && attribute.ConstructorArguments[index].Value is string text) return text;
@@ -466,12 +740,24 @@ internal sealed class SchemaParser
         for (int i = 0; i < _model.Scalars.Length; i++) { Value(i); Field(_model.Scalars[i]); }
         Value(_model.Derived.Length);
         for (int i = 0; i < _model.Derived.Length; i++)
-        { Value(i); Value(_model.Derived[i].Name); Position(_model.Derived[i].Expression); Value(_model.Derived[i].WhenVersion); Value(_model.Derived[i].Otherwise); }
+        { Value(i); Value(_model.Derived[i].Name); Position(_model.Derived[i].Expression); Value(_model.Derived[i].WhenVersion); Value(_model.Derived[i].Otherwise); Value(_model.Derived[i].CountSubtract); Value(_model.Derived[i].Semantic); }
+        Value(_model.Computed.Length);
+        for (int i = 0; i < _model.Computed.Length; i++)
+        {
+            var computed = _model.Computed[i];
+            Value(i); Value(computed.Name); Value(computed.Method);
+            // Inputs order is semantic (hook parameter order) and part of identity.
+            Value(computed.Inputs.Length); foreach (string input in computed.Inputs) Value(input);
+            Value(computed.Maximum); Value(computed.Semantic); Value(computed.DiagnosticFieldId);
+            Value(computed.DiagnosticSource);
+            Value(computed.WhenVersions.Length); foreach (uint version in computed.WhenVersions) Value(version);
+        }
         Value(_model.Arrays.Length);
         for (int i = 0; i < _model.Arrays.Length; i++)
         {
             var array = _model.Arrays[i];
             Value(i); Value(array.Name); Value(array.Count); Position(array.Start); Value(array.Stride); Value(array.ExternallyPositioned);
+            Value(array.WhenVersions.Length); foreach (uint version in array.WhenVersions) Value(version);
             Value(array.Fields.Length);
             for (int j = 0; j < array.Fields.Length; j++) { Value(j); Field(array.Fields[j]); }
         }

@@ -44,6 +44,10 @@ internal sealed class DerivedModel
     public PositionModel Expression { get; set; } = new();
     public long WhenVersion { get; set; } = -1;
     public string? Otherwise { get; set; }
+    // Spec 2.2: the affine expression subtracts CountSubtract before multiplying, and a
+    // derived used as an array count must be exactly the rawCount-CountSubtract form.
+    public uint CountSubtract { get; set; }
+    public NumberSemantic Semantic { get; set; } = NumberSemantic.Plain;
 }
 
 internal sealed class ArrayModel
@@ -55,7 +59,29 @@ internal sealed class ArrayModel
     public PositionModel Start { get; set; } = new();
     public int Stride { get; set; }
     public bool ExternallyPositioned { get; set; }
+    // Normalized (distinct, ordered) activation domain; empty means every supported
+    // version. Stored normalized so identity and emission share one canonical set.
+    public ImmutableArray<uint> WhenVersions { get; set; } = ImmutableArray<uint>.Empty;
     public ImmutableArray<ScalarModel> Fields { get; set; } = ImmutableArray<ScalarModel>.Empty;
+}
+
+// Build-time node for a spec 2.3 structural computation. The hook itself is
+// handwritten C# in the same partial; this model feeds emission, bounds,
+// dependency checks and identity only.
+internal sealed class ComputedModel
+{
+    public string Name { get; set; } = "";
+    public string Method { get; set; } = "";
+    // Declared input order is semantic (hook parameter order) and part of identity.
+    public ImmutableArray<string> Inputs { get; set; } = ImmutableArray<string>.Empty;
+    public ulong Maximum { get; set; } = uint.MaxValue;
+    public NumberSemantic Semantic { get; set; }
+    public int DiagnosticFieldId { get; set; }
+    // Spec 2.3: a count computed must declare its diagnostic field explicitly, so the
+    // parser records whether the named argument was present at all.
+    public bool HasExplicitDiagnosticField { get; set; }
+    public string? DiagnosticSource { get; set; }
+    public ImmutableArray<uint> WhenVersions { get; set; } = ImmutableArray<uint>.Empty;
 }
 
 internal sealed class PayloadModel
@@ -82,6 +108,7 @@ internal sealed class TableModel
     public ImmutableArray<uint> SupportedVersions { get; set; } = ImmutableArray<uint>.Empty;
     public ImmutableArray<ScalarModel> Scalars { get; set; } = ImmutableArray<ScalarModel>.Empty;
     public ImmutableArray<DerivedModel> Derived { get; set; } = ImmutableArray<DerivedModel>.Empty;
+    public ImmutableArray<ComputedModel> Computed { get; set; } = ImmutableArray<ComputedModel>.Empty;
     public ImmutableArray<ArrayModel> Arrays { get; set; } = ImmutableArray<ArrayModel>.Empty;
     public ImmutableArray<PayloadModel> Payloads { get; set; } = ImmutableArray<PayloadModel>.Empty;
     // Canonical typed-model encoding; used only for incremental equality.
