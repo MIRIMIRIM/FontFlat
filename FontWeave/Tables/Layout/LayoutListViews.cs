@@ -4,15 +4,9 @@ namespace FontWeave.Tables.Layout;
 
 public readonly ref partial struct LayoutTagListView
 {
-    public ReadStatus TryGetTagRecord(int ordinal, out TagRecordData record, out FontDiagnostic diagnostic)
-    {
-        record = default;
-        ReadStatus status = TryGetCount(out ushort count, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = LayoutReadWire.Ordinal(ordinal, count, Location, 0, out diagnostic);
-        return status == ReadStatus.Done ? TryReadTagRecordAt(LayoutTagListLayout.HeaderLength +
-            (ulong)ordinal * LayoutTagListLayout.RecordStride, ordinal, out record, out diagnostic) : status;
-    }
+    // The generated contract version 1 array accessors (TryGetTagRecord and
+    // TryGetTagRecordExtent) own the ordinal, range and truncation rules; this
+    // partial keeps only the semantic checks and the traversal below.
 
     public ReadStatus TryReadScripts(int featureCount, out LayoutScript[]? scripts,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
@@ -54,7 +48,9 @@ public readonly ref partial struct LayoutTagListView
         if (status != ReadStatus.Done) return status;
         status = LayoutListsTableCompiler.CheckCount(featureCount, Location, 0, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        int recordsEnd = LayoutTagListLayout.HeaderLength + LayoutTagListLayout.RecordStride * count;
+        status = TryGetTagRecordExtent(out _, out _, out ulong recordsEndExtent, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int recordsEnd = (int)recordsEndExtent;
         if (!budget.Work(recordsEnd, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         LayoutScript[]? result = null;
         if (state.Materialize)
@@ -99,7 +95,9 @@ public readonly ref partial struct LayoutTagListView
         if (status != ReadStatus.Done) return status;
         status = LayoutListsTableCompiler.CheckCount(lookupCount, Location, 0, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        int recordsEnd = LayoutTagListLayout.HeaderLength + LayoutTagListLayout.RecordStride * count;
+        status = TryGetTagRecordExtent(out _, out _, out ulong recordsEndExtent, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int recordsEnd = (int)recordsEndExtent;
         if (!budget.Work(recordsEnd, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         LayoutFeature[]? result = null;
         if (state.Materialize)

@@ -124,15 +124,9 @@ public readonly ref partial struct LayoutFeatureView
 
 public readonly ref partial struct LayoutScriptView
 {
-    public ReadStatus TryGetLanguageRecord(int ordinal, out LanguageRecordData record, out FontDiagnostic diagnostic)
-    {
-        record = default;
-        ReadStatus status = TryGetLanguageCount(out ushort count, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = LayoutReadWire.Ordinal(ordinal, count, Location, LayoutScriptLayout.CountOffset, out diagnostic);
-        return status == ReadStatus.Done ? TryReadLanguageRecordAt(LayoutScriptLayout.HeaderLength +
-            (ulong)ordinal * LayoutTagListLayout.RecordStride, ordinal, out record, out diagnostic) : status;
-    }
+    // The generated contract version 1 array accessors (TryGetLanguageRecord and
+    // TryGetLanguageRecordExtent) own the ordinal, range and truncation rules; this
+    // partial keeps the DFLT rule, tag ordering and per-edge target checks below.
 
     internal ReadStatus Process(uint tag, int featureCount, int position, LayoutReadState state,
         DataLocation listLocation, DataLocation recordLocation, out LayoutScript? model,
@@ -151,7 +145,9 @@ public readonly ref partial struct LayoutScriptView
         }
         if (tag == LayoutScriptLayout.DefaultTag && DefaultLanguageOffset == 0)
             return MissingDefault(out diagnostic);
-        int headerEnd = LayoutScriptLayout.HeaderLength + LayoutTagListLayout.RecordStride * count;
+        status = TryGetLanguageRecordExtent(out _, out _, out ulong headerEndExtent, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int headerEnd = (int)headerEndExtent;
         if (!budget.Work(headerEnd, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         LayoutLangSys? defaultLanguage = null;
         int consumed = headerEnd;

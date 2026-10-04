@@ -39,19 +39,22 @@ internal static class LayoutListsLayout
 
 // ScriptList and FeatureList have one shared structural definition. Their tag
 // ordering and child contexts belong to the semantic partial, not another reader.
-[BinaryTable(0, LayoutTagListLayout.HeaderLength)]
+// Contract version 1 makes the counted record arrays generated contracts: the
+// generated ordinal/extent accessors and the fixed-start counted writer replace
+// the handwritten row arithmetic in the semantic partials.
+[BinaryTable(0, LayoutTagListLayout.HeaderLength, ContractVersion = 1)]
 [BinaryScalar("Count", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
-[BinaryRecord("TagRecord", LayoutTagListLayout.RecordStride)]
+[BinaryArray("TagRecord", "Count", LayoutTagListLayout.HeaderLength, LayoutTagListLayout.RecordStride)]
 [BinaryElement("TagRecord", "Tag", WireType.UInt32, 0, DataField.Tag)]
 [BinaryElement("TagRecord", "Offset", WireType.UInt16, LayoutTagListLayout.RecordOffsetField, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
 public readonly ref partial struct LayoutTagListView { }
 
-[BinaryTable(0, LayoutScriptLayout.HeaderLength)]
+[BinaryTable(0, LayoutScriptLayout.HeaderLength, ContractVersion = 1)]
 [BinaryScalar("DefaultLanguageOffset", WireType.UInt16, LayoutScriptLayout.DefaultOffsetField, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
 [BinaryScalar("LanguageCount", WireType.UInt16, LayoutScriptLayout.CountOffset, DataField.Count, Semantic = NumberSemantic.Count)]
-[BinaryRecord("LanguageRecord", LayoutTagListLayout.RecordStride)]
+[BinaryArray("LanguageRecord", "LanguageCount", LayoutScriptLayout.HeaderLength, LayoutTagListLayout.RecordStride)]
 [BinaryElement("LanguageRecord", "Tag", WireType.UInt32, 0, DataField.Tag)]
 [BinaryElement("LanguageRecord", "Offset", WireType.UInt16, LayoutTagListLayout.RecordOffsetField, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]

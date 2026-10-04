@@ -174,8 +174,8 @@ public static partial class LayoutListsTableCompiler
     {
         CoverageTableCompiler.RequireWritten(LayoutTagListView.TryWriteCount(destination, (ushort)plan.Records.Length, out _, plan.Location));
         for (int i = 0; i < plan.Records.Length; i++)
-            CoverageTableCompiler.RequireWritten(LayoutTagListView.TryWriteTagRecordAt(destination,
-                LayoutTagListLayout.HeaderLength + (ulong)i * LayoutTagListLayout.RecordStride,
+            CoverageTableCompiler.RequireWritten(LayoutTagListView.TryWriteTagRecord(destination,
+                (ulong)plan.Records.Length,
                 new LayoutTagListView.TagRecordData(i, plan.Records[i].Tag, (ushort)plan.Targets[i]), out _, plan.Location));
         foreach (var block in plan.Blocks)
         {
@@ -184,8 +184,8 @@ public static partial class LayoutListsTableCompiler
             CoverageTableCompiler.RequireWritten(LayoutScriptView.TryWriteDefaultLanguageOffset(bytes, defaultOffset, out _, block.Model.Location));
             CoverageTableCompiler.RequireWritten(LayoutScriptView.TryWriteLanguageCount(bytes, (ushort)block.Model.Languages.Length, out _, block.Model.Location));
             for (int i = 0; i < block.Model.Languages.Length; i++)
-                CoverageTableCompiler.RequireWritten(LayoutScriptView.TryWriteLanguageRecordAt(bytes,
-                    LayoutScriptLayout.HeaderLength + (ulong)i * LayoutTagListLayout.RecordStride,
+                CoverageTableCompiler.RequireWritten(LayoutScriptView.TryWriteLanguageRecord(bytes,
+                    (ulong)block.Model.Languages.Length,
                     new LayoutScriptView.LanguageRecordData(i, block.Model.Languages[i].Tag,
                         (ushort)(block.LanguageTargets[i] - block.Position)), out _, block.Model.Location));
         }
@@ -272,8 +272,8 @@ public static partial class LayoutListsTableCompiler
     {
         CoverageTableCompiler.RequireWritten(LayoutTagListView.TryWriteCount(destination, (ushort)plan.Records.Length, out _, plan.Location));
         for (int i = 0; i < plan.Records.Length; i++)
-            CoverageTableCompiler.RequireWritten(LayoutTagListView.TryWriteTagRecordAt(destination,
-                LayoutTagListLayout.HeaderLength + (ulong)i * LayoutTagListLayout.RecordStride,
+            CoverageTableCompiler.RequireWritten(LayoutTagListView.TryWriteTagRecord(destination,
+                (ulong)plan.Records.Length,
                 new LayoutTagListView.TagRecordData(i, plan.Records[i].Tag, (ushort)plan.Targets[i]), out _, plan.Location));
         foreach (var block in plan.Blocks)
         {
