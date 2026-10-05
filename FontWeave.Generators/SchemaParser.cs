@@ -374,58 +374,169 @@ internal sealed class SchemaParser
         ValidateReferences();
         ValidateScanOffsetCoverage();
 
-        var generated = new HashSet<string>(StringComparer.Ordinal)
-            { "IsBound", "RawBytes", "TryOpen", "_data", "_location", "_bound", "Location", "NormalizeLocation", "TrySlice", "Fail", "TryRequireKnownVersion" };
+        // Generated member names with the parameter shapes they are emitted under (spec 8.1).
+        // A null shape reserves a non-method member (property, field, nested type) or a
+        // conditional emission this check does not model; a same-name handwritten member then
+        // collides exactly as before. A modeled shape rejects only a handwritten method whose
+        // C# signature (parameter count, per-parameter kind with in/ref/out merged, parameter
+        // types) matches, so a legal overload beside a generated accessor compiles (card 1.2-a:
+        // the ushort getter projection over the record accessor), while a true duplicate
+        // stays FWG002.
+        var generated = new Dictionary<string, List<string[]?>>(StringComparer.Ordinal);
+        void GeneratedMember(string name)
+        {
+            if (generated.ContainsKey(name))
+                Error(FontSchemaGenerator.Reference, "Generated member collision: " + name);
+            else
+                generated.Add(name, new List<string[]?> { null });
+        }
+        void GeneratedMethod(string name, params string[][] shapes)
+        {
+            if (generated.ContainsKey(name))
+                Error(FontSchemaGenerator.Reference, "Generated member collision: " + name);
+            else
+                generated.Add(name, new List<string[]?>(shapes));
+        }
+        const string DiagnosticOut = "byref FontWeave.Core.FontDiagnostic";
+        string ByRef(string type) => "byref " + type;
+        string Value(string type) => "value " + type;
+        string[] RecordOut(ArrayModel array) => new[] { ByRef(array.Name + "Data"), DiagnosticOut };
+        string[] CountedWriter(ArrayModel array) => new[]
+        {
+            Value("System.Span<byte>"), Value("ulong"), ByRef(array.Name + "Data"),
+            DiagnosticOut, Value("FontWeave.Core.DataLocation")
+        };
+        string? RoleLeading() => _model.RoleType;
+        string[] ReferenceOpener(ReferenceModel reference, bool atForm)
+        {
+            var shape = new List<string>();
+            if (RoleLeading() is { } role) shape.Add(ByRef(role));
+            if (atForm)
+                shape.AddRange(new[] { Value("ulong"), Value("int") });
+            else if (reference.ArrayName is { } arrayName &&
+                _model.Arrays.FirstOrDefault(a => a.Name == arrayName) is { ExternallyPositioned: false })
+                shape.Add(Value("int"));
+            shape.Add(ByRef(reference.TargetFullName ?? "object"));
+            shape.Add(ByRef("bool"));
+            shape.Add(DiagnosticOut);
+            return shape.ToArray();
+        }
+
+        GeneratedMember("IsBound");
+        GeneratedMember("RawBytes");
+        GeneratedMember("TryOpen");
+        GeneratedMember("_data");
+        GeneratedMember("_location");
+        GeneratedMember("_bound");
+        GeneratedMember("Location");
+        GeneratedMember("NormalizeLocation");
+        GeneratedMember("TrySlice");
+        GeneratedMember("Fail");
+        GeneratedMember("TryRequireKnownVersion");
         if (_model.ContractVersion == 1 && _model.GenerateStructureScan)
         {
             // The emitted scan family (spec 6.1); handwritten collisions stay FWG002.
-            GeneratedName(generated, "TryScanStructure");
-            GeneratedName(generated, "ScanStructureCore");
+            GeneratedMember("TryScanStructure");
+            GeneratedMember("ScanStructureCore");
         }
-        GeneratedName(generated, _model.Name);
+        GeneratedMember(_model.Name);
         foreach (var scalar in _model.Scalars)
         {
-            GeneratedName(generated, "TryGet" + scalar.Name);
+            GeneratedMethod("TryGet" + scalar.Name, new[] { ByRef(scalar.CsType), DiagnosticOut });
             if (scalar.WhenVersion < 0 && scalar.Position.Base is null && scalar.Position.Count is null)
-                GeneratedName(generated, "TryWrite" + scalar.Name);
-            GeneratedName(generated, "TryEvaluateScalar" + scalar.Name + "Position");
-            if (scalar.Semantic == NumberSemantic.FixedPoint) GeneratedName(generated, "TryGet" + scalar.Name + "Value");
+                GeneratedMethod("TryWrite" + scalar.Name, new[]
+                {
+                    Value("System.Span<byte>"), Value(scalar.CsType), DiagnosticOut, Value("FontWeave.Core.DataLocation")
+                });
+            GeneratedMethod("TryEvaluateScalar" + scalar.Name + "Position", new[] { ByRef("ulong"), DiagnosticOut });
+            if (scalar.Semantic == NumberSemantic.FixedPoint)
+                GeneratedMethod("TryGet" + scalar.Name + "Value", new[] { ByRef("double"), DiagnosticOut });
             if (scalar.WhenVersion < 0 && scalar.Position.Base is null && scalar.Position.Constant + (uint)scalar.Width <= (ulong)Math.Max(0, _model.MinimumHeader))
-                GeneratedName(generated, scalar.Name);
+                GeneratedMember(scalar.Name);
         }
-        foreach (var value in _model.Derived) GeneratedName(generated, "TryGet" + value.Name);
-        foreach (var computed in _model.Computed) GeneratedName(generated, "TryGet" + computed.Name);
+        foreach (var value in _model.Derived) GeneratedMethod("TryGet" + value.Name, new[] { ByRef("ulong"), DiagnosticOut });
+        foreach (var computed in _model.Computed) GeneratedMethod("TryGet" + computed.Name, new[] { ByRef("ulong"), DiagnosticOut });
         foreach (var array in _model.Arrays)
         {
-            GeneratedName(generated, array.Name + "Data");
-            GeneratedName(generated, "TryWrite" + array.Name + "At");
-            if (array.ExternallyPositioned) GeneratedName(generated, "TryRead" + array.Name + "At");
-            else { GeneratedName(generated, "TryGet" + array.Name); GeneratedName(generated, "TryEvaluateArray" + array.Name + "Start"); }
+            GeneratedMember(array.Name + "Data");
+            GeneratedMethod("TryWrite" + array.Name + "At", CountedWriter(array));
+            if (array.ExternallyPositioned)
+                GeneratedMethod("TryRead" + array.Name + "At",
+                    new[] { Value("ulong"), Value("int"), ByRef(array.Name + "Data"), DiagnosticOut });
+            else
+            {
+                GeneratedMethod("TryGet" + array.Name, new[] { Value("int") }.Concat(RecordOut(array)).ToArray());
+                GeneratedMethod("TryEvaluateArray" + array.Name + "Start", new[] { ByRef("ulong"), DiagnosticOut });
+            }
         }
         if (_model.ContractVersion == 1)
             foreach (var array in _model.Arrays)
             {
                 if (array.ExternallyPositioned) continue;
-                GeneratedName(generated, "TryGet" + array.Name + "Extent");
-                GeneratedName(generated, "TryRequire" + array.Name + "Extent");
+                GeneratedMethod("TryGet" + array.Name + "Extent",
+                    new[] { ByRef("ulong"), ByRef("ulong"), ByRef("ulong"), DiagnosticOut });
+                GeneratedMethod("TryRequire" + array.Name + "Extent", new[] { DiagnosticOut });
                 // The static counted writer is only emitted for fixed constant starts
                 // driven by an unconditional, fixed-position count scalar.
                 if (array.Start.Base is null && _scalars.TryGetValue(array.Count, out var count) &&
                     count.WhenVersion < 0 && count.Position.Base is null)
-                    GeneratedName(generated, "TryWrite" + array.Name);
+                    GeneratedMethod("TryWrite" + array.Name, CountedWriter(array));
             }
-        foreach (var payload in _model.Payloads) GeneratedName(generated, "TryGet" + payload.Array + "Payload");
+        foreach (var payload in _model.Payloads)
+            GeneratedMethod("TryGet" + payload.Array + "Payload",
+                new[] { Value("int"), ByRef("System.ReadOnlySpan<byte>"), DiagnosticOut },
+                new[] { Value("int"), ByRef("System.ReadOnlySpan<byte>"), Value("FontWeave.Core.DataLocation"), DiagnosticOut });
         foreach (var reference in _model.References)
         {
-            GeneratedName(generated, "TryOpen" + reference.Name);
-            GeneratedName(generated, "TryGet" + reference.Name + "OffsetValue");
+            GeneratedMethod("TryOpen" + reference.Name, ReferenceOpener(reference, atForm: false));
             if (reference.ArrayName is { } openArray &&
                 _model.Arrays.FirstOrDefault(a => a.Name == openArray) is { ExternallyPositioned: true })
-                GeneratedName(generated, "TryOpen" + reference.Name + "At");
+                GeneratedMethod("TryOpen" + reference.Name + "At", ReferenceOpener(reference, atForm: true));
+            ScalarModel? fixupOffset = reference.ArrayName is null
+                ? _scalars.TryGetValue(reference.OffsetField, out var scalarFixup) ? scalarFixup : null
+                : _model.Arrays.FirstOrDefault(a => a.Name == reference.ArrayName)?.Fields
+                    .FirstOrDefault(f => f.Name == reference.OffsetField);
+            if (fixupOffset is { } offsetField)
+                GeneratedMethod("TryGet" + reference.Name + "OffsetValue", new[]
+                {
+                    Value("bool"), Value("ulong"), Value("ulong"), ByRef(offsetField.CsType),
+                    DiagnosticOut, Value("FontWeave.Core.DataLocation")
+                });
+            else
+                GeneratedMember("TryGet" + reference.Name + "OffsetValue");
         }
         foreach (var member in symbol.GetMembers())
-            if (!member.IsImplicitlyDeclared && generated.Contains(member.Name))
+        {
+            if (member.IsImplicitlyDeclared || !generated.TryGetValue(member.Name, out var shapes))
+                continue;
+            // A same-name handwritten method whose signature differs from every fully
+            // modeled shape is a legal C# overload (card 1.2-a); anything else collides.
+            bool overload = member is IMethodSymbol method &&
+                shapes.All(shape => shape is not null && !SameSignature(method, shape));
+            if (!overload)
                 Error(FontSchemaGenerator.Reference, "A handwritten member collides with generated API: " + member.Name);
+        }
+    }
+
+    // C# signature equality for overloading: parameter count, per-parameter kind with
+    // in/ref/out merged (the compiler forbids overloads differing only on those), and
+    // parameter types. Nested record data types of this view compare by simple name; a
+    // handwritten signature referencing this round's generated nested types cannot resolve
+    // during the parse yet, so unresolvable types count as indistinguishable and stay FWG002.
+    private bool SameSignature(IMethodSymbol method, string[] shape)
+    {
+        if (method.Parameters.Length != shape.Length) return false;
+        for (int i = 0; i < shape.Length; i++)
+        {
+            var parameter = method.Parameters[i];
+            if (parameter.Type.TypeKind == TypeKind.Error) return true;
+            string type = parameter.Type is INamedTypeSymbol named &&
+                SymbolEqualityComparer.Default.Equals(named.ContainingType, _symbol)
+                ? named.Name : parameter.Type.ToDisplayString();
+            string kind = parameter.RefKind == RefKind.None ? "value" : "byref";
+            if (kind + " " + type != shape[i]) return false;
+        }
+        return true;
     }
 
     private void ValidateScalar(ScalarModel value)
@@ -1059,10 +1170,6 @@ internal sealed class SchemaParser
     {
         Name(name);
         if (!names.Add(name)) Error(FontSchemaGenerator.Reference, "Duplicate schema name: " + name);
-    }
-    private void GeneratedName(HashSet<string> names, string name)
-    {
-        if (!names.Add(name)) Error(FontSchemaGenerator.Reference, "Generated member collision: " + name);
     }
     private void Name(string name)
     {

@@ -3052,4 +3052,127 @@ public sealed class SchemaContractsTests
         Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
             static s => s.HintName == "Probe.LegacyView.g.cs");
     }
+
+    // GA1 (card 1.2-a, A1 OQ-2 route 1): a handwritten ushort projection getter beside the
+    // generated record accessor is a legal C# overload (out type differs), and both report
+    // the same wire value with the generated ordinal and truncation gates underneath.
+    [Fact]
+    public void SignatureAwareNamesAllowUshortProjectionBesideRecordAccessor()
+    {
+        Assert.Equal("Done|7,Done|7," +
+            "InvalidIndex|IndexOutOfRange|Count|0|18446744073709551615|1," +
+            "InvalidIndex|IndexOutOfRange|Count|0|18446744073709551615|1," +
+            "Truncated|TruncatedData|Payload|2|3|4," +
+            "Truncated|TruncatedData|Payload|2|3|4", Execute("""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x74657374, 2, ContractVersion = 1)]
+            [BinaryScalar("Count", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
+            [BinaryArray("Item", "Count", 2, 2)]
+            [BinaryElement("Item", "Index", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct IndexView
+            {
+                // The compatibility projection: generated record accessor plus .Index.
+                public ReadStatus TryGetItem(int ordinal, out ushort index, out FontDiagnostic diagnostic)
+                {
+                    index = 0;
+                    ReadStatus status = TryGetItem(ordinal, out ItemData row, out diagnostic);
+                    if (status == ReadStatus.Done) index = row.Index;
+                    return status;
+                }
+            }
+            public static class Entry
+            {
+                private static string Describe(ReadStatus status, FontDiagnostic d) =>
+                    $"{status}|{d.Code}|{d.Location.Field}|{d.Location.Offset}|{d.Detail}|{d.Expected}";
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    byte[] wire = { 0, 1, 0, 7 };
+                    IndexView.TryOpen(wire, out var view, out _);
+                    ReadStatus record = view.TryGetItem(0, out IndexView.ItemData row, out _);
+                    ReadStatus projected = view.TryGetItem(0, out ushort index, out _);
+                    results.Add($"{record}|{row.Index},{projected}|{index}");
+                    ReadStatus recordOrdinal = view.TryGetItem(-1, out IndexView.ItemData _, out var recordDiagnostic);
+                    results.Add(Describe(recordOrdinal, recordDiagnostic));
+                    ReadStatus ushortOrdinal = view.TryGetItem(-1, out ushort _, out var ushortDiagnostic);
+                    results.Add(Describe(ushortOrdinal, ushortDiagnostic));
+                    byte[] cut = { 0, 1, 0 };
+                    IndexView.TryOpen(cut, out var cutView, out _);
+                    ReadStatus recordCut = cutView.TryGetItem(0, out IndexView.ItemData _, out var cutRecordDiagnostic);
+                    results.Add(Describe(recordCut, cutRecordDiagnostic));
+                    ReadStatus ushortCut = cutView.TryGetItem(0, out ushort _, out var cutUshortDiagnostic);
+                    results.Add(Describe(ushortCut, cutUshortDiagnostic));
+                    return string.Join(",", results);
+                }
+            }
+            """));
+    }
+
+    // GA2 (card 1.2-h): the relaxation covers same-name different-signature only; a same
+    // name with the record shape stays FWG002 under V0 and V1, as does a duplicate name.
+    [Fact]
+    public void SameNameSameSignatureStillCollidesWithGeneratedApi()
+    {
+        foreach (string gate in new[] { ", ContractVersion = 1", "" })
+        {
+            var (driver, _) = Generate(Driver(), Input(Tree($$"""
+                using FontWeave.Core;
+                using FontWeave.Schema;
+                namespace Probe;
+                [BinaryTable(0x74657374, 2{{gate}})]
+                [BinaryScalar("Count", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
+                [BinaryArray("Item", "Count", 2, 2)]
+                [BinaryElement("Item", "Index", WireType.UInt16, 0, DataField.Payload)]
+                public readonly ref partial struct IndexView
+                {
+                    public ReadStatus TryGetItem(int ordinal, out ItemData record, out FontDiagnostic diagnostic)
+                    { record = default; diagnostic = default; return ReadStatus.Done; }
+                }
+                """)));
+            Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG002" &&
+                d.GetMessage().Contains("TryGetItem"));
+            Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+                static s => s.HintName == "Probe.IndexView.g.cs");
+        }
+        var (duplicate, _) = Generate(Driver(), Input(Tree("""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x74657374, 4)]
+            [BinaryScalar("Value", WireType.UInt16, 0, DataField.Payload)]
+            [BinaryScalar("Value", WireType.UInt16, 2, DataField.Payload)]
+            public readonly ref partial struct DuplicateView { }
+            """)));
+        Assert.Contains(duplicate.GetRunResult().Diagnostics, d => d.Id == "FWG002" &&
+            d.GetMessage().Contains("Duplicate schema name"));
+    }
+
+    // GA3 (card 1.7): the signature-aware name check does not change the V0 capability
+    // verdict; a V0 declaration of a role contract is still the ContractVersion=1 refusal.
+    [Fact]
+    public void VersionZeroCapabilityVerdictIsUnchangedBesideSignatureAwareNames()
+    {
+        var (driver, _) = Generate(Driver(), Input(Tree("""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            public enum WireKind : byte { Sub = 1, Pos = 2 }
+            [BinaryTable(0x74657374, 2, RoleType = typeof(WireKind))]
+            [BinaryScalar("Count", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
+            [BinaryArray("Item", "Count", 2, 2)]
+            [BinaryElement("Item", "Index", WireType.UInt16, 0, DataField.Payload)]
+            public readonly ref partial struct IndexView
+            {
+                public ReadStatus TryGetItem(int ordinal, out ushort index, out FontDiagnostic diagnostic)
+                { index = 0; diagnostic = default; return ReadStatus.Done; }
+            }
+            """)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG001" && d.Location.IsInSource);
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.IndexView.g.cs");
+    }
 }
