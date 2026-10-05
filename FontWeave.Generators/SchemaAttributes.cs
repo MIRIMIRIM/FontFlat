@@ -120,6 +120,10 @@ namespace FontWeave.Schema
         public ReferenceNullPolicy NullPolicy { get; set; }
         public ReferenceZeroFailure ZeroFailure { get; set; }
         public bool AllowTargetAtEnd { get; set; }
+        // M1c (spec 2.1): the reference's own activation domain; it must be a subset of
+        // the offset field's owning record/array existence domain and of the supported
+        // versions. Empty means every supported version.
+        public uint[] WhenVersions { get; set; } = new uint[0];
         public long[] WhenRoles { get; set; } = new long[0];
         public string? Selector { get; set; }
         public uint[] SelectorValues { get; set; } = new uint[0];

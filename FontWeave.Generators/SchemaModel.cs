@@ -129,6 +129,11 @@ internal sealed class ReferenceModel
     public ReferenceNullPolicy NullPolicy { get; set; }
     public ReferenceZeroFailure ZeroFailure { get; set; }
     public bool AllowTargetAtEnd { get; set; }
+    // Normalized (distinct, ordered) activation domain (spec 2.1, M1c); empty means every
+    // supported version. The offset field's owning record/array existence domain must
+    // contain it, so emission shares one canonical set with the opener applicability and
+    // the scan slot guard.
+    public ImmutableArray<uint> WhenVersions { get; set; } = ImmutableArray<uint>.Empty;
     // Finite dispatch conditions (spec 4): empty WhenRoles means every supported role;
     // SelectorValues empty on a DefaultRaw branch is the remainder set. Both stored
     // normalized (distinct, ordered) so identity and emission share one canonical set.

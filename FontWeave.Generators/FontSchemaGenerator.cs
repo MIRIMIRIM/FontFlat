@@ -343,7 +343,7 @@ public sealed class FontSchemaGenerator : IIncrementalGenerator
             ZeroFailure = reference.ZeroFailure, AllowTargetAtEnd = reference.AllowTargetAtEnd,
             WhenRoles = reference.WhenRoles, Selector = reference.Selector, SelectorValues = reference.SelectorValues,
             DefaultRaw = reference.DefaultRaw, TargetRole = reference.TargetRole, ForwardRole = reference.ForwardRole,
-            Scan = reference.Scan, ScanOrder = reference.ScanOrder,
+            Scan = reference.Scan, ScanOrder = reference.ScanOrder, WhenVersions = reference.WhenVersions,
             TargetMinimumHeader = reference.TargetMinimumHeader, TargetNamespace = reference.TargetNamespace,
             TargetName = reference.TargetName, TargetIdentity = reference.TargetIdentity,
             TargetRoleType = reference.TargetRoleType

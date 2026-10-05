@@ -1261,8 +1261,20 @@ internal static class ViewEmitter
             writer.Line("}");
         }
 
-        writer.Line($"{declare} = TryRequireKnownVersion(out _, out diagnostic);");
-        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        if (reference.WhenVersions.Length != 0)
+        {
+            // M1c applicability (spec 2.1/3.4, card 1.2-a): a known-but-inactive version
+            // refuses at the version field before the ordinal and offset field reads, so
+            // a physically absent source record is never touched (A2 OQ-2 convention).
+            writer.Line($"{declare} = TryRequireKnownVersion(out ulong version, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+            EmitCondition(writer, model, reference.WhenVersions);
+        }
+        else
+        {
+            writer.Line($"{declare} = TryRequireKnownVersion(out _, out diagnostic);");
+            writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        }
 
         if (reference.WhenRoles.Length != 0)
         {
@@ -1708,7 +1720,8 @@ internal static class ViewEmitter
         string ownRoleProfile = roleDispatch ? "unchecked((long)role)" : "0L";
         bool hasVersion = model.VersionField is not null;
         bool needsVersion = hasVersion &&
-            (model.Scalars.Any(static s => s.WhenVersion >= 0) || model.Arrays.Any(static a => a.WhenVersions.Length != 0));
+            (model.Scalars.Any(static s => s.WhenVersion >= 0) || model.Arrays.Any(static a => a.WhenVersions.Length != 0) ||
+                model.References.Any(static r => r.WhenVersions.Length != 0));
 
         // The derived/computed values the scan may probe beyond the declared scalars:
         // array counts, payload minimum/storage anchors and reference minimum/base/length
@@ -2057,19 +2070,28 @@ internal static class ViewEmitter
         // The slot exists only while its source field physically exists (spec 4): an
         // array-form slot follows the array's activation, a scalar-form slot the offset
         // field's own version condition.
-        bool guarded = false;
+        int guards = 0;
         if (array is not null && array.WhenVersions.Length != 0)
         {
             EmitScanVersionGuard(writer, array.WhenVersions);
             writer.Indent++;
-            guarded = true;
+            guards++;
         }
         else if (array is null && offset.WhenVersion >= 0)
         {
             writer.Line($"if (version == {U((ulong)offset.WhenVersion)})");
             writer.Line("{");
             writer.Indent++;
-            guarded = true;
+            guards++;
+        }
+        if (first.WhenVersions.Length != 0)
+        {
+            // M1c (spec 2.1): the slot's own declared activation domain stacks on the
+            // physical existence domain - an inactive version skips the whole group, so
+            // nothing marks Partial and no edge is charged (card 1.2-a).
+            EmitScanVersionGuard(writer, first.WhenVersions);
+            writer.Indent++;
+            guards++;
         }
         if (array is { ExternallyPositioned: true })
         {
@@ -2080,7 +2102,7 @@ internal static class ViewEmitter
         }
         else
             EmitScanSlotSelection(writer, model, group, array, offset, emitted);
-        if (guarded)
+        for (int i = 0; i < guards; i++)
         {
             writer.Indent--;
             writer.Line("}");

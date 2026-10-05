@@ -198,6 +198,7 @@ internal sealed class SchemaParser
                         NullPolicy = (ReferenceNullPolicy)Number(attribute, "NullPolicy", 0),
                         ZeroFailure = (ReferenceZeroFailure)Number(attribute, "ZeroFailure", 0),
                         AllowTargetAtEnd = Boolean(attribute, "AllowTargetAtEnd", false),
+                        WhenVersions = Gate(WhenVersions(attribute)),
                         WhenRoles = Longs(attribute, "WhenRoles"), Selector = Text(attribute, "Selector"),
                         SelectorValues = SelectorValues(attribute), DefaultRaw = Boolean(attribute, "DefaultRaw", false),
                         TargetRole = Number(attribute, "TargetRole", long.MinValue),
@@ -631,6 +632,19 @@ internal sealed class SchemaParser
             if (!offset.IsUnsigned || offset.Semantic != NumberSemantic.Offset || offset.Scale == 0)
                 Error(FontSchemaGenerator.Layout, "A reference offset field must be an unsigned Offset value with a positive scale: " + reference.OffsetField);
 
+            // M1c existence domains (spec 2.1, card 1.2-a): a reference's declared
+            // activation domain still needs the table's version support (the shared
+            // conditional-domain rule), and a record-scoped offset field's own existence
+            // domain bounds it - the reference can never outlive its source field.
+            if (reference.WhenVersions.Length != 0)
+            {
+                ValidateConditionDomain(reference.WhenVersions, "Reference " + reference.Name);
+                if (array is { } source && source.WhenVersions.Length != 0 &&
+                    reference.WhenVersions.Any(v => !source.WhenVersions.Contains(v)))
+                    Error(FontSchemaGenerator.Condition, "Reference " + reference.Name +
+                        " declares a WhenVersions value outside the existence domain of " + source.Name + ".");
+            }
+
             string slotKey = reference.ArrayName is null ? reference.OffsetField : reference.ArrayName + ":" + reference.OffsetField;
             if (payloadSlots.Contains(slotKey))
                 Error(FontSchemaGenerator.Condition, "A source slot cannot declare both a payload and a reference: " + slotKey);
@@ -850,6 +864,16 @@ internal sealed class SchemaParser
         {
             string key = slot.Key;
             var group = slot.Value;
+            // The scan slot guard is one whole-slot existence domain (M1c): branches of a
+            // slot share the source field, so they must also share one activation domain.
+            string? slotDomain = null;
+            foreach (var reference in group)
+            {
+                string domain = string.Join(",", reference.WhenVersions);
+                if (slotDomain is null) slotDomain = domain;
+                else if (slotDomain != domain)
+                    Error(FontSchemaGenerator.Condition, "Branches of a source slot must share one WhenVersions domain: " + key);
+            }
             // Only branches that use a selector declare one; those must agree on the name
             // (spec 4), while a selector-less branch carries no selector axis at all.
             var declaredSelectors = group.Where(static reference => reference.Selector is not null)
@@ -1333,6 +1357,7 @@ internal sealed class SchemaParser
             Value(reference.TargetFullName); Value(reference.Origin); Value(reference.Base); Value(reference.Minimum);
             Value(reference.Length); Value(reference.NullPolicy); Value(reference.ZeroFailure); Value(reference.AllowTargetAtEnd);
             Value(reference.WhenRoles.Length); foreach (long role in reference.WhenRoles) Value(role);
+            Value(reference.WhenVersions.Length); foreach (uint version in reference.WhenVersions) Value(version);
             Value(reference.Selector);
             Value(reference.SelectorValues.Length); foreach (uint value in reference.SelectorValues) Value(value);
             Value(reference.DefaultRaw); Value(reference.TargetRole); Value(reference.ForwardRole); Value(reference.Scan); Value(reference.ScanOrder);

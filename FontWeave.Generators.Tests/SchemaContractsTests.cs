@@ -3175,4 +3175,236 @@ public sealed class SchemaContractsTests
         Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
             static s => s.HintName == "Probe.IndexView.g.cs");
     }
+
+    // ---- M1c generator contracts (card 2.4, GV1-GV5): reference WhenVersions ----
+
+    // A record-scoped reference slot whose record carries WhenVersions {1,2} while the
+    // reference itself declares the subset domain {2}; LeafSchema above stays the target.
+    private const string WhenVersionsReferrerFields = """
+        [BinaryScalar("Version", WireType.UInt16, 0, DataField.Version)]
+        [BinaryRecord("Row", 4, WhenVersions = new uint[] { 1, 2 })]
+        [BinaryElement("Row", "LeafAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+        [BinaryReference("Leaf", "LeafAt", typeof(LeafView), Array = "Row", WhenVersions = new uint[] { 2 })]
+        """;
+
+    // GV1 (card 1.2-a, spec 2.1/3.4): the opener's applicability step refuses a
+    // known-but-inactive version at the version field (Detail=version, Expected=0)
+    // ahead of the record read, so a short wire is not misreported as Truncated; an
+    // unknown version still reports UnsupportedVersion; the active version opens.
+    [Fact]
+    public void ReferenceWhenVersionsRefuseInactiveVersionsBeforeFieldReads()
+    {
+        string result = SchemaProbeDriver.Execute($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 6, ContractVersion = 1, VersionField = "Version", SupportedVersions = new uint[] { 1, 2 })]
+            {{WhenVersionsReferrerFields}}
+            public readonly ref partial struct WhenRefView { }
+            public static class Entry
+            {
+                private static string Describe(ReadStatus status, FontDiagnostic d) =>
+                    $"{status}|{d.Code}|{d.Location.Field}|{d.Location.Offset}|{d.Detail}|{d.Expected}";
+                public static string Run()
+                {
+                    byte[] inactive = { 0, 1, 0xAA, 0xAA, 0xAA, 0xAA, 0x00, 0x0C };
+                    WhenRefView.TryOpen(inactive, out var view, out _);
+                    // The record row [6,10) does not exist on this 8-byte wire: a field read
+                    // would report Truncated, the applicability refusal must win first.
+                    string inactiveRow = Describe(view.TryOpenLeafAt(6, 0, out _, out _, out var inactiveDiagnostic), inactiveDiagnostic);
+                    byte[] stranger = { 0, 9, 0xAA, 0xAA, 0xAA, 0xAA, 0x00, 0x0C };
+                    WhenRefView.TryOpen(stranger, out var unknown, out _);
+                    string unknownRow = Describe(unknown.TryOpenLeafAt(6, 0, out _, out _, out var unknownDiagnostic), unknownDiagnostic);
+                    byte[] active = { 0, 2, 0xAA, 0xAA, 0xAA, 0xAA, 0x00, 0x0C, 0xAA, 0xAA, 0xAA, 0xAA, 0x00, 0x2A };
+                    WhenRefView.TryOpen(active, out var current, out _);
+                    ReadStatus status = current.TryOpenLeafAt(6, 0, out var child, out bool present, out _);
+                    child.TryGetSeed(out ushort seed, out _);
+                    return $"{inactiveRow},{unknownRow},{status}|{present}|{seed}";
+                }
+            }
+            """);
+        Assert.Equal("UnsupportedFormat|UnsupportedOperation|Version|0|1|0," +
+            "UnsupportedFormat|UnsupportedVersion|Version|0|9|0,Done|True|42", result);
+    }
+
+    // GV2 (card 1.2-a, spec 2.1): the declared domain needs the table's version support
+    // and stays inside the offset field's owning record existence domain; a record
+    // without conditions only asks for supported-version membership.
+    [Theory]
+    [InlineData("subset")]
+    [InlineData("superset")]
+    [InlineData("partialIntersection")]
+    [InlineData("unconditionalRecord")]
+    [InlineData("noVersionField")]
+    public void ReferenceWhenVersionsRespectTheExistenceDomain(string shape)
+    {
+        string table = shape == "noVersionField"
+            ? "[BinaryTable(0x74657374, 6, ContractVersion = 1)]"
+            : "[BinaryTable(0x74657374, 6, ContractVersion = 1, VersionField = \"Version\", SupportedVersions = new uint[] { 1, 2 })]";
+        string record = shape switch
+        {
+            "superset" => "[BinaryRecord(\"Row\", 4, WhenVersions = new uint[] { 2 })]",
+            "partialIntersection" => "[BinaryRecord(\"Row\", 4, WhenVersions = new uint[] { 2 })]",
+            "unconditionalRecord" => "[BinaryRecord(\"Row\", 4)]",
+            _ => "[BinaryRecord(\"Row\", 4, WhenVersions = new uint[] { 1, 2 })]"
+        };
+        string domain = shape switch
+        {
+            "superset" => "WhenVersions = new uint[] { 1, 2 }",
+            "partialIntersection" => "WhenVersions = new uint[] { 1 }",
+            "noVersionField" => "WhenVersions = new uint[] { 1 }",
+            _ => "WhenVersions = new uint[] { 2 }"
+        };
+        var (driver, _) = Generate(Driver(), Input(Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            {{table}}
+            [BinaryScalar("Version", WireType.UInt16, 0, DataField.Version)]
+            {{record}}
+            [BinaryElement("Row", "LeafAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("Leaf", "LeafAt", typeof(LeafView), Array = "Row", {{domain}})]
+            public readonly ref partial struct DomainView { }
+            """)));
+        var diagnostics = driver.GetRunResult().Diagnostics;
+        if (shape is "superset" or "partialIntersection" or "noVersionField")
+        {
+            Assert.Contains(diagnostics, d => d.Id == "FWG005" && d.Location.IsInSource);
+            Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+                s => s.HintName == "Probe.DomainView.g.cs");
+        }
+        else
+        {
+            Assert.DoesNotContain(diagnostics, d => d.Severity == DiagnosticSeverity.Error);
+            Assert.Contains(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+                s => s.HintName == "Probe.DomainView.g.cs");
+        }
+    }
+
+    // GV3 (card 1.2-a, spec 2.1): the scan slot guard stacks the reference's own domain
+    // on the slot existence domain - an inactive version skips the whole slot (no Partial
+    // mark, zero edge fee) while the same version's opener refuses identically.
+    [Fact]
+    public void ScanSlotGuardSkipsInactiveReferenceDomainsWithoutEdgeCharges()
+    {
+        string result = SchemaProbeDriver.Execute($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 8, ContractVersion = 1, VersionField = "Version", SupportedVersions = new uint[] { 1, 2 }, GenerateStructureScan = true)]
+            [BinaryScalar("Version", WireType.UInt16, 0, DataField.Version)]
+            [BinaryScalar("Count", WireType.UInt16, 2, DataField.Count, Semantic = NumberSemantic.Count)]
+            [BinaryArray("Row", "Count", 8, 4, WhenVersions = new uint[] { 1, 2 })]
+            [BinaryElement("Row", "LeafAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryElement("Row", "Fill", WireType.UInt16, 2, DataField.Payload)]
+            [BinaryReference("Leaf", "LeafAt", typeof(LeafView), Array = "Row", Scan = ReferenceScan.Observe, WhenVersions = new uint[] { 2 })]
+            public readonly ref partial struct ScanGuardView { }
+            public static class Entry
+            {
+                private static string Describe(ReadStatus status, FontDiagnostic d) =>
+                    $"{status}|{d.Code}|{d.Location.Field}|{d.Location.Offset}|{d.Detail}|{d.Expected}";
+                public static string Run()
+                {
+                    byte[] wire = { 0, 1, 0, 1, 0xAA, 0xAA, 0xAA, 0xAA, 0x00, 0x0C, 0xAA, 0xAA, 0x00, 0x2A, 0xAA, 0xAA };
+                    // Version 1: the slot physically exists but the reference is inactive -
+                    // the scan finishes DeclaredClosure with probes+body only, and the same
+                    // version's opener refuses ahead of the record read.
+                    ScanGuardView.TryOpen(wire, out var inactive, out _);
+                    var inactiveBudget = new BuildBudget(new BuildLimits());
+                    var inactiveStatus = inactive.TryScanStructure(inactiveBudget, out var inactiveCoverage, out var inactiveScan);
+                    var inactiveUsage = inactiveBudget.Usage;
+                    string inactiveOpener = Describe(inactive.TryOpenLeaf(0, out _, out _, out var inactiveOpen), inactiveOpen);
+                    byte[] activeWire = (byte[])wire.Clone();
+                    activeWire[1] = 2;
+                    ScanGuardView.TryOpen(activeWire, out var active, out _);
+                    var activeBudget = new BuildBudget(new BuildLimits());
+                    var activeStatus = active.TryScanStructure(activeBudget, out var activeCoverage, out _);
+                    var activeUsage = activeBudget.Usage;
+                    return $"{inactiveStatus}|{(int)inactiveCoverage}|{inactiveUsage.WorkUnits}|{inactiveUsage.TemporaryBytes}|{inactiveScan.Code}" +
+                        $"|{inactiveOpener}" +
+                        $"|{activeStatus}|{(int)activeCoverage}|{activeUsage.WorkUnits}|{activeUsage.TemporaryBytes}";
+                }
+            }
+            """);
+        // probes 2 + body(1+12) = 15 without the edge; the active version adds the
+        // per-occurrence edge fee 1 + offset probe 1 and the Observe Partial mark.
+        Assert.Equal("Done|1|15|0|None" +
+            "|UnsupportedFormat|UnsupportedOperation|Version|0|1|0" +
+            "|Done|2|17|0", result);
+    }
+
+    // GV4 (card 1.2-e, spec 8.2): the normalized WhenVersions set is identity - a
+    // reordering stays Cached, a set change re-emits, and an invalid declaration
+    // recovers on the round trip.
+    [Fact]
+    public void ReferenceWhenVersionsIdentityChangesReemitAndRoundTrip()
+    {
+        static SyntaxTree Referrer(string domain, string path) => Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 6, ContractVersion = 1, VersionField = "Version", SupportedVersions = new uint[] { 1, 2 })]
+            [BinaryScalar("Version", WireType.UInt16, 0, DataField.Version)]
+            [BinaryRecord("Row", 4, WhenVersions = new uint[] { 1, 2 })]
+            [BinaryElement("Row", "LeafAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("Leaf", "LeafAt", typeof(LeafView), Array = "Row", {{domain}})]
+            public readonly ref partial struct WhenRefView { }
+            """, path);
+        string[] Reasons(GeneratorDriverRunResult runResult) =>
+            runResult.Results.Single().TrackedSteps["EmittedTables"]
+                .SelectMany(static s => s.Outputs)
+                .Where(static o => ((string, string, string?))o.Value is { } output && output.Item1 == "Probe.WhenRefView.g.cs")
+                .Select(static o => $"{o.Reason}").ToArray();
+        var initialTree = Referrer("WhenVersions = new uint[] { 1, 2 }", "Referrer.cs");
+        var initial = Generate(Driver(), Input(initialTree));
+        // A normalized reordering is one identity, not a contract change.
+        var reorderedTree = Referrer("WhenVersions = new uint[] { 2, 1 }", "Referrer.cs");
+        var reorderedInput = Input(initialTree).ReplaceSyntaxTree(initialTree, reorderedTree);
+        var reordered = Generate(initial.Driver, reorderedInput);
+        Assert.All(reordered.Driver.GetRunResult().Results.Single().TrackedSteps["EmittedTables"]
+            .SelectMany(static s => s.Outputs), s => Assert.Equal(IncrementalStepRunReason.Cached, s.Reason));
+        // A domain change is a contract change: Modified.
+        var changedTree = Referrer("WhenVersions = new uint[] { 2 }", "Referrer.cs");
+        var changedInput = reorderedInput.ReplaceSyntaxTree(reorderedTree, changedTree);
+        var changed = Generate(reordered.Driver, changedInput);
+        Assert.Equal(["Modified"], Reasons(changed.Driver.GetRunResult()));
+        // An out-of-domain declaration drops the output; restoring it recovers emission.
+        var brokenTree = Referrer("WhenVersions = new uint[] { 2, 7 }", "Referrer.cs");
+        var brokenInput = changedInput.ReplaceSyntaxTree(changedTree, brokenTree);
+        var broken = Generate(changed.Driver, brokenInput);
+        Assert.Contains(broken.Driver.GetRunResult().Diagnostics, static d => d.Id == "FWG005");
+        Assert.DoesNotContain(broken.Driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.WhenRefView.g.cs");
+        var restoredTree = Referrer("WhenVersions = new uint[] { 2 }", "Referrer.cs");
+        var restored = Generate(broken.Driver, brokenInput.ReplaceSyntaxTree(brokenTree, restoredTree));
+        Assert.DoesNotContain(restored.Driver.GetRunResult().Diagnostics, static d => d.Severity == DiagnosticSeverity.Error);
+        Assert.Contains(restored.Driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.WhenRefView.g.cs");
+    }
+
+    // GV5 (card 1.7): a reference WhenVersions declaration on a V0 table is the explicit
+    // ContractVersion=1 rejection (FWG001); the capability stays V1-only.
+    [Fact]
+    public void VersionZeroRejectsReferenceWhenVersionsDeclarations()
+    {
+        var (driver, _) = Generate(Driver(), Input(Tree($$"""
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{LeafSchema}}
+            [BinaryTable(0x74657374, 6)]
+            [BinaryScalar("Version", WireType.UInt16, 0, DataField.Version)]
+            [BinaryRecord("Row", 4)]
+            [BinaryElement("Row", "LeafAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryReference("Leaf", "LeafAt", typeof(LeafView), Array = "Row", WhenVersions = new uint[] { 1 })]
+            public readonly ref partial struct LegacyView { }
+            """)));
+        Assert.Contains(driver.GetRunResult().Diagnostics, d => d.Id == "FWG001" && d.Location.IsInSource);
+        Assert.DoesNotContain(driver.GetRunResult().Results.SelectMany(static r => r.GeneratedSources),
+            static s => s.HintName == "Probe.LegacyView.g.cs");
+    }
 }
