@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -105,20 +104,31 @@ public static class MetaTableCompiler
 
     private static void Write(MetaTable model, Span<byte> bytes)
     {
-        BinaryPrimitives.WriteUInt32BigEndian(bytes, model.Version);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(4), model.Flags);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(8), model.Reserved);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(12), model.DataMapsCount);
+        // After the admission/capacity preflight these generated writers cannot fail;
+        // a failure is a writer contract bug and surfaces loudly. Compiled output is
+        // additionally re-opened and strictly Validated by both callers.
+        RequireWritten(MetaView.TryWriteVersion(bytes, model.Version, out _, model.Location));
+        RequireWritten(MetaView.TryWriteFlags(bytes, model.Flags, out _, model.Location));
+        RequireWritten(MetaView.TryWriteReserved(bytes, model.Reserved, out _, model.Location));
+        RequireWritten(MetaView.TryWriteDataMapsCount(bytes, model.DataMapsCount, out _, model.Location));
         int at = MetaLayout.HeaderLength;
         int payloadAt = at + MetaLayout.RecordStride * (int)model.DataMapsCount;
+        int ordinal = 0;
         foreach (var record in model.Records)
         {
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(at), record.Tag);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(at + 4), (uint)payloadAt);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(at + 8), (uint)record.Payload.Length);
+            RequireWritten(MetaView.TryWriteDataMapAt(bytes, (ulong)at, new MetaView.DataMapData(ordinal,
+                record.Tag, (uint)payloadAt, (uint)record.Payload.Length), out _, model.Location));
             record.Payload.CopyTo(bytes.Slice(payloadAt));
             at += MetaLayout.RecordStride;
             payloadAt += record.Payload.Length;
+            ordinal++;
         }
+    }
+
+    // Same contract as the layout emission path: a preflighted meta write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
+    {
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted meta write failed.");
     }
 }
