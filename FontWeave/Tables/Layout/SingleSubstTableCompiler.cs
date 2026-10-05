@@ -88,12 +88,13 @@ public static class SingleSubstTableCompiler
         if (!budget.Work(model.Glyphs.Length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         ReadStatus status = PlanSingle(model, out var plan, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        // Fallible hooks and budgets complete before the destination capacity check (spec 7.3; A6 1.5 O4 order).
+        if (!budget.Work(EmissionWork(plan), model.Location, out diagnostic) ||
+            !budget.Output(plan.Length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         if (destination.Length < plan.Length)
             return ReadWire.Fail(ReadStatus.DestinationTooSmall, DiagnosticCode.DestinationTooSmall,
                 model.Location.AtLocal(DataField.OutputBytes, 0), out diagnostic,
                 (ulong)destination.Length, (ulong)plan.Length);
-        if (!budget.Work(EmissionWork(plan), model.Location, out diagnostic) ||
-            !budget.Output(plan.Length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         WritePlanned(model, plan, destination);
         diagnostic = default;
         return ReadStatus.Done;

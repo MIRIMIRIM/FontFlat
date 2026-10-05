@@ -49,6 +49,7 @@ public static class CaretValueTableCompiler
     {
         ArgumentNullException.ThrowIfNull(model);
         int length = Measure(model);
+        // Orderings coexist by registration: this GDEF-chain leaf gains the spec 7.3 budget-first order with M2/T4-02 (OQ-M1e-2).
         if (destination.Length < length)
             return ReadWire.Fail(ReadStatus.DestinationTooSmall, DiagnosticCode.DestinationTooSmall,
                 model.Location.AtLocal(DataField.OutputBytes, 0), out diagnostic,
