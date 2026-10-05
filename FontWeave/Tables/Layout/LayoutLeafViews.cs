@@ -4,15 +4,15 @@ namespace FontWeave.Tables.Layout;
 
 public readonly ref partial struct LayoutLangSysView
 {
+    // The generated contract version 1 array accessors (TryGetFeatureIndex record form,
+    // TryGetFeatureIndexExtent and TryRequireFeatureIndexExtent) own the ordinal, range
+    // and truncation rules; the ushort getter below is the compatibility projection over
+    // the record accessor, and this partial keeps only the semantic checks and traversal.
+
     public ReadStatus TryGetFeatureIndex(int ordinal, out ushort index, out FontDiagnostic diagnostic)
     {
         index = 0;
-        ReadStatus status = TryGetFeatureCount(out ushort count, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = LayoutReadWire.Ordinal(ordinal, count, Location, LayoutLangSysLayout.CountOffset, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = TryReadFeatureIndexAt(LayoutLangSysLayout.HeaderLength +
-            (ulong)ordinal * LayoutLangSysLayout.IndexStride, ordinal, out var row, out diagnostic);
+        ReadStatus status = TryGetFeatureIndex(ordinal, out FeatureIndexData row, out diagnostic);
         if (status == ReadStatus.Done) index = row.Index;
         return status;
     }
@@ -67,15 +67,13 @@ public readonly ref partial struct LayoutLangSysView
 
 public readonly ref partial struct LayoutFeatureView
 {
+    // Same projection shape as LangSys: the generated record accessor owns the ordinal,
+    // range and truncation rules; the ushort getter is its compatibility projection.
+
     public ReadStatus TryGetLookupIndex(int ordinal, out ushort index, out FontDiagnostic diagnostic)
     {
         index = 0;
-        ReadStatus status = TryGetLookupCount(out ushort count, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = LayoutReadWire.Ordinal(ordinal, count, Location, LayoutFeatureLayout.CountOffset, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = TryReadLookupIndexAt(LayoutFeatureLayout.HeaderLength +
-            (ulong)ordinal * LayoutFeatureLayout.IndexStride, ordinal, out var row, out diagnostic);
+        ReadStatus status = TryGetLookupIndex(ordinal, out LookupIndexData row, out diagnostic);
         if (status == ReadStatus.Done) index = row.Index;
         return status;
     }
@@ -124,9 +122,9 @@ public readonly ref partial struct LayoutFeatureView
 
 public readonly ref partial struct LayoutScriptView
 {
-    // The generated contract version 1 array accessors (TryGetLanguageRecord and
-    // TryGetLanguageRecordExtent) own the ordinal, range and truncation rules; this
-    // partial keeps the DFLT rule, tag ordering and per-edge target checks below.
+    // The generated contract version 1 accessors own the ordinal, range, truncation and
+    // reference rules (TryGetLanguageRecord family plus the DefaultLanguage/Language
+    // openers); this partial keeps the DFLT rule, tag ordering and the traversal below.
 
     internal ReadStatus Process(uint tag, int featureCount, int position, LayoutReadState state,
         DataLocation listLocation, DataLocation recordLocation, out LayoutScript? model,
@@ -153,8 +151,8 @@ public readonly ref partial struct LayoutScriptView
         int consumed = headerEnd;
         if (DefaultLanguageOffset != 0)
         {
-            status = ReadLanguage(DefaultLanguageOffset, LayoutScriptLayout.DefaultOffsetField,
-                headerEnd, featureCount, position, state, out defaultLanguage, out diagnostic, budget);
+            status = ReadLanguage(-1, DefaultLanguageOffset, featureCount, position, state,
+                out defaultLanguage, out diagnostic, budget);
             if (status != ReadStatus.Done) return status;
             if (defaultLanguage is not null) consumed = Math.Max(consumed, DefaultLanguageOffset + defaultLanguage.ConsumedLength);
         }
@@ -177,8 +175,8 @@ public readonly ref partial struct LayoutScriptView
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     Location.AtLocal(DataField.Tag, (ulong)at, i), out diagnostic, row.Tag, previous);
             previous = row.Tag;
-            status = ReadLanguage(row.Offset, at + LayoutTagListLayout.RecordOffsetField,
-                headerEnd, featureCount, position, state, out var language, out diagnostic, budget);
+            status = ReadLanguage(i, row.Offset, featureCount, position, state,
+                out var language, out diagnostic, budget);
             if (status != ReadStatus.Done) return status;
             if (languages is not null)
             {
@@ -196,15 +194,18 @@ public readonly ref partial struct LayoutScriptView
         return ReadStatus.Done;
     }
 
-    private ReadStatus ReadLanguage(ushort offset, int field, int recordsEnd, int featureCount,
+    private ReadStatus ReadLanguage(int ordinal, ushort offset, int featureCount,
         int position, LayoutReadState state, out LayoutLangSys? model, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         model = null;
-        ReadStatus status = LayoutReadWire.Target(_data, offset, recordsEnd, field, Location, out diagnostic);
-        if (status != ReadStatus.Done) return status;
+        LayoutLangSysView child;
+        ReadStatus status;
+        if (ordinal < 0)
+            status = TryOpenDefaultLanguage(out child, out _, out diagnostic);
+        else
+            status = TryOpenLanguage(ordinal, out child, out _, out diagnostic);
         // offset is inside this suffix of the operation's root, so this sum is bounded by root length.
         int target = position + offset;
-        status = LayoutLangSysView.TryOpen(_data.Slice(offset), out var child, out diagnostic, state.At(target));
         return status == ReadStatus.Done ? child.Process(featureCount, target, state,
             out model, out diagnostic, budget) : status;
     }

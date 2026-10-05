@@ -42,12 +42,21 @@ internal static class LayoutListsLayout
 // Contract version 1 makes the counted record arrays generated contracts: the
 // generated ordinal/extent accessors and the fixed-start counted writer replace
 // the handwritten row arithmetic in the semantic partials.
-[BinaryTable(0, LayoutTagListLayout.HeaderLength, ContractVersion = 1)]
+[BinaryTable(0, LayoutTagListLayout.HeaderLength, ContractVersion = 1,
+    RoleType = typeof(LayoutTagListRole),
+    SupportedRoles = new long[] { (long)LayoutTagListRole.ScriptList, (long)LayoutTagListRole.FeatureList })]
 [BinaryScalar("Count", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
 [BinaryArray("TagRecord", "Count", LayoutTagListLayout.HeaderLength, LayoutTagListLayout.RecordStride)]
 [BinaryElement("TagRecord", "Tag", WireType.UInt32, 0, DataField.Tag)]
 [BinaryElement("TagRecord", "Offset", WireType.UInt16, LayoutTagListLayout.RecordOffsetField, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+[BinaryDerived("RecordsEnd", Constant = 2, Count = "Count", Stride = LayoutTagListLayout.RecordStride)]
+[BinaryReference("Script", "Offset", typeof(LayoutScriptView), Array = "TagRecord",
+    WhenRoles = new long[] { (long)LayoutTagListRole.ScriptList },
+    Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required, Minimum = "RecordsEnd")]
+[BinaryReference("Feature", "Offset", typeof(LayoutFeatureView), Array = "TagRecord",
+    WhenRoles = new long[] { (long)LayoutTagListRole.FeatureList },
+    Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required, Minimum = "RecordsEnd")]
 public readonly ref partial struct LayoutTagListView { }
 
 [BinaryTable(0, LayoutScriptLayout.HeaderLength, ContractVersion = 1)]
@@ -58,33 +67,46 @@ public readonly ref partial struct LayoutTagListView { }
 [BinaryElement("LanguageRecord", "Tag", WireType.UInt32, 0, DataField.Tag)]
 [BinaryElement("LanguageRecord", "Offset", WireType.UInt16, LayoutTagListLayout.RecordOffsetField, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+[BinaryDerived("RecordsEnd", Constant = 4, Count = "LanguageCount", Stride = LayoutTagListLayout.RecordStride)]
+[BinaryReference("DefaultLanguage", "DefaultLanguageOffset", typeof(LayoutLangSysView),
+    Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required, Minimum = "RecordsEnd")]
+[BinaryReference("Language", "Offset", typeof(LayoutLangSysView), Array = "LanguageRecord",
+    Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required, Minimum = "RecordsEnd")]
 public readonly ref partial struct LayoutScriptView { }
 
-[BinaryTable(0, LayoutLangSysLayout.HeaderLength)]
+[BinaryTable(0, LayoutLangSysLayout.HeaderLength, ContractVersion = 1)]
 [BinaryScalar("LookupOrderOffset", WireType.UInt16, 0, DataField.Offset)]
 [BinaryScalar("RequiredFeatureIndex", WireType.UInt16, LayoutLangSysLayout.RequiredOffset, DataField.Payload)]
 [BinaryScalar("FeatureCount", WireType.UInt16, LayoutLangSysLayout.CountOffset, DataField.Count, Semantic = NumberSemantic.Count)]
-[BinaryRecord("FeatureIndex", LayoutLangSysLayout.IndexStride)]
+[BinaryArray("FeatureIndex", "FeatureCount", LayoutLangSysLayout.HeaderLength, LayoutLangSysLayout.IndexStride)]
 [BinaryElement("FeatureIndex", "Index", WireType.UInt16, 0, DataField.Payload)]
 public readonly ref partial struct LayoutLangSysView { }
 
-[BinaryTable(0, LayoutFeatureLayout.HeaderLength)]
+[BinaryTable(0, LayoutFeatureLayout.HeaderLength, ContractVersion = 1)]
 [BinaryScalar("ParamsOffsetRaw", WireType.UInt16, 0, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
 [BinaryScalar("LookupCount", WireType.UInt16, LayoutFeatureLayout.CountOffset, DataField.Count, Semantic = NumberSemantic.Count)]
-[BinaryRecord("LookupIndex", LayoutFeatureLayout.IndexStride)]
+[BinaryArray("LookupIndex", "LookupCount", LayoutFeatureLayout.HeaderLength, LayoutFeatureLayout.IndexStride)]
 [BinaryElement("LookupIndex", "Index", WireType.UInt16, 0, DataField.Payload)]
 public readonly ref partial struct LayoutFeatureView { }
 
-[BinaryTable(0, LayoutLookupListLayout.HeaderLength)]
+[BinaryTable(0, LayoutLookupListLayout.HeaderLength, ContractVersion = 1,
+    RoleType = typeof(LayoutLookupKind),
+    SupportedRoles = new long[] { (long)LayoutLookupKind.Gsub, (long)LayoutLookupKind.Gpos })]
 [BinaryScalar("Count", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
-[BinaryRecord("LookupOffset", LayoutLookupListLayout.OffsetStride)]
+[BinaryArray("LookupOffset", "Count", LayoutLookupListLayout.HeaderLength, LayoutLookupListLayout.OffsetStride)]
 [BinaryElement("LookupOffset", "Offset", WireType.UInt16, 0, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+[BinaryDerived("RecordsEnd", Constant = 2, Count = "Count", Stride = 2)]
+[BinaryReference("Lookup", "Offset", typeof(LookupView), Array = "LookupOffset",
+    Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required, Minimum = "RecordsEnd",
+    ForwardRole = true)]
 public readonly ref partial struct LayoutLookupListView { }
 
-[BinaryTable(0, LayoutListsLayout.Header10, VersionField = "Version",
-    SupportedVersions = new uint[] { LayoutListsLayout.Version10, LayoutListsLayout.Version11 })]
+[BinaryTable(0, LayoutListsLayout.Header10, ContractVersion = 1, VersionField = "Version",
+    SupportedVersions = new uint[] { LayoutListsLayout.Version10, LayoutListsLayout.Version11 },
+    RoleType = typeof(LayoutLookupKind),
+    SupportedRoles = new long[] { (long)LayoutLookupKind.Gsub, (long)LayoutLookupKind.Gpos })]
 [BinaryScalar("Version", WireType.UInt32, 0, DataField.Version)]
 [BinaryScalar("ScriptListOffset", WireType.UInt16, LayoutListsLayout.ScriptOffsetField, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
@@ -95,4 +117,13 @@ public readonly ref partial struct LayoutLookupListView { }
 [BinaryRecord("VariationsHeader", LayoutListsLayout.VariationsStride)]
 [BinaryElement("VariationsHeader", "OffsetRaw", WireType.UInt32, 0, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
+[BinaryComputed("ChildBase", "ChildBaseOf",
+    Inputs = new[] { "Version" }, Maximum = 14ul,
+    Semantic = NumberSemantic.Offset, DiagnosticField = DataField.Offset)]
+[BinaryReference("ScriptList", "ScriptListOffset", typeof(LayoutTagListView),
+    TargetRole = (long)LayoutTagListRole.ScriptList, Minimum = "ChildBase")]
+[BinaryReference("FeatureList", "FeatureListOffset", typeof(LayoutTagListView),
+    TargetRole = (long)LayoutTagListRole.FeatureList, Minimum = "ChildBase")]
+[BinaryReference("LookupList", "LookupListOffset", typeof(LayoutLookupListView),
+    ForwardRole = true, Minimum = "ChildBase")]
 public readonly ref partial struct LayoutListsView { }

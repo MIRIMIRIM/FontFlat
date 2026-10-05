@@ -1338,7 +1338,9 @@ internal static class ViewEmitter
             writer.Line("out diagnostic, unchecked((ulong)ordinal), count);");
             writer.Indent -= 2;
             writer.Line("}");
-            writer.Line($"status = TryGet{array.Name}(ordinal, out var record, out diagnostic);");
+            // The record type is named explicitly so a same-name handwritten overload (card
+            // 1.2-a's ushort projection) cannot make this generated call ambiguous.
+            writer.Line($"status = TryGet{array.Name}(ordinal, out {array.Name}Data record, out diagnostic);");
             writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
             writer.Line($"status = TryEvaluateArray{array.Name}Start(out ulong arrayStart, out diagnostic);");
             writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");

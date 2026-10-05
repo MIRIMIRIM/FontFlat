@@ -2,6 +2,14 @@ using FontWeave.Core;
 
 namespace FontWeave.Tables.Layout;
 
+/// <summary>The calling direction a shared TagList is opened under; it selects the
+/// declared Script/Feature reference branch and is never a wire field.</summary>
+internal enum LayoutTagListRole : byte
+{
+    ScriptList = 1,
+    FeatureList = 2,
+}
+
 public sealed class LayoutLangSys
 {
     private readonly ushort[] _features;

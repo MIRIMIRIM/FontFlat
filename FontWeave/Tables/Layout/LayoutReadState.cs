@@ -40,36 +40,12 @@ internal sealed class LayoutReadState
 
 internal static class LayoutReadWire
 {
-    internal static ReadStatus Target(ReadOnlySpan<byte> parent, ushort offset, int recordsEnd,
-        int fieldPosition, DataLocation location, out FontDiagnostic diagnostic)
-    {
-        if (offset == 0 || offset >= parent.Length)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                location.AtLocal(DataField.Offset, (ulong)fieldPosition), out diagnostic, offset, (ulong)parent.Length);
-        if (offset < recordsEnd)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
-                location.AtLocal(DataField.Offset, (ulong)fieldPosition), out diagnostic, offset, (ulong)recordsEnd);
-        diagnostic = default;
-        return ReadStatus.Done;
-    }
-
     internal static ReadStatus Index(ushort value, int count, DataLocation location, ulong position,
         int ordinal, out FontDiagnostic diagnostic)
     {
         if (value >= count)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 location.AtLocal(DataField.Payload, position, ordinal), out diagnostic, value, (ulong)count);
-        diagnostic = default;
-        return ReadStatus.Done;
-    }
-
-    internal static ReadStatus Ordinal(int ordinal, int count, DataLocation location, ulong countPosition,
-        out FontDiagnostic diagnostic)
-    {
-        if (ordinal < 0 || ordinal >= count)
-            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                location.AtLocal(DataField.Count, countPosition, ordinal), out diagnostic,
-                unchecked((ulong)(long)ordinal), (ulong)count);
         diagnostic = default;
         return ReadStatus.Done;
     }

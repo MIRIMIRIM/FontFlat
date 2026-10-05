@@ -4,9 +4,9 @@ namespace FontWeave.Tables.Layout;
 
 public readonly ref partial struct LayoutTagListView
 {
-    // The generated contract version 1 array accessors (TryGetTagRecord and
-    // TryGetTagRecordExtent) own the ordinal, range and truncation rules; this
-    // partial keeps only the semantic checks and the traversal below.
+    // The generated contract version 1 accessors own the ordinal, range, truncation and
+    // typed-reference rules (TryGetTagRecord family plus the role-dispatched Script and
+    // Feature openers); this partial keeps only the semantic checks and the traversal.
 
     public ReadStatus TryReadScripts(int featureCount, out LayoutScript[]? scripts,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
@@ -71,12 +71,9 @@ public readonly ref partial struct LayoutTagListView
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     Location.AtLocal(DataField.Tag, (ulong)at, i), out diagnostic, record.Tag, previous);
             previous = record.Tag;
-            status = LayoutReadWire.Target(_data, record.Offset, recordsEnd,
-                at + LayoutTagListLayout.RecordOffsetField, Location, out diagnostic);
+            status = TryOpenScript(LayoutTagListRole.ScriptList, i, out var child, out _, out diagnostic);
             if (status != ReadStatus.Done) return status;
             int target = position + record.Offset;
-            status = LayoutScriptView.TryOpen(_data.Slice(record.Offset), out var child, out diagnostic, state.At(target));
-            if (status != ReadStatus.Done) return status;
             status = child.Process(record.Tag, featureCount, target, state, Location,
                 Location.AtLocal(DataField.Tag, (ulong)at, i), out var script, out diagnostic, budget);
             if (status != ReadStatus.Done) return status;
@@ -118,12 +115,9 @@ public readonly ref partial struct LayoutTagListView
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     Location.AtLocal(DataField.Tag, (ulong)at, i), out diagnostic, record.Tag, previous);
             previous = record.Tag;
-            status = LayoutReadWire.Target(_data, record.Offset, recordsEnd,
-                at + LayoutTagListLayout.RecordOffsetField, Location, out diagnostic);
+            status = TryOpenFeature(LayoutTagListRole.FeatureList, i, out var child, out _, out diagnostic);
             if (status != ReadStatus.Done) return status;
             int target = position + record.Offset;
-            status = LayoutFeatureView.TryOpen(_data.Slice(record.Offset), out var child, out diagnostic, state.At(target));
-            if (status != ReadStatus.Done) return status;
             status = child.Process(record.Tag, lookupCount, target, state, Location,
                 Location.AtLocal(DataField.Tag, (ulong)at, i), out var feature, out diagnostic, budget);
             if (status != ReadStatus.Done) return status;
@@ -137,15 +131,14 @@ public readonly ref partial struct LayoutTagListView
 
 public readonly ref partial struct LayoutLookupListView
 {
+    // The generated contract version 1 accessors own the ordinal, range, truncation and
+    // reference rules (TryGetLookupOffset record form, the extent family and the
+    // role-dispatched Lookup opener); the ushort getter is the compatibility projection.
+
     public ReadStatus TryGetLookupOffset(int ordinal, out ushort offset, out FontDiagnostic diagnostic)
     {
         offset = 0;
-        ReadStatus status = TryGetCount(out ushort count, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = LayoutReadWire.Ordinal(ordinal, count, Location, 0, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = TryReadLookupOffsetAt(LayoutLookupListLayout.HeaderLength +
-            (ulong)ordinal * LayoutLookupListLayout.OffsetStride, ordinal, out var row, out diagnostic);
+        ReadStatus status = TryGetLookupOffset(ordinal, out LookupOffsetData row, out diagnostic);
         if (status == ReadStatus.Done) offset = row.Offset;
         return status;
     }
@@ -189,15 +182,12 @@ public readonly ref partial struct LayoutLookupListView
         {
             status = TryGetLookupOffset(i, out ushort offset, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            int at = LayoutLookupListLayout.HeaderLength + i * LayoutLookupListLayout.OffsetStride;
-            status = LayoutReadWire.Target(_data, offset, recordsEnd, at, Location, out diagnostic);
+            status = TryOpenLookup(kind, i, out var child, out _, out diagnostic);
             if (status != ReadStatus.Done) return status;
             int target = position + offset;
             if (!budget.Work(1, Location, out diagnostic)) return ReadStatus.ResourceLimit;
             if (state.Lookups is not null && state.Lookups.TryGetValue(target, out var cached))
             { result![i] = cached; continue; }
-            status = LookupView.TryOpen(_data.Slice(offset), out var child, out diagnostic, state.At(target));
-            if (status != ReadStatus.Done) return status;
             if (state.Materialize)
             {
                 status = child.TryReadHeader(numGlyphs, kind, out var lookup, out diagnostic, budget);
@@ -221,6 +211,22 @@ public readonly ref partial struct LayoutLookupListView
 
 public readonly ref partial struct LayoutListsView
 {
+    // The generated contract version 1 accessors own the three child references (the
+    // TargetRole-dispatched ScriptList/FeatureList openers and the ForwardRole LookupList
+    // opener, each against the declared ChildBase computed); this partial keeps version
+    // selection, the raw variations observation and the traversal below.
+
+    // 10 bytes for a v1.0 root and 14 once the variations header exists: one of the
+    // explicitly allowed bounded selections (spec 2.3). The computed feeds the reference
+    // Minimum on demand and never re-prices the Work below, which keeps its local value.
+    private static ReadStatus ChildBaseOf(uint version, DataLocation diagnosticLocation,
+        out ulong value, out FontDiagnostic diagnostic)
+    {
+        value = version == LayoutListsLayout.Version11 ? 14UL : 10UL;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
     public ReadStatus TryRead(int numGlyphs, LayoutLookupKind kind, out LayoutListsTable? model,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
@@ -265,24 +271,12 @@ public readonly ref partial struct LayoutListsView
             variations = header.OffsetRaw; headerEnd = LayoutListsLayout.Header11;
         }
         if (!budget.Work(headerEnd, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        status = LayoutReadWire.Target(_data, ScriptListOffset, headerEnd,
-            LayoutListsLayout.ScriptOffsetField, Location, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = LayoutReadWire.Target(_data, FeatureListOffset, headerEnd,
-            LayoutListsLayout.FeatureOffsetField, Location, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = LayoutReadWire.Target(_data, LookupListOffset, headerEnd,
-            LayoutListsLayout.LookupOffsetField, Location, out diagnostic);
-        if (status != ReadStatus.Done) return status;
         var state = new LayoutReadState(Location, _data.Length, materialize);
-        status = LayoutTagListView.TryOpen(_data.Slice(ScriptListOffset), out var scriptsView,
-            out diagnostic, state.At(ScriptListOffset));
+        status = TryOpenScriptList(kind, out var scriptsView, out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = LayoutTagListView.TryOpen(_data.Slice(FeatureListOffset), out var featuresView,
-            out diagnostic, state.At(FeatureListOffset));
+        status = TryOpenFeatureList(kind, out var featuresView, out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = LayoutLookupListView.TryOpen(_data.Slice(LookupListOffset), out var lookupsView,
-            out diagnostic, state.At(LookupListOffset));
+        status = TryOpenLookupList(kind, out var lookupsView, out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = scriptsView.ProcessScripts(featuresView.Count, ScriptListOffset, state, out var scripts, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
