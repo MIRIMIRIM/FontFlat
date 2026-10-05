@@ -76,7 +76,18 @@ public readonly ref partial struct StaticDeviceView
         model = null;
         ReadStatus status = InspectWords(out int count, out int bits, out int consumed,
             out ushort lastWord, out diagnostic, budget);
-        if (status != ReadStatus.Done) return status;
+        return status == ReadStatus.Done
+            ? Materialize(count, bits, consumed, lastWord, out model, out diagnostic, budget) : status;
+    }
+
+    // Expansion over already inspected facts (spec 6.2): InspectWords owns every check,
+    // so this step re-walks the same proven packed words only to unpack deltas and must
+    // not re-inspect. The separate entry lets a parent that just inspected (SinglePos
+    // ReadDevice, M1b handoff) consume its facts without paying them twice.
+    internal ReadStatus Materialize(int count, int bits, int consumed, ushort lastWord,
+        out StaticDeviceTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
         if (!budget.Work(count, Location, out diagnostic) ||
             !budget.Buffer(count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         var deltas = new sbyte[count];
@@ -87,7 +98,7 @@ public readonly ref partial struct StaticDeviceView
             ushort word = lastWord;
             if (i != words - 1)
             {
-                status = TryGetWord(i, out var record, out diagnostic);
+                ReadStatus status = TryGetWord(i, out var record, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 word = record.Value;
             }
@@ -102,7 +113,9 @@ public readonly ref partial struct StaticDeviceView
         return ReadStatus.Done;
     }
 
-    private ReadStatus InspectWords(out int count, out int bits, out int consumed, out ushort lastWord,
+    // The single strict pass over the packed device words; parents that only validate
+    // use the Inspect projection, parents that materialize reuse its facts.
+    internal ReadStatus InspectWords(out int count, out int bits, out int consumed, out ushort lastWord,
         out FontDiagnostic diagnostic, BuildBudget budget)
     {
         count = bits = 0;

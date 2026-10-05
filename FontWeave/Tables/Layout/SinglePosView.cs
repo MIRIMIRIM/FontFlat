@@ -180,11 +180,13 @@ public readonly ref partial struct SinglePosView
         int local = target - (state.Length - _data.Length);
         ReadStatus status = StaticDeviceView.TryOpen(_data.Slice(local), out var view, out diagnostic, state.At(target));
         if (status != ReadStatus.Done) return status;
-        status = view.Inspect(out int count, out length, out diagnostic, budget);
+        status = view.InspectWords(out int count, out int bits, out length, out ushort lastWord, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         if (state.Materialize)
         {
-            status = view.TryRead(out model, out diagnostic, budget);
+            // Expansion consumes the facts InspectWords just proved (spec 6.2); the
+            // former TryRead re-entry paid the same consumed Work twice (M1b handoff).
+            status = view.Materialize(count, bits, length, lastWord, out model, out diagnostic, budget);
             if (status != ReadStatus.Done) return status;
         }
         if (!budget.Buffer(state.Materialize ? 32 : 16, state.At(target), out diagnostic)) return ReadStatus.ResourceLimit;

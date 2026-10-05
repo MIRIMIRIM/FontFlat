@@ -47,7 +47,7 @@ public readonly ref partial struct SingleSubstView
     }
 
     internal ReadStatus Validate(int numGlyphs, out FontDiagnostic diagnostic, BuildBudget budget) =>
-        Inspect(numGlyphs, out _, out _, out _, out diagnostic, budget);
+        Inspect(numGlyphs, out _, out _, out _, out _, out _, out diagnostic, budget);
 
     public ReadStatus TryRead(int numGlyphs, out SingleSubstTable? model,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
@@ -100,13 +100,16 @@ public readonly ref partial struct SingleSubstView
             }
         }
         ReadStatus status = Inspect(numGlyphs, out var coverage, out int count, out int consumed,
-            out diagnostic, budget, coverageModel, coverageOrigin);
+            out int coverageCount, out int coverageLength, out diagnostic, budget, coverageModel, coverageOrigin);
         if (status != ReadStatus.Done) return status;
         if (!budget.Work(count, Location, out diagnostic) ||
             !budget.Buffer(2L * count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         if (coverageModel is null)
         {
-            status = coverage.TryRead(numGlyphs, out coverageModel, out diagnostic, budget);
+            // Expansion consumes the facts Inspect just proved (spec 6.2); the former
+            // TryRead re-entry paid the same consumed Work twice (M1b handoff).
+            status = coverage.Materialize(numGlyphs, coverageCount, coverageLength,
+                out coverageModel, out diagnostic, budget);
             if (status != ReadStatus.Done) return status;
             if (coverageCache is not null)
             {
@@ -130,11 +133,12 @@ public readonly ref partial struct SingleSubstView
     }
 
     private ReadStatus Inspect(int numGlyphs, out CoverageView coverage, out int count, out int consumed,
-        out FontDiagnostic diagnostic, BuildBudget budget, CoverageTable? cachedCoverage = null,
-        DataLocation? coverageOrigin = null)
+        out int coverageCount, out int coverageLength, out FontDiagnostic diagnostic, BuildBudget budget,
+        CoverageTable? cachedCoverage = null, DataLocation? coverageOrigin = null)
     {
         coverage = default;
         count = consumed = 0;
+        coverageCount = coverageLength = 0;
         ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
@@ -177,7 +181,8 @@ public readonly ref partial struct SingleSubstView
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
                 Location.AtLocal(DataField.Offset, SingleSubstLayout.CoverageOffsetField),
                 out diagnostic, CoverageOffset, (ulong)bodyEnd);
-        int coverageCount, coverageLength;
+        // The coverage facts thread out for the materialize step, which re-walks the
+        // same proven rows without paying a second inspection (M1b handoff).
         if (cachedCoverage is null)
         {
             status = TryOpenCoverage(out coverage, out _, out diagnostic);
