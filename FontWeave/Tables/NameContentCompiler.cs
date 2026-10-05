@@ -153,29 +153,27 @@ public static partial class NameTableCompiler
             !budget.Buffer(total, request, out diagnostic))
             return ReadStatus.ResourceLimit;
         var compiled = new byte[(int)total];
-        BinaryPrimitives.WriteUInt16BigEndian(compiled, content.Format);
-        BinaryPrimitives.WriteUInt16BigEndian(compiled.AsSpan(2), (ushort)count);
-        BinaryPrimitives.WriteUInt16BigEndian(compiled.AsSpan(4), (ushort)metadataEnd);
+        _ = NameView.TryWriteFormat(compiled, (ushort)content.Format, out _);
+        _ = NameView.TryWriteDeclaredCount(compiled, (ushort)count, out _);
+        _ = NameView.TryWriteStorageOffset(compiled, (ushort)metadataEnd, out _);
         for (int i = 0; i < count; i++)
         {
             int original = recordOrder[i];
             NameRecordValue record = content.Records[original];
-            Span<byte> row = compiled.AsSpan(6 + i * 12, 12);
-            BinaryPrimitives.WriteUInt16BigEndian(row, record.PlatformId);
-            BinaryPrimitives.WriteUInt16BigEndian(row[2..], record.EncodingId);
-            BinaryPrimitives.WriteUInt16BigEndian(row[4..], record.LanguageId);
-            BinaryPrimitives.WriteUInt16BigEndian(row[6..], record.NameId);
-            BinaryPrimitives.WriteUInt16BigEndian(row[8..], (ushort)record.Payload.Length);
-            BinaryPrimitives.WriteUInt16BigEndian(row[10..], (ushort)offsets[original]);
+            _ = NameView.TryWriteRecordAt(compiled, (ulong)(6 + i * 12), new NameView.RecordData(i,
+                record.PlatformId, record.EncodingId, record.LanguageId, record.NameId,
+                (ushort)record.Payload.Length, (ushort)offsets[original]), out _);
         }
         if (content.Format == 1)
         {
+            // LanguageTagCount is a condition-activated scalar (WhenVersion=1)
+            // and therefore has no generated writer; the raw write stays.
             BinaryPrimitives.WriteUInt16BigEndian(compiled.AsSpan(6 + count * 12), (ushort)tagCount);
             for (int i = 0; i < tagCount; i++)
             {
-                Span<byte> row = compiled.AsSpan(8 + count * 12 + i * 4, 4);
-                BinaryPrimitives.WriteUInt16BigEndian(row, (ushort)payloads[count + i].Length);
-                BinaryPrimitives.WriteUInt16BigEndian(row[2..], (ushort)offsets[count + i]);
+                _ = NameView.TryWriteLanguageTagAt(compiled, (ulong)(8 + count * 12 + i * 4),
+                    new NameView.LanguageTagData(i, (ushort)payloads[count + i].Length,
+                        (ushort)offsets[count + i]), out _);
             }
         }
         storage.AsSpan(0, storageLength).CopyTo(compiled.AsSpan(metadataEnd));

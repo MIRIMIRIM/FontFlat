@@ -251,7 +251,11 @@ public static partial class NameTableCompiler
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.InvalidValue,
                 request.At(DataField.StorageOffset, 0), out diagnostic,
                 (ulong)metadataEnd, ushort.MaxValue);
-        int oldMetadataEnd = 6 + count * 12 + (source.Format == 1 ? 2 + oldTagCount * 4 : 0);
+        // The source MetadataEnd is a wire fact, not a plan value: the view
+        // derives it and the source has already passed TryRead, so the
+        // projection is defensive (plan invariant, same as A3).
+        _ = view.TryGetMetadataEnd(out ulong sourceMetadataEnd, out _);
+        int oldMetadataEnd = checked((int)sourceMetadataEnd);
         int suffixLength = source.OriginalBytes.Length - oldMetadataEnd;
         if (!budget.Buffer(suffixLength, request.At(DataField.TemporaryBytes, 0), out diagnostic) ||
             !budget.Work(suffixLength, request.At(DataField.WorkUnits, 0), out diagnostic))
@@ -311,14 +315,12 @@ public static partial class NameTableCompiler
         {
             NameRecordModel record = source.Records[i];
             int row = 6 + i * 12;
-            source.OriginalBytes.Span.Slice(row, 8).CopyTo(compiled.AsSpan(row));
-            if (languageEdited[i])
-                BinaryPrimitives.WriteUInt16BigEndian(compiled.AsSpan(row + 4), languageIds[i]);
             string? replacement = texts[i];
             int length = replacement is null ? record.Length : replacement.Length * 2;
-            BinaryPrimitives.WriteUInt16BigEndian(compiled.AsSpan(row + 8), (ushort)length);
-            BinaryPrimitives.WriteUInt16BigEndian(compiled.AsSpan(row + 10),
-                length == 0 ? (ushort)0 : (ushort)(cursor - metadataEnd));
+            _ = NameView.TryWriteRecordAt(compiled, (ulong)row, new NameView.RecordData(i,
+                record.PlatformId, record.EncodingId,
+                languageEdited[i] ? languageIds[i] : record.LanguageId, record.NameId,
+                (ushort)length, length == 0 ? (ushort)0 : (ushort)(cursor - metadataEnd)), out _);
             if (replacement is null)
                 record.Payload.Span.CopyTo(compiled.AsSpan(cursor));
             else if (NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId, unicodeInterpretation))
@@ -333,8 +335,8 @@ public static partial class NameTableCompiler
             int row = 6 + count * 12 + 2 + i * 4;
             ReadOnlySpan<byte> payload = i < oldTagCount ? source.LanguageTags[i].Payload.Span : default;
             int length = i < oldTagCount ? payload.Length : appendTag!.Length * 2;
-            BinaryPrimitives.WriteUInt16BigEndian(compiled.AsSpan(row), (ushort)length);
-            BinaryPrimitives.WriteUInt16BigEndian(compiled.AsSpan(row + 2), (ushort)(cursor - metadataEnd));
+            _ = NameView.TryWriteLanguageTagAt(compiled, (ulong)row, new NameView.LanguageTagData(i,
+                (ushort)length, (ushort)(cursor - metadataEnd)), out _);
             if (i < oldTagCount)
                 payload.CopyTo(compiled.AsSpan(cursor));
             else
