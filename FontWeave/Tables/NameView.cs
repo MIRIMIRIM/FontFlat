@@ -46,16 +46,16 @@ public readonly ref partial struct NameView
 
         int count = DeclaredCount;
         // A valid metadata boundary is required before interpreting any record payload.
-        for (int ordinal = 0; ordinal < count; ordinal++)
-        {
-            status = TryGetRecord(ordinal, out _, out diagnostic);
-            if (status != ReadStatus.Done) return status;
-        }
+        status = TryRequireRecordExtent(out diagnostic);
+        if (status != ReadStatus.Done) return status;
         status = TryGetLanguageTagCount(out ushort tagCount, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        for (int ordinal = 0; ordinal < tagCount; ordinal++)
+        if (Format == 1)
         {
-            status = TryGetLanguageTag(ordinal, out _, out diagnostic);
+            // The guard owns the LanguageTag existence domain: format 0 has no
+            // tag-array window on the wire, and the extent check would address
+            // [MetadataEnd, ...) as if a tag array existed there.
+            status = TryRequireLanguageTagExtent(out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
         status = TryGetMetadataEnd(out ulong metadataEnd, out diagnostic);
@@ -101,9 +101,9 @@ public readonly ref partial struct NameView
                 return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
                     Location.At(DataField.Payload, payloadOffset, ordinal), out diagnostic,
                     referencedPayloadBytes, (ulong)maxReferencedPayloadBytes);
-            status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
+            status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload,
+                out DataLocation payloadLocation, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            DataLocation payloadLocation = Location.At(DataField.Payload, payloadOffset, ordinal);
             NameLegacyEncoding? legacyEncoding = encodings?[ordinal];
             status = NameTextCodec.ValidatePayload(record.PlatformId, record.EncodingId,
                 payload, payloadLocation, out diagnostic, legacyEncoding, unicodeInterpretation);
@@ -141,15 +141,16 @@ public readonly ref partial struct NameView
                 return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
                     Location.At(DataField.Payload, payloadOffset, ordinal), out diagnostic,
                     referencedPayloadBytes, (ulong)maxReferencedPayloadBytes);
-            status = TryGetLanguageTagPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
+            status = TryGetLanguageTagPayload(ordinal, out ReadOnlySpan<byte> payload,
+                out DataLocation payloadLocation, out diagnostic);
             if (status != ReadStatus.Done) return status;
             if (!IsValidUtf16BigEndian(payload))
                 return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidUtf16,
-                    Location.At(DataField.Payload, payloadOffset, ordinal), out diagnostic,
+                    payloadLocation, out diagnostic,
                     (ulong)payload.Length);
             if (!NameLanguageTagSyntax.IsWellFormed(Encoding.BigEndianUnicode.GetString(payload)))
                 return ReadWire.Fail(ReadStatus.InvalidEncoding, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.Payload, payloadOffset, ordinal), out diagnostic);
+                    payloadLocation, out diagnostic);
         }
 
         diagnostic = default;
@@ -171,11 +172,11 @@ public readonly ref partial struct NameView
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
                 Location.At(DataField.EncodingId, 6UL + (ulong)ordinal * 12 + 2, ordinal),
                 out diagnostic, record.EncodingId);
-        status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
+        status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload,
+            out DataLocation payloadLocation, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = NameTextCodec.TryDecode(record.PlatformId, record.EncodingId, payload,
-            out text, out diagnostic, Location.At(DataField.Payload,
-                (ulong)StorageOffset + record.StorageRelativeOffset, ordinal), unicodeInterpretation);
+            out text, out diagnostic, payloadLocation, unicodeInterpretation);
         if (status != ReadStatus.Done &&
             (!NameTextCodec.IsHistoricalUnicode(record.PlatformId, record.EncodingId, unicodeInterpretation) || status == ReadStatus.InvalidEncoding))
             diagnostic = diagnostic with { Detail = record.Length };
@@ -195,10 +196,11 @@ public readonly ref partial struct NameView
         status = NameTextCodec.ValidateSelection(record.PlatformId, record.EncodingId, encoding,
             DataLocation.Anonymous(0x6E616D65).At(DataField.EncodingId, 0, ordinal), out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
+        status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload,
+            out DataLocation payloadLocation, out diagnostic);
         if (status != ReadStatus.Done) return status;
         return NameTextCodec.TryDecode(encoding, payload, out text, out diagnostic,
-            Location.At(DataField.Payload, (ulong)StorageOffset + record.StorageRelativeOffset, ordinal));
+            payloadLocation);
     }
 
     /// <summary>Locally decode a record without treating an unknown encoding as damaged text.</summary>
@@ -212,10 +214,9 @@ public readonly ref partial struct NameView
         if (status != ReadStatus.Done) return status;
         status = TryGetRecord(ordinal, out RecordData record, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload, out diagnostic);
+        status = TryGetRecordPayload(ordinal, out ReadOnlySpan<byte> payload,
+            out DataLocation payloadLocation, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        DataLocation payloadLocation = Location.At(DataField.Payload,
-            (ulong)StorageOffset + record.StorageRelativeOffset, ordinal);
         status = NameTextCodec.ValidatePayload(record.PlatformId, record.EncodingId, payload,
             payloadLocation, out diagnostic, unicodeInterpretation: unicodeInterpretation);
         if (status != ReadStatus.Done)
@@ -230,8 +231,7 @@ public readonly ref partial struct NameView
             return ReadStatus.Done;
         }
         status = NameTextCodec.TryDecode(record.PlatformId, record.EncodingId, payload,
-            out text, out diagnostic, Location.At(DataField.Payload,
-                (ulong)StorageOffset + record.StorageRelativeOffset, ordinal), unicodeInterpretation);
+            out text, out diagnostic, payloadLocation, unicodeInterpretation);
         if (status != ReadStatus.Done)
         {
             diagnostic = diagnostic with { Detail = record.Length };
@@ -341,33 +341,33 @@ public readonly ref partial struct NameView
         for (int i = 0; i < records.Length; i++)
         {
             _ = TryGetRecord(i, out RecordData row, out _);
-            _ = TryGetRecordPayload(i, out ReadOnlySpan<byte> payload, out _);
+            _ = TryGetRecordPayload(i, out ReadOnlySpan<byte> payload,
+                out DataLocation payloadLocation, out _);
             ulong rowAt = 6UL + (ulong)i * 12;
-            ulong payloadAt = (ulong)StorageOffset + row.StorageRelativeOffset;
             NameLegacyEncoding? legacyEncoding = encodings?[i];
             NameDecodeState decodeState = NameTextCodec.DecodeState(row.PlatformId, row.EncodingId,
                 payload, legacyEncoding, unicodeInterpretation);
             string? text = null;
             if (decodeState == NameDecodeState.Decoded)
                 _ = NameTextCodec.TryDecode(row.PlatformId, row.EncodingId,
-                    payload, legacyEncoding, out text, out _, Location.At(DataField.Payload, payloadAt, i), unicodeInterpretation);
+                    payload, legacyEncoding, out text, out _, payloadLocation, unicodeInterpretation);
             records[i] = new NameRecordModel(i, row.PlatformId, row.EncodingId,
                 row.LanguageId, row.NameId, row.Length, row.StorageRelativeOffset,
                 payload.ToArray(), decodeState,
                 text,
                 Location.At(DataField.None, rowAt, i),
-                Location.At(DataField.Payload, payloadAt, i), legacyEncoding);
+                payloadLocation, legacyEncoding);
         }
         for (int i = 0; i < tags.Length; i++)
         {
             _ = TryGetLanguageTag(i, out LanguageTagData row, out _);
-            _ = TryGetLanguageTagPayload(i, out ReadOnlySpan<byte> payload, out _);
+            _ = TryGetLanguageTagPayload(i, out ReadOnlySpan<byte> payload,
+                out DataLocation payloadLocation, out _);
             ulong rowAt = 6UL + (ulong)DeclaredCount * 12 + 2 + (ulong)i * 4;
-            ulong payloadAt = (ulong)StorageOffset + row.StorageRelativeOffset;
             tags[i] = new NameLanguageTagModel(i, row.Length, row.StorageRelativeOffset,
                 payload.ToArray(), Encoding.BigEndianUnicode.GetString(payload),
                 Location.At(DataField.None, rowAt, i),
-                Location.At(DataField.Payload, payloadAt, i));
+                payloadLocation);
         }
         model = new NameTableModel(Format, StorageOffset, original, records, tags, Location, unicodeInterpretation);
         diagnostic = default;

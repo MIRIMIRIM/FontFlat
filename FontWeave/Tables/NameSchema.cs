@@ -4,7 +4,7 @@ using FontWeave.Core;
 
 namespace FontWeave.Tables;
 
-[BinaryTable(0x6E616D65, 6, VersionField = "Format", SupportedVersions = new uint[] { 0, 1 })]
+[BinaryTable(0x6E616D65, 6, ContractVersion = 1, VersionField = "Format", SupportedVersions = new uint[] { 0, 1 })]
 [BinaryScalar("Format", WireType.UInt16, 0, DataField.Version)]
 [BinaryScalar("DeclaredCount", WireType.UInt16, 2, DataField.Count, Semantic = NumberSemantic.Count)]
 [BinaryScalar("StorageOffset", WireType.UInt16, 4, DataField.StorageOffset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
