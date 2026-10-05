@@ -160,7 +160,8 @@ public readonly ref partial struct SinglePosView
         if (status != ReadStatus.Done) return status;
         if (state.Materialize)
         {
-            status = view.TryRead(numGlyphs, out model, out diagnostic, budget);
+            // Expansion consumes the facts Inspect just proved; no second inspection.
+            status = view.Materialize(numGlyphs, count, length, out model, out diagnostic, budget);
             if (status != ReadStatus.Done) return status;
         }
         if (!budget.Buffer(state.Materialize ? 32 : 16, state.At(target), out diagnostic)) return ReadStatus.ResourceLimit;

@@ -43,6 +43,16 @@ public readonly ref partial struct CoverageView
         ReadStatus status = Inspect(numGlyphs, out int expandedCount, out int consumed,
             out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
+        return Materialize(numGlyphs, expandedCount, consumed, out model, out diagnostic, budget);
+    }
+
+    // Expansion over already inspected facts (spec 6.2): Inspect owns version, count,
+    // format and every per-row semantic check, so this step re-walks the same verified
+    // rows only to copy glyph ids and must not re-inspect the same semantics.
+    internal ReadStatus Materialize(int numGlyphs, int expandedCount, int consumed,
+        out CoverageTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
         if (!budget.Work(2L * expandedCount, Location, out diagnostic) ||
             !budget.Buffer(2L * expandedCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         ushort[] glyphs = new ushort[expandedCount];
