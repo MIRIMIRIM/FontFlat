@@ -55,6 +55,13 @@ internal sealed class LayoutReadState
     internal int NumGlyphsContext => _numGlyphsContext;
     internal int KindContext => _kindContext;
 
+    // Published-fact counts for the sanctioned source-closure validation probes;
+    // mechanical observability only, no schema or behavior surface.
+    internal int ScriptFactCount => _scriptFacts?.Count ?? 0;
+    internal int LanguageFactCount => _languageFacts?.Count ?? 0;
+    internal int FeatureFactCount => _featureFacts?.Count ?? 0;
+    internal int LookupFactCount => _lookupFacts?.Count ?? 0;
+
     internal DataLocation At(int position) => Origin.AtLocal(DataField.None, (ulong)position);
 
     internal static ReadStatus BindContext(ref int slot, int value, DataLocation location,
