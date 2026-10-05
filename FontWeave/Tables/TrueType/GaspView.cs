@@ -87,8 +87,7 @@ public readonly ref partial struct GaspView
         ushort previous = 0;
         for (int ordinal = 0; ordinal < declared; ordinal++)
         {
-            status = TryReadRangeAt((ulong)(GaspLayout.HeaderLength +
-                ordinal * GaspLayout.RangeStride), ordinal, out var record, out diagnostic);
+            status = TryGetRange(ordinal, out RangeData record, out diagnostic);
             if (status != ReadStatus.Done) return status;
             // rangeMaxPPEM is strictly increasing; an equal or smaller value is refused with
             // the offending ordinal, because the ordering is what makes the ranges meaningful.
@@ -120,20 +119,18 @@ public readonly ref partial struct GaspView
         return ReadStatus.Done;
     }
 
-    /// <summary>Reads one range by ordinal.</summary>
+    /// <summary>Reads one range by ordinal.
+    ///
+    /// A compatibility projection over the generated <c>TryGetRange(int, out RangeData, …)</c>
+    /// accessor, not a second reader: the version gate deliberately runs here, ahead of the
+    /// generated ordinal gate, so an unknown version with a plausible ordinal reports
+    /// UnsupportedVersion rather than an index failure.</summary>
     public ReadStatus TryGetRange(int ordinal, out GaspRange range, out FontDiagnostic diagnostic)
     {
         range = default;
         ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = TryGetNumRanges(out ushort declared, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        if (ordinal < 0 || ordinal >= declared)
-            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Count, GaspLayout.NumRangesAt, ordinal), out diagnostic,
-                unchecked((ulong)(long)ordinal), declared);
-        status = TryReadRangeAt((ulong)(GaspLayout.HeaderLength +
-            ordinal * GaspLayout.RangeStride), ordinal, out var record, out diagnostic);
+        status = TryGetRange(ordinal, out RangeData record, out diagnostic);
         if (status != ReadStatus.Done) return status;
         range = new(ordinal, record.RangeMaxPpem, record.RangeGaspBehavior);
         diagnostic = default;

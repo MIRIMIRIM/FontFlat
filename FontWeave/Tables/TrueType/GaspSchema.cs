@@ -39,14 +39,15 @@ internal static class GaspLayout
 }
 
 // gasp is a versioned header followed by a counted array of ranges. Both the version and
-// the count live on the wire, and the array element has two scalars, so the array is
-// declared here and the version-dependent flag mask is applied by the partial.
-[BinaryTable(GaspLayout.Tag, GaspLayout.HeaderLength, VersionField = "Version",
+// the count live on the wire, so the counted array is declared here (contract version 1:
+// the generated accessor owns the ordinal gate and row addressing) and the version-dependent
+// flag mask is applied by the partial.
+[BinaryTable(GaspLayout.Tag, GaspLayout.HeaderLength, ContractVersion = 1, VersionField = "Version",
     SupportedVersions = new uint[] { GaspLayout.Version0, GaspLayout.Version1 })]
 [BinaryScalar("Version", WireType.UInt16, GaspLayout.VersionAt, DataField.Version)]
 [BinaryScalar("NumRanges", WireType.UInt16, GaspLayout.NumRangesAt, DataField.Count,
     Semantic = NumberSemantic.Count)]
-[BinaryRecord("Range", GaspLayout.RangeStride)]
+[BinaryArray("Range", "NumRanges", GaspLayout.HeaderLength, GaspLayout.RangeStride)]
 [BinaryElement("Range", "RangeMaxPpem", WireType.UInt16, GaspLayout.RangeMaxPpemFieldAt,
     DataField.Count, Semantic = NumberSemantic.Plain)]
 [BinaryElement("Range", "RangeGaspBehavior", WireType.UInt16, GaspLayout.RangeBehaviorFieldAt,
