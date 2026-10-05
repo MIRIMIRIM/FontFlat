@@ -14,14 +14,14 @@ public readonly ref partial struct LayoutTagListView
         scripts = null;
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return ProcessScripts(featureCount, 0, new(Location, _data.Length, true), out scripts, out diagnostic, budget);
+        return ProcessScripts(featureCount, 0, new(Location, _data.Length, true, featureCount: featureCount), out scripts, out diagnostic, budget);
     }
 
     public ReadStatus ValidateScripts(int featureCount, out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return ProcessScripts(featureCount, 0, new(Location, _data.Length, false), out _, out diagnostic, budget);
+        return ProcessScripts(featureCount, 0, new(Location, _data.Length, false, featureCount: featureCount), out _, out diagnostic, budget);
     }
 
     public ReadStatus TryReadFeatures(int lookupCount, out LayoutFeature[]? features,
@@ -30,14 +30,14 @@ public readonly ref partial struct LayoutTagListView
         features = null;
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return ProcessFeatures(lookupCount, 0, new(Location, _data.Length, true), out features, out diagnostic, budget);
+        return ProcessFeatures(lookupCount, 0, new(Location, _data.Length, true, lookupCount: lookupCount), out features, out diagnostic, budget);
     }
 
     public ReadStatus ValidateFeatures(int lookupCount, out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return ProcessFeatures(lookupCount, 0, new(Location, _data.Length, false), out _, out diagnostic, budget);
+        return ProcessFeatures(lookupCount, 0, new(Location, _data.Length, false, lookupCount: lookupCount), out _, out diagnostic, budget);
     }
 
     internal ReadStatus ProcessScripts(int featureCount, int position, LayoutReadState state,
@@ -149,7 +149,7 @@ public readonly ref partial struct LayoutLookupListView
         lookups = null;
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return Process(numGlyphs, kind, 0, new(Location, _data.Length, true), out lookups, out diagnostic, budget);
+        return Process(numGlyphs, kind, 0, new(Location, _data.Length, true, numGlyphs: numGlyphs, kind: (int)kind), out lookups, out diagnostic, budget);
     }
 
     public ReadStatus Validate(int numGlyphs, LayoutLookupKind kind,
@@ -157,7 +157,7 @@ public readonly ref partial struct LayoutLookupListView
     {
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return Process(numGlyphs, kind, 0, new(Location, _data.Length, false), out _, out diagnostic, budget);
+        return Process(numGlyphs, kind, 0, new(Location, _data.Length, false, numGlyphs: numGlyphs, kind: (int)kind), out _, out diagnostic, budget);
     }
 
     internal ReadStatus Process(int numGlyphs, LayoutLookupKind kind, int position, LayoutReadState state,
@@ -186,6 +186,14 @@ public readonly ref partial struct LayoutLookupListView
             if (status != ReadStatus.Done) return status;
             int target = position + offset;
             if (!budget.Work(1, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+            if (!state.Materialize)
+            {
+                status = state.BindNumGlyphs(numGlyphs, Location, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = state.BindKind(kind, Location, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                if (state.TryGetLookupFact(target)) continue;
+            }
             if (state.Lookups is not null && state.Lookups.TryGetValue(target, out var cached))
             { result![i] = cached; continue; }
             if (state.Materialize)
@@ -200,6 +208,10 @@ public readonly ref partial struct LayoutLookupListView
             else
             {
                 status = child.ValidateHeader(numGlyphs, kind, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+                // Validate-mode facts publish after the header fully validated; the
+                // per-record offset/opener checks above stay on every alias either way.
+                status = state.PublishLookupFact(target, state.At(target), budget, out diagnostic);
                 if (status != ReadStatus.Done) return status;
             }
         }
@@ -271,13 +283,17 @@ public readonly ref partial struct LayoutListsView
             variations = header.OffsetRaw; headerEnd = LayoutListsLayout.Header11;
         }
         if (!budget.Work(headerEnd, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        var state = new LayoutReadState(Location, _data.Length, materialize);
         status = TryOpenScriptList(kind, out var scriptsView, out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = TryOpenFeatureList(kind, out var featuresView, out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = TryOpenLookupList(kind, out var lookupsView, out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        // The root operation pins all four context slots: one root window, one glyph
+        // count and kind, one feature/lookup count domain for every facts hit below.
+        var state = new LayoutReadState(Location, _data.Length, materialize,
+            featureCount: featuresView.Count, lookupCount: lookupsView.Count,
+            numGlyphs: numGlyphs, kind: (int)kind);
         status = scriptsView.ProcessScripts(featuresView.Count, ScriptListOffset, state, out var scripts, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         status = featuresView.ProcessFeatures(lookupsView.Count, FeatureListOffset, state, out var features, out diagnostic, budget);

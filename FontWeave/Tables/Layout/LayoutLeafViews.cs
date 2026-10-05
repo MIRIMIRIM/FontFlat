@@ -26,6 +26,12 @@ public readonly ref partial struct LayoutLangSysView
         status = LayoutListsTableCompiler.CheckCount(featureCount, Location, LayoutLangSysLayout.CountOffset, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!budget.Work(1, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        if (!state.Materialize)
+        {
+            status = state.BindFeatureCount(featureCount, Location, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            if (state.TryGetLanguageFact(position)) { diagnostic = default; return ReadStatus.Done; }
+        }
         if (state.Languages is not null && state.Languages.TryGetValue(position, out model))
         { diagnostic = default; return ReadStatus.Done; }
         if (LookupOrderOffset != 0)
@@ -60,6 +66,13 @@ public readonly ref partial struct LayoutLangSysView
             status = LayoutReadState.Store(state.Languages, position, model, Location, budget, out diagnostic);
             if (status != ReadStatus.Done) { model = null; return status; }
         }
+        else
+        {
+            // Validate mode publishes the completed success only after every row and
+            // scalar above passed; a failed admission publishes nothing.
+            status = state.PublishLanguageFact(position, state.At(position), budget, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -88,6 +101,12 @@ public readonly ref partial struct LayoutFeatureView
         status = LayoutListsTableCompiler.CheckCount(lookupCount, Location, LayoutFeatureLayout.CountOffset, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!budget.Work(1, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        if (!state.Materialize)
+        {
+            status = state.BindLookupCount(lookupCount, Location, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            if (state.TryGetFeatureFact(position)) { diagnostic = default; return ReadStatus.Done; }
+        }
         if (state.Features is not null && state.Features.TryGetValue(position, out var cached))
         { model = cached.AtRecord(tag, listLocation, recordLocation); diagnostic = default; return ReadStatus.Done; }
         int consumed = LayoutFeatureLayout.HeaderLength + LayoutFeatureLayout.IndexStride * count;
@@ -115,6 +134,12 @@ public readonly ref partial struct LayoutFeatureView
             status = LayoutReadState.Store(state.Features, position, model, Location, budget, out diagnostic);
             if (status != ReadStatus.Done) { model = null; return status; }
         }
+        else
+        {
+            // Validate-mode facts publish, same admission and placement as LangSys.
+            status = state.PublishFeatureFact(position, state.At(position), budget, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -134,11 +159,24 @@ public readonly ref partial struct LayoutScriptView
         ReadStatus status = TryGetLanguageCount(out ushort count, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!budget.Work(1, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        if (!state.Materialize)
+        {
+            status = state.BindFeatureCount(featureCount, Location, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
         if (state.Scripts is not null && state.Scripts.TryGetValue(position, out var cached))
         {
             if (tag == LayoutScriptLayout.DefaultTag && cached.DefaultLanguage is null)
                 return MissingDefault(out diagnostic);
             model = cached.AtRecord(tag, listLocation, recordLocation);
+            diagnostic = default; return ReadStatus.Done;
+        }
+        if (!state.Materialize && state.TryGetScriptFact(position, out LayoutScriptFact fact))
+        {
+            // Facts keep every per-alias condition observable: DFLT depends on this
+            // record's tag, not on the shared body, so the recheck survives the hit.
+            if (tag == LayoutScriptLayout.DefaultTag && fact.DefaultLanguageOffset == 0)
+                return MissingDefault(out diagnostic);
             diagnostic = default; return ReadStatus.Done;
         }
         if (tag == LayoutScriptLayout.DefaultTag && DefaultLanguageOffset == 0)
@@ -189,6 +227,14 @@ public readonly ref partial struct LayoutScriptView
             model = new(tag, defaultLanguage, languages, Location, consumed, null, listLocation, recordLocation);
             status = LayoutReadState.Store(state.Scripts, position, model, Location, budget, out diagnostic);
             if (status != ReadStatus.Done) { model = null; return status; }
+        }
+        else
+        {
+            // Inner-first facts order (LangSys before Script) and publish only after
+            // the whole body validated, mirroring the materialize Store placement.
+            status = state.PublishScriptFact(position, DefaultLanguageOffset,
+                state.At(position), budget, out diagnostic);
+            if (status != ReadStatus.Done) return status;
         }
         diagnostic = default;
         return ReadStatus.Done;
