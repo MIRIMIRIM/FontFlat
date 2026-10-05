@@ -25,19 +25,17 @@ public readonly ref partial struct GdefView
         ushort offset = classes!.MarkGlyphSetsDefOffset;
         if (offset != 0)
         {
-            if (offset >= _data.Length)
-                return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                    Location.AtLocal(DataField.Offset, GdefLayout.MarkSetsAt), out diagnostic,
-                    offset, (ulong)_data.Length);
-            int header = classes.Version == GdefLayout.Version13 ? GdefLayout.Header13 : GdefLayout.Header12;
-            if (offset < header)
-                return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
-                    Location.AtLocal(DataField.Offset, GdefLayout.MarkSetsAt), out diagnostic, offset, (ulong)header);
-            status = MarkGlyphSetsView.TryOpen(_data.Slice(offset), out var child, out diagnostic,
-                Location.AtLocal(DataField.None, offset));
+            // The declared envelope owns the raw-value guard (record existence domain,
+            // v1.0 refuses inactive before touching bytes 12..14), the zero policy, the
+            // HeaderEnd floor, the source bounds and the child TryOpen.
+            status = TryOpenMarkGlyphSetsAt(GdefLayout.MarkSetsAt, -1, out var setsView,
+                out bool setsPresent, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            status = child.TryRead(numGlyphs, out sets, out diagnostic, budget);
-            if (status != ReadStatus.Done) return status;
+            if (setsPresent)
+            {
+                status = setsView.TryRead(numGlyphs, out sets, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
         }
         return GdefLookupContext.TryCreate(classes, sets, out context, out diagnostic, budget);
     }
@@ -79,9 +77,18 @@ public readonly ref partial struct GdefView
             headerLength = GdefLayout.Header13;
         }
         if (!budget.Work(headerLength, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        status = ReadClasses(GlyphClassDefOffset, GdefLayout.GlyphClassesAt, headerLength,
-            numGlyphs, 4, out var glyphClasses, out diagnostic, budget);
+        // The declared openers own the zero policy, the HeaderEnd floor, the source
+        // bounds and the child TryOpen; class limits and the child reads stay here.
+        status = TryOpenGlyphClassDef(out var glyphView, out bool glyphPresent, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        ClassDefTable? glyphClasses = null;
+        if (glyphPresent)
+        {
+            status = glyphView.ValidateClassLimit(4, budget, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = glyphView.TryRead(numGlyphs, out glyphClasses, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+        }
         // The same ClassDef layout and glyph context is compatible in both roles.
         // The stricter 0..4 check above entails the generic mark-attachment value limit.
         ClassDefTable? markAttachmentClasses;
@@ -89,38 +96,18 @@ public readonly ref partial struct GdefView
             markAttachmentClasses = glyphClasses;
         else
         {
-            status = ReadClasses(MarkAttachClassDefOffset, GdefLayout.MarkAttachmentClassesAt,
-                headerLength, numGlyphs, ushort.MaxValue, out markAttachmentClasses, out diagnostic, budget);
+            status = TryOpenMarkAttachClassDef(out var markView, out bool markPresent, out diagnostic);
             if (status != ReadStatus.Done) return status;
+            markAttachmentClasses = null;
+            if (markPresent)
+            {
+                status = markView.TryRead(numGlyphs, out markAttachmentClasses, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
         }
         model = new((uint)version, numGlyphs, glyphClasses, markAttachmentClasses,
             AttachListOffset, LigCaretListOffset, markSetsOffset, variationStoreOffset, Location);
         diagnostic = default;
         return ReadStatus.Done;
-    }
-
-    private ReadStatus ReadClasses(ushort offset, int fieldPosition, int headerLength,
-        int numGlyphs, ushort classLimit, out ClassDefTable? model,
-        out FontDiagnostic diagnostic, BuildBudget budget)
-    {
-        model = null;
-        if (offset == 0) { diagnostic = default; return ReadStatus.Done; }
-        if (offset >= _data.Length)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                Location.AtLocal(DataField.Offset, (ulong)fieldPosition), out diagnostic,
-                offset, (ulong)_data.Length);
-        if (offset < headerLength)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
-                Location.AtLocal(DataField.Offset, (ulong)fieldPosition), out diagnostic,
-                offset, (ulong)headerLength);
-        ReadStatus status = ClassDefView.TryOpen(_data.Slice(offset), out var child, out diagnostic,
-            Location.AtLocal(DataField.None, offset));
-        if (status != ReadStatus.Done) return status;
-        if (classLimit != ushort.MaxValue)
-        {
-            status = child.ValidateClassLimit(classLimit, budget, out diagnostic);
-            if (status != ReadStatus.Done) return status;
-        }
-        return child.TryRead(numGlyphs, out model, out diagnostic, budget);
     }
 }

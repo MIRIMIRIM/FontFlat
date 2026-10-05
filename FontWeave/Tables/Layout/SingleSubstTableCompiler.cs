@@ -273,8 +273,11 @@ public static class SingleSubstTableCompiler
         }
         else
         {
-            CoverageTableCompiler.RequireWritten(SingleSubstView.TryWriteSubstituteHeaderAt(destination,
-                SingleSubstLayout.BodyOffset, new SingleSubstView.SubstituteHeaderData(-1, (ushort)plan.Count), out _, model.Location));
+            // The unconditional scalar writer replaces the former record writer at the
+            // same position with the same value; the plan invariant (count within the
+            // UInt16 field) makes the call infallible (A3 defensive-formalization form).
+            CoverageTableCompiler.RequireWritten(SingleSubstView.TryWriteSubstituteGlyphCount(destination,
+                (ushort)plan.Count, out _, model.Location));
             for (int i = 0; i < substitutes.Length; i++)
                 CoverageTableCompiler.RequireWritten(SingleSubstView.TryWriteSubstituteRecordAt(destination,
                     SingleSubstLayout.HeaderLength + (ulong)i * SingleSubstLayout.SubstituteStride,

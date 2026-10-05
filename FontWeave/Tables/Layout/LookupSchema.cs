@@ -10,7 +10,7 @@ internal static class LookupLayout
         UseMarkFilteringSet = 0x0010, ReservedMask = 0x00E0, AttachmentMask = 0xFF00;
 }
 
-[BinaryTable(0, LookupLayout.HeaderLength, ContractVersion = 1,
+[BinaryTable(0, LookupLayout.HeaderLength, ContractVersion = 1, GenerateStructureScan = true,
     RoleType = typeof(LayoutLookupKind),
     SupportedRoles = new long[] { (long)LayoutLookupKind.Gsub, (long)LayoutLookupKind.Gpos })]
 [BinaryScalar("LookupType", WireType.UInt16, LookupLayout.TypeAt, DataField.Tag)]
@@ -25,12 +25,17 @@ internal static class LookupLayout
     Inputs = new[] { "Flags", "SubtableCount" }, Maximum = 131078ul,
     Semantic = NumberSemantic.Offset, DiagnosticField = DataField.Offset,
     DiagnosticSource = "SubtableCount")]
+// OpenOnly scan policy (OQ-M1c-8): the subtable bodies stay the semantic chain's
+// property, so the scan only proves the header binding; no Follow - SingleSubst and
+// SinglePos have not enabled scan, and a Follow declaration would be FWG005.
 [BinaryReference("SingleSubst", "SubtableOffset", typeof(SingleSubstView),
     Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gsub },
-    Selector = "LookupType", SelectorValues = new uint[] { 1 }, Minimum = "SubtablePrefix")]
+    Selector = "LookupType", SelectorValues = new uint[] { 1 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
 [BinaryReference("SinglePos", "SubtableOffset", typeof(SinglePosView),
     Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gpos },
-    Selector = "LookupType", SelectorValues = new uint[] { 1 }, Minimum = "SubtablePrefix")]
+    Selector = "LookupType", SelectorValues = new uint[] { 1 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
 [BinaryReference("UnknownTypeRaw", "SubtableOffset", Array = "SubtableOffsetRecord",
     Selector = "LookupType", DefaultRaw = true, Scan = ReferenceScan.Observe)]
 public readonly ref partial struct LookupView

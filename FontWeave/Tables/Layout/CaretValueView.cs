@@ -5,14 +5,11 @@ namespace FontWeave.Tables.Layout;
 public readonly ref partial struct CaretValueView
 {
     /// <summary>Observes the format-3 fields, including a non-conformant zero DeviceOffset.
-    /// Typed validation, rather than this local header observation, rejects that null reference.</summary>
-    public ReadStatus TryGetFormat3Header(out Format3HeaderData header, out FontDiagnostic diagnostic)
-    {
-        header = default;
-        ReadStatus status = RequireFormat3(out diagnostic);
-        return status == ReadStatus.Done
-            ? TryReadFormat3HeaderAt(CaretValueLayout.BodyAt, -1, out header, out diagnostic) : status;
-    }
+    /// Typed validation, rather than this local header observation, rejects that null reference.
+    /// Formats 1/2 refuse as known-but-inactive and unknown formats as unknown versions;
+    /// the generated record reader owns both gates (M1c known-inactive takeover).</summary>
+    public ReadStatus TryGetFormat3Header(out Format3HeaderData header, out FontDiagnostic diagnostic) =>
+        TryReadFormat3HeaderAt(CaretValueLayout.BodyAt, -1, out header, out diagnostic);
 
     public ReadStatus Validate(out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
@@ -59,30 +56,14 @@ public readonly ref partial struct CaretValueView
         if (!budget.Work(CaretValueLayout.Format3Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         coordinate = header.Coordinate;
         offset = header.DeviceOffset;
+        // The production zero refusal stays in the semantic layer (OQ-M1c-3): the frozen
+        // caret-value3-null-device row is InvalidOffset@Offset/4, while the generated
+        // ZeroFailure=InvalidValue branch would report InvalidFormat at opener level.
         if (offset == 0)
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.InvalidValue,
                 Location.AtLocal(DataField.Offset, CaretValueLayout.DeviceOffsetAt), out diagnostic, 0, 1);
-        if (offset < CaretValueLayout.Format3Length)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
-                Location.AtLocal(DataField.Offset, CaretValueLayout.DeviceOffsetAt), out diagnostic,
-                offset, CaretValueLayout.Format3Length);
-        if (offset >= _data.Length)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                Location.AtLocal(DataField.Offset, CaretValueLayout.DeviceOffsetAt), out diagnostic,
-                offset, (ulong)_data.Length);
-        return StaticDeviceView.TryOpen(_data.Slice(offset), out child, out diagnostic,
-            Location.AtLocal(DataField.None, offset));
-    }
-
-    private ReadStatus RequireFormat3(out FontDiagnostic diagnostic)
-    {
-        ReadStatus status = TryGetFormat(out ushort format, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        if (format != 3)
-            return ReadWire.Fail(ReadStatus.UnsupportedFormat, format is 1 or 2
-                    ? DiagnosticCode.UnsupportedOperation : DiagnosticCode.UnsupportedVersion,
-                Location.AtLocal(DataField.Version, 0), out diagnostic, format, 3);
-        diagnostic = default;
-        return ReadStatus.Done;
+        // The declared envelope owns the storage floor (Minimum=BodyEnd), the source
+        // bounds and the child TryOpen with the location translated exactly once.
+        return TryOpenDeviceAt(CaretValueLayout.BodyAt, -1, out child, out _, out diagnostic);
     }
 }

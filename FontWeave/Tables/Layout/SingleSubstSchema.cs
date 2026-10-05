@@ -18,11 +18,32 @@ internal static class SingleSubstLayout
 [BinaryScalar("CoverageOffset", WireType.UInt16, SingleSubstLayout.CoverageOffsetField, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
 [BinaryReference("Coverage", "CoverageOffset", typeof(CoverageView),
-    Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required)]
+    Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required, Minimum = "BodyEnd")]
 [BinaryRecord("DeltaRecord", SingleSubstLayout.BodyRecordStride)]
 [BinaryElement("DeltaRecord", "DeltaGlyphId", WireType.Int16, 0, DataField.Payload)]
-[BinaryRecord("SubstituteHeader", SingleSubstLayout.BodyRecordStride)]
-[BinaryElement("SubstituteHeader", "GlyphCount", WireType.UInt16, 0, DataField.Count)]
+// M1c a' (OQ-M1c-4): the former SubstituteHeader record is one unconditional scalar.
+// Under format 1 the same bytes are the delta; observing them as a raw count is
+// harmless and always readable, which keeps the computed BodyEnd on an unconditional
+// activation path.
+[BinaryScalar("SubstituteGlyphCount", WireType.UInt16, SingleSubstLayout.BodyOffset, DataField.Count)]
 [BinaryRecord("SubstituteRecord", SingleSubstLayout.SubstituteStride)]
 [BinaryElement("SubstituteRecord", "GlyphId", WireType.UInt16, 0, DataField.GlyphId)]
-public readonly ref partial struct SingleSubstView { }
+// 6 + 2*count: the SubtablePrefixOf shape (mask test plus conditional selection is one
+// of the explicitly allowed bounded computations, spec 2.3). The worst case
+// 6 + 2*65535 = 131076 matches the declared static Maximum. BodyEnd is the declared
+// storage floor of the Coverage reference, replacing the former handwritten pre-check
+// (OQ-1's boundary marker; the Minimum row reproduces its diagnostics byte for byte).
+[BinaryComputed("BodyEnd", "BodyEndOf",
+    Inputs = new[] { "Format", "SubstituteGlyphCount" }, Maximum = 131076ul,
+    Semantic = NumberSemantic.Offset, DiagnosticField = DataField.Offset,
+    DiagnosticSource = "Format")]
+public readonly ref partial struct SingleSubstView
+{
+    private static ReadStatus BodyEndOf(ushort format, ushort substituteGlyphCount,
+        DataLocation diagnosticLocation, out ulong value, out FontDiagnostic diagnostic)
+    {
+        value = format == 1 ? 6UL : 6UL + 2UL * substituteGlyphCount;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+}

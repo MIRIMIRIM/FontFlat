@@ -14,14 +14,14 @@ public readonly ref partial struct SingleSubstView
         return status;
     }
 
+    // The public signature stays the record-era name; the body is the generated
+    // unconditional scalar projection (same position, same value, M1c a').
     public ReadStatus TryGetSubstituteCount(out ushort count, out FontDiagnostic diagnostic)
     {
         count = 0;
         ReadStatus status = RequireFormat(2, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = TryReadSubstituteHeaderAt(SingleSubstLayout.BodyOffset, -1, out var record, out diagnostic);
-        if (status == ReadStatus.Done) count = record.GlyphCount;
-        return status;
+        return status == ReadStatus.Done
+            ? TryGetSubstituteGlyphCount(out count, out diagnostic) : status;
     }
 
     public ReadStatus TryGetSubstitute(int ordinal, out ushort glyphId, out FontDiagnostic diagnostic)
@@ -171,16 +171,10 @@ public readonly ref partial struct SingleSubstView
                         out diagnostic, gid, (ulong)numGlyphs);
             }
         }
-        // OQ-1 ruling: the format-conditional body end is context the declared Minimum
-        // family cannot express, so this one storage-before pre-check stays in the semantic
-        // partial, ahead of the opener. bodyEnd <= _data.Length always holds at this point
-        // (both format bodies have been read), so the pre-check and the opener's zero/range
-        // branches cover disjoint states: 0 -> opener range; (0, bodyEnd) -> pre-check;
-        // [bodyEnd, len) -> opener.
-        if (CoverageOffset != 0 && CoverageOffset < bodyEnd)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
-                Location.AtLocal(DataField.Offset, SingleSubstLayout.CoverageOffsetField),
-                out diagnostic, CoverageOffset, (ulong)bodyEnd);
+        // M1c (OQ-M1c-4): the former OQ-1 pre-check block is gone. The declared
+        // Coverage Minimum=BodyEnd owns the storage floor inside the opener, ahead
+        // of its zero/bounds branches with byte-identical diagnostics; bodyEnd <=
+        // _data.Length always holds here (both format bodies have been read).
         // The coverage facts thread out for the materialize step, which re-walks the
         // same proven rows without paying a second inspection (M1b handoff).
         if (cachedCoverage is null)
