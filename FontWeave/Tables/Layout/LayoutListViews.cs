@@ -163,6 +163,25 @@ public readonly ref partial struct LayoutLookupListView
     internal ReadStatus Process(int numGlyphs, LayoutLookupKind kind, int position, LayoutReadState state,
         out LookupTable[]? lookups, out FontDiagnostic diagnostic, BuildBudget budget)
     {
+        return ProcessLookups(numGlyphs, kind, null, position, state, false, out lookups, out diagnostic, budget);
+    }
+
+    // T4-03 whole-table deep walk: the M1 metadata-only skeleton with the GSUB typed
+    // dispatch inside. kind=Gsub decodes the supported types into owned models (type 7
+    // unwraps one level); a wrapped-unsupported lookup degrades to metadata-only on the
+    // exact typed-refusal signature. kind=Gpos behaves byte-identically to the M1 face
+    // (GPOS deep read is T4-05).
+    internal ReadStatus ProcessDeep(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
+        int position, LayoutReadState state, out LookupTable[]? lookups,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        return ProcessLookups(numGlyphs, kind, context, position, state, true, out lookups, out diagnostic, budget);
+    }
+
+    private ReadStatus ProcessLookups(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
+        int position, LayoutReadState state, bool deep, out LookupTable[]? lookups,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
         lookups = null;
         ReadStatus status = TryGetCount(out ushort count, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -196,10 +215,40 @@ public readonly ref partial struct LayoutLookupListView
             }
             if (state.Lookups is not null && state.Lookups.TryGetValue(target, out var cached))
             { result![i] = cached; continue; }
+            // The typed dispatch needs only the type byte; the typed entries re-prove
+            // the header rows themselves, so the metadata pre-read would double-charge
+            // the same Work (spec 6.2) and is only paid on the metadata-only paths.
+            // The non-deep walk never touches the type byte (M1 face stays identical).
+            bool typed = false;
+            ushort lookupType = 0;
+            if (deep && kind == LayoutLookupKind.Gsub)
+            {
+                status = child.TryGetLookupType(out lookupType, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                typed = LookupTable.IsTypedSupported(kind, lookupType);
+            }
             if (state.Materialize)
             {
-                status = child.TryReadHeader(numGlyphs, kind, out var lookup, out diagnostic, budget);
-                if (status != ReadStatus.Done) return status;
+                LookupTable? lookup;
+                if (typed)
+                {
+                    status = child.TryRead(numGlyphs, kind, context, out lookup, out diagnostic, budget);
+                    if (status != ReadStatus.Done)
+                    {
+                        // OQ-T4-03-4: exactly the W7 layered refusal (wrapped type
+                        // outside {1..4} under a type-7 header) degrades this lookup to
+                        // metadata-only; every other failure stays a real failure.
+                        if (!LookupView.IsTypedRefusal(kind, lookupType, status, diagnostic))
+                            return status;
+                        status = child.TryReadHeader(numGlyphs, kind, out lookup, out diagnostic, budget);
+                        if (status != ReadStatus.Done) return status;
+                    }
+                }
+                else
+                {
+                    status = child.TryReadHeader(numGlyphs, kind, out lookup, out diagnostic, budget);
+                    if (status != ReadStatus.Done) return status;
+                }
                 status = LayoutReadState.Store(state.Lookups, target, lookup!, state.At(target),
                     budget, out diagnostic);
                 if (status != ReadStatus.Done) return status;
@@ -207,8 +256,22 @@ public readonly ref partial struct LayoutLookupListView
             }
             else
             {
-                status = child.ValidateHeader(numGlyphs, kind, out diagnostic, budget);
-                if (status != ReadStatus.Done) return status;
+                if (typed)
+                {
+                    status = child.Validate(numGlyphs, kind, context, out diagnostic, budget);
+                    if (status != ReadStatus.Done)
+                    {
+                        if (!LookupView.IsTypedRefusal(kind, lookupType, status, diagnostic))
+                            return status;
+                        status = child.ValidateHeader(numGlyphs, kind, out diagnostic, budget);
+                        if (status != ReadStatus.Done) return status;
+                    }
+                }
+                else
+                {
+                    status = child.ValidateHeader(numGlyphs, kind, out diagnostic, budget);
+                    if (status != ReadStatus.Done) return status;
+                }
                 // Validate-mode facts publish after the header fully validated; the
                 // per-record offset/opener checks above stay on every alias either way.
                 status = state.PublishLookupFact(target, state.At(target), budget, out diagnostic);
@@ -299,6 +362,78 @@ public readonly ref partial struct LayoutListsView
         status = featuresView.ProcessFeatures(lookupsView.Count, FeatureListOffset, state, out var features, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         status = lookupsView.Process(numGlyphs, kind, LookupListOffset, state, out var lookups, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        if (materialize) model = new((uint)version, variations, scripts!, features!, lookups!, numGlyphs, kind, Location);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Whole-table deep read (T4-03 section 3): the M1 list faces keep their
+    /// signatures; this is the additional entry, not a replacement. The lookups walk
+    /// decodes the GSUB supported types into owned models (type 7 unwraps exactly one
+    /// level); a wrapped-unsupported lookup degrades to metadata-only. The GDEF context
+    /// is caller-supplied for the typed Lookup-flag contract and never inferred; the
+    /// v1.1 variations header stays a raw observation (FeatureVariations is T4-04).</summary>
+    public ReadStatus TryReadTable(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
+        out LayoutListsTable? model, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        model = null;
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        return TryReadTable(numGlyphs, kind, context, out model, out diagnostic, budget);
+    }
+
+    internal ReadStatus TryReadTable(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
+        out LayoutListsTable? model, out FontDiagnostic diagnostic, BuildBudget budget) =>
+        ProcessTable(numGlyphs, kind, context, true, out model, out diagnostic, budget);
+
+    /// <summary>Whole-table typed validation without materializing any owned model;
+    /// the same dispatch and degrade rules as <see cref="TryReadTable"/>.</summary>
+    public ReadStatus ValidateTable(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        return ValidateTable(numGlyphs, kind, context, out diagnostic, budget);
+    }
+
+    internal ReadStatus ValidateTable(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
+        out FontDiagnostic diagnostic, BuildBudget budget) =>
+        ProcessTable(numGlyphs, kind, context, false, out _, out diagnostic, budget);
+
+    private ReadStatus ProcessTable(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
+        bool materialize, out LayoutListsTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = LayoutListsTableCompiler.CheckKind(kind, Location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        uint variations = 0;
+        int headerEnd = LayoutListsLayout.Header10;
+        if (version == LayoutListsLayout.Version11)
+        {
+            status = TryReadVariationsHeaderAt(LayoutListsLayout.VariationsOffsetField, -1, out var header, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            variations = header.OffsetRaw; headerEnd = LayoutListsLayout.Header11;
+        }
+        if (!budget.Work(headerEnd, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        status = TryOpenScriptList(kind, out var scriptsView, out _, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryOpenFeatureList(kind, out var featuresView, out _, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryOpenLookupList(kind, out var lookupsView, out _, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var state = new LayoutReadState(Location, _data.Length, materialize,
+            featureCount: featuresView.Count, lookupCount: lookupsView.Count,
+            numGlyphs: numGlyphs, kind: (int)kind);
+        status = scriptsView.ProcessScripts(featuresView.Count, ScriptListOffset, state, out var scripts, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        status = featuresView.ProcessFeatures(lookupsView.Count, FeatureListOffset, state, out var features, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        status = lookupsView.ProcessDeep(numGlyphs, kind, context, LookupListOffset, state, out var lookups, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         if (materialize) model = new((uint)version, variations, scripts!, features!, lookups!, numGlyphs, kind, Location);
         diagnostic = default;

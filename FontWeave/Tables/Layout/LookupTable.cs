@@ -13,7 +13,9 @@ public sealed class LookupTable
 
     internal LookupTable(LayoutLookupKind kind, int numGlyphs, ushort lookupType, ushort flags,
         ushort? markFilteringSet, ushort[] sourceOffsets, SingleSubstTable[]? singleSubstitutions,
-        DataLocation location, SinglePosTable[]? singlePositions = null)
+        DataLocation location, SinglePosTable[]? singlePositions = null,
+        MultipleSubstTable[]? multiples = null, AlternateSubstTable[]? alternates = null,
+        LigatureSubstTable[]? ligatures = null, ExtensionSubstTable[]? extensions = null)
     {
         Kind = kind;
         NumGlyphs = numGlyphs;
@@ -23,6 +25,10 @@ public sealed class LookupTable
         _sourceOffsets = sourceOffsets;
         SingleSubstitutions = singleSubstitutions is null ? null : Array.AsReadOnly(singleSubstitutions);
         SinglePositions = singlePositions is null ? null : Array.AsReadOnly(singlePositions);
+        Multiples = multiples is null ? null : Array.AsReadOnly(multiples);
+        Alternates = alternates is null ? null : Array.AsReadOnly(alternates);
+        Ligatures = ligatures is null ? null : Array.AsReadOnly(ligatures);
+        Extensions = extensions is null ? null : Array.AsReadOnly(extensions);
         Location = location;
     }
 
@@ -31,39 +37,58 @@ public sealed class LookupTable
     public ushort LookupType { get; }
     public ushort Flags { get; }
     public ushort? MarkFilteringSet { get; }
-    public int SubtableCount => SingleSubstitutions?.Count ?? SinglePositions?.Count ?? _sourceOffsets.Length;
+    public int SubtableCount => SingleSubstitutions?.Count ?? SinglePositions?.Count ?? Multiples?.Count
+        ?? Alternates?.Count ?? Ligatures?.Count ?? Extensions?.Count ?? _sourceOffsets.Length;
     public DataLocation Location { get; }
     public DataLocation SourceLocation => Location;
     public ReadOnlySpan<ushort> SourceSubtableOffsets => _sourceOffsets;
     public IReadOnlyList<SingleSubstTable>? SingleSubstitutions { get; }
     public IReadOnlyList<SinglePosTable>? SinglePositions { get; }
+    public IReadOnlyList<MultipleSubstTable>? Multiples { get; }
+    public IReadOnlyList<AlternateSubstTable>? Alternates { get; }
+    public IReadOnlyList<LigatureSubstTable>? Ligatures { get; }
+    public IReadOnlyList<ExtensionSubstTable>? Extensions { get; }
+
+    /// <summary>The kind-aware typed read support set (T4-03 section 3.3): GSUB decodes
+    /// types 1/2/3/4/7, GPOS stays type 1 (T4-05). Every other value keeps the raw
+    /// observe/typed-refuse layering with byte-identical diagnostics.</summary>
+    internal static bool IsTypedSupported(LayoutLookupKind kind, ushort lookupType) =>
+        kind == LayoutLookupKind.Gsub
+            ? lookupType is 1 or 2 or 3 or 4 or 7
+            : lookupType == 1;
     public EffectiveMarkFilter EffectiveMarkFilter => (Flags & LookupLayout.IgnoreMarks) != 0
         ? EffectiveMarkFilter.IgnoreMarks : (Flags & LookupLayout.UseMarkFilteringSet) != 0
             ? EffectiveMarkFilter.MarkSet : (Flags & LookupLayout.AttachmentMask) != 0
                 ? EffectiveMarkFilter.AttachmentClass : EffectiveMarkFilter.None;
 
-    public ReadStatus ValidateFlags(GdefLookupContext? context, out FontDiagnostic diagnostic)
+    public ReadStatus ValidateFlags(GdefLookupContext? context, out FontDiagnostic diagnostic) =>
+        ValidateFlags(NumGlyphs, Flags, MarkFilteringSet, SubtableCount, context, Location, out diagnostic);
+
+    // One flags contract body shared by the owned model and the view-level typed
+    // validation (T4-03 section 3); every diagnostic coordinate derives from location.
+    internal static ReadStatus ValidateFlags(int numGlyphs, ushort flags, ushort? markFilteringSet,
+        int subtableCount, GdefLookupContext? context, DataLocation location, out FontDiagnostic diagnostic)
     {
-        if ((Flags & LookupLayout.ReservedMask) != 0 ||
-            ((Flags & LookupLayout.UseMarkFilteringSet) != 0) != MarkFilteringSet.HasValue)
+        if ((flags & LookupLayout.ReservedMask) != 0 ||
+            ((flags & LookupLayout.UseMarkFilteringSet) != 0) != markFilteringSet.HasValue)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.AtLocal(DataField.Flags, LookupLayout.FlagsAt), out diagnostic, Flags, 0xFF1F);
+                location.AtLocal(DataField.Flags, LookupLayout.FlagsAt), out diagnostic, flags, 0xFF1F);
         // Cross-table identity: GDEF and GSUB/GPOS tags are deliberately different.
         // Source 0 is caller-owned, not a wildcard for a known source or another face.
-        if (context is not null && (context.NumGlyphs != NumGlyphs ||
-            context.Location.SourceId != Location.SourceId || context.Location.FaceIndex != Location.FaceIndex))
+        if (context is not null && (context.NumGlyphs != numGlyphs ||
+            context.Location.SourceId != location.SourceId || context.Location.FaceIndex != location.FaceIndex))
             return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
-                Location.AtLocal(DataField.None, 0), out diagnostic);
-        if ((Flags & LookupLayout.IgnoreMask) != 0 && context?.GlyphClasses is null ||
-            (Flags & LookupLayout.AttachmentMask) != 0 && context?.MarkAttachmentClasses is null ||
-            (Flags & LookupLayout.UseMarkFilteringSet) != 0 &&
+                location.AtLocal(DataField.None, 0), out diagnostic);
+        if ((flags & LookupLayout.IgnoreMask) != 0 && context?.GlyphClasses is null ||
+            (flags & LookupLayout.AttachmentMask) != 0 && context?.MarkAttachmentClasses is null ||
+            (flags & LookupLayout.UseMarkFilteringSet) != 0 &&
                 (context is null || context.Version < GdefLayout.Version12 || context.MarkGlyphSets is null))
             return ReadWire.Fail(ReadStatus.MissingTable, DiagnosticCode.TableNotFound,
-                Location.AtLocal(DataField.Flags, LookupLayout.FlagsAt), out diagnostic);
-        if (MarkFilteringSet is ushort set && set >= context!.MarkGlyphSets!.Sets.Count)
+                location.AtLocal(DataField.Flags, LookupLayout.FlagsAt), out diagnostic);
+        if (markFilteringSet is ushort set && set >= context!.MarkGlyphSets!.Sets.Count)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.AtLocal(DataField.Count, LookupLayout.HeaderLength +
-                    (ulong)SubtableCount * LookupLayout.OffsetStride),
+                location.AtLocal(DataField.Count, LookupLayout.HeaderLength +
+                    (ulong)subtableCount * LookupLayout.OffsetStride),
                 out diagnostic, set, (ulong)context.MarkGlyphSets.Sets.Count);
         diagnostic = default;
         return ReadStatus.Done;
@@ -91,6 +116,22 @@ public sealed class LookupTable
 
     internal LookupTable WithDecodedPositions(SinglePosTable[] subtables) =>
         new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location, subtables);
+
+    internal LookupTable WithDecodedMultiples(MultipleSubstTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            multiples: subtables);
+
+    internal LookupTable WithDecodedAlternates(AlternateSubstTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            alternates: subtables);
+
+    internal LookupTable WithDecodedLigatures(LigatureSubstTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            ligatures: subtables);
+
+    internal LookupTable WithDecodedExtensions(ExtensionSubstTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            extensions: subtables);
 
     internal static ReadStatus ValidateGposSource(DataLocation location, out FontDiagnostic diagnostic)
     {
