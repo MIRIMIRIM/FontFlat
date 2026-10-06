@@ -54,10 +54,10 @@ public readonly ref partial struct LookupView
     internal ReadStatus Validate(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
         out FontDiagnostic diagnostic, BuildBudget budget)
     {
-        // The typed validation entry is GSUB-only by card boundary (GPOS stays the
-        // metadata-only face until T4-05); the refusal carries the kind like the
-        // header's unknown-kind row.
-        if (kind != LayoutLookupKind.Gsub)
+        // The typed validation entry serves both layout kinds (T4-05 extended the
+        // former GSUB-only face); a value outside the two-kind domain keeps the
+        // header's unknown-kind refusal shape.
+        if (kind is not (LayoutLookupKind.Gsub or LayoutLookupKind.Gpos))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, (ulong)kind);
         ReadStatus status = ValidateHeader(numGlyphs, kind, out diagnostic, budget);
@@ -65,7 +65,8 @@ public readonly ref partial struct LookupView
         if (!LookupTable.IsTypedSupported(kind, LookupType))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
-        status = LookupTable.ValidateGsubSource(Location, out diagnostic);
+        status = kind == LayoutLookupKind.Gsub ? LookupTable.ValidateGsubSource(Location, out diagnostic)
+            : LookupTable.ValidateGposSource(Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
         // The filter word is read again here because ValidateHeader (metadata-only)
         // does not retain it; the shared static core keeps one flags contract body.
@@ -90,10 +91,11 @@ public readonly ref partial struct LookupView
         ReadStatus status = TryReadHeader(numGlyphs, kind, out var header, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         LookupTable parsed = header!;
-        // The typed gate is kind-aware (T4-03 section 3.3): GSUB decodes {1,2,3,4,7},
-        // GPOS stays {1}. Position (after the header, before the source/flags checks),
-        // status/code/field, Detail=type and the default Expected are unchanged; the
-        // only new reachable behavior is GSUB {2,3,4,7} passing this gate.
+        // The typed gate is kind-aware (T4-03 section 3.3, extended by T4-05): GSUB
+        // decodes {1,2,3,4,7}, GPOS decodes {1,2,3}. Position (after the header, before
+        // the source/flags checks), status/code/field, Detail=type and the default
+        // Expected are unchanged; the newly reachable pass set is GPOS {2,3} joining
+        // GPOS type 1 behind the same gate (W11 pins the 4-9 refusal shape).
         if (!LookupTable.IsTypedSupported(kind, parsed.LookupType))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, parsed.LookupType);
@@ -102,7 +104,13 @@ public readonly ref partial struct LookupView
         if (status != ReadStatus.Done) return status;
         status = parsed.ValidateFlags(context, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
-        if (kind == LayoutLookupKind.Gpos) return ReadPositions(parsed, out model, out diagnostic, budget);
+        if (kind == LayoutLookupKind.Gpos)
+            return parsed.LookupType switch
+            {
+                2 => ReadPairPositions(parsed, out model, out diagnostic, budget),
+                3 => ReadCursiveRules(parsed, out model, out diagnostic, budget),
+                _ => ReadPositions(parsed, out model, out diagnostic, budget),
+            };
         switch (parsed.LookupType)
         {
             case 2: return ReadRules(parsed, out model, out diagnostic, budget, 2);
@@ -167,6 +175,64 @@ public readonly ref partial struct LookupView
             subtables[i] = childModel!;
         }
         model = header.WithDecodedPositions(subtables); diagnostic = default; return ReadStatus.Done;
+    }
+
+    // Types 2/3 GPOS walks keep the type-1 subtable walk shape exactly: an alias cache
+    // keyed by the physical parent-local offset, one shared read state per Lookup span
+    // (its facts caches dedupe Coverage/ClassDef/Device/Anchor bodies) and a Buffer(16)
+    // per unique subtable, with the leaf chains owning their semantics.
+    private ReadStatus ReadPairPositions(LookupTable header, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        int count = header.SubtableCount;
+        if (!budget.Work(count, Location, out diagnostic) ||
+            !budget.Buffer(8L * count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        PairPosTable[] subtables = new PairPosTable[count];
+        var children = new Dictionary<ushort, PairPosTable>();
+        var state = new PairPosReadState(header.NumGlyphs, Location, _data.Length, true);
+        for (int i = 0; i < count; i++)
+        {
+            ushort offset = header.SourceSubtableOffsets[i];
+            if (!children.TryGetValue(offset, out var childModel))
+            {
+                ReadStatus status = TryOpenPairPos(header.Kind, i, out var child, out _, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = child.TryRead(header.NumGlyphs, out childModel, out diagnostic, budget, state, offset);
+                if (status != ReadStatus.Done) return status;
+                if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                children.Add(offset, childModel!);
+            }
+            subtables[i] = childModel!;
+        }
+        model = header.WithDecodedPairPositions(subtables); diagnostic = default; return ReadStatus.Done;
+    }
+
+    private ReadStatus ReadCursiveRules(LookupTable header, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        int count = header.SubtableCount;
+        if (!budget.Work(count, Location, out diagnostic) ||
+            !budget.Buffer(8L * count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        CursivePosTable[] subtables = new CursivePosTable[count];
+        var children = new Dictionary<ushort, CursivePosTable>();
+        var state = new CursivePosReadState(header.NumGlyphs, Location, _data.Length, true);
+        for (int i = 0; i < count; i++)
+        {
+            ushort offset = header.SourceSubtableOffsets[i];
+            if (!children.TryGetValue(offset, out var childModel))
+            {
+                ReadStatus status = TryOpenCursivePos(header.Kind, i, out var child, out _, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = child.TryRead(header.NumGlyphs, out childModel, out diagnostic, budget, state, offset);
+                if (status != ReadStatus.Done) return status;
+                if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                children.Add(offset, childModel!);
+            }
+            subtables[i] = childModel!;
+        }
+        model = header.WithDecodedCursive(subtables); diagnostic = default; return ReadStatus.Done;
     }
 
     // Types 2/3/4 share the type-1 subtable walk shape exactly: an alias cache keyed by
@@ -306,7 +372,8 @@ public readonly ref partial struct LookupView
         diagnostic.Expected == 0 && LookupTable.IsTypedSupported(kind, lookupType);
 
     // Typed validation without materialization, sharing the read path's per-type
-    // dispatch; admissions stay Work-shaped (no Buffer, no owned arrays).
+    // dispatch; admissions stay Work-shaped (no Buffer, no owned arrays). The GPOS
+    // branch (T4-05) only sees types 1/2/3 - the kind-aware gate refused the rest.
     private ReadStatus ValidateTyped(int numGlyphs, LayoutLookupKind kind, BuildBudget budget,
         out FontDiagnostic diagnostic)
     {
@@ -314,6 +381,21 @@ public readonly ref partial struct LookupView
         if (status != ReadStatus.Done) return status;
         int count = SubtableCount;
         if (!budget.Work(count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        if (kind == LayoutLookupKind.Gpos)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                status = lookupType switch
+                {
+                    2 => OpenAndValidatePairPos(i, numGlyphs, budget, out diagnostic),
+                    3 => OpenAndValidateCursivePos(i, numGlyphs, budget, out diagnostic),
+                    _ => OpenAndValidateSinglePos(i, kind, numGlyphs, budget, out diagnostic),
+                };
+                if (status != ReadStatus.Done) return status;
+            }
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
         switch (lookupType)
         {
             case 1:
@@ -369,6 +451,27 @@ public readonly ref partial struct LookupView
         }
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    private ReadStatus OpenAndValidateSinglePos(int ordinal, LayoutLookupKind kind, int numGlyphs,
+        BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = TryOpenSinglePos(kind, ordinal, out var single, out _, out diagnostic);
+        return status == ReadStatus.Done ? single.Validate(numGlyphs, out diagnostic, budget) : status;
+    }
+
+    private ReadStatus OpenAndValidatePairPos(int ordinal, int numGlyphs,
+        BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = TryOpenPairPos(LayoutLookupKind.Gpos, ordinal, out var pair, out _, out diagnostic);
+        return status == ReadStatus.Done ? pair.Validate(numGlyphs, out diagnostic, budget) : status;
+    }
+
+    private ReadStatus OpenAndValidateCursivePos(int ordinal, int numGlyphs,
+        BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = TryOpenCursivePos(LayoutLookupKind.Gpos, ordinal, out var cursive, out _, out diagnostic);
+        return status == ReadStatus.Done ? cursive.Validate(numGlyphs, out diagnostic, budget) : status;
     }
 
     private ReadStatus ReadHeader(int numGlyphs, LayoutLookupKind kind, bool materialize,

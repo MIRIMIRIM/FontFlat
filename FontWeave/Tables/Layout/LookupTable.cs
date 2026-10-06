@@ -15,7 +15,8 @@ public sealed class LookupTable
         ushort? markFilteringSet, ushort[] sourceOffsets, SingleSubstTable[]? singleSubstitutions,
         DataLocation location, SinglePosTable[]? singlePositions = null,
         MultipleSubstTable[]? multiples = null, AlternateSubstTable[]? alternates = null,
-        LigatureSubstTable[]? ligatures = null, ExtensionSubstTable[]? extensions = null)
+        LigatureSubstTable[]? ligatures = null, ExtensionSubstTable[]? extensions = null,
+        PairPosTable[]? pairPositions = null, CursivePosTable[]? cursiveAttachments = null)
     {
         Kind = kind;
         NumGlyphs = numGlyphs;
@@ -29,6 +30,8 @@ public sealed class LookupTable
         Alternates = alternates is null ? null : Array.AsReadOnly(alternates);
         Ligatures = ligatures is null ? null : Array.AsReadOnly(ligatures);
         Extensions = extensions is null ? null : Array.AsReadOnly(extensions);
+        PairPositions = pairPositions is null ? null : Array.AsReadOnly(pairPositions);
+        CursiveAttachments = cursiveAttachments is null ? null : Array.AsReadOnly(cursiveAttachments);
         Location = location;
     }
 
@@ -38,7 +41,8 @@ public sealed class LookupTable
     public ushort Flags { get; }
     public ushort? MarkFilteringSet { get; }
     public int SubtableCount => SingleSubstitutions?.Count ?? SinglePositions?.Count ?? Multiples?.Count
-        ?? Alternates?.Count ?? Ligatures?.Count ?? Extensions?.Count ?? _sourceOffsets.Length;
+        ?? Alternates?.Count ?? Ligatures?.Count ?? Extensions?.Count ?? PairPositions?.Count
+        ?? CursiveAttachments?.Count ?? _sourceOffsets.Length;
     public DataLocation Location { get; }
     public DataLocation SourceLocation => Location;
     public ReadOnlySpan<ushort> SourceSubtableOffsets => _sourceOffsets;
@@ -48,14 +52,17 @@ public sealed class LookupTable
     public IReadOnlyList<AlternateSubstTable>? Alternates { get; }
     public IReadOnlyList<LigatureSubstTable>? Ligatures { get; }
     public IReadOnlyList<ExtensionSubstTable>? Extensions { get; }
+    public IReadOnlyList<PairPosTable>? PairPositions { get; }
+    public IReadOnlyList<CursivePosTable>? CursiveAttachments { get; }
 
-    /// <summary>The kind-aware typed read support set (T4-03 section 3.3): GSUB decodes
-    /// types 1/2/3/4/7, GPOS stays type 1 (T4-05). Every other value keeps the raw
-    /// observe/typed-refuse layering with byte-identical diagnostics.</summary>
+    /// <summary>The kind-aware typed read support set (T4-03 section 3.3, extended by
+    /// T4-05): GSUB decodes types 1/2/3/4/7, GPOS decodes 1/2/3. Every other value
+    /// keeps the raw observe/typed-refuse layering with byte-identical diagnostics
+    /// (GPOS 4-9's refusal is W11's pin; type 9 stays unopened for T4-06).</summary>
     internal static bool IsTypedSupported(LayoutLookupKind kind, ushort lookupType) =>
         kind == LayoutLookupKind.Gsub
             ? lookupType is 1 or 2 or 3 or 4 or 7
-            : lookupType == 1;
+            : lookupType is 1 or 2 or 3;
     public EffectiveMarkFilter EffectiveMarkFilter => (Flags & LookupLayout.IgnoreMarks) != 0
         ? EffectiveMarkFilter.IgnoreMarks : (Flags & LookupLayout.UseMarkFilteringSet) != 0
             ? EffectiveMarkFilter.MarkSet : (Flags & LookupLayout.AttachmentMask) != 0
@@ -132,6 +139,14 @@ public sealed class LookupTable
     internal LookupTable WithDecodedExtensions(ExtensionSubstTable[] subtables) =>
         new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
             extensions: subtables);
+
+    internal LookupTable WithDecodedPairPositions(PairPosTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            pairPositions: subtables);
+
+    internal LookupTable WithDecodedCursive(CursivePosTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            cursiveAttachments: subtables);
 
     internal static ReadStatus ValidateGposSource(DataLocation location, out FontDiagnostic diagnostic)
     {

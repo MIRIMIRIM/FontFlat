@@ -22,7 +22,8 @@ internal static class CursivePosLayout
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
 [BinaryScalar("EntryExitCount", WireType.UInt16, CursivePosLayout.CountField, DataField.Count,
     Semantic = NumberSemantic.Count)]
-[BinaryRecord("EntryExitRecord", CursivePosLayout.RecordStride)]
+[BinaryArray("EntryExitRecord", "EntryExitCount", CursivePosLayout.MinimumHeader,
+    CursivePosLayout.RecordStride)]
 [BinaryElement("EntryExitRecord", "EntryAnchorOffset", WireType.UInt16, CursivePosLayout.EntryOffsetAt,
     DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = true)]
 [BinaryElement("EntryExitRecord", "ExitAnchorOffset", WireType.UInt16, CursivePosLayout.ExitOffsetAt,

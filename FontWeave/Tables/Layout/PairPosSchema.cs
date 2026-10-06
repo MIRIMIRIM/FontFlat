@@ -7,21 +7,24 @@ internal static class PairPosLayout
 {
     internal const uint Tag = 0x47504F53;
     // The shared fixed prefix (format, coverage, both value formats) is the bound
-    // header; the format-specific scalars extend it to 10 (fmt1) / 16 (fmt2) bytes.
+    // header; the format-specific tails extend it to 10 (fmt1) / 16 (fmt2) bytes.
     internal const int MinimumHeader = 8, CoverageField = 2, Format1Field = 4, Format2Field = 6,
-        PairSetCountField = 8, ClassDef1Field = 8, ClassDef2Field = 10,
-        Class1CountField = 12, Class2CountField = 14,
+        PairSetCountField = 8, Format2HeaderField = 8,
         Format1Header = 10, Format2Header = 16, OffsetStride = 2, WordStride = 2;
-    internal const ushort SupportedMask = 0x00FF;
+    // One mask contract value, referenced from the SinglePos family constant (the two
+    // ValueFormats reuse the T4-01 mask semantics; no second mask contract exists).
+    internal const ushort SupportedMask = SinglePosLayout.SupportedMask;
 }
 
 // GPOS lookup type 2 (pair adjustment positioning), both formats one view. The two
-// formats branch on PairFormat with per-version scalars (CaretValue format1/2/3
-// precedent): the fmt1 pairSet block and the fmt2 class-matrix header share positions
-// 8..14 under disjoint version gates. The dynamic rows are the card's explicit
-// hand-written boundary - the value/device words are declared as 2-byte records on the
-// views themselves (SinglePos SignedValue/DeviceOffset same-owner precedent), and the
-// stride/matrix walking stays in the semantic partials (no dynamic-mask DSL).
+// formats branch on PairFormat with a per-version tail record (CaretValue format
+// precedent): the fmt2 class-matrix header (both ClassDef offsets and both class
+// counts) exists only under format 2, while the fmt1 pairSetCount word is the
+// unconditional count source its offset array needs. The dynamic rows are the card's
+// explicit hand-written boundary - the value/device words are declared as 2-byte
+// records on the views themselves (SinglePos SignedValue/DeviceOffset same-owner
+// precedent), and the stride/matrix walking stays in the semantic partials (no
+// dynamic-mask DSL).
 [BinaryTable(PairPosLayout.Tag, PairPosLayout.MinimumHeader, ContractVersion = 1,
     VersionField = "PairFormat", SupportedVersions = new uint[] { 1, 2 })]
 [BinaryScalar("PairFormat", WireType.UInt16, 0, DataField.Version)]
@@ -30,17 +33,16 @@ internal static class PairPosLayout
 [BinaryScalar("ValueFormat1", WireType.UInt16, PairPosLayout.Format1Field, DataField.Flags)]
 [BinaryScalar("ValueFormat2", WireType.UInt16, PairPosLayout.Format2Field, DataField.Flags)]
 [BinaryScalar("PairSetCount", WireType.UInt16, PairPosLayout.PairSetCountField, DataField.Count,
-    Semantic = NumberSemantic.Count, WhenVersion = 1, Otherwise = 0)]
-[BinaryScalar("ClassDef1Offset", WireType.UInt16, PairPosLayout.ClassDef1Field, DataField.Offset,
-    Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false,
-    WhenVersion = 2, Otherwise = 0)]
-[BinaryScalar("ClassDef2Offset", WireType.UInt16, PairPosLayout.ClassDef2Field, DataField.Offset,
-    Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false,
-    WhenVersion = 2, Otherwise = 0)]
-[BinaryScalar("Class1Count", WireType.UInt16, PairPosLayout.Class1CountField, DataField.Count,
-    Semantic = NumberSemantic.Count, WhenVersion = 2, Otherwise = 0)]
-[BinaryScalar("Class2Count", WireType.UInt16, PairPosLayout.Class2CountField, DataField.Count,
-    Semantic = NumberSemantic.Count, WhenVersion = 2, Otherwise = 0)]
+    Semantic = NumberSemantic.Count)]
+[BinaryRecord("Format2Header", 8, WhenVersions = new uint[] { 2 })]
+[BinaryElement("Format2Header", "ClassDef1Offset", WireType.UInt16, 0, DataField.Offset,
+    Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+[BinaryElement("Format2Header", "ClassDef2Offset", WireType.UInt16, 2, DataField.Offset,
+    Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+[BinaryElement("Format2Header", "Class1Count", WireType.UInt16, 4, DataField.Count,
+    Semantic = NumberSemantic.Count)]
+[BinaryElement("Format2Header", "Class2Count", WireType.UInt16, 6, DataField.Count,
+    Semantic = NumberSemantic.Count)]
 [BinaryArray("PairSetOffsetRecord", "PairSetCount", PairPosLayout.Format1Header,
     PairPosLayout.OffsetStride)]
 [BinaryElement("PairSetOffsetRecord", "PairSetOffset", WireType.UInt16, 0, DataField.Offset,
@@ -65,10 +67,10 @@ internal static class PairPosLayout
     Minimum = "Format1HeaderEnd", WhenVersions = new uint[] { 1 })]
 // Both offsets may legally name one shared ClassDef (spec gpos.md:307, W12); identity
 // sharing is the semantic cache's property, never assumed from equal addresses.
-[BinaryReference("ClassDef1", "ClassDef1Offset", typeof(ClassDefView),
+[BinaryReference("ClassDef1", "ClassDef1Offset", typeof(ClassDefView), Array = "Format2Header",
     Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required,
     Minimum = "Format2HeaderEnd", WhenVersions = new uint[] { 2 })]
-[BinaryReference("ClassDef2", "ClassDef2Offset", typeof(ClassDefView),
+[BinaryReference("ClassDef2", "ClassDef2Offset", typeof(ClassDefView), Array = "Format2Header",
     Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required,
     Minimum = "Format2HeaderEnd", WhenVersions = new uint[] { 2 })]
 public readonly ref partial struct PairPosView { }

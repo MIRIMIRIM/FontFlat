@@ -166,11 +166,11 @@ public readonly ref partial struct LayoutLookupListView
         return ProcessLookups(numGlyphs, kind, null, position, state, false, out lookups, out diagnostic, budget);
     }
 
-    // T4-03 whole-table deep walk: the M1 metadata-only skeleton with the GSUB typed
+    // T4-03 whole-table deep walk: the M1 metadata-only skeleton with the typed
     // dispatch inside. kind=Gsub decodes the supported types into owned models (type 7
-    // unwraps one level); a wrapped-unsupported lookup degrades to metadata-only on the
-    // exact typed-refusal signature. kind=Gpos behaves byte-identically to the M1 face
-    // (GPOS deep read is T4-05).
+    // unwraps one level); kind=Gpos decodes types 1/2/3 the same way (T4-05). A lookup
+    // whose type stays unsupported (GSUB's wrapped-unsupported signature, or a GPOS
+    // type 4-9/unknown) degrades to metadata-only on the exact typed-refusal signature.
     internal ReadStatus ProcessDeep(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
         int position, LayoutReadState state, out LookupTable[]? lookups,
         out FontDiagnostic diagnostic, BuildBudget budget)
@@ -221,7 +221,7 @@ public readonly ref partial struct LayoutLookupListView
             // The non-deep walk never touches the type byte (M1 face stays identical).
             bool typed = false;
             ushort lookupType = 0;
-            if (deep && kind == LayoutLookupKind.Gsub)
+            if (deep)
             {
                 status = child.TryGetLookupType(out lookupType, out diagnostic);
                 if (status != ReadStatus.Done) return status;
