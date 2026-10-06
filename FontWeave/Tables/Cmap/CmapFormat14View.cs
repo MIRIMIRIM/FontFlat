@@ -4,26 +4,6 @@ namespace FontWeave.Tables;
 
 public readonly ref partial struct CmapFormat14View
 {
-    /// <summary>Bounded record read of the selector and its two UVS table offsets.</summary>
-    public ReadStatus TryGetVarSelector(int ordinal, out uint varSelector, out uint defaultUvsOffset,
-        out uint nonDefaultUvsOffset, out FontDiagnostic diagnostic)
-    {
-        varSelector = 0; defaultUvsOffset = 0; nonDefaultUvsOffset = 0;
-        if (!IsBound)
-            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
-        if (ordinal < 0 || (uint)ordinal >= NumVarSelectorRecords)
-            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.AtLocal(DataField.Count, 6, ordinal), out diagnostic,
-                unchecked((ulong)(long)ordinal), NumVarSelectorRecords);
-        ulong position = CmapFormat14Layout.HeaderLength + CmapFormat14Layout.RecordStride * (ulong)(uint)ordinal;
-        ReadStatus status = TryReadVarSelectorAt(position, ordinal, out var record, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        varSelector = record.VarSelector;
-        defaultUvsOffset = record.DefaultUVSOffset;
-        nonDefaultUvsOffset = record.NonDefaultUVSOffset;
-        return ReadStatus.Done;
-    }
-
     /// <summary>Bounded row count of the default-UVS table referenced by one record;
     /// ReadStatus.NotFound reports a record without a default table.</summary>
     public ReadStatus TryGetDefaultRangeCount(int recordOrdinal, out int count, out FontDiagnostic diagnostic)
@@ -132,9 +112,11 @@ public readonly ref partial struct CmapFormat14View
         ulong previousSelector = 0;
         for (int i = 0; (uint)i < recordCount; i++)
         {
-            status = TryGetVarSelector(i, out uint varSelector, out uint defaultOffset,
-                out uint nonDefaultOffset, out diagnostic);
+            status = TryGetVarSelector(i, out var selectorRecord, out diagnostic);
             if (status != ReadStatus.Done) return status;
+            uint varSelector = selectorRecord.VarSelector;
+            uint defaultOffset = selectorRecord.DefaultUVSOffset;
+            uint nonDefaultOffset = selectorRecord.NonDefaultUVSOffset;
             ulong recordPosition = CmapFormat14Layout.HeaderLength + CmapFormat14Layout.RecordStride * (ulong)(uint)i;
             if (i > 0 && varSelector <= previousSelector)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
@@ -293,7 +275,7 @@ public readonly ref partial struct CmapFormat14View
                 Location.AtLocal(DataField.Count, 6, recordOrdinal), out diagnostic,
                 unchecked((ulong)(long)recordOrdinal), NumVarSelectorRecords);
         ulong recordPosition = CmapFormat14Layout.HeaderLength + CmapFormat14Layout.RecordStride * (ulong)(uint)recordOrdinal;
-        ReadStatus status = TryReadVarSelectorAt(recordPosition, recordOrdinal, out var record, out diagnostic);
+        ReadStatus status = TryGetVarSelector(recordOrdinal, out var record, out diagnostic);
         if (status != ReadStatus.Done) return status;
         uint offset = isDefault ? record.DefaultUVSOffset : record.NonDefaultUVSOffset;
         if (offset == 0)

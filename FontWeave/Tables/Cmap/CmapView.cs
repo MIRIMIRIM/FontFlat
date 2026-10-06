@@ -585,8 +585,10 @@ public readonly ref partial struct CmapView
         var selectors = new CmapVarSelectorRecord[(int)view.NumVarSelectorRecords];
         for (int i = 0; i < selectors.Length; i++)
         {
-            _ = view.TryGetVarSelector(i, out uint varSelector, out uint defaultOffset,
-                out uint nonDefaultOffset, out _);
+            _ = view.TryGetVarSelector(i, out var selectorRecord, out _);
+            uint varSelector = selectorRecord.VarSelector;
+            uint defaultOffset = selectorRecord.DefaultUVSOffset;
+            uint nonDefaultOffset = selectorRecord.NonDefaultUVSOffset;
             CmapDefaultUvsRange[] defaultRanges = [];
             if (defaultOffset != 0)
             {
