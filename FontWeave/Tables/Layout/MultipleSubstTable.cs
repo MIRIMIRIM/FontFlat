@@ -42,4 +42,9 @@ public sealed class MultipleSubstTable
         diagnostic = default;
         return ReadStatus.Done;
     }
+
+    public ReadStatus TryWithSequences(ReadOnlySpan<ushort> glyphs, ReadOnlySpan<ushort[]> sequences,
+        out MultipleSubstTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        MultipleSubstTableCompiler.TryCreate(glyphs, sequences, NumGlyphs, out updated,
+            out diagnostic, limits, Location, Coverage.Format);
 }

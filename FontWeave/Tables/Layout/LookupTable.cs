@@ -164,4 +164,54 @@ public sealed class LookupTable
         return LookupTableCompiler.TryCreateSingleSubst(NumGlyphs, subtables,
             Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
     }
+
+    // The T4-03 edit APIs: one per supported lookup type, each re-running the type's
+    // explicit factory (same flags/context contract as creation).
+    public ReadStatus TryWithMultiples(IReadOnlyList<MultipleSubstTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gsub || LookupType != 2)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreateMultipleSubst(NumGlyphs, subtables,
+            Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
+    }
+
+    public ReadStatus TryWithAlternates(IReadOnlyList<AlternateSubstTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gsub || LookupType != 3)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreateAlternateSubst(NumGlyphs, subtables,
+            Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
+    }
+
+    public ReadStatus TryWithLigatures(IReadOnlyList<LigatureSubstTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gsub || LookupType != 4)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreateLigatureSubst(NumGlyphs, subtables,
+            Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
+    }
+
+    public ReadStatus TryWithExtensions(IReadOnlyList<ExtensionSubstTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gsub || LookupType != 7)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreateExtensionSubst(NumGlyphs, subtables,
+            Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
+    }
 }

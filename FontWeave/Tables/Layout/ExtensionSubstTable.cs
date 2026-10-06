@@ -31,4 +31,46 @@ public sealed class ExtensionSubstTable
     public DataLocation Location { get; }
     /// <summary>Header length plus the wrapped leaf's consumed length.</summary>
     public int ConsumedLength { get; }
+
+    /// <summary>Explicit wrapper factory for the extension-wrapped rule edit: the
+    /// wrapped lookup type must be one of the finite direct leaves and exactly that
+    /// leaf's model must be supplied (the others stay null).</summary>
+    public static ReadStatus TryCreate(ushort extensionLookupType, SingleSubstTable? single,
+        MultipleSubstTable? multiple, AlternateSubstTable? alternate, LigatureSubstTable? ligature,
+        out ExtensionSubstTable? model, out FontDiagnostic diagnostic, DataLocation location = default)
+    {
+        model = null;
+        if (extensionLookupType is not (1 or 2 or 3 or 4))
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                location.AtLocal(DataField.Tag, ExtensionSubstLayout.TypeAt), out diagnostic,
+                extensionLookupType);
+        int leaves = (single is null ? 0 : 1) + (multiple is null ? 0 : 1) +
+            (alternate is null ? 0 : 1) + (ligature is null ? 0 : 1);
+        if (leaves != 1)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Tag, ExtensionSubstLayout.TypeAt), out diagnostic,
+                (ulong)leaves, 1UL);
+        // The one supplied leaf must be the one the declared type names.
+        bool matches = extensionLookupType switch
+        {
+            1 => single is not null,
+            2 => multiple is not null,
+            3 => alternate is not null,
+            _ => ligature is not null,
+        };
+        if (!matches)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Tag, ExtensionSubstLayout.TypeAt), out diagnostic,
+                extensionLookupType);
+        int consumed = ExtensionSubstLayout.HeaderLength + extensionLookupType switch
+        {
+            1 => single!.ConsumedLength,
+            2 => multiple!.ConsumedLength,
+            3 => alternate!.ConsumedLength,
+            _ => ligature!.ConsumedLength,
+        };
+        model = new(extensionLookupType, single, multiple, alternate, ligature, location, consumed);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
 }

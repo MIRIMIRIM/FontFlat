@@ -83,4 +83,23 @@ public sealed class LigatureSubstTable
         diagnostic = default;
         return ReadStatus.Done;
     }
+
+    public ReadStatus TryWithSets(ReadOnlySpan<ushort> glyphs, ReadOnlySpan<LigatureSetTable> sets,
+        out LigatureSubstTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        LigatureSubstTableCompiler.TryCreate(glyphs, sets, NumGlyphs, out updated,
+            out diagnostic, limits, Location, Coverage.Format);
+
+    /// <summary>Replaces one set's ligature rules in preference order; the set keeps
+    /// its Coverage-derived identity through the subtable factory.</summary>
+    public static ReadStatus TryCreateSet(ReadOnlySpan<LigatureTable> ligatures,
+        out LigatureSetTable? set, out FontDiagnostic diagnostic, DataLocation location = default)
+    {
+        set = null;
+        long length = LigatureSetLayout.HeaderLength + LigatureSetLayout.OffsetStride * ligatures.Length;
+        foreach (var ligature in ligatures)
+            length += LigatureLayout.HeaderLength + 2L * ligature.Components.Length;
+        set = new(ligatures.ToArray(), location, (int)length);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
 }

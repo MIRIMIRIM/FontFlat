@@ -42,4 +42,9 @@ public sealed class AlternateSubstTable
         diagnostic = default;
         return ReadStatus.Done;
     }
+
+    public ReadStatus TryWithAlternateSets(ReadOnlySpan<ushort> glyphs, ReadOnlySpan<ushort[]> alternateSets,
+        out AlternateSubstTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        AlternateSubstTableCompiler.TryCreate(glyphs, alternateSets, NumGlyphs, out updated,
+            out diagnostic, limits, Location, Coverage.Format);
 }
