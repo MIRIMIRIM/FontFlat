@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -49,18 +48,19 @@ public static class DsigTableCompiler
             !budget.Buffer(length, request, out diagnostic)) return ReadStatus.ResourceLimit;
 
         var bytes = new byte[(int)length];
-        BinaryPrimitives.WriteUInt32BigEndian(bytes, 1);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), (ushort)count);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6), content.Flags);
+        RequireWritten(DsigView.TryWriteVersion(bytes, 1, out _, request));
+        RequireWritten(DsigView.TryWriteNumSignatures(bytes, (ushort)count, out _, request));
+        RequireWritten(DsigView.TryWriteFlags(bytes, content.Flags, out _, request));
         int at = DsigLayout.HeaderLength, blockAt = directoryEnd;
-        foreach (ReadOnlyMemory<byte> packet in packets)
+        for (int i = 0; i < count; i++)
         {
+            ReadOnlyMemory<byte> packet = packets[i];
             int blockLength = DsigLayout.BlockHeaderLength + packet.Length;
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(at), 1);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(at + 4), (uint)blockLength);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(at + 8), (uint)blockAt);
-            // The zero-initialized output provides both reserved uint16 values.
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(blockAt + 4), (uint)packet.Length);
+            RequireWritten(DsigView.TryWriteSignatureAt(bytes, (ulong)at,
+                new DsigView.SignatureData(i, 1, (uint)blockLength, (uint)blockAt), out _, request));
+            // The generated writer explicitly writes both reserved uint16 zeros.
+            RequireWritten(DsigView.TryWriteSignatureBlockHeaderAt(bytes, (ulong)blockAt,
+                new DsigView.SignatureBlockHeaderData(i, 0, 0, (uint)packet.Length), out _, request));
             packet.Span.CopyTo(bytes.AsSpan(blockAt + DsigLayout.BlockHeaderLength));
             at += DsigLayout.RecordStride;
             blockAt += blockLength;
@@ -107,21 +107,31 @@ public static class DsigTableCompiler
     {
         // Preserve gaps and tails without treating them as another signature payload.
         model.OriginalBytes.CopyTo(bytes);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes, model.Version);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(4), model.NumSignatures);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(6), model.Flags);
+        // After the admission/capacity preflight these generated writers cannot fail;
+        // a failure is a writer contract bug and surfaces loudly.
+        RequireWritten(DsigView.TryWriteVersion(bytes, model.Version, out _, model.Location));
+        RequireWritten(DsigView.TryWriteNumSignatures(bytes, model.NumSignatures, out _, model.Location));
+        RequireWritten(DsigView.TryWriteFlags(bytes, model.Flags, out _, model.Location));
         int at = DsigLayout.HeaderLength;
+        int ordinal = 0;
         foreach (var record in model.Records)
         {
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(at), record.Format);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(at + 4), record.Length);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(at + 8), record.Offset);
-            var block = bytes.Slice((int)record.Offset, (int)record.Length);
-            BinaryPrimitives.WriteUInt16BigEndian(block, 0);
-            BinaryPrimitives.WriteUInt16BigEndian(block.Slice(2), 0);
-            BinaryPrimitives.WriteUInt32BigEndian(block.Slice(4), (uint)record.Signature.Length);
-            record.Signature.CopyTo(block.Slice(DsigLayout.BlockHeaderLength));
+            RequireWritten(DsigView.TryWriteSignatureAt(bytes, (ulong)at, new DsigView.SignatureData(
+                ordinal, record.Format, record.Length, record.Offset), out _, model.Location));
+            RequireWritten(DsigView.TryWriteSignatureBlockHeaderAt(bytes, (ulong)record.Offset,
+                new DsigView.SignatureBlockHeaderData(ordinal, 0, 0, (uint)record.Signature.Length),
+                out _, model.Location));
+            record.Signature.CopyTo(bytes.Slice((int)record.Offset + DsigLayout.BlockHeaderLength,
+                (int)record.Length - DsigLayout.BlockHeaderLength));
             at += DsigLayout.RecordStride;
+            ordinal++;
         }
+    }
+
+    // Same contract as the layout emission path: a preflighted dsig write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
+    {
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted dsig write failed.");
     }
 }
