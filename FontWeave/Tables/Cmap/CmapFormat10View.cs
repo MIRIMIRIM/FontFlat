@@ -4,20 +4,6 @@ namespace FontWeave.Tables;
 
 public readonly ref partial struct CmapFormat10View
 {
-    /// <summary>Bounded local glyph entry read; positions are subtable-relative (20 + 2*ordinal).</summary>
-    public ReadStatus TryGetGlyphEntry(int ordinal, out GlyphEntryData entry, out FontDiagnostic diagnostic)
-    {
-        entry = default;
-        if (!IsBound)
-            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
-        if (ordinal < 0 || (uint)ordinal >= NumChars)
-            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.AtLocal(DataField.Count, 16, ordinal), out diagnostic,
-                unchecked((ulong)(long)ordinal), NumChars);
-        return TryReadGlyphEntryAt(CmapFormat10Layout.HeaderLength + 2UL * (uint)ordinal, ordinal,
-            out entry, out diagnostic);
-    }
-
     /// <summary>Strict format 10 validation: reserved/language rules, exact length, empty tables
     /// allowed, the window [startCharCode, startCharCode + numChars) inside the scalar domain
     /// and disjoint from the surrogate block, and every nonzero glyph id against numGlyphs.

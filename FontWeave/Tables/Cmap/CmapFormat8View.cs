@@ -24,20 +24,6 @@ public readonly ref partial struct CmapFormat8View
         return ReadStatus.Done;
     }
 
-    /// <summary>Bounded local group read; ordering, glyph and is32 consistency are checked by Validate.</summary>
-    public ReadStatus TryGetGroup(int ordinal, out GroupData group, out FontDiagnostic diagnostic)
-    {
-        group = default;
-        if (!IsBound)
-            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
-        if (ordinal < 0 || (uint)ordinal >= NumGroups)
-            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.AtLocal(DataField.Count, CmapFormat8Layout.NumGroupsOffset, ordinal), out diagnostic,
-                unchecked((ulong)(long)ordinal), NumGroups);
-        return TryReadGroupAt(CmapFormat8Layout.HeaderLength + 12UL * (uint)ordinal, ordinal,
-            out group, out diagnostic);
-    }
-
     /// <summary>Strict format 8 validation: reserved/language rules, exact length, ordered
     /// non-overlapping scalar-bounded groups with linear GID bounds, and the three-branch is32
     /// consistency rule: a non-BMP group's start high half must be declared a first half, a

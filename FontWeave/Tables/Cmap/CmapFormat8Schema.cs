@@ -19,13 +19,15 @@ internal static class CmapFormat8Layout
 
 // The is32 bitmap at 12..8204 has no record semantics and is intentionally absent from the
 // schema; the handwritten partial reads it with bounded accessors on the same single View.
-[BinaryTable(CmapLayout.Tag, CmapFormat8Layout.HeaderLength, VersionField = "Format", SupportedVersions = new uint[] { 8 })]
+// The group count lives on the wire, so the group rows are declared here (contract version
+// 1: the generated accessor owns the ordinal gate and row addressing).
+[BinaryTable(CmapLayout.Tag, CmapFormat8Layout.HeaderLength, ContractVersion = 1, VersionField = "Format", SupportedVersions = new uint[] { 8 })]
 [BinaryScalar("Format", WireType.UInt16, 0, DataField.Version)]
 [BinaryScalar("Reserved", WireType.UInt16, 2, DataField.Payload)]
 [BinaryScalar("Length", WireType.UInt32, 4, DataField.Length)]
 [BinaryScalar("Language", WireType.UInt32, 8, DataField.LanguageId)]
 [BinaryScalar("NumGroups", WireType.UInt32, CmapFormat8Layout.NumGroupsOffset, DataField.Count, Semantic = NumberSemantic.Count)]
-[BinaryRecord("Group", CmapFormat8Layout.GroupStride)]
+[BinaryArray("Group", "NumGroups", CmapFormat8Layout.HeaderLength, CmapFormat8Layout.GroupStride)]
 [BinaryElement("Group", "StartCharCode", WireType.UInt32, 0, DataField.CharCode)]
 [BinaryElement("Group", "EndCharCode", WireType.UInt32, 4, DataField.CharCode)]
 [BinaryElement("Group", "StartGlyphID", WireType.UInt32, 8, DataField.GlyphId)]
