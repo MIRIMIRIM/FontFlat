@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -138,17 +137,27 @@ public static class HmtxTableCompiler
 
     private static void Write(HmtxTable model, Span<byte> bytes)
     {
-        int at = 0;
-        foreach (var metric in model.LongMetrics)
+        // After the capacity preflight these generated writers cannot fail; a failure
+        // is a writer contract bug and surfaces loudly.
+        for (int i = 0; i < model.LongMetrics.Length; i++)
         {
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(at), metric.AdvanceWidth);
-            BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(at + 2), metric.LeftSideBearing);
-            at += HmtxLayout.LongStride;
+            var metric = model.LongMetrics[i];
+            RequireWritten(HmtxView.TryWriteLongMetricAt(bytes, (ulong)i * HmtxLayout.LongStride,
+                new HmtxView.LongMetricData(i, metric.AdvanceWidth, metric.LeftSideBearing),
+                out _, model.Location));
         }
-        foreach (short lsb in model.TailLeftSideBearings)
+        for (int i = 0; i < model.TailLeftSideBearings.Length; i++)
         {
-            BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(at), lsb);
-            at += HmtxLayout.TailStride;
+            RequireWritten(HmtxView.TryWriteTailBearingAt(bytes,
+                (ulong)model.NumberOfHMetrics * HmtxLayout.LongStride + (ulong)i * HmtxLayout.TailStride,
+                new HmtxView.TailBearingData(i, model.TailLeftSideBearings[i]), out _, model.Location));
         }
+    }
+
+    // Same contract as the vorg emission path: a preflighted write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
+    {
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted hmtx write failed.");
     }
 }

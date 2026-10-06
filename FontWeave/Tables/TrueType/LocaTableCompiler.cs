@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -199,20 +198,29 @@ public static class LocaTableCompiler
 
     private static void Write(LocaTable model, Span<byte> bytes)
     {
-        int at = 0;
-        foreach (uint offset in model.Offsets)
+        // After the capacity preflight these generated writers cannot fail; a failure
+        // is a writer contract bug and surfaces loudly.
+        for (int i = 0; i < model.Offsets.Length; i++)
         {
             if (model.LongFormat)
             {
-                BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(at), offset);
-                at += LocaLayout.LongStride;
+                RequireWritten(LocaView.TryWriteLongOffsetAt(bytes, (ulong)i * LocaLayout.LongStride,
+                    new LocaView.LongOffsetData(i, model.Offsets[i]), out _, model.Location));
             }
             else
             {
-                BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(at),
-                    (ushort)(offset / LocaLayout.ShortScale));
-                at += LocaLayout.ShortStride;
+                // Half-value encoding: the write half of the raw-stores-encoded contract.
+                RequireWritten(LocaView.TryWriteShortOffsetAt(bytes, (ulong)i * LocaLayout.ShortStride,
+                    new LocaView.ShortOffsetData(i, (ushort)(model.Offsets[i] / LocaLayout.ShortScale)),
+                    out _, model.Location));
             }
         }
+    }
+
+    // Same contract as the vorg emission path: a preflighted write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
+    {
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted loca write failed.");
     }
 }

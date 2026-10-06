@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -138,17 +137,27 @@ public static class VmtxTableCompiler
 
     private static void Write(VmtxTable model, Span<byte> bytes)
     {
-        int at = 0;
-        foreach (var metric in model.LongMetrics)
+        // After the capacity preflight these generated writers cannot fail; a failure
+        // is a writer contract bug and surfaces loudly.
+        for (int i = 0; i < model.LongMetrics.Length; i++)
         {
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(at), metric.AdvanceHeight);
-            BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(at + 2), metric.TopSideBearing);
-            at += VmtxLayout.LongStride;
+            var metric = model.LongMetrics[i];
+            RequireWritten(VmtxView.TryWriteLongMetricAt(bytes, (ulong)i * VmtxLayout.LongStride,
+                new VmtxView.LongMetricData(i, metric.AdvanceHeight, metric.TopSideBearing),
+                out _, model.Location));
         }
-        foreach (short tsb in model.TailTopSideBearings)
+        for (int i = 0; i < model.TailTopSideBearings.Length; i++)
         {
-            BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(at), tsb);
-            at += VmtxLayout.TailStride;
+            RequireWritten(VmtxView.TryWriteTailBearingAt(bytes,
+                (ulong)model.NumOfLongVerMetrics * VmtxLayout.LongStride + (ulong)i * VmtxLayout.TailStride,
+                new VmtxView.TailBearingData(i, model.TailTopSideBearings[i]), out _, model.Location));
         }
+    }
+
+    // Same contract as the vorg emission path: a preflighted write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
+    {
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted vmtx write failed.");
     }
 }
