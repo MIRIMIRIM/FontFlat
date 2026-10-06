@@ -42,7 +42,7 @@ public static partial class LayoutListsTableCompiler
         WriteLookups(plan, destination); diagnostic = default; return ReadStatus.Done;
     }
 
-    private static ReadStatus PlanLookups(ReadOnlySpan<LookupTable> input, GdefLookupContext? context,
+    internal static ReadStatus PlanLookups(ReadOnlySpan<LookupTable> input, GdefLookupContext? context,
         out LookupPlan? plan, out FontDiagnostic diagnostic, BuildBudget budget, DataLocation sourceFallback = default)
     {
         plan = null;
@@ -114,7 +114,7 @@ public static partial class LayoutListsTableCompiler
         return Advance(ref cursor, item.Plan.Length, item.Model.Location, budget, out diagnostic);
     }
 
-    private static void WriteLookups(LookupPlan plan, Span<byte> destination)
+    internal static void WriteLookups(LookupPlan plan, Span<byte> destination)
     {
         CoverageTableCompiler.RequireWritten(LayoutLookupListView.TryWriteCount(destination, (ushort)plan.Records.Length, out _, plan.Location));
         for (int i = 0; i < plan.Records.Length; i++)

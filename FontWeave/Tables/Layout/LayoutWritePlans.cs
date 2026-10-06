@@ -4,7 +4,7 @@ namespace FontWeave.Tables.Layout;
 
 public static partial class LayoutListsTableCompiler
 {
-    private sealed class ScriptBlock(LayoutScript model, int position, int[] languageTargets)
+    internal sealed class ScriptBlock(LayoutScript model, int position, int[] languageTargets)
     {
         internal LayoutScript Model { get; } = model;
         internal int Position { get; } = position;
@@ -12,11 +12,11 @@ public static partial class LayoutListsTableCompiler
         internal int DefaultTarget { get; set; }
     }
 
-    private sealed record LanguageBlock(LayoutLangSys Model, int Position);
-    private sealed record ScriptPlan(LayoutScript[] Records, int[] Targets, ScriptBlock[] Blocks,
+    internal sealed record LanguageBlock(LayoutLangSys Model, int Position);
+    internal sealed record ScriptPlan(LayoutScript[] Records, int[] Targets, ScriptBlock[] Blocks,
         LanguageBlock[] Languages, int Length, DataLocation Location);
-    private sealed record FeatureBlock(LayoutFeature Model, int Position);
-    private sealed record FeaturePlan(LayoutFeature[] Records, int[] Targets, FeatureBlock[] Blocks,
+    internal sealed record FeatureBlock(LayoutFeature Model, int Position);
+    internal sealed record FeaturePlan(LayoutFeature[] Records, int[] Targets, FeatureBlock[] Blocks,
         int Length, DataLocation Location);
 
     public static ReadStatus TryCompileScripts(ReadOnlySpan<LayoutScript> scripts, int featureCount,
@@ -49,7 +49,7 @@ public static partial class LayoutListsTableCompiler
         WriteScripts(plan, destination); diagnostic = default; return ReadStatus.Done;
     }
 
-    private static ReadStatus PlanScripts(ReadOnlySpan<LayoutScript> input, int featureCount,
+    internal static ReadStatus PlanScripts(ReadOnlySpan<LayoutScript> input, int featureCount,
         out ScriptPlan? plan, out FontDiagnostic diagnostic, BuildBudget budget, DataLocation sourceFallback = default)
     {
         plan = null;
@@ -170,7 +170,7 @@ public static partial class LayoutListsTableCompiler
         return ReadStatus.Done;
     }
 
-    private static void WriteScripts(ScriptPlan plan, Span<byte> destination)
+    internal static void WriteScripts(ScriptPlan plan, Span<byte> destination)
     {
         CoverageTableCompiler.RequireWritten(LayoutTagListView.TryWriteCount(destination, (ushort)plan.Records.Length, out _, plan.Location));
         for (int i = 0; i < plan.Records.Length; i++)
@@ -232,7 +232,7 @@ public static partial class LayoutListsTableCompiler
         WriteFeatures(plan, destination); diagnostic = default; return ReadStatus.Done;
     }
 
-    private static ReadStatus PlanFeatures(ReadOnlySpan<LayoutFeature> input, int lookupCount,
+    internal static ReadStatus PlanFeatures(ReadOnlySpan<LayoutFeature> input, int lookupCount,
         out FeaturePlan? plan, out FontDiagnostic diagnostic, BuildBudget budget, DataLocation sourceFallback = default)
     {
         plan = null;
@@ -268,7 +268,7 @@ public static partial class LayoutListsTableCompiler
         diagnostic = default; return ReadStatus.Done;
     }
 
-    private static void WriteFeatures(FeaturePlan plan, Span<byte> destination)
+    internal static void WriteFeatures(FeaturePlan plan, Span<byte> destination)
     {
         CoverageTableCompiler.RequireWritten(LayoutTagListView.TryWriteCount(destination, (ushort)plan.Records.Length, out _, plan.Location));
         for (int i = 0; i < plan.Records.Length; i++)
