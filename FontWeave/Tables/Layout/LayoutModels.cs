@@ -132,7 +132,10 @@ public sealed class LayoutListsTable
             scripts, features, lookups, NumGlyphs, Kind, out updated, out diagnostic, limits, Location);
 }
 
-/// <summary>Three separately owned fragments. There is intentionally no GSUB/GPOS root output.</summary>
+/// <summary>Three separately owned fragments: the lists-compiler face that predates
+/// the root writers. Whole-table output now exists for both layout roots
+/// (GsubTableCompiler, GposTableCompiler); this fragments face stays the shared
+/// three-fragment emission those roots' plans reuse, not a second root output.</summary>
 public sealed class LayoutListFragments
 {
     internal LayoutListFragments(byte[] scripts, byte[] features, byte[] lookups)
