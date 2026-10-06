@@ -14,6 +14,11 @@ internal sealed record PositioningSlotPlan(SinglePosTable Child, SinglePosPartPl
 // T4-03 direct leaf slots (types 2/3/4) share the substitution slot shape.
 internal sealed record MultipleSlotPlan(MultipleSubstTable Child, MultipleSubstPartPlan Part,
     ushort Target, int Length) : LookupSlotPlan(Target, Length);
+// T4-05 GPOS positioning slots (types 2/3): the same slot shape, GPOS leaf plans.
+internal sealed record PairSlotPlan(PairPosTable Child, PairPosPartPlan Part,
+    ushort Target, int Length) : LookupSlotPlan(Target, Length);
+internal sealed record CursiveSlotPlan(CursivePosTable Child, CursivePosPartPlan Part,
+    ushort Target, int Length) : LookupSlotPlan(Target, Length);
 internal sealed record AlternateSlotPlan(AlternateSubstTable Child, AlternateSubstPartPlan Part,
     ushort Target, int Length) : LookupSlotPlan(Target, Length);
 internal sealed record LigatureSlotPlan(LigatureSubstTable Child, LigaturePartPlan Part,
@@ -145,6 +150,84 @@ public static class LookupTableCompiler
         out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default) =>
         TryCreateRules(numGlyphs, subtables, 4, flags, markFilteringSet, context,
             out model, out diagnostic, new BuildBudget(limits), location);
+
+    // The T4-05 explicit GPOS lookup factories (types 2/3): the same caller-supplied
+    // source/kind/child identity rules as the substitution factories, kind fixed to
+    // Gpos and the typed payload landing in the matching positioning slot.
+    public static ReadStatus TryCreatePairPos(int numGlyphs, IReadOnlyList<PairPosTable> subtables,
+        ushort flags, ushort? markFilteringSet, GdefLookupContext? context, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default) =>
+        TryCreatePositioning(numGlyphs, subtables, 2, flags, markFilteringSet, context,
+            out model, out diagnostic, new BuildBudget(limits), location);
+
+    public static ReadStatus TryCreateCursivePos(int numGlyphs, IReadOnlyList<CursivePosTable> subtables,
+        ushort flags, ushort? markFilteringSet, GdefLookupContext? context, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default) =>
+        TryCreatePositioning(numGlyphs, subtables, 3, flags, markFilteringSet, context,
+            out model, out diagnostic, new BuildBudget(limits), location);
+
+    private static ReadStatus TryCreatePositioning<TLeaf>(int numGlyphs, IReadOnlyList<TLeaf> subtables,
+        ushort lookupType, ushort flags, ushort? markFilteringSet, GdefLookupContext? context,
+        out LookupTable? model, out FontDiagnostic diagnostic, BuildBudget budget,
+        DataLocation location = default) where TLeaf : class
+    {
+        ArgumentNullException.ThrowIfNull(subtables);
+        model = null;
+        ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = LookupTable.ValidateGposSource(location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int count = subtables.Count;
+        if (count > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, LookupLayout.CountAt), out diagnostic,
+                (ulong)count, ushort.MaxValue);
+        if (!budget.Work(2L * count, location, out diagnostic) ||
+            !budget.Buffer(8L * count, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var copy = new TLeaf[count];
+        for (int i = 0; i < count; i++)
+        {
+            TLeaf? child = subtables[i];
+            if (child is null)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.AtLocal(DataField.Payload, LookupLayout.HeaderLength +
+                        (ulong)i * LookupLayout.OffsetStride, i), out diagnostic);
+            if (PositioningGlyphsOf(child) != numGlyphs ||
+                PositioningLocationOf(child).SourceId != location.SourceId ||
+                PositioningLocationOf(child).FaceIndex != location.FaceIndex)
+                return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
+                    location.AtLocal(DataField.None, 0, i), out diagnostic);
+            status = LookupTable.ValidateGposSource(PositioningLocationOf(child), out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            copy[i] = child;
+        }
+        PairPosTable[]? pairs = null;
+        CursivePosTable[]? cursives = null;
+        if (lookupType == 2) pairs = (PairPosTable[])(object)copy;
+        else cursives = (CursivePosTable[])(object)copy;
+        var candidate = new LookupTable(LayoutLookupKind.Gpos, numGlyphs, lookupType, flags,
+            markFilteringSet, [], null, location: location, pairPositions: pairs,
+            cursiveAttachments: cursives);
+        status = candidate.ValidateFlags(context, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        model = candidate;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static int PositioningGlyphsOf<TLeaf>(TLeaf child) where TLeaf : class => child switch
+    {
+        PairPosTable model => model.NumGlyphs,
+        CursivePosTable model => model.NumGlyphs,
+        _ => throw new InvalidOperationException("Unknown positioning rule child."),
+    };
+
+    private static DataLocation PositioningLocationOf<TLeaf>(TLeaf child) where TLeaf : class => child switch
+    {
+        PairPosTable model => model.Location,
+        CursivePosTable model => model.Location,
+        _ => throw new InvalidOperationException("Unknown positioning rule child."),
+    };
 
     private static ReadStatus TryCreateRules<TLeaf>(int numGlyphs, IReadOnlyList<TLeaf> subtables,
         ushort lookupType, ushort flags, ushort? markFilteringSet, GdefLookupContext? context,
@@ -351,14 +434,22 @@ public static class LookupTableCompiler
         return PlanExtension(model, context, out plan, out diagnostic, budget);
     }
 
-    private static bool HasTypedPayload(LookupTable model) => model.LookupType switch
-    {
-        1 => model.SingleSubstitutions is not null,
-        2 => model.Multiples is not null,
-        3 => model.Alternates is not null,
-        4 => model.Ligatures is not null,
-        _ => model.Extensions is not null,
-    };
+    private static bool HasTypedPayload(LookupTable model) => model.Kind == LayoutLookupKind.Gpos
+        ? model.LookupType switch
+        {
+            1 => model.SinglePositions is not null,
+            2 => model.PairPositions is not null,
+            3 => model.CursiveAttachments is not null,
+            _ => false,
+        }
+        : model.LookupType switch
+        {
+            1 => model.SingleSubstitutions is not null,
+            2 => model.Multiples is not null,
+            3 => model.Alternates is not null,
+            4 => model.Ligatures is not null,
+            _ => model.Extensions is not null,
+        };
 
     private static ReadStatus UnsupportedType(LookupTable model, out FontDiagnostic diagnostic) =>
         ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
@@ -378,7 +469,9 @@ public static class LookupTableCompiler
         bool multiples = model.Kind == LayoutLookupKind.Gsub && type == 2 && model.Multiples is not null;
         bool alternates = model.Kind == LayoutLookupKind.Gsub && type == 3 && model.Alternates is not null;
         bool ligatures = model.Kind == LayoutLookupKind.Gsub && type == 4 && model.Ligatures is not null;
-        if (!(substitution || positioning || multiples || alternates || ligatures))
+        bool pairs = model.Kind == LayoutLookupKind.Gpos && type == 2 && model.PairPositions is not null;
+        bool cursive = model.Kind == LayoutLookupKind.Gpos && type == 3 && model.CursiveAttachments is not null;
+        if (!(substitution || positioning || multiples || alternates || ligatures || pairs || cursive))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, model.LookupType);
         ReadStatus status = model.Kind == LayoutLookupKind.Gsub
@@ -506,6 +599,8 @@ public static class LookupTableCompiler
         MultipleSlotPlan => 2,
         AlternateSlotPlan => 3,
         LigatureSlotPlan => 4,
+        // A GPOS slot can never reach here: the extension candidate is Gsub-only and
+        // stays so (T4-05's pin - GPOS needing an outer extension is a finite refusal).
         _ => throw new InvalidOperationException("An extension slot cannot wrap another extension slot."),
     };
 
@@ -522,8 +617,8 @@ public static class LookupTableCompiler
         int sourceCount = type switch
         {
             1 => model.Kind == LayoutLookupKind.Gsub ? model.SingleSubstitutions!.Count : model.SinglePositions!.Count,
-            2 => model.Multiples!.Count,
-            3 => model.Alternates!.Count,
+            2 => model.Kind == LayoutLookupKind.Gpos ? model.PairPositions!.Count : model.Multiples!.Count,
+            3 => model.Kind == LayoutLookupKind.Gpos ? model.CursiveAttachments!.Count : model.Alternates!.Count,
             4 => model.Ligatures!.Count,
             _ => model.Extensions!.Count,
         };
@@ -536,6 +631,8 @@ public static class LookupTableCompiler
         var multiples = new Dictionary<MultipleSubstTable, MultipleSubstPartPlan[]>(ReferenceEqualityComparer.Instance);
         var alternates = new Dictionary<AlternateSubstTable, AlternateSubstPartPlan[]>(ReferenceEqualityComparer.Instance);
         var ligatureSets = new Dictionary<LigatureSubstTable, LigaturePartPlan[]>(ReferenceEqualityComparer.Instance);
+        var pairs = new Dictionary<PairPosTable, PairPosPartPlan[]>(ReferenceEqualityComparer.Instance);
+        var cursives = new Dictionary<CursivePosTable, CursivePosPartPlan[]>(ReferenceEqualityComparer.Instance);
         ReadStatus status;
         for (int i = 0; i < sourceCount; i++)
         {
@@ -563,6 +660,32 @@ public static class LookupTableCompiler
                         if (status != ReadStatus.Done) return status;
                         if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
                         positions.Add(child, group!);
+                    }
+                    result[i] = ToParts(group!, child);
+                    break;
+                }
+                case 2 when model.Kind == LayoutLookupKind.Gpos:
+                {
+                    PairPosTable child = model.PairPositions![i];
+                    if (!pairs.TryGetValue(child, out PairPosPartPlan[]? group))
+                    {
+                        status = PairPosTableCompiler.TryPlanSubtables(child, out group, out diagnostic, budget);
+                        if (status != ReadStatus.Done) return status;
+                        if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                        pairs.Add(child, group!);
+                    }
+                    result[i] = ToParts(group!, child);
+                    break;
+                }
+                case 3 when model.Kind == LayoutLookupKind.Gpos:
+                {
+                    CursivePosTable child = model.CursiveAttachments![i];
+                    if (!cursives.TryGetValue(child, out CursivePosPartPlan[]? group))
+                    {
+                        status = CursivePosTableCompiler.TryPlanSubtables(child, out group, out diagnostic, budget);
+                        if (status != ReadStatus.Done) return status;
+                        if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                        cursives.Add(child, group!);
                     }
                     result[i] = ToParts(group!, child);
                     break;
@@ -707,6 +830,8 @@ public static class LookupTableCompiler
             SinglePosPartPlan part => new PositioningSlotPlan((SinglePosTable)leaf.Child, part, 0, length),
             MultipleSubstPartPlan part => new MultipleSlotPlan((MultipleSubstTable)leaf.Child, part, 0, length),
             AlternateSubstPartPlan part => new AlternateSlotPlan((AlternateSubstTable)leaf.Child, part, 0, length),
+            PairPosPartPlan part => new PairSlotPlan((PairPosTable)leaf.Child, part, 0, length),
+            CursivePosPartPlan part => new CursiveSlotPlan((CursivePosTable)leaf.Child, part, 0, length),
             _ => new LigatureSlotPlan((LigatureSubstTable)leaf.Child, (LigaturePartPlan)leaf.Part, 0, length),
         };
     }
@@ -717,6 +842,8 @@ public static class LookupTableCompiler
         SinglePosPartPlan plan => plan.Length,
         MultipleSubstPartPlan plan => plan.Length,
         AlternateSubstPartPlan plan => plan.Length,
+        PairPosPartPlan plan => plan.Length,
+        CursivePosPartPlan plan => plan.Length,
         _ => ((LigaturePartPlan)part).Length,
     };
 
@@ -733,8 +860,10 @@ public static class LookupTableCompiler
             LookupLayout.HeaderLength + (ulong)sourceOrdinal * LookupLayout.OffsetStride, sourceOrdinal);
         ReadStatus status = model.LookupType switch
         {
-            2 => LookupView.TryGetMultipleSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
-            3 => LookupView.TryGetAlternateSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
+            2 when model.Kind == LayoutLookupKind.Gsub => LookupView.TryGetMultipleSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
+            2 => LookupView.TryGetPairPosOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
+            3 when model.Kind == LayoutLookupKind.Gsub => LookupView.TryGetAlternateSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
+            3 => LookupView.TryGetCursivePosOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             4 => LookupView.TryGetLigatureSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             7 => LookupView.TryGetExtensionSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             _ => model.Kind == LayoutLookupKind.Gsub
@@ -819,6 +948,12 @@ public static class LookupTableCompiler
                 break;
             case AlternateSlotPlan alternate:
                 AlternateSubstTableCompiler.WritePlanned(alternate.Child, alternate.Part, destination);
+                break;
+            case PairSlotPlan pair:
+                PairPosTableCompiler.WritePlanned(pair.Child, pair.Part, destination);
+                break;
+            case CursiveSlotPlan cursive:
+                CursivePosTableCompiler.WritePlanned(cursive.Child, cursive.Part, destination);
                 break;
             default:
                 var ligature = (LigatureSlotPlan)slot;

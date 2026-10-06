@@ -77,6 +77,77 @@ public sealed class PairPosTable
         pairSet = _pairSets![coverageOrdinal]; diagnostic = default; return ReadStatus.Done;
     }
 
+    // Plan-side enumerations: one device model per present Device slot, in row-major
+    // order, so the write plan's identity dedup is deterministic.
+    internal IEnumerable<StaticDeviceTable?> EnumerateDevices()
+    {
+        if (Format == 1)
+        {
+            int sets = _pairSets?.Length ?? 0;
+            for (int i = 0; i < sets; i++)
+            {
+                var set = _pairSets![i];
+                for (int j = 0; j < set.PairValueCount; j++)
+                {
+                    var record = set.Records[j];
+                    for (int slot = 4; slot < 8; slot++)
+                    {
+                        yield return record.Value1.DeviceAt(slot);
+                        yield return record.Value2.DeviceAt(slot);
+                    }
+                }
+            }
+        }
+        else
+        {
+            int cells = Class1Count * Class2Count;
+            for (int i = 0; i < cells; i++)
+                for (int slot = 4; slot < 8; slot++)
+                {
+                    yield return _values1![i].DeviceAt(slot);
+                    yield return _values2![i].DeviceAt(slot);
+                }
+        }
+    }
+
+    internal StaticValueRecord GetMatrixValue1(int class1, int class2) =>
+        Format == 2 ? _values1![class1 * Class2Count + class2] : default;
+    internal StaticValueRecord GetMatrixValue2(int class1, int class2) =>
+        Format == 2 ? _values2![class1 * Class2Count + class2] : default;
+
+    /// <summary>Atomically replaces one coverage key's pair rows. The format, masks,
+    /// coverage and glyph context are retained; source identity is re-proven.</summary>
+    public ReadStatus TryWithPairSet(int coverageOrdinal, ReadOnlySpan<PairValueRecord> records,
+        out PairPosTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Format != 1 || _pairSets is null || coverageOrdinal < 0 || coverageOrdinal >= _pairSets.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, PairPosLayout.PairSetCountField, coverageOrdinal),
+                out diagnostic, unchecked((ulong)(long)coverageOrdinal), (ulong)(_pairSets?.Length ?? 0));
+        var rows = new PairValueRecord[_pairSets.Length][];
+        for (int i = 0; i < _pairSets.Length; i++)
+            rows[i] = _pairSets[i].Records.ToArray();
+        records.CopyTo(rows[coverageOrdinal].AsSpan());
+        return PairPosTableCompiler.TryCreate(Coverage.Glyphs, rows, NumGlyphs, ValueFormat1,
+            ValueFormat2, out updated, out diagnostic, limits, Location, Coverage.Format);
+    }
+
+    /// <summary>Atomically replaces the class-matrix rows (physical class1-major order,
+    /// class1Count x class2Count cells). The ClassDefs, coverage and context are retained.</summary>
+    public ReadStatus TryWithMatrixValues(ReadOnlySpan<StaticValueRecord> values1,
+        ReadOnlySpan<StaticValueRecord> values2, out PairPosTable? updated,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Format != 2)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Version, 0), out diagnostic, Format);
+        return PairPosTableCompiler.TryCreate(Coverage.Glyphs, ClassDef1!.Ranges, ClassDef2!.Ranges,
+            (ushort)Class1Count, (ushort)Class2Count, values1, values2, NumGlyphs, ValueFormat1,
+            ValueFormat2, out updated, out diagnostic, limits, Location, Coverage.Format);
+    }
+
     public ReadStatus TryGetMatrixValue(int class1, int class2, out StaticValueRecord value1,
         out StaticValueRecord value2, out FontDiagnostic diagnostic)
     {

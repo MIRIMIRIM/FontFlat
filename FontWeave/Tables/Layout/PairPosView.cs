@@ -51,7 +51,7 @@ public readonly ref partial struct PairPosView
 
     // The two ValueFormats reuse the SinglePos mask contract (SupportedMask=0x00FF,
     // reserved bits refuse); each format's refusal carries its own field position.
-    private static ReadStatus ValidateMasks(ushort valueFormat1, ushort valueFormat2,
+    internal static ReadStatus ValidateMasks(ushort valueFormat1, ushort valueFormat2,
         DataLocation location, out FontDiagnostic diagnostic)
     {
         if ((valueFormat1 & ~PairPosLayout.SupportedMask) != 0)

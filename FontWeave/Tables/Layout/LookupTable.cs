@@ -229,4 +229,30 @@ public sealed class LookupTable
         return LookupTableCompiler.TryCreateExtensionSubst(NumGlyphs, subtables,
             Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
     }
+
+    // The T4-05 edit APIs: one per supported GPOS positioning type, each re-running the
+    // type's explicit factory (same flags/context contract as creation).
+    public ReadStatus TryWithPairPositions(IReadOnlyList<PairPosTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gpos || LookupType != 2)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreatePairPos(NumGlyphs, subtables,
+            Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
+    }
+
+    public ReadStatus TryWithCursive(IReadOnlyList<CursivePosTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gpos || LookupType != 3)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreateCursivePos(NumGlyphs, subtables,
+            Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
+    }
 }

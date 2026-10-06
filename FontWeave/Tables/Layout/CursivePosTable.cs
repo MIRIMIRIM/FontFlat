@@ -25,6 +25,18 @@ public sealed class AnchorTable
     public StaticDeviceTable? YDevice { get; }
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
+
+    /// <summary>Atomically moves the anchor coordinates; the format, opaque point and
+    /// Device attachments are retained (a coordinate is a free Int16, so no wire
+    /// invariant needs re-proving).</summary>
+    public ReadStatus TryWithCoordinate(short xCoordinate, short yCoordinate,
+        out AnchorTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = new(Format, xCoordinate, yCoordinate, AnchorPoint, XDevice, YDevice,
+            Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
 }
 
 /// <summary>One cursive attachment record: both slots may be null, individually or
@@ -51,6 +63,22 @@ public sealed class CursivePosTable
     public ReadOnlySpan<EntryExitTable> Records => _records;
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
+
+    /// <summary>Atomically replaces one coverage key's anchor slots (either may be the
+    /// legal NULL no-op). Coverage and glyph context are retained.</summary>
+    public ReadStatus TryWithEntryExit(int coverageOrdinal, AnchorTable? entry, AnchorTable? exit,
+        out CursivePosTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (coverageOrdinal < 0 || coverageOrdinal >= _records.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, CursivePosLayout.CountField, coverageOrdinal),
+                out diagnostic, unchecked((ulong)(long)coverageOrdinal), (ulong)_records.Length);
+        var records = (EntryExitTable[])_records.Clone();
+        records[coverageOrdinal] = new(entry, exit);
+        return CursivePosTableCompiler.TryCreate(Coverage.Glyphs, records, NumGlyphs,
+            out updated, out diagnostic, limits, Location);
+    }
 
     public ReadStatus TryGetEntryExit(int coverageOrdinal, out EntryExitTable record,
         out FontDiagnostic diagnostic)
