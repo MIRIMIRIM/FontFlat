@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -84,8 +83,19 @@ public static class LtshTableCompiler
 
     private static void Write(LtshTable model, Span<byte> bytes)
     {
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, 0);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(2), model.NumGlyphs);
+        // After the capacity preflight these generated writers cannot fail; a failure
+        // is a writer contract bug and surfaces loudly. The threshold tail stays a span
+        // copy: per-byte generated writes would be NumGlyphs writer calls with no
+        // structural win (OQ-M2a-2 keep-churn).
+        RequireWritten(LtshView.TryWriteVersion(bytes, 0, out _, model.Location));
+        RequireWritten(LtshView.TryWriteNumGlyphs(bytes, model.NumGlyphs, out _, model.Location));
         model.YPixels.CopyTo(bytes.Slice(LtshLayout.HeaderLength));
+    }
+
+    // Same contract as the pclt emission path: a preflighted write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
+    {
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted ltsh write failed.");
     }
 }

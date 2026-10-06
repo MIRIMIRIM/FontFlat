@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -105,16 +104,27 @@ public static class VorgTableCompiler
 
     private static void Write(VorgTable model, Span<byte> bytes)
     {
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, model.MajorVersion);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(2), model.MinorVersion);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(4), model.DefaultVertOriginY);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(6), model.NumVertOriginYMetrics);
-        int at = VorgLayout.HeaderLength;
-        foreach (var record in model.Records)
+        // After the capacity preflight these generated writers cannot fail; a failure
+        // is a writer contract bug and surfaces loudly.
+        RequireWritten(VorgView.TryWriteMajorVersion(bytes, model.MajorVersion, out _, model.Location));
+        RequireWritten(VorgView.TryWriteMinorVersion(bytes, model.MinorVersion, out _, model.Location));
+        RequireWritten(VorgView.TryWriteDefaultVertOriginY(bytes, model.DefaultVertOriginY, out _, model.Location));
+        RequireWritten(VorgView.TryWriteNumVertOriginYMetrics(bytes, model.NumVertOriginYMetrics,
+            out _, model.Location));
+        for (int i = 0; i < model.Records.Length; i++)
         {
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(at), record.GlyphIndex);
-            BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(at + 2), record.VertOriginY);
-            at += VorgLayout.RecordStride;
+            var record = model.Records[i];
+            RequireWritten(VorgView.TryWriteOriginRecordAt(bytes,
+                VorgLayout.HeaderLength + (ulong)i * VorgLayout.RecordStride,
+                new VorgView.OriginRecordData(i, record.GlyphIndex, record.VertOriginY),
+                out _, model.Location));
         }
+    }
+
+    // Same contract as the pclt emission path: a preflighted write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
+    {
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted vorg write failed.");
     }
 }

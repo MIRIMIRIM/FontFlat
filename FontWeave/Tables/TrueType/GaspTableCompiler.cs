@@ -54,13 +54,16 @@ public static class GaspTableCompiler
             !budget.Buffer(length, model.Location, out diagnostic))
             return ReadStatus.ResourceLimit;
         var bytes = new byte[length];
-        WriteUInt16(bytes, GaspLayout.VersionAt, (ushort)model.Version);
-        WriteUInt16(bytes, GaspLayout.NumRangesAt, (ushort)model.RangeCount);
+        // After the budget preflight these generated writers cannot fail; a failure is
+        // a writer contract bug and surfaces loudly.
+        RequireWritten(GaspView.TryWriteVersion(bytes, (ushort)model.Version, out _, model.Location));
+        RequireWritten(GaspView.TryWriteNumRanges(bytes, (ushort)model.RangeCount, out _, model.Location));
         for (int i = 0; i < model.RangeCount; i++)
         {
-            int at = GaspLayout.HeaderLength + i * GaspLayout.RangeStride;
-            WriteUInt16(bytes, at + GaspLayout.RangeMaxPpemFieldAt, model[i].RangeMaxPpem);
-            WriteUInt16(bytes, at + GaspLayout.RangeBehaviorFieldAt, model[i].RangeGaspBehavior);
+            ulong at = (ulong)(GaspLayout.HeaderLength + i * GaspLayout.RangeStride);
+            RequireWritten(GaspView.TryWriteRangeAt(bytes, at,
+                new GaspView.RangeData(i, model[i].RangeMaxPpem, model[i].RangeGaspBehavior),
+                out _, model.Location));
         }
         budget.RecordCompiledTable(length);
         output = bytes;
@@ -196,9 +199,10 @@ public static class GaspTableCompiler
             location == default ? DataLocation.Anonymous(GaspLayout.Tag) : location);
     }
 
-    private static void WriteUInt16(byte[] bytes, int at, ushort value)
+    // Same contract as the pclt emission path: a preflighted write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
     {
-        bytes[at] = unchecked((byte)(value >> 8));
-        bytes[at + 1] = unchecked((byte)value);
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted gasp write failed.");
     }
 }

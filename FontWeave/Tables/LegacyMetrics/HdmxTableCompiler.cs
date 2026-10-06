@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -112,17 +111,34 @@ public static class HdmxTableCompiler
 
     private static void Write(HdmxTable model, Span<byte> bytes)
     {
+        // The zero padding between the last width and the canonical stride is the write
+        // half of the read contract (non-zero padding is tolerated, compilation writes
+        // zeros), so the clear stays a semantic owner here.
         bytes.Clear();
+        // After the capacity preflight these generated writers cannot fail; a failure is
+        // a writer contract bug and surfaces loudly. The freshly allocated zero version
+        // bits also go through the declared writer (pclt precedent). The width tail
+        // stays a span copy: per-byte generated writes would add NumGlyphs calls per
+        // record with no structural win (OQ-M2a-2 keep-churn).
         int stride = HdmxLayout.CanonicalStride(model.NumGlyphs);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(2), model.NumRecords);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(4), (uint)stride);
+        RequireWritten(HdmxView.TryWriteVersion(bytes, 0, out _, model.Location));
+        RequireWritten(HdmxView.TryWriteNumRecords(bytes, model.NumRecords, out _, model.Location));
+        RequireWritten(HdmxView.TryWriteSizeDeviceRecord(bytes, (uint)stride, out _, model.Location));
         for (int i = 0; i < model.NumRecords; i++)
         {
             var record = model.Records[i];
-            int position = HdmxLayout.HeaderLength + i * stride;
-            bytes[position] = record.PixelSize;
-            bytes[position + 1] = Maximum(record.Widths);
-            record.Widths.CopyTo(bytes.Slice(position + HdmxLayout.RecordHeaderLength));
+            ulong position = (ulong)(HdmxLayout.HeaderLength + i * stride);
+            RequireWritten(HdmxView.TryWriteDeviceRecordHeaderAt(bytes, position,
+                new HdmxView.DeviceRecordHeaderData(i, record.PixelSize, Maximum(record.Widths)),
+                out _, model.Location));
+            record.Widths.CopyTo(bytes.Slice((int)position + HdmxLayout.RecordHeaderLength));
         }
+    }
+
+    // Same contract as the pclt emission path: a preflighted write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
+    {
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted hdmx write failed.");
     }
 }

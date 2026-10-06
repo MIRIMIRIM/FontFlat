@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -236,36 +235,47 @@ public static class VdmxTableCompiler
 
     private static void Write(VdmxTable model, Span<byte> bytes)
     {
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, model.Version);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(2), model.NumGroups);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(4), model.NumRatios);
+        // After the capacity preflight these generated writers cannot fail; a failure
+        // is a writer contract bug and surfaces loudly.
+        RequireWritten(VdmxView.TryWriteVersion(bytes, model.Version, out _, model.Location));
+        RequireWritten(VdmxView.TryWriteNumRecs(bytes, model.NumGroups, out _, model.Location));
+        RequireWritten(VdmxView.TryWriteNumRatios(bytes, model.NumRatios, out _, model.Location));
         for (int i = 0; i < model.NumRatios; i++)
         {
             VdmxRatio ratio = model.Ratios[i];
-            int row = (int)RatioPosition(i);
-            bytes[row] = ratio.CharSet;
-            bytes[row + 1] = ratio.XRatio;
-            bytes[row + 2] = ratio.YStartRatio;
-            bytes[row + 3] = ratio.YEndRatio;
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice((int)OffsetPosition(model, i)),
-                (ushort)model.Groups[ratio.GroupIndex].SourceOffset);
+            RequireWritten(VdmxView.TryWriteRatioAt(bytes, RatioPosition(i),
+                new VdmxView.RatioData(i, ratio.CharSet, ratio.XRatio, ratio.YStartRatio, ratio.YEndRatio),
+                out _, model.Location));
+            // GetLength pinned the target offset to <= 0xFFFF before this runs, so the
+            // (ushort) narrowing is the declared wire contract, byte-identical to the
+            // 16-bit store it replaces.
+            RequireWritten(VdmxView.TryWriteGroupOffsetAt(bytes, OffsetPosition(model, i),
+                new VdmxView.GroupOffsetData(i, (ushort)model.Groups[ratio.GroupIndex].SourceOffset),
+                out _, model.Location));
         }
         for (int i = 0; i < model.NumGroups; i++)
         {
             VdmxGroup group = model.Groups[i];
             int row = (int)group.SourceOffset;
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(row), (ushort)group.Entries.Length);
-            bytes[row + 2] = group.StartSize;
-            bytes[row + 3] = group.EndSize;
+            RequireWritten(VdmxView.TryWriteGroupHeaderAt(bytes, (ulong)row,
+                new VdmxView.GroupHeaderData(i, (ushort)group.Entries.Length, group.StartSize, group.EndSize),
+                out _, model.Location));
             for (int j = 0; j < group.Entries.Length; j++)
             {
                 VdmxEntry entry = group.Entries[j];
-                int at = row + VdmxLayout.GroupHeaderLength + j * VdmxLayout.EntryStride;
-                BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(at), entry.YPelHeight);
-                BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(at + 2), entry.YMax);
-                BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(at + 4), entry.YMin);
+                ulong at = (ulong)(row + VdmxLayout.GroupHeaderLength + j * VdmxLayout.EntryStride);
+                RequireWritten(VdmxView.TryWriteEntryAt(bytes, at,
+                    new VdmxView.EntryData(j, entry.YPelHeight, entry.YMax, entry.YMin),
+                    out _, model.Location));
             }
         }
+    }
+
+    // Same contract as the pclt emission path: a preflighted write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
+    {
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted vdmx write failed.");
     }
 
     private static ulong RatioPosition(int ordinal) =>
