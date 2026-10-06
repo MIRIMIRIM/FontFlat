@@ -5,7 +5,8 @@ namespace FontWeave.Tables.Layout;
 public readonly ref partial struct GdefView
 {
     /// <summary>Reads class definitions and MarkGlyphSets for Lookup-flag validation.
-    /// AttachList, LigCaretList and variation data remain untraversed raw observations.</summary>
+    /// The AttachList and LigCaretList references are declared but not traversed by this
+    /// reader; the variation store stays a raw observation.</summary>
     public ReadStatus TryReadContext(int numGlyphs, out GdefLookupContext? context,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
@@ -41,7 +42,8 @@ public readonly ref partial struct GdefView
     }
 
     /// <summary>Reads the two class-definition consumers, not the complete GDEF table.
-    /// Other header offsets are retained as raw values without traversing their targets.</summary>
+    /// Other header offsets keep their declared references unopened here; the variation
+    /// store stays a raw observation.</summary>
     public ReadStatus TryReadClasses(int numGlyphs, out GdefClassDefinitions? model,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {

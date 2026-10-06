@@ -17,19 +17,19 @@ internal static class GdefLayout
 [BinaryScalar("Version", WireType.UInt32, 0, DataField.Version)]
 [BinaryScalar("GlyphClassDefOffset", WireType.UInt16, GdefLayout.GlyphClassesAt, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = true)]
-// Raw-only policy (OQ-M1c-1): AttachList and LigCaretList stay undeclared observations.
-// Declaring a reference would traverse targets GDEF support does not cover; adding only
-// Offset semantics without a reference would blur "declared relation" with "observed raw
-// value", so neither is claimed here.
-[BinaryScalar("AttachListOffset", WireType.UInt16, GdefLayout.AttachListAt, DataField.Offset)]
-[BinaryScalar("LigCaretListOffset", WireType.UInt16, GdefLayout.LigCaretListAt, DataField.Offset)]
+[BinaryScalar("AttachListOffset", WireType.UInt16, GdefLayout.AttachListAt, DataField.Offset,
+    Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = true)]
+[BinaryScalar("LigCaretListOffset", WireType.UInt16, GdefLayout.LigCaretListAt, DataField.Offset,
+    Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = true)]
 [BinaryScalar("MarkAttachClassDefOffset", WireType.UInt16, GdefLayout.MarkAttachmentClassesAt, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = true)]
 [BinaryRecord("MarkSetsHeader", 2, WhenVersions = new uint[] { GdefLayout.Version12, GdefLayout.Version13 })]
 [BinaryElement("MarkSetsHeader", "MarkGlyphSetsDefOffset", WireType.UInt16, 0, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = true)]
-// Raw-only policy (OQ-M1c-1): the variation store header is read for its raw value under
-// its v1.3 existence domain, but the store itself stays an undeclared observation.
+// Raw-only policy (OQ-M1c-1 ⑥, T5-01 prerequisite registration): the variation store
+// header is read for its raw value under its v1.3 existence domain, but the store itself
+// stays an undeclared observation. Its structures, VariationIndex/0x8000 semantics and
+// typed consumption are hard prerequisites of T5-01 and are deliberately undesigned here.
 [BinaryRecord("VariationStoreHeader", 4, WhenVersions = new uint[] { GdefLayout.Version13 })]
 [BinaryElement("VariationStoreHeader", "ItemVariationStoreOffset", WireType.UInt32, 0, DataField.Offset)]
 // 12 / 14 / 18 by declared version: the classdef references' storage floor.
@@ -49,6 +49,12 @@ internal static class GdefLayout
     Array = "MarkSetsHeader", Origin = ReferenceOrigin.ViewStart,
     NullPolicy = ReferenceNullPolicy.Optional, Minimum = "HeaderEnd",
     WhenVersions = new uint[] { GdefLayout.Version12, GdefLayout.Version13 })]
+[BinaryReference("AttachList", "AttachListOffset", typeof(AttachListView),
+    Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Optional,
+    Minimum = "HeaderEnd")]
+[BinaryReference("LigCaretList", "LigCaretListOffset", typeof(LigCaretListView),
+    Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Optional,
+    Minimum = "HeaderEnd")]
 public readonly ref partial struct GdefView
 {
     private static ReadStatus HeaderEndOf(uint version, DataLocation diagnosticLocation,
