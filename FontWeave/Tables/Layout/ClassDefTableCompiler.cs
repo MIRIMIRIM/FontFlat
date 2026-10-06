@@ -89,14 +89,14 @@ public static class ClassDefTableCompiler
     {
         ArgumentNullException.ThrowIfNull(model);
         int length = Measure(model);
-        // Orderings coexist by registration: this GDEF-chain leaf gains the spec 7.3 budget-first order with M2/T4-02 (OQ-M1e-2).
+        var budget = new BuildBudget(limits);
+        // Fallible hooks and budgets complete before the destination capacity check (spec 7.3; A6 1.5 O4 order).
+        if (!budget.Work(length, model.Location, out diagnostic) ||
+            !budget.Output(length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         if (destination.Length < length)
             return ReadWire.Fail(ReadStatus.DestinationTooSmall, DiagnosticCode.DestinationTooSmall,
                 model.Location.AtLocal(DataField.OutputBytes, 0), out diagnostic,
                 (ulong)destination.Length, (ulong)length);
-        var budget = new BuildBudget(limits);
-        if (!budget.Work(length, model.Location, out diagnostic) ||
-            !budget.Output(length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         WritePlanned(model, destination);
         diagnostic = default;
         return ReadStatus.Done;

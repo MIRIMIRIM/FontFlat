@@ -143,4 +143,55 @@ public static class MarkGlyphSetsTableCompiler
                 destination.Slice((int)plan.Targets[i], CoverageTableCompiler.Measure(set)));
         }
     }
+
+    /// <summary>Wire length of the canonical emission (reference-deduped Coverages);
+    /// budget-free arithmetic for the GDEF root planner (T4-02).</summary>
+    internal static int Measure(MarkGlyphSetsTable model)
+    {
+        int length = MarkGlyphSetsLayout.HeaderLength + MarkGlyphSetsLayout.OffsetStride * model.Sets.Count;
+        var seen = new List<CoverageTable>();
+        for (int i = 0; i < model.Sets.Count; i++)
+        {
+            CoverageTable set = model.Sets[i];
+            bool shared = false;
+            foreach (var candidate in seen)
+            {
+                if (ReferenceEquals(candidate, set)) { shared = true; break; }
+            }
+            if (!shared)
+            {
+                seen.Add(set);
+                length += CoverageTableCompiler.Measure(set);
+            }
+        }
+        return length;
+    }
+
+    /// <summary>Root-writer emission: plans without a budget (the GDEF root owns the
+    /// aggregate budget and preflighted the destination) and writes one body.</summary>
+    internal static void WritePlanned(MarkGlyphSetsTable model, Span<byte> destination)
+    {
+        var offsets = new uint[model.Sets.Count];
+        var unique = new List<CoverageTable>();
+        var targets = new List<uint>();
+        int cursor = MarkGlyphSetsLayout.HeaderLength + MarkGlyphSetsLayout.OffsetStride * model.Sets.Count;
+        for (int i = 0; i < model.Sets.Count; i++)
+        {
+            CoverageTable set = model.Sets[i];
+            int index = unique.FindIndex(candidate => ReferenceEquals(candidate, set));
+            if (index < 0)
+            {
+                offsets[i] = (uint)cursor;
+                targets.Add(offsets[i]);
+                unique.Add(set);
+                cursor += CoverageTableCompiler.Measure(set);
+            }
+            else
+            {
+                offsets[i] = targets[index];
+            }
+        }
+        WritePlanned(model, new Plan(offsets, unique.ToArray(), targets.ToArray(), unique.Count, cursor),
+            destination);
+    }
 }

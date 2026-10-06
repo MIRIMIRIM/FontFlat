@@ -33,6 +33,15 @@ public sealed class CaretValueEntry
 
     internal static CaretValueEntry ForDevice(short coordinate, StaticDeviceTable device,
         DataLocation location) => new(3, coordinate, null, device, location);
+
+    /// <summary>Explicit factories for editor-supplied entries; the format is the
+    /// discriminator and never inferred (T4-02 edit contract).</summary>
+    public static CaretValueEntry Create(short coordinate) => new(1, coordinate, null, null, default);
+
+    public static CaretValueEntry CreatePointIndex(ushort pointIndex) => new(2, null, pointIndex, null, default);
+
+    public static CaretValueEntry CreateDevice(short coordinate, StaticDeviceTable device) =>
+        new(3, coordinate, null, device, default);
 }
 
 /// <summary>One ligated glyph's caret positions in declared order; the sequence
