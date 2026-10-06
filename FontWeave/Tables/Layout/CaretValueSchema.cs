@@ -5,7 +5,8 @@ namespace FontWeave.Tables.Layout;
 
 internal static class CaretValueLayout
 {
-    internal const int PrefixLength = 2, BodyAt = 2, Format3Length = 6, DeviceOffsetAt = 4;
+    internal const int PrefixLength = 2, BodyAt = 2, Format12Length = 4, Format3Length = 6,
+        DeviceOffsetAt = 4;
 }
 
 // Format 3 is the only format with an owned model (the required static Device keeps its

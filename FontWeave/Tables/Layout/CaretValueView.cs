@@ -11,6 +11,17 @@ public readonly ref partial struct CaretValueView
     public ReadStatus TryGetFormat3Header(out Format3HeaderData header, out FontDiagnostic diagnostic) =>
         TryReadFormat3HeaderAt(CaretValueLayout.BodyAt, -1, out header, out diagnostic);
 
+    /// <summary>Format-1 observation for the LigCaretList chain (T4-02 format activation):
+    /// a plain Int16 caret coordinate with no body beyond the format field.</summary>
+    public ReadStatus TryGetFormat1Header(out Format1HeaderData header, out FontDiagnostic diagnostic) =>
+        TryReadFormat1HeaderAt(CaretValueLayout.BodyAt, -1, out header, out diagnostic);
+
+    /// <summary>Format-2 observation for the LigCaretList chain: the contour-point index
+    /// is an opaque UInt16 whose existence domain is the owning glyph's outline, a
+    /// cross-table domain GDEF does not check (OQ-T4-02-2).</summary>
+    public ReadStatus TryGetFormat2Header(out Format2HeaderData header, out FontDiagnostic diagnostic) =>
+        TryReadFormat2HeaderAt(CaretValueLayout.BodyAt, -1, out header, out diagnostic);
+
     public ReadStatus Validate(out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
         var budget = new BuildBudget(limits);
