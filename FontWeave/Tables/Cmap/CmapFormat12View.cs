@@ -4,20 +4,6 @@ namespace FontWeave.Tables;
 
 public readonly ref partial struct CmapFormat12View
 {
-    /// <summary>Bounded local group read; ordering and glyph bounds are checked by Validate.</summary>
-    public ReadStatus TryGetGroup(int ordinal, out GroupData group, out FontDiagnostic diagnostic)
-    {
-        group = default;
-        if (!IsBound)
-            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
-        if (ordinal < 0 || (uint)ordinal >= NumGroups)
-            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.AtLocal(DataField.Count, 12, ordinal), out diagnostic,
-                unchecked((ulong)(long)ordinal), NumGroups);
-        return TryReadGroupAt(CmapFormat12Layout.HeaderLength + 12UL * (uint)ordinal, ordinal,
-            out group, out diagnostic);
-    }
-
     /// <summary>Strict format 12 validation: reserved/language zero, exact length, ordered
     /// non-overlapping scalar-bounded groups and GID bounds against numGlyphs.</summary>
     public ReadStatus Validate(int numGlyphs, out FontDiagnostic diagnostic, BuildLimits? limits = null)
