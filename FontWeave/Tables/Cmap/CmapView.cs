@@ -460,11 +460,11 @@ public readonly ref partial struct CmapView
         var segments = new CmapFormat4Segment[count];
         for (int i = 0; i < count; i++)
         {
-            _ = view.TryGetStartCode(i, out ushort start, out _);
-            _ = view.TryGetEndCode(i, out ushort end, out _);
-            _ = view.TryGetIdDelta(i, out short delta, out _);
-            _ = view.TryGetIdRangeOffset(i, out ushort rangeOffset, out _);
-            segments[i] = new(start, end, delta, rangeOffset);
+            _ = view.TryGetStartCode(i, out var startRow, out _);
+            _ = view.TryGetEndCode(i, out var endRow, out _);
+            _ = view.TryGetIdDelta(i, out var deltaRow, out _);
+            _ = view.TryGetIdRangeOffset(i, out var rangeOffsetRow, out _);
+            segments[i] = new(startRow.Value, endRow.Value, deltaRow.Value, rangeOffsetRow.Value);
         }
         var bytes = view.RawBytes;
         long glyphEntries = (bytes.Length - view.GlyphArrayStart) / 2;

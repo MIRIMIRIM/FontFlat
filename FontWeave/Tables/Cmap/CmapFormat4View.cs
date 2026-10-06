@@ -9,62 +9,13 @@ public readonly ref partial struct CmapFormat4View
 
     internal long GlyphArrayStart => 16 + 8L * SegmentCount;
 
-    /// <summary>Bounded local field reads; positions are subtable-relative and derived from SegCountX2.</summary>
-    public ReadStatus TryGetEndCode(int ordinal, out ushort value, out FontDiagnostic diagnostic)
+    // Contract-version-1 computed hook (StaticDevice precedent): the generated accessors
+    // own the version gate, the count read and the ordinal gates of the four segment
+    // arrays; the same integer truncation as the SegmentCount property above.
+    private static ReadStatus SegmentCountOf(ushort segCountX2, DataLocation diagnosticLocation,
+        out ulong value, out FontDiagnostic diagnostic)
     {
-        value = 0;
-        ReadStatus status = BoundSegmentField(14, ordinal, out ulong position, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = TryReadEndCodeAt(position, ordinal, out var row, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        value = row.Value;
-        return ReadStatus.Done;
-    }
-
-    public ReadStatus TryGetStartCode(int ordinal, out ushort value, out FontDiagnostic diagnostic)
-    {
-        value = 0;
-        ReadStatus status = BoundSegmentField(16 + 2L * SegmentCount, ordinal, out ulong position, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = TryReadStartCodeAt(position, ordinal, out var row, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        value = row.Value;
-        return ReadStatus.Done;
-    }
-
-    public ReadStatus TryGetIdDelta(int ordinal, out short value, out FontDiagnostic diagnostic)
-    {
-        value = 0;
-        ReadStatus status = BoundSegmentField(16 + 4L * SegmentCount, ordinal, out ulong position, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = TryReadIdDeltaAt(position, ordinal, out var row, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        value = row.Value;
-        return ReadStatus.Done;
-    }
-
-    public ReadStatus TryGetIdRangeOffset(int ordinal, out ushort value, out FontDiagnostic diagnostic)
-    {
-        value = 0;
-        ReadStatus status = BoundSegmentField(16 + 6L * SegmentCount, ordinal, out ulong position, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = TryReadIdRangeOffsetAt(position, ordinal, out var row, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        value = row.Value;
-        return ReadStatus.Done;
-    }
-
-    private ReadStatus BoundSegmentField(long start, int ordinal, out ulong position, out FontDiagnostic diagnostic)
-    {
-        position = 0;
-        if (!IsBound)
-            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
-        int count = SegmentCount;
-        if (ordinal < 0 || ordinal >= count)
-            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.AtLocal(DataField.Count, 6, ordinal), out diagnostic,
-                unchecked((ulong)(long)ordinal), (uint)count);
-        position = (ulong)(start + 2L * ordinal);
+        value = segCountX2 / 2ul;
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -137,14 +88,16 @@ public readonly ref partial struct CmapFormat4View
         long totalSpan = 0;
         for (int i = 0; i < count; i++)
         {
-            status = TryGetEndCode(i, out ushort end, out diagnostic);
+            status = TryGetEndCode(i, out var endRow, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            status = TryGetStartCode(i, out ushort start, out diagnostic);
+            status = TryGetStartCode(i, out var startRow, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            status = TryGetIdDelta(i, out short delta, out diagnostic);
+            status = TryGetIdDelta(i, out var deltaRow, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            status = TryGetIdRangeOffset(i, out ushort rangeOffset, out diagnostic);
+            status = TryGetIdRangeOffset(i, out var rangeOffsetRow, out diagnostic);
             if (status != ReadStatus.Done) return status;
+            ushort end = endRow.Value, start = startRow.Value, rangeOffset = rangeOffsetRow.Value;
+            short delta = deltaRow.Value;
             var location = Location.AtLocal(DataField.CharCode, (ulong)(14 + 2L * count) + 2UL * (uint)i, i);
             if (start > end || (i > 0 && start <= previousEnd))
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.OverlappingRange,
