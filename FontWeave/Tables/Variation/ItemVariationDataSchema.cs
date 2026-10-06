@@ -7,6 +7,8 @@ internal static class ItemVariationDataLayout
 {
     internal const int HeaderLength = 6, ItemCountAt = 0, WordDeltaCountAt = 2,
         RegionIndexCountAt = 4, RegionIndexesAt = 6, RegionIndexStride = 2;
+    // The packed wordDeltaCount masks (spec otvarcommonformats.md).
+    internal const ushort LongWordsFlag = 0x8000, WordDeltaCountMask = 0x7FFF;
 }
 
 // One ItemVariationData subtable: itemCount delta-set rows over regionIndexCount
