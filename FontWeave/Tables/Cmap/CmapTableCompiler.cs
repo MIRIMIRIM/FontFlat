@@ -931,9 +931,9 @@ public static class CmapTableCompiler
         if (!budget.Work(length, location, out diagnostic) ||
             !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         var bytes = new byte[length];
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, 0);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(2), length);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), subtable.Language);
+        RequireWritten(CmapFormat0View.TryWriteFormat(bytes, 0, out _, location));
+        RequireWritten(CmapFormat0View.TryWriteLength(bytes, length, out _, location));
+        RequireWritten(CmapFormat0View.TryWriteLanguage(bytes, subtable.Language, out _, location));
         var glyphArray = subtable.GlyphArray;
         for (int i = 0; i < CmapFormat0Layout.GlyphCount; i++)
             bytes[6 + i] = glyphArray[i];
@@ -986,13 +986,15 @@ public static class CmapTableCompiler
         if (!budget.Work(length, location, out diagnostic) ||
             !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         var bytes = new byte[length];
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, 6);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(2), (ushort)length);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), language);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6), firstCode);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(8), (ushort)glyphArray.Length);
+        RequireWritten(CmapFormat6View.TryWriteFormat(bytes, 6, out _, location));
+        RequireWritten(CmapFormat6View.TryWriteLength(bytes, (ushort)length, out _, location));
+        RequireWritten(CmapFormat6View.TryWriteLanguage(bytes, language, out _, location));
+        RequireWritten(CmapFormat6View.TryWriteFirstCode(bytes, firstCode, out _, location));
+        RequireWritten(CmapFormat6View.TryWriteEntryCount(bytes, (ushort)glyphArray.Length, out _, location));
         for (int i = 0; i < glyphArray.Length; i++)
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(10 + 2 * i), glyphArray[i]);
+            RequireWritten(CmapFormat6View.TryWriteGlyphEntryAt(bytes,
+                CmapFormat6Layout.HeaderLength + (ulong)(uint)(2 * i),
+                new CmapFormat6View.GlyphEntryData(i, glyphArray[i]), out _, location));
         output = bytes;
         diagnostic = default;
         return ReadStatus.Done;
@@ -1094,19 +1096,19 @@ public static class CmapTableCompiler
         if (!budget.Work(length, location, out diagnostic) ||
             !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         var bytes = new byte[length];
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, 2);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(2), (ushort)length);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), language);
+        RequireWritten(CmapFormat2View.TryWriteFormat(bytes, 2, out _, location));
+        RequireWritten(CmapFormat2View.TryWriteLength(bytes, (ushort)length, out _, location));
+        RequireWritten(CmapFormat2View.TryWriteLanguage(bytes, language, out _, location));
         for (int i = 0; i < 256; i++)
             BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6 + 2 * i), subHeaderKeys[i]);
         for (int k = 0; k < subHeaders.Length; k++)
         {
             var header = subHeaders[k];
-            int at = 518 + 8 * k;
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at), header.FirstCode);
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 2), header.EntryCount);
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 4), unchecked((ushort)header.IdDelta));
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 6), header.IdRangeOffset);
+            RequireWritten(CmapFormat2View.TryWriteSubHeaderAt(bytes,
+                CmapFormat2Layout.KeysEnd + (ulong)(uint)(8 * k),
+                new CmapFormat2View.SubHeaderData(k, header.FirstCode, header.EntryCount,
+                    header.IdDelta, header.IdRangeOffset),
+                out _, location));
         }
         int glyphStart = 518 + 8 * subHeaders.Length;
         for (int i = 0; i < glyphArray.Length; i++)
@@ -1128,24 +1130,29 @@ public static class CmapTableCompiler
         if (!budget.Work(length, location, out diagnostic) ||
             !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         var bytes = new byte[length];
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, 4);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(2), (ushort)length);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), language);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6), (ushort)(count * 2));
+        RequireWritten(CmapFormat4View.TryWriteFormat(bytes, 4, out _, location));
+        RequireWritten(CmapFormat4View.TryWriteLength(bytes, (ushort)length, out _, location));
+        RequireWritten(CmapFormat4View.TryWriteLanguage(bytes, language, out _, location));
+        RequireWritten(CmapFormat4View.TryWriteSegCountX2(bytes, (ushort)(count * 2), out _, location));
         int power = 1, selector = 0;
         while (power <= count / 2) { power *= 2; selector++; }
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(8), (ushort)(power * 2));
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(10), (ushort)selector);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(12), (ushort)(count * 2 - power * 2));
+        RequireWritten(CmapFormat4View.TryWriteSearchRange(bytes, (ushort)(power * 2), out _, location));
+        RequireWritten(CmapFormat4View.TryWriteEntrySelector(bytes, (ushort)selector, out _, location));
+        RequireWritten(CmapFormat4View.TryWriteRangeShift(bytes, (ushort)(count * 2 - power * 2), out _, location));
         for (int r = 0; r < count; r++)
         {
             var segment = segments[r];
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(14 + 2 * r), segment.EndCode);
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(16 + 2 * count + 2 * r), segment.StartCode);
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(16 + 4 * count + 2 * r),
-                unchecked((ushort)segment.IdDelta));
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(16 + 6 * count + 2 * r),
-                segment.IdRangeOffset);
+            RequireWritten(CmapFormat4View.TryWriteEndCodeAt(bytes,
+                (ulong)(14 + 2 * r), new CmapFormat4View.EndCodeData(r, segment.EndCode), out _, location));
+            RequireWritten(CmapFormat4View.TryWriteStartCodeAt(bytes,
+                (ulong)(16 + 2 * count + 2 * r),
+                new CmapFormat4View.StartCodeData(r, segment.StartCode), out _, location));
+            RequireWritten(CmapFormat4View.TryWriteIdDeltaAt(bytes,
+                (ulong)(16 + 4 * count + 2 * r),
+                new CmapFormat4View.IdDeltaData(r, segment.IdDelta), out _, location));
+            RequireWritten(CmapFormat4View.TryWriteIdRangeOffsetAt(bytes,
+                (ulong)(16 + 6 * count + 2 * r),
+                new CmapFormat4View.IdRangeOffsetData(r, segment.IdRangeOffset), out _, location));
         }
         for (int g = 0; g < glyphArray.Length; g++)
             BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(16 + 8 * count + 2 * g), glyphArray[g]);
@@ -1163,14 +1170,15 @@ public static class CmapTableCompiler
         if (!budget.Work(length, location, out diagnostic) ||
             !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         var bytes = new byte[length];
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, 12);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(4), (uint)length);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(12), (uint)runs.Count);
+        RequireWritten(CmapFormat12View.TryWriteFormat(bytes, 12, out _, location));
+        RequireWritten(CmapFormat12View.TryWriteLength(bytes, (uint)length, out _, location));
+        RequireWritten(CmapFormat12View.TryWriteNumGroups(bytes, (uint)runs.Count, out _, location));
         for (int r = 0; r < runs.Count; r++)
         {
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16 + 12 * r), runs[r].Start);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(20 + 12 * r), runs[r].End);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(24 + 12 * r), runs[r].Glyph);
+            RequireWritten(CmapFormat12View.TryWriteGroupAt(bytes,
+                CmapFormat12Layout.HeaderLength + (ulong)(uint)(12 * r),
+                new CmapFormat12View.GroupData(r, runs[r].Start, runs[r].End, runs[r].Glyph),
+                out _, location));
         }
         output = bytes;
         diagnostic = default;
@@ -1197,14 +1205,16 @@ public static class CmapTableCompiler
         if (!budget.Work(length, location, out diagnostic) ||
             !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         var bytes = new byte[length];
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, 13);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(4), (uint)length);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(12), (uint)runs.Count);
+        RequireWritten(CmapFormat13View.TryWriteFormat(bytes, 13, out _, location));
+        RequireWritten(CmapFormat13View.TryWriteLength(bytes, (uint)length, out _, location));
+        RequireWritten(CmapFormat13View.TryWriteNumGroups(bytes, (uint)runs.Count, out _, location));
         for (int r = 0; r < runs.Count; r++)
         {
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16 + 12 * r), runs[r].StartCharCode);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(20 + 12 * r), runs[r].EndCharCode);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(24 + 12 * r), runs[r].StartGlyphID);
+            RequireWritten(CmapFormat13View.TryWriteGroupAt(bytes,
+                CmapFormat13Layout.HeaderLength + (ulong)(uint)(12 * r),
+                new CmapFormat13View.GroupData(r, runs[r].StartCharCode, runs[r].EndCharCode,
+                    runs[r].StartGlyphID),
+                out _, location));
         }
         output = bytes;
         diagnostic = default;
@@ -1273,18 +1283,18 @@ public static class CmapTableCompiler
         if (!budget.Work(length, location, out diagnostic) ||
             !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         var bytes = new byte[length];
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, 8);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(4), (uint)length);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(8), language);
+        RequireWritten(CmapFormat8View.TryWriteFormat(bytes, 8, out _, location));
+        RequireWritten(CmapFormat8View.TryWriteLength(bytes, (uint)length, out _, location));
+        RequireWritten(CmapFormat8View.TryWriteLanguage(bytes, language, out _, location));
         is32.CopyTo(bytes.AsSpan(CmapFormat8Layout.Is32Offset));
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(CmapFormat8Layout.NumGroupsOffset),
-            (uint)groups.Length);
+        RequireWritten(CmapFormat8View.TryWriteNumGroups(bytes, (uint)groups.Length, out _, location));
         for (int r = 0; r < groups.Length; r++)
         {
-            int at = CmapFormat8Layout.HeaderLength + 12 * r;
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(at), groups[r].StartCharCode);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(at + 4), groups[r].EndCharCode);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(at + 8), groups[r].StartGlyphID);
+            RequireWritten(CmapFormat8View.TryWriteGroupAt(bytes,
+                CmapFormat8Layout.HeaderLength + (ulong)(uint)(12 * r),
+                new CmapFormat8View.GroupData(r, groups[r].StartCharCode, groups[r].EndCharCode,
+                    groups[r].StartGlyphID),
+                out _, location));
         }
         output = bytes;
         diagnostic = default;
@@ -1343,13 +1353,15 @@ public static class CmapTableCompiler
         if (!budget.Work(length, location, out diagnostic) ||
             !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         var bytes = new byte[length];
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, 10);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(4), (uint)length);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(8), language);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(12), start);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16), (uint)glyphArray.Length);
+        RequireWritten(CmapFormat10View.TryWriteFormat(bytes, 10, out _, location));
+        RequireWritten(CmapFormat10View.TryWriteLength(bytes, (uint)length, out _, location));
+        RequireWritten(CmapFormat10View.TryWriteLanguage(bytes, language, out _, location));
+        RequireWritten(CmapFormat10View.TryWriteStartCharCode(bytes, start, out _, location));
+        RequireWritten(CmapFormat10View.TryWriteNumChars(bytes, (uint)glyphArray.Length, out _, location));
         for (int i = 0; i < glyphArray.Length; i++)
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(20 + 2 * i), glyphArray[i]);
+            RequireWritten(CmapFormat10View.TryWriteGlyphEntryAt(bytes,
+                CmapFormat10Layout.HeaderLength + (ulong)(uint)(2 * i),
+                new CmapFormat10View.GlyphEntryData(i, glyphArray[i]), out _, location));
         output = bytes;
         diagnostic = default;
         return ReadStatus.Done;
@@ -1385,15 +1397,17 @@ public static class CmapTableCompiler
         if (!budget.Work(length + 24L * canonical.Count, location, out diagnostic) ||
             !budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         var bytes = new byte[length];
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, 14);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(2), (uint)length);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(6), (uint)canonical.Count);
+        RequireWritten(CmapFormat14View.TryWriteFormat(bytes, 14, out _, location));
+        RequireWritten(CmapFormat14View.TryWriteLength(bytes, (uint)length, out _, location));
+        RequireWritten(CmapFormat14View.TryWriteNumVarSelectorRecords(bytes,
+            (uint)canonical.Count, out _, location));
         for (int i = 0; i < canonical.Count; i++)
         {
-            int record = 10 + 11 * i;
-            WriteUInt24(bytes.AsSpan(record), canonical[i].VarSelector);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(record + 3), (uint)defaultOffsets[i]);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(record + 7), (uint)nonDefaultOffsets[i]);
+            RequireWritten(CmapFormat14View.TryWriteVarSelectorAt(bytes,
+                CmapFormat14Layout.HeaderLength + (ulong)(uint)(11 * i),
+                new CmapFormat14View.VarSelectorData(i, canonical[i].VarSelector,
+                    (uint)defaultOffsets[i], (uint)nonDefaultOffsets[i]),
+                out _, location));
         }
         for (int i = 0; i < canonical.Count; i++)
         {
@@ -1406,8 +1420,11 @@ public static class CmapTableCompiler
                 for (int r = 0; r < selector.DefaultRanges.Length; r++)
                 {
                     var range = selector.DefaultRanges[r];
-                    WriteUInt24(bytes.AsSpan(atTable + 4 + 4 * r), range.StartUnicodeValue);
-                    bytes[atTable + 4 + 4 * r + 3] = range.AdditionalCount;
+                    RequireWritten(CmapFormat14View.TryWriteDefaultRangeAt(bytes,
+                        (ulong)(atTable + 4 + 4 * r),
+                        new CmapFormat14View.DefaultRangeData(r, range.StartUnicodeValue,
+                            range.AdditionalCount),
+                        out _, location));
                 }
             }
             if (nonDefaultOffsets[i] != 0)
@@ -1418,9 +1435,10 @@ public static class CmapTableCompiler
                 for (int r = 0; r < selector.NonDefaultMappings.Length; r++)
                 {
                     var mapping = selector.NonDefaultMappings[r];
-                    WriteUInt24(bytes.AsSpan(atTable + 4 + 5 * r), mapping.UnicodeValue);
-                    BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(atTable + 4 + 5 * r + 3),
-                        mapping.GlyphId);
+                    RequireWritten(CmapFormat14View.TryWriteUvsMappingAt(bytes,
+                        (ulong)(atTable + 4 + 5 * r),
+                        new CmapFormat14View.UvsMappingData(r, mapping.UnicodeValue, mapping.GlyphId),
+                        out _, location));
                 }
             }
         }
@@ -1452,17 +1470,17 @@ public static class CmapTableCompiler
         return [.. merged];
     }
 
-    private static void WriteUInt24(Span<byte> destination, uint value)
+    // Same contract as the Vorg/Hmtx emission paths: a preflighted write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
     {
-        destination[0] = (byte)((value >> 16) & 0xFF);
-        destination[1] = (byte)((value >> 8) & 0xFF);
-        destination[2] = (byte)(value & 0xFF);
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted cmap write failed.");
     }
 
     private static void WriteShell(CmapTable model, byte[]?[] payloads, Span<byte> bytes)
     {
-        BinaryPrimitives.WriteUInt16BigEndian(bytes, 0);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(2), (ushort)model.Records.Length);
+        RequireWritten(CmapView.TryWriteVersion(bytes, 0, out _, model.Location));
+        RequireWritten(CmapView.TryWriteNumTables(bytes, (ushort)model.Records.Length, out _, model.Location));
         long at = CmapLayout.HeaderLength + 8L * model.Records.Length;
         var offsets = new long[payloads.Length];
         for (int j = 0; j < payloads.Length; j++)
@@ -1473,10 +1491,11 @@ public static class CmapTableCompiler
         for (int i = 0; i < model.Records.Length; i++)
         {
             var record = model.Records[i];
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(4 + 8 * i, 2), record.PlatformId);
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(6 + 8 * i, 2), record.EncodingId);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(8 + 8 * i, 4),
-                checked((uint)offsets[record.SubtableIndex]));
+            RequireWritten(CmapView.TryWriteEncodingRecordAt(bytes,
+                CmapLayout.HeaderLength + (ulong)(uint)(8 * i),
+                new CmapView.EncodingRecordData(i, record.PlatformId, record.EncodingId,
+                    checked((uint)offsets[record.SubtableIndex])),
+                out _, model.Location));
         }
         for (int j = 0; j < payloads.Length; j++)
             payloads[j]!.CopyTo(bytes.Slice((int)offsets[j], payloads[j]!.Length));
