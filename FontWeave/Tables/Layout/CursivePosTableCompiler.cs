@@ -85,6 +85,16 @@ public static class CursivePosTableCompiler
             + (anchor.YDevice is null ? 0 : StaticDeviceTableCompiler.Measure(anchor.YDevice)),
     };
 
+    // The body-only stride: WriteAnchor emits just the anchor header while devices are
+    // placed as separate leaves, so placement and the plan length must advance by the
+    // header size, never by the composite MeasureAnchor.
+    private static int MeasureAnchorBody(AnchorTable anchor) => anchor.Format switch
+    {
+        1 => AnchorLayout.MinimumHeader,
+        2 => AnchorLayout.MinimumHeader + 2,
+        _ => AnchorLayout.Format3Length,
+    };
+
     public static ReadStatus TryCompile(CursivePosTable model, out byte[]? output,
         out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
         TryCompile(model, out output, out diagnostic, new BuildBudget(limits));
@@ -152,10 +162,10 @@ public static class CursivePosTableCompiler
             {
                 if (anchor is not AnchorTable body || anchorTargets.ContainsKey(body)) continue;
                 if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
-                int anchorLength = MeasureAnchor(body);
-                anchorTargets.Add(body, 0);
-                anchors.Add(new(body, 0));
-                leafBytes += anchorLength;
+                    int anchorLength = MeasureAnchorBody(body);
+                    anchorTargets.Add(body, 0);
+                    anchors.Add(new(body, 0));
+                    leafBytes += anchorLength;
                 if (body.XDevice is not null && !deviceTargets.ContainsKey(body.XDevice))
                 {
                     deviceTargets.Add(body.XDevice, 0);
@@ -178,19 +188,19 @@ public static class CursivePosTableCompiler
         // reach; every anchor offset is preflighted through the generated helpers.
         int largest = -1;
         for (int i = 0; i < anchors.Count; i++)
-            if (largest < 0 || MeasureAnchor(anchors[i].Model) > MeasureAnchor(anchors[largest].Model))
+            if (largest < 0 || MeasureAnchorBody(anchors[i].Model) > MeasureAnchorBody(anchors[largest].Model))
                 largest = i;
         long at = anchorBase;
         for (int i = 0; i < anchors.Count; i++)
         {
             if (i == largest) continue;
             anchors[i].Position = (int)at;
-            at += MeasureAnchor(anchors[i].Model);
+            at += MeasureAnchorBody(anchors[i].Model);
         }
         if (largest >= 0)
         {
             anchors[largest].Position = (int)at;
-            at += MeasureAnchor(anchors[largest].Model);
+            at += MeasureAnchorBody(anchors[largest].Model);
         }
         // The record slot offsets were placed largest-body-last (SinglePos canon), so
         // the last anchor end is the widest Offset16 the EntryExit records must hold;
@@ -267,7 +277,7 @@ public static class CursivePosTableCompiler
     private static void WriteAnchor(AnchorTable anchor, int at, CursivePosPartPlan plan,
         Span<byte> destination, DataLocation location)
     {
-        var slice = destination.Slice(at, MeasureAnchor(anchor)); // window only; devices emit separately
+        var slice = destination.Slice(at, MeasureAnchorBody(anchor)); // window only; devices emit separately
         CoverageTableCompiler.RequireWritten(AnchorView.TryWriteAnchorFormat(slice,
             anchor.Format, out _, location));
         CoverageTableCompiler.RequireWritten(AnchorView.TryWriteXCoordinate(slice,
