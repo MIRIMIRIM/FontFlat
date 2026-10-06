@@ -26,7 +26,7 @@ internal static class LookupLayout
     Semantic = NumberSemantic.Offset, DiagnosticField = DataField.Offset,
     DiagnosticSource = "SubtableCount")]
 // OpenOnly scan policy (OQ-M1c-8): the subtable bodies stay the semantic chain's
-// property, so the scan only proves the header binding; no Follow - none of the six
+// property, so the scan only proves the header binding; no Follow - none of the eight
 // branch targets has enabled scan, and a Follow declaration would be FWG005.
 [BinaryReference("SingleSubst", "SubtableOffset", typeof(SingleSubstView),
     Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gsub },
@@ -55,9 +55,22 @@ internal static class LookupLayout
     Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gsub },
     Selector = "LookupType", SelectorValues = new uint[] { 7 }, Minimum = "SubtablePrefix",
     Scan = ReferenceScan.OpenOnly)]
+// T4-05: the GPOS pair/cursive branches share the SinglePos branch geometry exactly
+// (OQ-M1c-8 reasoning: leaf semantics stay in the semantic chain, the scan only proves
+// header binding). GPOS type 9 extension has no branch here and is never unwrapped -
+// its metadata-only boundary is pinned on both the read and write sides (T4-06).
+[BinaryReference("PairPos", "SubtableOffset", typeof(PairPosView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gpos },
+    Selector = "LookupType", SelectorValues = new uint[] { 2 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
+[BinaryReference("CursivePos", "SubtableOffset", typeof(CursivePosView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gpos },
+    Selector = "LookupType", SelectorValues = new uint[] { 3 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
 // The remainder set is now type not in {1,2,3,4,7} for GSUB (contextual 5/6, reverse 8
-// and unknown values - T4-04's raw boundary) plus every non-type-1 GPOS value (GPOS
-// type 7 has no extension branch here; GPOS type 9 is T4-06's structure, OQ-T4-03-8).
+// and unknown values - T4-04's raw boundary) plus every GPOS value outside {1,2,3}
+// (types 4/5/6/7/8 keep the typed refusal in place, W11's pin; type 7 has no GPOS
+// extension branch and type 9 is T4-06's structure, OQ-T4-03-8) and unknown values.
 // The raw-observe/typed-refuse layering of unknown types is unchanged.
 [BinaryReference("UnknownTypeRaw", "SubtableOffset", Array = "SubtableOffsetRecord",
     Selector = "LookupType", DefaultRaw = true, Scan = ReferenceScan.Observe)]
