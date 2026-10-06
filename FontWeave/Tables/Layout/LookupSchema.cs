@@ -26,8 +26,8 @@ internal static class LookupLayout
     Semantic = NumberSemantic.Offset, DiagnosticField = DataField.Offset,
     DiagnosticSource = "SubtableCount")]
 // OpenOnly scan policy (OQ-M1c-8): the subtable bodies stay the semantic chain's
-// property, so the scan only proves the header binding; no Follow - SingleSubst and
-// SinglePos have not enabled scan, and a Follow declaration would be FWG005.
+// property, so the scan only proves the header binding; no Follow - none of the six
+// branch targets has enabled scan, and a Follow declaration would be FWG005.
 [BinaryReference("SingleSubst", "SubtableOffset", typeof(SingleSubstView),
     Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gsub },
     Selector = "LookupType", SelectorValues = new uint[] { 1 }, Minimum = "SubtablePrefix",
@@ -36,6 +36,29 @@ internal static class LookupLayout
     Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gpos },
     Selector = "LookupType", SelectorValues = new uint[] { 1 }, Minimum = "SubtablePrefix",
     Scan = ReferenceScan.OpenOnly)]
+// T4-03: the GSUB direct substitution branches (types 2/3/4) and the type-7 extension
+// branch share the SingleSubst branch geometry exactly (M1c OQ-M1c-8 reasoning: leaf
+// semantics stay in the semantic chain, the scan only proves header binding).
+[BinaryReference("MultipleSubst", "SubtableOffset", typeof(MultipleSubstView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gsub },
+    Selector = "LookupType", SelectorValues = new uint[] { 2 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
+[BinaryReference("AlternateSubst", "SubtableOffset", typeof(AlternateSubstView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gsub },
+    Selector = "LookupType", SelectorValues = new uint[] { 3 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
+[BinaryReference("LigatureSubst", "SubtableOffset", typeof(LigatureSubstView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gsub },
+    Selector = "LookupType", SelectorValues = new uint[] { 4 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
+[BinaryReference("ExtensionSubst", "SubtableOffset", typeof(ExtensionSubstView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gsub },
+    Selector = "LookupType", SelectorValues = new uint[] { 7 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
+// The remainder set is now type not in {1,2,3,4,7} for GSUB (contextual 5/6, reverse 8
+// and unknown values - T4-04's raw boundary) plus every non-type-1 GPOS value (GPOS
+// type 7 has no extension branch here; GPOS type 9 is T4-06's structure, OQ-T4-03-8).
+// The raw-observe/typed-refuse layering of unknown types is unchanged.
 [BinaryReference("UnknownTypeRaw", "SubtableOffset", Array = "SubtableOffsetRecord",
     Selector = "LookupType", DefaultRaw = true, Scan = ReferenceScan.Observe)]
 public readonly ref partial struct LookupView
