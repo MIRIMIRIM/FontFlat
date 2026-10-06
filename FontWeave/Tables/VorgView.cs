@@ -4,22 +4,6 @@ namespace FontWeave.Tables;
 
 public readonly ref partial struct VorgView
 {
-    /// <summary>Bounded local record access, without claiming sortedness or glyph-count validity.</summary>
-    public ReadStatus TryGetOriginRecord(int ordinal, out OriginRecordData record,
-        out FontDiagnostic diagnostic)
-    {
-        record = default;
-        if (!IsBound)
-            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView,
-                Location, out diagnostic);
-        if (ordinal < 0 || ordinal >= NumVertOriginYMetrics)
-            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.At(DataField.Count, 6, ordinal), out diagnostic,
-                unchecked((ulong)(long)ordinal), NumVertOriginYMetrics);
-        return TryReadOriginRecordAt(VorgLayout.HeaderLength + (ulong)ordinal * VorgLayout.RecordStride,
-            ordinal, out record, out diagnostic);
-    }
-
     public ReadStatus Validate(VorgContext context, out FontDiagnostic diagnostic)
     {
         ArgumentNullException.ThrowIfNull(context);
