@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using System.Text;
 using FontWeave.Core;
 
@@ -163,30 +162,44 @@ public static class PostTableCompiler
 
     private static void Write(PostTable model, Span<byte> bytes)
     {
+        // After the capacity preflight these generated writers cannot fail; a failure
+        // is a writer contract bug and surfaces loudly. The CustomNames Pascal segment
+        // below stays hand-written: variable-length name semantics, not schema layout.
         var h = model.Header;
-        BinaryPrimitives.WriteUInt32BigEndian(bytes, model.Version);
-        BinaryPrimitives.WriteInt32BigEndian(bytes.Slice(4), h.ItalicAngleRaw);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(8), h.UnderlinePosition);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.Slice(10), h.UnderlineThickness);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(12), h.IsFixedPitch);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(16), h.MinMemType42);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(20), h.MaxMemType42);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(24), h.MinMemType1);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(28), h.MaxMemType1);
+        DataLocation location = model.Location;
+        RequireWritten(PostView.TryWriteVersion(bytes, model.Version, out _, location));
+        RequireWritten(PostView.TryWriteItalicAngleRaw(bytes, h.ItalicAngleRaw, out _, location));
+        RequireWritten(PostView.TryWriteUnderlinePosition(bytes, h.UnderlinePosition, out _, location));
+        RequireWritten(PostView.TryWriteUnderlineThickness(bytes, h.UnderlineThickness, out _, location));
+        RequireWritten(PostView.TryWriteIsFixedPitch(bytes, h.IsFixedPitch, out _, location));
+        RequireWritten(PostView.TryWriteMinMemType42(bytes, h.MinMemType42, out _, location));
+        RequireWritten(PostView.TryWriteMaxMemType42(bytes, h.MaxMemType42, out _, location));
+        RequireWritten(PostView.TryWriteMinMemType1(bytes, h.MinMemType1, out _, location));
+        RequireWritten(PostView.TryWriteMaxMemType1(bytes, h.MaxMemType1, out _, location));
         if (model.NameKind is PostNameKind.Standard258 or PostNameKind.NoNames) return;
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(32), model.NumGlyphs!.Value);
+        RequireWritten(PostView.TryWriteNumGlyphs(bytes, model.NumGlyphs!.Value, out _, location));
         if (model.NameKind == PostNameKind.SignedOffsets)
         {
-            for (int i = 0; i < model.SignedOffsets.Length; i++) bytes[34 + i] = unchecked((byte)model.SignedOffsets[i]);
+            for (int i = 0; i < model.SignedOffsets.Length; i++)
+                RequireWritten(PostView.TryWriteGlyphOffsetAt(bytes, 34UL + (uint)i,
+                    new PostView.GlyphOffsetData(i, model.SignedOffsets[i]), out _, location));
             return;
         }
         for (int i = 0; i < model.GlyphNameIndices.Length; i++)
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(34 + 2 * i), model.GlyphNameIndices[i]);
+            RequireWritten(PostView.TryWriteGlyphNameIndexAt(bytes, 34UL + 2UL * (uint)i,
+                new PostView.GlyphNameIndexData(i, model.GlyphNameIndices[i]), out _, location));
         int at = 34 + 2 * model.GlyphNameIndices.Length;
         foreach (string name in model.CustomNames)
         {
             bytes[at++] = (byte)name.Length;
             at += Encoding.ASCII.GetBytes(name, bytes.Slice(at));
         }
+    }
+
+    // Same contract as the meta emission path: a preflighted write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
+    {
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted post write failed.");
     }
 }

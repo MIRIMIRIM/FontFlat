@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using FontWeave.Core;
 
 namespace FontWeave.Tables;
@@ -16,7 +15,7 @@ public static class PcltTableCompiler
             !budget.Buffer(PcltLayout.Length, model.Location, out diagnostic))
             return ReadStatus.ResourceLimit;
         byte[] bytes = new byte[PcltLayout.Length];
-        Write(model.Values, bytes);
+        Write(model.Values, model.Location, bytes);
         budget.RecordCompiledTable(bytes.Length);
         output = bytes;
         diagnostic = default;
@@ -31,27 +30,43 @@ public static class PcltTableCompiler
             return ReadWire.Fail(ReadStatus.DestinationTooSmall, DiagnosticCode.DestinationTooSmall,
                 model.Location.At(DataField.OutputBytes, 0), out diagnostic,
                 (ulong)destination.Length, PcltLayout.Length);
-        Write(model.Values, destination.Slice(0, PcltLayout.Length));
+        Write(model.Values, model.Location, destination.Slice(0, PcltLayout.Length));
         diagnostic = default;
         return ReadStatus.Done;
     }
 
-    private static void Write(PcltValues v, Span<byte> bytes)
+    private static void Write(PcltValues v, DataLocation location, Span<byte> bytes)
     {
-        BinaryPrimitives.WriteUInt32BigEndian(bytes, PcltLayout.Version);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(4), v.FontNumber);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(8), v.Pitch);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(10), v.XHeight);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(12), v.Style);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(14), v.TypeFamily);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(16), v.CapHeight);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(18), v.SymbolSet);
+        // After the capacity preflight these generated writers cannot fail; a failure
+        // is a writer contract bug and surfaces loudly. The 64-bit character
+        // complement splits into the two declared big-endian dwords at 36/40, which is
+        // byte-identical to the single 8-byte write it replaces. The Typeface and
+        // FileName ASCII narrowing stays a byte loop: sixteen/six generated U8 writer
+        // calls would be churn without a structural win (OQ-M2a-2 keep-churn).
+        RequireWritten(PcltView.TryWriteVersionRaw(bytes, PcltLayout.Version, out _, location));
+        RequireWritten(PcltView.TryWriteFontNumber(bytes, v.FontNumber, out _, location));
+        RequireWritten(PcltView.TryWritePitch(bytes, v.Pitch, out _, location));
+        RequireWritten(PcltView.TryWriteXHeight(bytes, v.XHeight, out _, location));
+        RequireWritten(PcltView.TryWriteStyle(bytes, v.Style, out _, location));
+        RequireWritten(PcltView.TryWriteTypeFamily(bytes, v.TypeFamily, out _, location));
+        RequireWritten(PcltView.TryWriteCapHeight(bytes, v.CapHeight, out _, location));
+        RequireWritten(PcltView.TryWriteSymbolSet(bytes, v.SymbolSet, out _, location));
         for (int i = 0; i < 16; i++) bytes[20 + i] = (byte)v.Typeface[i];
-        BinaryPrimitives.WriteUInt64BigEndian(bytes.Slice(36), v.CharacterComplement);
+        RequireWritten(PcltView.TryWriteCharacterComplementHigh(bytes,
+            unchecked((uint)(v.CharacterComplement >> 32)), out _, location));
+        RequireWritten(PcltView.TryWriteCharacterComplementLow(bytes,
+            unchecked((uint)v.CharacterComplement), out _, location));
         for (int i = 0; i < 6; i++) bytes[44 + i] = (byte)v.FileName[i];
-        bytes[50] = unchecked((byte)v.StrokeWeight);
-        bytes[51] = unchecked((byte)v.WidthType);
-        bytes[52] = v.SerifStyle;
-        bytes[53] = 0;
+        RequireWritten(PcltView.TryWriteStrokeWeight(bytes, v.StrokeWeight, out _, location));
+        RequireWritten(PcltView.TryWriteWidthType(bytes, v.WidthType, out _, location));
+        RequireWritten(PcltView.TryWriteSerifStyle(bytes, v.SerifStyle, out _, location));
+        RequireWritten(PcltView.TryWriteReserved(bytes, 0, out _, location));
+    }
+
+    // Same contract as the meta emission path: a preflighted write failing is a
+    // mechanical bug, not a caller-facing outcome; it must never be silently discarded.
+    private static void RequireWritten(ReadStatus status)
+    {
+        if (status != ReadStatus.Done) throw new InvalidOperationException("A preflighted pclt write failed.");
     }
 }
