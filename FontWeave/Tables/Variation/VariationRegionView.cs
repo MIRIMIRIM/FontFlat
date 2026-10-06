@@ -105,7 +105,7 @@ public readonly ref partial struct VariationRegionListView
     // The ordered triple domain (spec RegionAxisCoordinates): range, ordering, and the
     // sign rule whose one exception is peak == 0 with start negative-or-zero and end
     // positive-or-zero.
-    private static ReadStatus ValidateAxisTriple(short start, short peak, short end,
+    internal static ReadStatus ValidateAxisTriple(short start, short peak, short end,
         DataLocation location, out FontDiagnostic diagnostic)
     {
         if (start < -F2Dot14One || start > F2Dot14One)

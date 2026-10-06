@@ -107,4 +107,77 @@ public sealed class HvarTable
         return Store.TryGetDeltaSet(index.Outer, index.Inner, out hasVariation, out deltas,
             out diagnostic, limits);
     }
+
+    /// <summary>Replaces one region's axis triples through the store owner; the row
+    /// layout, width classes and maps never move (card 4 edit API). The glyph-count
+    /// context and source identity are preserved.</summary>
+    public ReadStatus TryWithRegionAxes(int region, ReadOnlySpan<VariationRegionAxis> axes,
+        out HvarTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        ReadStatus status = VariationStoreTableCompiler.TryWithRegionAxes(Store, region, axes,
+            out var store, out diagnostic, limits);
+        if (status != ReadStatus.Done) return status;
+        return Rebuild(store!, AdvanceWidthMapping, LsbMapping, RsbMapping, out updated,
+            out diagnostic, limits);
+    }
+
+    /// <summary>Replaces one delta row's values; the owning subtable's width classes
+    /// are kept and their domains enforced per slot (OQ-T5-01-5 finite refusal).</summary>
+    public ReadStatus TryWithDeltaRow(int outer, int inner, ReadOnlySpan<int> deltas,
+        out HvarTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        ReadStatus status = VariationStoreTableCompiler.TryWithDeltaRow(Store, outer, inner,
+            deltas, out var store, out diagnostic, limits);
+        if (status != ReadStatus.Done) return status;
+        return Rebuild(store!, AdvanceWidthMapping, LsbMapping, RsbMapping, out updated,
+            out diagnostic, limits);
+    }
+
+    /// <summary>Replaces one logical map entry; the target (outer, inner) pair must be
+    /// representable in the map's own entryFormat (card 4 edit API, OQ-T5-01-5).</summary>
+    public ReadStatus TryWithMapping(HvarMetric metric, int entryIndex, DeltaSetIndex entry,
+        out HvarTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        DeltaSetIndexMapTable? map = metric switch
+        {
+            HvarMetric.Advance => AdvanceWidthMapping,
+            HvarMetric.Lsb => LsbMapping,
+            _ => RsbMapping,
+        };
+        if (map is null)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Offset, metric switch
+                {
+                    HvarMetric.Advance => HvarLayout.AdvanceMapAt,
+                    HvarMetric.Lsb => HvarLayout.LsbMapAt,
+                    _ => HvarLayout.RsbMapAt,
+                }), out diagnostic, (ulong)metric, 0);
+        ReadStatus status = DeltaSetIndexMapTableCompiler.TryWithMapping(map, entryIndex, entry,
+            out var replaced, out diagnostic, limits);
+        if (status != ReadStatus.Done) return status;
+        return Rebuild(Store, metric switch
+        {
+            HvarMetric.Advance => replaced,
+            _ => AdvanceWidthMapping,
+        }, metric switch
+        {
+            HvarMetric.Lsb => replaced,
+            _ => LsbMapping,
+        }, metric switch
+        {
+            HvarMetric.Rsb => replaced,
+            _ => RsbMapping,
+        }, out updated, out diagnostic, limits);
+    }
+
+    // Re-roots the edited children under the same glyph-count context and source
+    // identity through the factory's guards - the root itself is not rebuilt.
+    private ReadStatus Rebuild(VariationStoreTable store, DeltaSetIndexMapTable? advanceMap,
+        DeltaSetIndexMapTable? lsbMap, DeltaSetIndexMapTable? rsbMap, out HvarTable? updated,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        HvarTableCompiler.TryCreate(store, advanceMap, lsbMap, rsbMap, Store.AxisCount,
+            NumGlyphs, out updated, out diagnostic, limits, Location);
 }
