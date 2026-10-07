@@ -136,6 +136,9 @@ public readonly ref partial struct LookupView
             {
                 2 => ReadPairPositions(parsed, out model, out diagnostic, budget),
                 3 => ReadCursiveRules(parsed, out model, out diagnostic, budget),
+                4 => ReadMarkBases(parsed, out model, out diagnostic, budget),
+                5 => ReadMarkLigs(parsed, out model, out diagnostic, budget),
+                6 => ReadMarkMarks(parsed, out model, out diagnostic, budget),
                 _ => ReadPositions(parsed, out model, out diagnostic, budget),
             };
         switch (parsed.LookupType)
@@ -265,9 +268,97 @@ public readonly ref partial struct LookupView
         model = header.WithDecodedCursive(subtables); diagnostic = default; return ReadStatus.Done;
     }
 
-    // Types 2/3/4 share the type-1 subtable walk shape exactly: an alias cache keyed by
-    // the physical parent-local offset, one shared Coverage cache per Lookup span and a
-    // Buffer(16) per unique subtable, with the leaf chains owning their semantics.
+    // The T4-06 mark-family walks keep the cursive walk's shape exactly: an alias
+    // cache keyed by the physical parent-local offset, one shared per-Lookup read
+    // state per Lookup span (its facts caches dedupe Coverage/Anchor/Device bodies
+    // across the whole mark side) and a Buffer(16) per unique subtable.
+    private ReadStatus ReadMarkBases(LookupTable header, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        int count = header.SubtableCount;
+        if (!budget.Work(count, Location, out diagnostic) ||
+            !budget.Buffer(8L * count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        MarkBasePosTable[] subtables = new MarkBasePosTable[count];
+        var children = new Dictionary<ushort, MarkBasePosTable>();
+        var state = new CursivePosReadState(header.NumGlyphs, Location, _data.Length, true);
+        for (int i = 0; i < count; i++)
+        {
+            ushort offset = header.SourceSubtableOffsets[i];
+            if (!children.TryGetValue(offset, out var childModel))
+            {
+                ReadStatus status = TryOpenMarkBasePos(header.Kind, i, out var child,
+                    out _, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = child.TryRead(header.NumGlyphs, out childModel, out diagnostic, budget,
+                    state, offset);
+                if (status != ReadStatus.Done) return status;
+                if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                children.Add(offset, childModel!);
+            }
+            subtables[i] = childModel!;
+        }
+        model = header.WithDecodedMarkBases(subtables); diagnostic = default; return ReadStatus.Done;
+    }
+
+    private ReadStatus ReadMarkLigs(LookupTable header, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        int count = header.SubtableCount;
+        if (!budget.Work(count, Location, out diagnostic) ||
+            !budget.Buffer(8L * count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        MarkLigPosTable[] subtables = new MarkLigPosTable[count];
+        var children = new Dictionary<ushort, MarkLigPosTable>();
+        var state = new CursivePosReadState(header.NumGlyphs, Location, _data.Length, true);
+        for (int i = 0; i < count; i++)
+        {
+            ushort offset = header.SourceSubtableOffsets[i];
+            if (!children.TryGetValue(offset, out var childModel))
+            {
+                ReadStatus status = TryOpenMarkLigPos(header.Kind, i, out var child,
+                    out _, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = child.TryRead(header.NumGlyphs, out childModel, out diagnostic, budget,
+                    state, offset);
+                if (status != ReadStatus.Done) return status;
+                if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                children.Add(offset, childModel!);
+            }
+            subtables[i] = childModel!;
+        }
+        model = header.WithDecodedMarkLigs(subtables); diagnostic = default; return ReadStatus.Done;
+    }
+
+    private ReadStatus ReadMarkMarks(LookupTable header, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        int count = header.SubtableCount;
+        if (!budget.Work(count, Location, out diagnostic) ||
+            !budget.Buffer(8L * count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        MarkMarkPosTable[] subtables = new MarkMarkPosTable[count];
+        var children = new Dictionary<ushort, MarkMarkPosTable>();
+        var state = new CursivePosReadState(header.NumGlyphs, Location, _data.Length, true);
+        for (int i = 0; i < count; i++)
+        {
+            ushort offset = header.SourceSubtableOffsets[i];
+            if (!children.TryGetValue(offset, out var childModel))
+            {
+                ReadStatus status = TryOpenMarkMarkPos(header.Kind, i, out var child,
+                    out _, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = child.TryRead(header.NumGlyphs, out childModel, out diagnostic, budget,
+                    state, offset);
+                if (status != ReadStatus.Done) return status;
+                if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                children.Add(offset, childModel!);
+            }
+            subtables[i] = childModel!;
+        }
+        model = header.WithDecodedMarkMarks(subtables); diagnostic = default; return ReadStatus.Done;
+    }
+
     private ReadStatus ReadRules(LookupTable parsed, out LookupTable? model,
         out FontDiagnostic diagnostic, BuildBudget budget, ushort lookupType)
     {
@@ -517,6 +608,9 @@ public readonly ref partial struct LookupView
                 {
                     2 => OpenAndValidatePairPos(i, numGlyphs, budget, out diagnostic),
                     3 => OpenAndValidateCursivePos(i, numGlyphs, budget, out diagnostic),
+                    4 => OpenAndValidateMarkBase(i, numGlyphs, budget, out diagnostic),
+                    5 => OpenAndValidateMarkLig(i, numGlyphs, budget, out diagnostic),
+                    6 => OpenAndValidateMarkMark(i, numGlyphs, budget, out diagnostic),
                     _ => OpenAndValidateSinglePos(i, kind, numGlyphs, budget, out diagnostic),
                 };
                 if (status != ReadStatus.Done) return status;
@@ -629,6 +723,32 @@ public readonly ref partial struct LookupView
         return status == ReadStatus.Done ? cursive.Validate(numGlyphs, out diagnostic, budget) : status;
     }
 
+    // The T4-06 mark family's validate-only admissions: same shape as the cursive
+    // one - the leaf chains own every semantic check, the walk only opens.
+    private ReadStatus OpenAndValidateMarkBase(int ordinal, int numGlyphs,
+        BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = TryOpenMarkBasePos(LayoutLookupKind.Gpos, ordinal, out var markBase, out _, out diagnostic);
+        return status == ReadStatus.Done ? markBase.Validate(numGlyphs, out diagnostic, budget) : status;
+    }
+
+    private ReadStatus OpenAndValidateMarkLig(int ordinal, int numGlyphs,
+        BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = TryOpenMarkLigPos(LayoutLookupKind.Gpos, ordinal, out var markLig, out _, out diagnostic);
+        return status == ReadStatus.Done ? markLig.Validate(numGlyphs, out diagnostic, budget) : status;
+    }
+
+    private ReadStatus OpenAndValidateMarkMark(int ordinal, int numGlyphs,
+        BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = TryOpenMarkMarkPos(LayoutLookupKind.Gpos, ordinal, out var markMark, out _, out diagnostic);
+        return status == ReadStatus.Done ? markMark.Validate(numGlyphs, out diagnostic, budget) : status;
+    }
+
+    // The T4-06 contextual/extension admissions: the GPOS branches open the reused
+    // GSUB-common contextual views and the GPOS-family extension view; the wrapped
+    // leaf's own semantic face owns every check.
     private ReadStatus ReadHeader(int numGlyphs, LayoutLookupKind kind, bool materialize,
         out LookupTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
     {

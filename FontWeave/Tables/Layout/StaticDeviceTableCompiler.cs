@@ -85,6 +85,8 @@ public static class StaticDeviceTableCompiler
         CoverageTableCompiler.RequireWritten(StaticDeviceView.TryWriteStartSize(destination, model.StartSize, out _, model.Location));
         CoverageTableCompiler.RequireWritten(StaticDeviceView.TryWriteEndSize(destination, model.EndSize, out _, model.Location));
         CoverageTableCompiler.RequireWritten(StaticDeviceView.TryWriteDeltaFormat(destination, model.DeltaFormat, out _, model.Location));
+        if (model.DeltaFormat == 0x8000)
+            return; // The VariationDevice body is the six-byte header alone (T4-06 3.4).
         int bits = 1 << model.DeltaFormat, mask = (1 << bits) - 1, perWord = 16 / bits;
         int words = StaticDeviceLayout.WordCount(model.Deltas.Length, bits), at = 0;
         for (int i = 0; i < words; i++)

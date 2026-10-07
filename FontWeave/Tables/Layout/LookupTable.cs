@@ -18,7 +18,8 @@ public sealed class LookupTable
         LigatureSubstTable[]? ligatures = null, ExtensionSubstTable[]? extensions = null,
         PairPosTable[]? pairPositions = null, CursivePosTable[]? cursiveAttachments = null,
         ContextualSubstTable[]? contextuales = null, ChainingSubstTable[]? chainings = null,
-        ReverseChainSubstTable[]? reverseChains = null)
+        ReverseChainSubstTable[]? reverseChains = null, MarkBasePosTable[]? markBases = null,
+        MarkLigPosTable[]? markLigs = null, MarkMarkPosTable[]? markMarks = null)
     {
         Kind = kind;
         NumGlyphs = numGlyphs;
@@ -37,6 +38,9 @@ public sealed class LookupTable
         Contextuals = contextuales is null ? null : Array.AsReadOnly(contextuales);
         Chainings = chainings is null ? null : Array.AsReadOnly(chainings);
         ReverseChains = reverseChains is null ? null : Array.AsReadOnly(reverseChains);
+        MarkBases = markBases is null ? null : Array.AsReadOnly(markBases);
+        MarkLigs = markLigs is null ? null : Array.AsReadOnly(markLigs);
+        MarkMarks = markMarks is null ? null : Array.AsReadOnly(markMarks);
         Location = location;
     }
 
@@ -48,7 +52,8 @@ public sealed class LookupTable
     public int SubtableCount => SingleSubstitutions?.Count ?? SinglePositions?.Count ?? Multiples?.Count
         ?? Alternates?.Count ?? Ligatures?.Count ?? Extensions?.Count ?? PairPositions?.Count
         ?? CursiveAttachments?.Count ?? Contextuals?.Count ?? Chainings?.Count
-        ?? ReverseChains?.Count ?? _sourceOffsets.Length;
+        ?? ReverseChains?.Count ?? MarkBases?.Count ?? MarkLigs?.Count ?? MarkMarks?.Count
+        ?? _sourceOffsets.Length;
     public DataLocation Location { get; }
     public DataLocation SourceLocation => Location;
     public ReadOnlySpan<ushort> SourceSubtableOffsets => _sourceOffsets;
@@ -65,15 +70,22 @@ public sealed class LookupTable
     public IReadOnlyList<ChainingSubstTable>? Chainings { get; }
     public IReadOnlyList<ReverseChainSubstTable>? ReverseChains { get; }
 
+    // The T4-06 decoded mark families: a typed read decodes exactly one of the three.
+    public IReadOnlyList<MarkBasePosTable>? MarkBases { get; }
+    public IReadOnlyList<MarkLigPosTable>? MarkLigs { get; }
+    public IReadOnlyList<MarkMarkPosTable>? MarkMarks { get; }
+
     /// <summary>The kind-aware typed read support set (T4-03 section 3.3, extended by
-    /// T4-05 and T4-04): GSUB decodes types 1-8, GPOS decodes 1/2/3. Every other value
-    /// keeps the raw observe/typed-refuse layering with byte-identical diagnostics
-    /// (GPOS 4-9's refusal is W11's pin; type 9 stays unopened for T4-06). The
-    /// metadata-only remainder is therefore GSUB unknown values plus the GPOS outside.</summary>
+    /// T4-05, T4-04 and T4-06's mark family): GSUB decodes types 1-8, GPOS decodes
+    /// 1-6 (the contextual pair and the type-9 extension land with T4-06 commit 3).
+    /// Every other value keeps the raw observe/typed-refuse layering with
+    /// byte-identical diagnostics (GPOS 7/8/9's refusal stays W11's pin until then).
+    /// The metadata-only remainder is therefore GSUB unknown values plus the GPOS
+    /// outside.</summary>
     internal static bool IsTypedSupported(LayoutLookupKind kind, ushort lookupType) =>
         kind == LayoutLookupKind.Gsub
             ? lookupType is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8
-            : lookupType is 1 or 2 or 3;
+            : lookupType is 1 or 2 or 3 or 4 or 5 or 6;
     public EffectiveMarkFilter EffectiveMarkFilter => (Flags & LookupLayout.IgnoreMarks) != 0
         ? EffectiveMarkFilter.IgnoreMarks : (Flags & LookupLayout.UseMarkFilteringSet) != 0
             ? EffectiveMarkFilter.MarkSet : (Flags & LookupLayout.AttachmentMask) != 0
@@ -171,6 +183,19 @@ public sealed class LookupTable
     internal LookupTable WithDecodedReverseChains(ReverseChainSubstTable[] subtables) =>
         new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
             reverseChains: subtables);
+
+    // The T4-06 decoded mark families.
+    internal LookupTable WithDecodedMarkBases(MarkBasePosTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            markBases: subtables);
+
+    internal LookupTable WithDecodedMarkLigs(MarkLigPosTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            markLigs: subtables);
+
+    internal LookupTable WithDecodedMarkMarks(MarkMarkPosTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            markMarks: subtables);
 
     internal static ReadStatus ValidateGposSource(DataLocation location, out FontDiagnostic diagnostic)
     {

@@ -90,6 +90,13 @@ public readonly ref partial struct StaticDeviceView
         model = null;
         if (!budget.Work(count, Location, out diagnostic) ||
             !budget.Buffer(count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        if (count == 0)
+        {
+            // The VariationDevice shape (0x8000): no packed words exist to unpack.
+            model = new(StartSize, EndSize, DeltaFormat, [], Location, consumed);
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
         var deltas = new sbyte[count];
         int words = StaticDeviceLayout.WordCount(count, bits), perWord = 16 / bits;
         int mask = (1 << bits) - 1, sign = 1 << (bits - 1), at = 0;
@@ -121,14 +128,29 @@ public readonly ref partial struct StaticDeviceView
         count = bits = 0;
         consumed = 0;
         lastWord = 0;
-        // The generated computed chain runs the version gate, the 0x8000 known-inactive
-        // refusal and the end<start underflow refusal before any charging, matching the
-        // former CheckHeader order at the same diagnostic locations.
-        ReadStatus status = TryGetDeltaValueCount(out ulong deltaCount, out diagnostic);
+        // The 0x8000 VariationDevice shape activates here (T4-06 section 3.4): the
+        // format word reads before the computed chain so the known-inactive refusal
+        // it would emit for 0x8000 is replaced by the six-byte header form - the
+        // start/end words carry the outer/inner delta-set indices (indices, so no
+        // end<start ordering applies) and no packed words exist. Every other version
+        // walks the generated chain whose version gate keeps the unknown-format
+        // UnsupportedVersion refusal and the DeltaValueCount hook the end<start
+        // underflow refusal, both byte-identical to the pre-activation order.
+        ReadStatus status = TryGetDeltaFormat(out ushort format, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (format == 0x8000)
+        {
+            consumed = StaticDeviceLayout.HeaderLength;
+            if (!budget.Work(consumed, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        // The generated computed chain runs the version gate and the end<start
+        // underflow refusal before any charging, matching the former CheckHeader
+        // order at the same diagnostic locations.
+        status = TryGetDeltaValueCount(out ulong deltaCount, out diagnostic);
         if (status != ReadStatus.Done) return status;
         count = (int)deltaCount;
-        status = TryGetDeltaFormat(out ushort format, out diagnostic);
-        if (status != ReadStatus.Done) return status;
         bits = 1 << format;
         status = TryGetWordExtent(out _, out ulong wordCount, out ulong end, out diagnostic);
         if (status != ReadStatus.Done) return status;

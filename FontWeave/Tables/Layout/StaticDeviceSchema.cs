@@ -11,13 +11,22 @@ internal static class StaticDeviceLayout
 
     // Compile-side model admission only (TryCreate value domains without spans, card
     // OQ-6); bound views run on the generated contract-version-1 chain above.
+    // T4-06 section 3.4: the 0x8000 VariationIndex form activates - start/end carry
+    // the outer/inner delta-set indices (indices, so the ppem end<start ordering
+    // constraint does not apply), the delta array is empty and the body is the
+    // 6-byte header; the store-domain validation lives at the consumption chain
+    // (the GDEF store is a cross-table input), not at this wire-level header.
     internal static ReadStatus CheckHeader(ushort start, ushort end, ushort format, DataLocation location,
         out int count, out int bits, out int consumed, out FontDiagnostic diagnostic)
     {
         count = bits = consumed = 0;
         if (format == 0x8000)
-            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
-                location.AtLocal(DataField.Version, FormatAt), out diagnostic, format);
+        {
+            count = bits = 0;
+            consumed = HeaderLength;
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
         if (format is not (1 or 2 or 3))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
                 location.AtLocal(DataField.Version, FormatAt), out diagnostic, format);
@@ -32,9 +41,10 @@ internal static class StaticDeviceLayout
     }
 }
 
-// 0x8000 is a known version whose structures stay conditionally inactive, so every
-// entry point reports the same UnsupportedOperation; other unknown formats stay
-// UnsupportedVersion at the version gate (card 1.3-b, main-agent adjudication).
+// The version gate keeps 0x8000 in the known set; formats 1..3's words stay
+// conditionally inactive outside their version (the branched arrays empty out) and
+// the 0x8000 VariationDevice shape is the semantic partial's (StartSize/EndSize
+// reinterpreted as the outer/inner delta-set indices, no packed words, T4-06 3.4).
 [BinaryTable(0, StaticDeviceLayout.HeaderLength, ContractVersion = 1, GenerateStructureScan = true,
     VersionField = "DeltaFormat", SupportedVersions = new uint[] { 1, 2, 3, 0x8000 })]
 [BinaryScalar("StartSize", WireType.UInt16, StaticDeviceLayout.StartAt, DataField.Count)]
