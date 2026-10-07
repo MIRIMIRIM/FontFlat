@@ -40,7 +40,7 @@ public readonly ref partial struct GdefView
                 if (status != ReadStatus.Done) return status;
             }
         }
-        return GdefLookupContext.TryCreate(classes, sets, out context, out diagnostic, budget);
+        return GdefLookupContext.TryCreate(classes, sets, null, out context, out diagnostic, budget);
     }
 
     /// <summary>Reads the two class-definition consumers, not the complete GDEF table.

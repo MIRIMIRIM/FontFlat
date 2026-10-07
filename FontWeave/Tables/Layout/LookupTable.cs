@@ -19,7 +19,8 @@ public sealed class LookupTable
         PairPosTable[]? pairPositions = null, CursivePosTable[]? cursiveAttachments = null,
         ContextualSubstTable[]? contextuales = null, ChainingSubstTable[]? chainings = null,
         ReverseChainSubstTable[]? reverseChains = null, MarkBasePosTable[]? markBases = null,
-        MarkLigPosTable[]? markLigs = null, MarkMarkPosTable[]? markMarks = null)
+        MarkLigPosTable[]? markLigs = null, MarkMarkPosTable[]? markMarks = null,
+        ExtensionPosTable[]? extensionPositions = null)
     {
         Kind = kind;
         NumGlyphs = numGlyphs;
@@ -41,6 +42,7 @@ public sealed class LookupTable
         MarkBases = markBases is null ? null : Array.AsReadOnly(markBases);
         MarkLigs = markLigs is null ? null : Array.AsReadOnly(markLigs);
         MarkMarks = markMarks is null ? null : Array.AsReadOnly(markMarks);
+        ExtensionPositions = extensionPositions is null ? null : Array.AsReadOnly(extensionPositions);
         Location = location;
     }
 
@@ -53,7 +55,7 @@ public sealed class LookupTable
         ?? Alternates?.Count ?? Ligatures?.Count ?? Extensions?.Count ?? PairPositions?.Count
         ?? CursiveAttachments?.Count ?? Contextuals?.Count ?? Chainings?.Count
         ?? ReverseChains?.Count ?? MarkBases?.Count ?? MarkLigs?.Count ?? MarkMarks?.Count
-        ?? _sourceOffsets.Length;
+        ?? ExtensionPositions?.Count ?? _sourceOffsets.Length;
     public DataLocation Location { get; }
     public DataLocation SourceLocation => Location;
     public ReadOnlySpan<ushort> SourceSubtableOffsets => _sourceOffsets;
@@ -74,18 +76,20 @@ public sealed class LookupTable
     public IReadOnlyList<MarkBasePosTable>? MarkBases { get; }
     public IReadOnlyList<MarkLigPosTable>? MarkLigs { get; }
     public IReadOnlyList<MarkMarkPosTable>? MarkMarks { get; }
+    // The T4-06 decoded type-9 extensions (the GPOS leaf union; types 7/8 land in
+    // the shared Contextuals/Chainings collections - the OQ-T4-06-3 reuse).
+    public IReadOnlyList<ExtensionPosTable>? ExtensionPositions { get; }
 
     /// <summary>The kind-aware typed read support set (T4-03 section 3.3, extended by
-    /// T4-05, T4-04 and T4-06's mark family): GSUB decodes types 1-8, GPOS decodes
-    /// 1-6 (the contextual pair and the type-9 extension land with T4-06 commit 3).
-    /// Every other value keeps the raw observe/typed-refuse layering with
-    /// byte-identical diagnostics (GPOS 7/8/9's refusal stays W11's pin until then).
-    /// The metadata-only remainder is therefore GSUB unknown values plus the GPOS
-    /// outside.</summary>
+    /// T4-05, T4-04 and T4-06): GSUB decodes types 1-8, GPOS decodes 1-9 (the type-9
+    /// extension unwraps exactly one level; wrapped=9/unknown leaves keep the layered
+    /// refusal inside the type-9 chain). Every other value keeps the raw
+    /// observe/typed-refuse layering with byte-identical diagnostics. The
+    /// metadata-only remainder is therefore unknown values of both kinds.</summary>
     internal static bool IsTypedSupported(LayoutLookupKind kind, ushort lookupType) =>
         kind == LayoutLookupKind.Gsub
             ? lookupType is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8
-            : lookupType is 1 or 2 or 3 or 4 or 5 or 6;
+            : lookupType is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9;
     public EffectiveMarkFilter EffectiveMarkFilter => (Flags & LookupLayout.IgnoreMarks) != 0
         ? EffectiveMarkFilter.IgnoreMarks : (Flags & LookupLayout.UseMarkFilteringSet) != 0
             ? EffectiveMarkFilter.MarkSet : (Flags & LookupLayout.AttachmentMask) != 0
@@ -196,6 +200,10 @@ public sealed class LookupTable
     internal LookupTable WithDecodedMarkMarks(MarkMarkPosTable[] subtables) =>
         new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
             markMarks: subtables);
+
+    internal LookupTable WithDecodedExtensionPositions(ExtensionPosTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            extensionPositions: subtables);
 
     internal static ReadStatus ValidateGposSource(DataLocation location, out FontDiagnostic diagnostic)
     {

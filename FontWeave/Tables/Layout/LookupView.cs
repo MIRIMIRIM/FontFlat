@@ -139,6 +139,9 @@ public readonly ref partial struct LookupView
                 4 => ReadMarkBases(parsed, out model, out diagnostic, budget),
                 5 => ReadMarkLigs(parsed, out model, out diagnostic, budget),
                 6 => ReadMarkMarks(parsed, out model, out diagnostic, budget),
+                7 => ReadContextPos(parsed, lookupCount, out model, out diagnostic, budget),
+                8 => ReadChainedContextPos(parsed, lookupCount, out model, out diagnostic, budget),
+                9 => ReadExtensionPositions(parsed, lookupCount, out model, out diagnostic, budget),
                 _ => ReadPositions(parsed, out model, out diagnostic, budget),
             };
         switch (parsed.LookupType)
@@ -359,6 +362,116 @@ public readonly ref partial struct LookupView
         model = header.WithDecodedMarkMarks(subtables); diagnostic = default; return ReadStatus.Done;
     }
 
+    // The T4-06 GPOS contextual walks (types 7/8) reuse the GSUB walks' shape and the
+    // GSUB-common contextual views/tables wholesale (OQ-T4-06-3): the only difference
+    // is the GPOS branch opener and the GPOS source validation already applied. The
+    // graph's lookupCount is the same explicit input (the GPOS LookupList count).
+    private ReadStatus ReadContextPos(LookupTable parsed, int lookupCount,
+        out LookupTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        if (!budget.Work(parsed.SubtableCount, Location, out diagnostic) ||
+            !budget.Buffer(8L * parsed.SubtableCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ContextualSubstTable[] subtables = parsed.SubtableCount == 0
+            ? [] : new ContextualSubstTable[parsed.SubtableCount];
+        var cache = new Dictionary<ushort, ContextualSubstTable>();
+        var coverageCache = new Dictionary<int, CoverageTable>();
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ushort offset = parsed.SourceSubtableOffsets[i];
+            if (!cache.TryGetValue(offset, out ContextualSubstTable? subtable))
+            {
+                ReadStatus status = TryOpenContextPos(LayoutLookupKind.Gpos, i, out var child,
+                    out _, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = child.TryRead(parsed.NumGlyphs, lookupCount, out subtable, out diagnostic,
+                    budget, coverageCache, offset, Location);
+                if (status != ReadStatus.Done) return status;
+                if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                cache.Add(offset, subtable!);
+            }
+            subtables[i] = subtable!;
+        }
+        model = parsed.WithDecodedContextuals(subtables);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus ReadChainedContextPos(LookupTable parsed, int lookupCount,
+        out LookupTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        if (!budget.Work(parsed.SubtableCount, Location, out diagnostic) ||
+            !budget.Buffer(8L * parsed.SubtableCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ChainingSubstTable[] subtables = parsed.SubtableCount == 0
+            ? [] : new ChainingSubstTable[parsed.SubtableCount];
+        var cache = new Dictionary<ushort, ChainingSubstTable>();
+        var coverageCache = new Dictionary<int, CoverageTable>();
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ushort offset = parsed.SourceSubtableOffsets[i];
+            if (!cache.TryGetValue(offset, out ChainingSubstTable? subtable))
+            {
+                ReadStatus status = TryOpenChainedContextPos(LayoutLookupKind.Gpos, i, out var child,
+                    out _, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = child.TryRead(parsed.NumGlyphs, lookupCount, out subtable, out diagnostic,
+                    budget, coverageCache, offset, Location);
+                if (status != ReadStatus.Done) return status;
+                if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                cache.Add(offset, subtable!);
+            }
+            subtables[i] = subtable!;
+        }
+        model = parsed.WithDecodedChainings(subtables);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    // Type 9: the finite one-level unwrap into the GPOS leaf set. A wrapped type
+    // outside {1..8} (the spec's wrapped=9 ban plus unknown values) refuses at THIS
+    // lookup's type field with Detail=the lookup type - byte-identical to the typed
+    // gate shape - and the whole-table reader recognizes exactly this signature and
+    // degrades the lookup to metadata-only (the OQ-T4-03-4 discipline, GPOS side).
+    private ReadStatus ReadExtensionPositions(LookupTable parsed, int lookupCount,
+        out LookupTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        if (!budget.Work(parsed.SubtableCount, Location, out diagnostic) ||
+            !budget.Buffer(8L * parsed.SubtableCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ExtensionPosTable[] subtables = parsed.SubtableCount == 0
+            ? [] : new ExtensionPosTable[parsed.SubtableCount];
+        var cache = new Dictionary<ushort, ExtensionPosTable>();
+        var coverageCache = new Dictionary<int, CoverageTable>();
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ushort offset = parsed.SourceSubtableOffsets[i];
+            if (!cache.TryGetValue(offset, out ExtensionPosTable? subtable))
+            {
+                ReadStatus status = TryOpenExtensionPos(LayoutLookupKind.Gpos, i, out var child,
+                    out _, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = child.TryGetExtensionLookupType(out ushort wrappedType, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                if (wrappedType is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8))
+                    return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                        Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, parsed.LookupType);
+                status = child.TryRead(parsed.NumGlyphs, lookupCount, out subtable, out diagnostic,
+                    budget, coverageCache, offset, Location);
+                if (status != ReadStatus.Done) return status;
+                if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                cache.Add(offset, subtable!);
+            }
+            subtables[i] = subtable!;
+        }
+        model = parsed.WithDecodedExtensionPositions(subtables);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    // Types 2/3/4 share the type-1 subtable walk shape exactly: an alias cache keyed by
+    // the physical parent-local offset, one shared Coverage cache per Lookup span and a
+    // Buffer(16) per unique subtable, with the leaf chains owning their semantics.
     private ReadStatus ReadRules(LookupTable parsed, out LookupTable? model,
         out FontDiagnostic diagnostic, BuildBudget budget, ushort lookupType)
     {
@@ -611,6 +724,9 @@ public readonly ref partial struct LookupView
                     4 => OpenAndValidateMarkBase(i, numGlyphs, budget, out diagnostic),
                     5 => OpenAndValidateMarkLig(i, numGlyphs, budget, out diagnostic),
                     6 => OpenAndValidateMarkMark(i, numGlyphs, budget, out diagnostic),
+                    7 => OpenAndValidateContextPos(i, numGlyphs, lookupCount, budget, out diagnostic),
+                    8 => OpenAndValidateChainedContextPos(i, numGlyphs, lookupCount, budget, out diagnostic),
+                    9 => OpenAndValidateExtensionPos(i, numGlyphs, lookupCount, budget, out diagnostic),
                     _ => OpenAndValidateSinglePos(i, kind, numGlyphs, budget, out diagnostic),
                 };
                 if (status != ReadStatus.Done) return status;
@@ -749,6 +865,35 @@ public readonly ref partial struct LookupView
     // The T4-06 contextual/extension admissions: the GPOS branches open the reused
     // GSUB-common contextual views and the GPOS-family extension view; the wrapped
     // leaf's own semantic face owns every check.
+    private ReadStatus OpenAndValidateContextPos(int ordinal, int numGlyphs, int lookupCount,
+        BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = TryOpenContextPos(LayoutLookupKind.Gpos, ordinal, out var contextual, out _, out diagnostic);
+        return status == ReadStatus.Done
+            ? contextual.Validate(numGlyphs, lookupCount, out diagnostic, budget) : status;
+    }
+
+    private ReadStatus OpenAndValidateChainedContextPos(int ordinal, int numGlyphs, int lookupCount,
+        BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = TryOpenChainedContextPos(LayoutLookupKind.Gpos, ordinal, out var chaining, out _, out diagnostic);
+        return status == ReadStatus.Done
+            ? chaining.Validate(numGlyphs, lookupCount, out diagnostic, budget) : status;
+    }
+
+    private ReadStatus OpenAndValidateExtensionPos(int ordinal, int numGlyphs, int lookupCount,
+        BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = TryOpenExtensionPos(LayoutLookupKind.Gpos, ordinal, out var extension, out _, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = extension.TryGetExtensionLookupType(out ushort wrappedType, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (wrappedType is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8))
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, 9);
+        return extension.Validate(numGlyphs, lookupCount, out diagnostic, budget);
+    }
+
     private ReadStatus ReadHeader(int numGlyphs, LayoutLookupKind kind, bool materialize,
         out LookupTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
     {
