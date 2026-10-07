@@ -1,5 +1,6 @@
 using FontWeave.Core;
 using FontWeave.Schema;
+using FontWeave.Tables.Variation;
 
 namespace FontWeave.Tables.Layout;
 
@@ -26,12 +27,14 @@ internal static class GdefLayout
 [BinaryRecord("MarkSetsHeader", 2, WhenVersions = new uint[] { GdefLayout.Version12, GdefLayout.Version13 })]
 [BinaryElement("MarkSetsHeader", "MarkGlyphSetsDefOffset", WireType.UInt16, 0, DataField.Offset,
     Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = true)]
-// Raw-only policy (OQ-M1c-1 ⑥, T5-01 prerequisite registration): the variation store
-// header is read for its raw value under its v1.3 existence domain, but the store itself
-// stays an undeclared observation. Its structures, VariationIndex/0x8000 semantics and
-// typed consumption are hard prerequisites of T5-01 and are deliberately undesigned here.
+// OQ-M1c-1 ⑥ closes here (T4-02b): the raw-only registration ends and the header
+// record keeps its shape while the offset gains the shared offset semantics. The typed
+// target is the T5-01 ItemVariationStoreView, wired in as the first Layout->Variation
+// cross-directory reference (the emitter qualifies it with global::); the store's
+// VariationIndex/0x8000 device semantics stay outside this declaration (T4-06).
 [BinaryRecord("VariationStoreHeader", 4, WhenVersions = new uint[] { GdefLayout.Version13 })]
-[BinaryElement("VariationStoreHeader", "ItemVariationStoreOffset", WireType.UInt32, 0, DataField.Offset)]
+[BinaryElement("VariationStoreHeader", "ItemVariationStoreOffset", WireType.UInt32, 0, DataField.Offset,
+    Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = true)]
 // 12 / 14 / 18 by declared version: the classdef references' storage floor.
 [BinaryComputed("HeaderEnd", "HeaderEndOf", Inputs = new[] { "Version" }, Maximum = 18ul,
     Semantic = NumberSemantic.Offset, DiagnosticField = DataField.Offset,
@@ -55,6 +58,13 @@ internal static class GdefLayout
 [BinaryReference("LigCaretList", "LigCaretListOffset", typeof(LigCaretListView),
     Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Optional,
     Minimum = "HeaderEnd")]
+// The store reference trails the five static references (OQ-T4-02b-4): the declared
+// existence domain is the record's own v1.3 slot, NULL is the spec's "may be NULL"
+// store, and the floor is the shared HeaderEnd computed field.
+[BinaryReference("ItemVariationStore", "ItemVariationStoreOffset", typeof(ItemVariationStoreView),
+    Array = "VariationStoreHeader", Origin = ReferenceOrigin.ViewStart,
+    NullPolicy = ReferenceNullPolicy.Optional, Minimum = "HeaderEnd",
+    WhenVersions = new uint[] { GdefLayout.Version13 })]
 public readonly ref partial struct GdefView
 {
     private static ReadStatus HeaderEndOf(uint version, DataLocation diagnosticLocation,
