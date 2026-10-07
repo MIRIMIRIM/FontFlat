@@ -40,7 +40,7 @@ public static class GdefTableCompiler
             return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
                 location.AtLocal(DataField.None, 0), out diagnostic);
         model = new(version, numGlyphs, glyphClasses, markAttachmentClasses, markGlyphSets,
-            attachList, ligCaretList, 0, location, 0);
+            attachList, ligCaretList, null, 0, location, 0);
         diagnostic = default;
         return ReadStatus.Done;
     }

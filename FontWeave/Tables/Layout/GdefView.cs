@@ -1,4 +1,5 @@
 using FontWeave.Core;
+using FontWeave.Tables.Variation;
 
 namespace FontWeave.Tables.Layout;
 
@@ -6,7 +7,8 @@ public readonly ref partial struct GdefView
 {
     /// <summary>Reads class definitions and MarkGlyphSets for Lookup-flag validation.
     /// The AttachList and LigCaretList references are declared but not traversed by this
-    /// reader; the variation store stays a raw observation.</summary>
+    /// reader, and neither is the item variation store (M1 face; the whole-table entry
+    /// owns the store traversal).</summary>
     public ReadStatus TryReadContext(int numGlyphs, out GdefLookupContext? context,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
@@ -42,8 +44,8 @@ public readonly ref partial struct GdefView
     }
 
     /// <summary>Reads the two class-definition consumers, not the complete GDEF table.
-    /// Other header offsets keep their declared references unopened here; the variation
-    /// store stays a raw observation.</summary>
+    /// Other header offsets keep their declared references unopened here, and the item
+    /// variation store is not traversed by this reader (M1 face).</summary>
     public ReadStatus TryReadClasses(int numGlyphs, out GdefClassDefinitions? model,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
@@ -113,17 +115,21 @@ public readonly ref partial struct GdefView
         return ReadStatus.Done;
     }
 
-    /// <summary>Validates the complete declared static slice without materializing any
-    /// owned model: version tree, all five references and the whole-table semantics.
-    /// The variation store is not traversed (T5-01 prerequisite, OQ-T4-02-5).</summary>
-    public ReadStatus ValidateTable(int numGlyphs, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    /// <summary>Validates the complete declared slice without materializing any
+    /// owned model: version tree, all five references, the whole-table semantics and
+    /// the typed item variation store traversal. axisCount is the caller's explicit
+    /// expectation (the T5-02-forward contract, HvarView shape); it is consumed only
+    /// where the store slot physically exists (v1.3 with a non-NULL offset).</summary>
+    public ReadStatus ValidateTable(int numGlyphs, int axisCount, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
     {
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return ValidateTable(numGlyphs, out diagnostic, budget);
+        return ValidateTable(numGlyphs, axisCount, out diagnostic, budget);
     }
 
-    internal ReadStatus ValidateTable(int numGlyphs, out FontDiagnostic diagnostic, BuildBudget budget)
+    internal ReadStatus ValidateTable(int numGlyphs, int axisCount, out FontDiagnostic diagnostic,
+        BuildBudget budget)
     {
         ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -158,22 +164,39 @@ public readonly ref partial struct GdefView
                 if (status != ReadStatus.Done) return status;
             }
         }
-        return ValidateDeclaredChains(numGlyphs, budget, out diagnostic);
+        status = ValidateDeclaredChains(numGlyphs, budget, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        // The store traversal trails the five references (OQ-T4-02b-4); the declared
+        // opener owns the version gate, the zero policy, the HeaderEnd floor and the
+        // source bounds, the store view owns its own structural domain.
+        if (version == GdefLayout.Version13)
+        {
+            status = TryOpenItemVariationStoreAt(GdefLayout.VariationStoreAt, -1,
+                out var storeView, out bool storePresent, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            if (storePresent)
+            {
+                status = storeView.Validate(axisCount, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
+        }
+        return Done(out diagnostic);
     }
 
-    /// <summary>Reads the complete declared static slice into an owned
-    /// <see cref="GdefTable"/>. The existing Lookup-flag readers keep their signatures;
+    /// <summary>Reads the complete declared slice into an owned
+    /// <see cref="GdefTable"/> with the typed item variation store mounted when the
+    /// v1.3 slot carries one. The existing Lookup-flag readers keep their signatures;
     /// this is the additional whole-table entry, not a replacement.</summary>
-    public ReadStatus TryReadTable(int numGlyphs, out GdefTable? model,
+    public ReadStatus TryReadTable(int numGlyphs, int axisCount, out GdefTable? model,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
         model = null;
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return TryReadTable(numGlyphs, out model, out diagnostic, budget);
+        return TryReadTable(numGlyphs, axisCount, out model, out diagnostic, budget);
     }
 
-    internal ReadStatus TryReadTable(int numGlyphs, out GdefTable? model,
+    internal ReadStatus TryReadTable(int numGlyphs, int axisCount, out GdefTable? model,
         out FontDiagnostic diagnostic, BuildBudget budget)
     {
         model = null;
@@ -220,6 +243,22 @@ public readonly ref partial struct GdefView
                 if (status != ReadStatus.Done) return status;
             }
         }
+        // The typed store mounts under the same declared-envelope discipline as the
+        // five references (HvarView shape): opener first, then the store view's own
+        // Validate/TryRead with the caller's explicit axis count. LONG_WORDS refuses
+        // here through the typed VarData read (OQ-T5-01-1 via the GDEF entry).
+        VariationStoreTable? store = null;
+        if (classes.Version == GdefLayout.Version13)
+        {
+            status = TryOpenItemVariationStoreAt(GdefLayout.VariationStoreAt, -1,
+                out var storeView, out bool storePresent, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            if (storePresent)
+            {
+                status = storeView.TryRead(axisCount, out store, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
+        }
         int headerEnd = classes.Version == GdefLayout.Version13 ? GdefLayout.Header13
             : classes.Version >= GdefLayout.Version12 ? GdefLayout.Header12 : GdefLayout.Header10;
         int consumed = headerEnd;
@@ -230,8 +269,12 @@ public readonly ref partial struct GdefView
         if (sets is not null) consumed = Math.Max(consumed, markSetsOffset + sets.ConsumedLength);
         if (attach is not null) consumed = Math.Max(consumed, AttachListOffset + attach.ConsumedLength);
         if (lig is not null) consumed = Math.Max(consumed, LigCaretListOffset + lig.ConsumedLength);
+        // The store extends the consumed span past the five subtrees (OQ-T4-02b-5: the
+        // three real witnesses now read consumedLength == the whole table length).
+        if (store is not null)
+            consumed = Math.Max(consumed, checked((int)classes.ItemVariationStoreOffset + store.ConsumedLength));
         model = new(classes.Version, numGlyphs, classes.GlyphClasses, classes.MarkAttachmentClasses,
-            sets, attach, lig, classes.ItemVariationStoreOffset, Location, consumed);
+            sets, attach, lig, store, classes.ItemVariationStoreOffset, Location, consumed);
         diagnostic = default;
         return ReadStatus.Done;
     }
