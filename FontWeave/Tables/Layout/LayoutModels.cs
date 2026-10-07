@@ -110,15 +110,19 @@ public sealed class LayoutListsTable
 
     internal LayoutListsTable(uint version, uint variations, LayoutScript[] scripts,
         LayoutFeature[] features, LookupTable[] lookups, int numGlyphs, LayoutLookupKind kind,
-        DataLocation location)
+        DataLocation location, FeatureVariationsTable? featureVariations = null)
     {
         Version = version; FeatureVariationsOffsetRaw = variations;
         _scripts = scripts; _features = features; _lookups = lookups;
         NumGlyphs = numGlyphs; Kind = kind; Location = location;
+        FeatureVariations = featureVariations;
     }
 
     public uint Version { get; }
     public uint FeatureVariationsOffsetRaw { get; }
+    /// <summary>The typed v1.1 variations block when the whole-table read traversed
+    /// it (T4-04 section 3.4); null for a zero offset and for the M1 list faces.</summary>
+    public FeatureVariationsTable? FeatureVariations { get; }
     public ReadOnlySpan<LayoutScript> Scripts => _scripts;
     public ReadOnlySpan<LayoutFeature> Features => _features;
     public ReadOnlySpan<LookupTable> Lookups => _lookups;

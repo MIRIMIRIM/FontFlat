@@ -4,20 +4,27 @@ namespace FontWeave.Tables.Layout;
 
 /// <summary>One extension-wrapped GSUB subtable read through the type-7 branch: the
 /// declared wrapped lookup type plus exactly one typed direct leaf (the finite
-/// one-level unwrap; wrapped types 5/6/8 and nested 7 never produce this model through
-/// a typed read, they refuse, and whole-table reads degrade those lookups to
-/// metadata-only, OQ-T4-03-4).</summary>
+/// one-level unwrap; wrapped=7 and unknown values never produce this model through a
+/// typed read, they refuse, and whole-table reads degrade those lookups to
+/// metadata-only, OQ-T4-03-4). The direct leaves are types 1..4 (T4-03) plus the
+/// contextual family 5/6/8 (T4-04; spec forbids only the wrapped=7 self-reference,
+/// OQ-T4-04-10).</summary>
 public sealed class ExtensionSubstTable
 {
     internal ExtensionSubstTable(ushort extensionLookupType, SingleSubstTable? single,
         MultipleSubstTable? multiple, AlternateSubstTable? alternate, LigatureSubstTable? ligature,
-        DataLocation location, int consumedLength)
+        DataLocation location, int consumedLength,
+        ContextualSubstTable? contextual = null, ChainingSubstTable? chaining = null,
+        ReverseChainSubstTable? reverseChain = null)
     {
         ExtensionLookupType = extensionLookupType;
         Single = single;
         Multiple = multiple;
         Alternate = alternate;
         Ligature = ligature;
+        Contextual = contextual;
+        Chaining = chaining;
+        ReverseChain = reverseChain;
         Location = location;
         ConsumedLength = consumedLength;
     }
@@ -27,6 +34,9 @@ public sealed class ExtensionSubstTable
     public MultipleSubstTable? Multiple { get; }
     public AlternateSubstTable? Alternate { get; }
     public LigatureSubstTable? Ligature { get; }
+    public ContextualSubstTable? Contextual { get; }
+    public ChainingSubstTable? Chaining { get; }
+    public ReverseChainSubstTable? ReverseChain { get; }
     /// <summary>The extension header's own location (not the wrapped body's).</summary>
     public DataLocation Location { get; }
     /// <summary>Header length plus the wrapped leaf's consumed length.</summary>
@@ -37,15 +47,19 @@ public sealed class ExtensionSubstTable
     /// leaf's model must be supplied (the others stay null).</summary>
     public static ReadStatus TryCreate(ushort extensionLookupType, SingleSubstTable? single,
         MultipleSubstTable? multiple, AlternateSubstTable? alternate, LigatureSubstTable? ligature,
-        out ExtensionSubstTable? model, out FontDiagnostic diagnostic, DataLocation location = default)
+        out ExtensionSubstTable? model, out FontDiagnostic diagnostic, DataLocation location = default,
+        ContextualSubstTable? contextual = null, ChainingSubstTable? chaining = null,
+        ReverseChainSubstTable? reverseChain = null)
     {
         model = null;
-        if (extensionLookupType is not (1 or 2 or 3 or 4))
+        if (extensionLookupType is not (1 or 2 or 3 or 4 or 5 or 6 or 8))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 location.AtLocal(DataField.Tag, ExtensionSubstLayout.TypeAt), out diagnostic,
                 extensionLookupType);
         int leaves = (single is null ? 0 : 1) + (multiple is null ? 0 : 1) +
-            (alternate is null ? 0 : 1) + (ligature is null ? 0 : 1);
+            (alternate is null ? 0 : 1) + (ligature is null ? 0 : 1) +
+            (contextual is null ? 0 : 1) + (chaining is null ? 0 : 1) +
+            (reverseChain is null ? 0 : 1);
         if (leaves != 1)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 location.AtLocal(DataField.Tag, ExtensionSubstLayout.TypeAt), out diagnostic,
@@ -56,7 +70,10 @@ public sealed class ExtensionSubstTable
             1 => single is not null,
             2 => multiple is not null,
             3 => alternate is not null,
-            _ => ligature is not null,
+            4 => ligature is not null,
+            5 => contextual is not null,
+            6 => chaining is not null,
+            _ => reverseChain is not null,
         };
         if (!matches)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
@@ -67,9 +84,13 @@ public sealed class ExtensionSubstTable
             1 => single!.ConsumedLength,
             2 => multiple!.ConsumedLength,
             3 => alternate!.ConsumedLength,
-            _ => ligature!.ConsumedLength,
+            4 => ligature!.ConsumedLength,
+            5 => contextual!.ConsumedLength,
+            6 => chaining!.ConsumedLength,
+            _ => reverseChain!.ConsumedLength,
         };
-        model = new(extensionLookupType, single, multiple, alternate, ligature, location, consumed);
+        model = new(extensionLookupType, single, multiple, alternate, ligature, location, consumed,
+            contextual, chaining, reverseChain);
         diagnostic = default;
         return ReadStatus.Done;
     }

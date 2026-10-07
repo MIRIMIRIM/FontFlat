@@ -232,7 +232,8 @@ public readonly ref partial struct LayoutLookupListView
                 LookupTable? lookup;
                 if (typed)
                 {
-                    status = child.TryRead(numGlyphs, kind, context, out lookup, out diagnostic, budget);
+                    status = child.TryRead(numGlyphs, kind, context, state.LookupCountContext,
+                        out lookup, out diagnostic, budget);
                     if (status != ReadStatus.Done)
                     {
                         // OQ-T4-03-4: exactly the W7 layered refusal (wrapped type
@@ -258,7 +259,8 @@ public readonly ref partial struct LayoutLookupListView
             {
                 if (typed)
                 {
-                    status = child.Validate(numGlyphs, kind, context, out diagnostic, budget);
+                    status = child.Validate(numGlyphs, kind, context, state.LookupCountContext,
+                        out diagnostic, budget);
                     if (status != ReadStatus.Done)
                     {
                         if (!LookupView.IsTypedRefusal(kind, lookupType, status, diagnostic))
@@ -435,8 +437,53 @@ public readonly ref partial struct LayoutListsView
         if (status != ReadStatus.Done) return status;
         status = lookupsView.ProcessDeep(numGlyphs, kind, context, LookupListOffset, state, out var lookups, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
-        if (materialize) model = new((uint)version, variations, scripts!, features!, lookups!, numGlyphs, kind, Location);
+        // T4-04 section 3.4: the v1.1 variations block is a typed traversal on the
+        // whole-table faces (structure only - no fvar authority is available here,
+        // so the axis-free checks run and the axis domain stays conditional, the
+        // FeatureTableSubst featureIndex domain feeding from the FeatureList count).
+        // A zero offset stays the legal empty observation (synthetic-pinned).
+        FeatureVariationsTable? variationsModel = null;
+        if (variations != 0)
+        {
+            if (variations >= (ulong)_data.Length)
+                return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                    Location.AtLocal(DataField.Offset, LayoutListsLayout.VariationsOffsetField),
+                    out diagnostic, variations, (ulong)_data.Length);
+            status = FeatureVariationsView.TryOpen(_data.Slice((int)variations), out var variationsView,
+                out diagnostic, Location);
+            if (status != ReadStatus.Done) return status;
+            if (materialize)
+            {
+                status = variationsView!.TryRead(out variationsModel, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
+            else
+            {
+                status = variationsView!.Inspect(out _, out diagnostic, budget);
+                if (status != ReadStatus.Done) return status;
+            }
+            status = variationsModel is null
+                ? ValidateVariations(variationsView!, featuresView.Count, budget, out diagnostic)
+                : variationsModel.ValidateTable(null, featuresView.Count, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+        }
+        if (materialize)
+        {
+            model = new((uint)version, variations, scripts!, features!, lookups!, numGlyphs, kind,
+                Location, variationsModel);
+        }
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    // Validate-mode FV walk: the view-level inspection plus the feature-count domain
+    // the owned ValidateTable carries (the explicit-input form needs a model, so the
+    // validate face re-walks the FTS featureIndex domain here).
+    private static ReadStatus ValidateVariations(FeatureVariationsView variationsView,
+        int featureCount, BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = variationsView.Validate(out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        return variationsView.ValidateFeatureDomains(featureCount, budget, out diagnostic);
     }
 }

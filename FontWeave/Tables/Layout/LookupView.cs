@@ -37,22 +37,49 @@ public readonly ref partial struct LookupView
         model = null;
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return TryRead(numGlyphs, kind, context, out model, out diagnostic, budget);
+        return TryRead(numGlyphs, kind, context, -1, out model, out diagnostic, budget);
+    }
+
+    /// <summary>The lookup-count-taking typed read: lookupCount is the LookupList
+    /// count in wire order and feeds the contextual lookup-index graph's
+    /// LookupListIndex domain (OQ-4's explicit input); a negative value keeps only
+    /// the owner-local SequenceIndex domain (the conditional-check first-class form).</summary>
+    public ReadStatus TryRead(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
+        int lookupCount, out LookupTable? model, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        model = null;
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        return TryRead(numGlyphs, kind, context, lookupCount, out model, out diagnostic, budget);
     }
 
     /// <summary>Typed validation of the supported substitution kinds without
-    /// materializing any owned model (T4-03 section 3). The metadata-only
-    /// <see cref="ValidateHeader"/> keeps its signature and behavior.</summary>
+    /// materializing any owned model (T4-03 section 3, extended by T4-04's
+    /// contextual families). The metadata-only <see cref="ValidateHeader"/> keeps
+    /// its signature and behavior.</summary>
     public ReadStatus Validate(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return Validate(numGlyphs, kind, context, out diagnostic, budget);
+        return Validate(numGlyphs, kind, context, -1, out diagnostic, budget);
+    }
+
+    /// <summary>The lookup-count-taking validation: lookupCount is the LookupList
+    /// count in wire order and feeds the contextual lookup-index graph's
+    /// LookupListIndex domain (OQ-4's explicit input); a negative value keeps only
+    /// the owner-local SequenceIndex domain.</summary>
+    public ReadStatus Validate(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
+        int lookupCount, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        return Validate(numGlyphs, kind, context, lookupCount, out diagnostic, budget);
     }
 
     internal ReadStatus Validate(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
-        out FontDiagnostic diagnostic, BuildBudget budget)
+        int lookupCount, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         // The typed validation entry serves both layout kinds (T4-05 extended the
         // former GSUB-only face); a value outside the two-kind domain keeps the
@@ -81,11 +108,11 @@ public readonly ref partial struct LookupView
         status = LookupTable.ValidateFlags(numGlyphs, Flags, filteringSet, SubtableCount,
             context, Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        return ValidateTyped(numGlyphs, kind, budget, out diagnostic);
+        return ValidateTyped(numGlyphs, kind, lookupCount, budget, out diagnostic);
     }
 
     internal ReadStatus TryRead(int numGlyphs, LayoutLookupKind kind, GdefLookupContext? context,
-        out LookupTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
+        int lookupCount, out LookupTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         model = null;
         ReadStatus status = TryReadHeader(numGlyphs, kind, out var header, out diagnostic, budget);
@@ -116,7 +143,10 @@ public readonly ref partial struct LookupView
             case 2: return ReadRules(parsed, out model, out diagnostic, budget, 2);
             case 3: return ReadRules(parsed, out model, out diagnostic, budget, 3);
             case 4: return ReadRules(parsed, out model, out diagnostic, budget, 4);
-            case 7: return ReadExtensions(parsed, out model, out diagnostic, budget);
+            case 5: return ReadContextualRules(parsed, lookupCount, out model, out diagnostic, budget);
+            case 6: return ReadChainingRules(parsed, lookupCount, out model, out diagnostic, budget);
+            case 7: return ReadExtensions(parsed, lookupCount, out model, out diagnostic, budget);
+            case 8: return ReadReverseChainRules(parsed, out model, out diagnostic, budget);
             default: break;
         }
         if (!budget.Work(parsed.SubtableCount, Location, out diagnostic) ||
@@ -322,11 +352,109 @@ public readonly ref partial struct LookupView
         return ReadStatus.Done;
     }
 
-    // Type 7: the finite one-level unwrap. A wrapped type outside {1..4} refuses at
-    // THIS lookup's type field with Detail=the lookup type - byte-identical to the
-    // typed gate shape (W7's layered refusal); the whole-table reader recognizes
-    // exactly this signature and degrades the lookup to metadata-only (OQ-T4-03-4).
-    private ReadStatus ReadExtensions(LookupTable parsed, out LookupTable? model,
+    // The T4-04 contextual walks share the direct-leaf walk shape exactly: an alias
+    // cache keyed by the physical parent-local offset, one shared Coverage cache per
+    // Lookup span and a Buffer(16) per unique subtable, with the leaf chains owning
+    // their semantics and the graph domains.
+    private ReadStatus ReadContextualRules(LookupTable parsed, int lookupCount,
+        out LookupTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        if (!budget.Work(parsed.SubtableCount, Location, out diagnostic) ||
+            !budget.Buffer(8L * parsed.SubtableCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ContextualSubstTable[] subtables = parsed.SubtableCount == 0
+            ? [] : new ContextualSubstTable[parsed.SubtableCount];
+        var cache = new Dictionary<ushort, ContextualSubstTable>();
+        var coverageCache = new Dictionary<int, CoverageTable>();
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ushort offset = parsed.SourceSubtableOffsets[i];
+            if (!cache.TryGetValue(offset, out ContextualSubstTable? subtable))
+            {
+                ReadStatus status = TryOpenContextualSubst(LayoutLookupKind.Gsub, i, out var child,
+                    out _, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = child.TryRead(parsed.NumGlyphs, lookupCount, out subtable, out diagnostic, budget,
+                    coverageCache, offset, Location);
+                if (status != ReadStatus.Done) return status;
+                if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                cache.Add(offset, subtable!);
+            }
+            subtables[i] = subtable!;
+        }
+        model = parsed.WithDecodedContextuals(subtables);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus ReadChainingRules(LookupTable parsed, int lookupCount,
+        out LookupTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        if (!budget.Work(parsed.SubtableCount, Location, out diagnostic) ||
+            !budget.Buffer(8L * parsed.SubtableCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ChainingSubstTable[] subtables = parsed.SubtableCount == 0
+            ? [] : new ChainingSubstTable[parsed.SubtableCount];
+        var cache = new Dictionary<ushort, ChainingSubstTable>();
+        var coverageCache = new Dictionary<int, CoverageTable>();
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ushort offset = parsed.SourceSubtableOffsets[i];
+            if (!cache.TryGetValue(offset, out ChainingSubstTable? subtable))
+            {
+                ReadStatus status = TryOpenChainingSubst(LayoutLookupKind.Gsub, i, out var child,
+                    out _, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = child.TryRead(parsed.NumGlyphs, lookupCount, out subtable, out diagnostic, budget,
+                    coverageCache, offset, Location);
+                if (status != ReadStatus.Done) return status;
+                if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                cache.Add(offset, subtable!);
+            }
+            subtables[i] = subtable!;
+        }
+        model = parsed.WithDecodedChainings(subtables);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus ReadReverseChainRules(LookupTable parsed, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        if (!budget.Work(parsed.SubtableCount, Location, out diagnostic) ||
+            !budget.Buffer(8L * parsed.SubtableCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ReverseChainSubstTable[] subtables = parsed.SubtableCount == 0
+            ? [] : new ReverseChainSubstTable[parsed.SubtableCount];
+        var cache = new Dictionary<ushort, ReverseChainSubstTable>();
+        var coverageCache = new Dictionary<int, CoverageTable>();
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ushort offset = parsed.SourceSubtableOffsets[i];
+            if (!cache.TryGetValue(offset, out ReverseChainSubstTable? subtable))
+            {
+                ReadStatus status = TryOpenReverseChainSubst(LayoutLookupKind.Gsub, i, out var child,
+                    out _, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = child.TryRead(parsed.NumGlyphs, out subtable, out diagnostic, budget,
+                    coverageCache, offset, Location);
+                if (status != ReadStatus.Done) return status;
+                if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                cache.Add(offset, subtable!);
+            }
+            subtables[i] = subtable!;
+        }
+        model = parsed.WithDecodedReverseChains(subtables);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    // Type 7: the finite one-level unwrap.
+    // (T4-04 extended the set; spec forbids only wrapped=7) refuses at THIS lookup's
+    // type field with Detail=the lookup type - byte-identical to the typed gate shape
+    // (W7's layered refusal); the whole-table reader recognizes exactly this
+    // signature and degrades the lookup to metadata-only (OQ-T4-03-4).
+    private ReadStatus ReadExtensions(LookupTable parsed, int lookupCount, out LookupTable? model,
         out FontDiagnostic diagnostic, BuildBudget budget)
     {
         model = null;
@@ -346,10 +474,10 @@ public readonly ref partial struct LookupView
                 if (status != ReadStatus.Done) return status;
                 status = child.TryGetExtensionLookupType(out ushort wrappedType, out diagnostic);
                 if (status != ReadStatus.Done) return status;
-                if (wrappedType is not (1 or 2 or 3 or 4))
+                if (wrappedType is not (1 or 2 or 3 or 4 or 5 or 6 or 8))
                     return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                         Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, parsed.LookupType);
-                status = child.TryRead(parsed.NumGlyphs, out subtable, out diagnostic, budget,
+                status = child.TryRead(parsed.NumGlyphs, lookupCount, out subtable, out diagnostic, budget,
                     coverageCache, offset, Location);
                 if (status != ReadStatus.Done) return status;
                 if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
@@ -374,8 +502,8 @@ public readonly ref partial struct LookupView
     // Typed validation without materialization, sharing the read path's per-type
     // dispatch; admissions stay Work-shaped (no Buffer, no owned arrays). The GPOS
     // branch (T4-05) only sees types 1/2/3 - the kind-aware gate refused the rest.
-    private ReadStatus ValidateTyped(int numGlyphs, LayoutLookupKind kind, BuildBudget budget,
-        out FontDiagnostic diagnostic)
+    private ReadStatus ValidateTyped(int numGlyphs, LayoutLookupKind kind, int lookupCount,
+        BuildBudget budget, out FontDiagnostic diagnostic)
     {
         ReadStatus status = TryGetLookupType(out ushort lookupType, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -434,6 +562,33 @@ public readonly ref partial struct LookupView
                     if (status != ReadStatus.Done) return status;
                 }
                 break;
+            case 5:
+                for (int i = 0; i < count; i++)
+                {
+                    status = TryOpenContextualSubst(kind, i, out var contextual, out _, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = contextual.Validate(numGlyphs, lookupCount, out diagnostic, budget);
+                    if (status != ReadStatus.Done) return status;
+                }
+                break;
+            case 6:
+                for (int i = 0; i < count; i++)
+                {
+                    status = TryOpenChainingSubst(kind, i, out var chaining, out _, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = chaining.Validate(numGlyphs, lookupCount, out diagnostic, budget);
+                    if (status != ReadStatus.Done) return status;
+                }
+                break;
+            case 8:
+                for (int i = 0; i < count; i++)
+                {
+                    status = TryOpenReverseChainSubst(kind, i, out var reverse, out _, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = reverse.Validate(numGlyphs, out diagnostic, budget);
+                    if (status != ReadStatus.Done) return status;
+                }
+                break;
             default:
                 for (int i = 0; i < count; i++)
                 {
@@ -441,10 +596,10 @@ public readonly ref partial struct LookupView
                     if (status != ReadStatus.Done) return status;
                     status = extension.TryGetExtensionLookupType(out ushort wrappedType, out diagnostic);
                     if (status != ReadStatus.Done) return status;
-                    if (wrappedType is not (1 or 2 or 3 or 4))
+                    if (wrappedType is not (1 or 2 or 3 or 4 or 5 or 6 or 8))
                         return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                             Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, lookupType);
-                    status = extension.Validate(numGlyphs, out diagnostic, budget);
+                    status = extension.Validate(numGlyphs, lookupCount, out diagnostic, budget);
                     if (status != ReadStatus.Done) return status;
                 }
                 break;

@@ -77,18 +77,33 @@ public static partial class LayoutListsTableCompiler
     public static ReadStatus TryCreate(uint version, uint featureVariationsOffsetRaw,
         ReadOnlySpan<LayoutScript> scripts, ReadOnlySpan<LayoutFeature> features, ReadOnlySpan<LookupTable> lookups,
         int numGlyphs, LayoutLookupKind kind, out LayoutListsTable? model, out FontDiagnostic diagnostic,
-        BuildLimits? limits = null, DataLocation location = default) => TryCreate(version, featureVariationsOffsetRaw,
-            scripts, features, lookups, numGlyphs, kind, out model, out diagnostic, new BuildBudget(limits), location);
+        BuildLimits? limits = null, DataLocation location = default,
+        FeatureVariationsTable? featureVariations = null) => TryCreate(version, featureVariationsOffsetRaw,
+            scripts, features, lookups, numGlyphs, kind, out model, out diagnostic,
+            new BuildBudget(limits), location, featureVariations);
 
     internal static ReadStatus TryCreate(uint version, uint featureVariationsOffsetRaw,
         ReadOnlySpan<LayoutScript> scripts, ReadOnlySpan<LayoutFeature> features, ReadOnlySpan<LookupTable> lookups,
         int numGlyphs, LayoutLookupKind kind, out LayoutListsTable? model, out FontDiagnostic diagnostic,
-        BuildBudget budget, DataLocation location = default)
+        BuildBudget budget, DataLocation location = default, FeatureVariationsTable? featureVariations = null)
     {
         model = null;
         if (version is not (LayoutListsLayout.Version10 or LayoutListsLayout.Version11))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
                 location.AtLocal(DataField.Version, 0), out diagnostic, version);
+        if (featureVariationsOffsetRaw == 0 && featureVariations is not null)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Offset, LayoutListsLayout.VariationsOffsetField),
+                out diagnostic, 0UL, 1UL);
+        if (featureVariations is not null)
+        {
+            // The caller-supplied FV validates against the same root inputs: no fvar
+            // authority is available here (the axis domain stays conditional), the
+            // FTS featureIndex domain is this table's FeatureList count.
+            ReadStatus fvStatus = featureVariations.ValidateTable(null, features.Length,
+                out diagnostic, budget);
+            if (fvStatus != ReadStatus.Done) return fvStatus;
+        }
         ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, location, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = CheckKind(kind, location, out diagnostic);
@@ -113,7 +128,7 @@ public static partial class LayoutListsTableCompiler
         if (!budget.Work(copied, location, out diagnostic) ||
             !budget.Buffer(8 * copied, location, out diagnostic)) return ReadStatus.ResourceLimit;
         model = new(version, featureVariationsOffsetRaw, scripts.ToArray(), features.ToArray(), lookups.ToArray(),
-            numGlyphs, kind, location);
+            numGlyphs, kind, location, featureVariations);
         diagnostic = default; return ReadStatus.Done;
     }
 

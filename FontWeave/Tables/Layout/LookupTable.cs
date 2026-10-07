@@ -16,7 +16,9 @@ public sealed class LookupTable
         DataLocation location, SinglePosTable[]? singlePositions = null,
         MultipleSubstTable[]? multiples = null, AlternateSubstTable[]? alternates = null,
         LigatureSubstTable[]? ligatures = null, ExtensionSubstTable[]? extensions = null,
-        PairPosTable[]? pairPositions = null, CursivePosTable[]? cursiveAttachments = null)
+        PairPosTable[]? pairPositions = null, CursivePosTable[]? cursiveAttachments = null,
+        ContextualSubstTable[]? contextuales = null, ChainingSubstTable[]? chainings = null,
+        ReverseChainSubstTable[]? reverseChains = null)
     {
         Kind = kind;
         NumGlyphs = numGlyphs;
@@ -32,6 +34,9 @@ public sealed class LookupTable
         Extensions = extensions is null ? null : Array.AsReadOnly(extensions);
         PairPositions = pairPositions is null ? null : Array.AsReadOnly(pairPositions);
         CursiveAttachments = cursiveAttachments is null ? null : Array.AsReadOnly(cursiveAttachments);
+        Contextuals = contextuales is null ? null : Array.AsReadOnly(contextuales);
+        Chainings = chainings is null ? null : Array.AsReadOnly(chainings);
+        ReverseChains = reverseChains is null ? null : Array.AsReadOnly(reverseChains);
         Location = location;
     }
 
@@ -42,7 +47,8 @@ public sealed class LookupTable
     public ushort? MarkFilteringSet { get; }
     public int SubtableCount => SingleSubstitutions?.Count ?? SinglePositions?.Count ?? Multiples?.Count
         ?? Alternates?.Count ?? Ligatures?.Count ?? Extensions?.Count ?? PairPositions?.Count
-        ?? CursiveAttachments?.Count ?? _sourceOffsets.Length;
+        ?? CursiveAttachments?.Count ?? Contextuals?.Count ?? Chainings?.Count
+        ?? ReverseChains?.Count ?? _sourceOffsets.Length;
     public DataLocation Location { get; }
     public DataLocation SourceLocation => Location;
     public ReadOnlySpan<ushort> SourceSubtableOffsets => _sourceOffsets;
@@ -54,14 +60,19 @@ public sealed class LookupTable
     public IReadOnlyList<ExtensionSubstTable>? Extensions { get; }
     public IReadOnlyList<PairPosTable>? PairPositions { get; }
     public IReadOnlyList<CursivePosTable>? CursiveAttachments { get; }
+    // The T4-04 contextual families: a typed read decodes exactly one of the three.
+    public IReadOnlyList<ContextualSubstTable>? Contextuals { get; }
+    public IReadOnlyList<ChainingSubstTable>? Chainings { get; }
+    public IReadOnlyList<ReverseChainSubstTable>? ReverseChains { get; }
 
     /// <summary>The kind-aware typed read support set (T4-03 section 3.3, extended by
-    /// T4-05): GSUB decodes types 1/2/3/4/7, GPOS decodes 1/2/3. Every other value
+    /// T4-05 and T4-04): GSUB decodes types 1-8, GPOS decodes 1/2/3. Every other value
     /// keeps the raw observe/typed-refuse layering with byte-identical diagnostics
-    /// (GPOS 4-9's refusal is W11's pin; type 9 stays unopened for T4-06).</summary>
+    /// (GPOS 4-9's refusal is W11's pin; type 9 stays unopened for T4-06). The
+    /// metadata-only remainder is therefore GSUB unknown values plus the GPOS outside.</summary>
     internal static bool IsTypedSupported(LayoutLookupKind kind, ushort lookupType) =>
         kind == LayoutLookupKind.Gsub
-            ? lookupType is 1 or 2 or 3 or 4 or 7
+            ? lookupType is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8
             : lookupType is 1 or 2 or 3;
     public EffectiveMarkFilter EffectiveMarkFilter => (Flags & LookupLayout.IgnoreMarks) != 0
         ? EffectiveMarkFilter.IgnoreMarks : (Flags & LookupLayout.UseMarkFilteringSet) != 0
@@ -147,6 +158,19 @@ public sealed class LookupTable
     internal LookupTable WithDecodedCursive(CursivePosTable[] subtables) =>
         new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
             cursiveAttachments: subtables);
+
+    // The T4-04 decoded contextual families.
+    internal LookupTable WithDecodedContextuals(ContextualSubstTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            contextuales: subtables);
+
+    internal LookupTable WithDecodedChainings(ChainingSubstTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            chainings: subtables);
+
+    internal LookupTable WithDecodedReverseChains(ReverseChainSubstTable[] subtables) =>
+        new(Kind, NumGlyphs, LookupType, Flags, MarkFilteringSet, _sourceOffsets, null, Location,
+            reverseChains: subtables);
 
     internal static ReadStatus ValidateGposSource(DataLocation location, out FontDiagnostic diagnostic)
     {
