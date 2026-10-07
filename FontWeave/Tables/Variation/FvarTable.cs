@@ -8,7 +8,9 @@ namespace FontWeave.Tables.Variation;
 /// belong to the avar evaluator's oracle face, not to the axis authority.</summary>
 public sealed class FvarAxis
 {
-    internal FvarAxis(uint tag, int minValue, int defaultValue, int maxValue,
+    /// <summary>Creates one axis record; the write contracts (range order, flag mask,
+    /// name-ID domain) are enforced by <see cref="FvarTableCompiler.TryCreate"/>.</summary>
+    public FvarAxis(uint tag, int minValue, int defaultValue, int maxValue,
         ushort flags, ushort axisNameID)
     {
         Tag = tag;
@@ -34,7 +36,10 @@ public sealed class FvarAxis
 /// spec's "should" domain and are observed, never enforced.</summary>
 public sealed class FvarInstance
 {
-    internal FvarInstance(ushort subfamilyNameID, ushort flags, int[] coordinates,
+    /// <summary>Creates one instance record; the coordinates vector must carry one
+    /// raw Fixed per axis and the postScriptNameID presence must be uniform over the
+    /// whole instance set (the factory enforces both).</summary>
+    public FvarInstance(ushort subfamilyNameID, ushort flags, int[] coordinates,
         ushort? postScriptNameID)
     {
         SubfamilyNameID = subfamilyNameID;
@@ -79,4 +84,105 @@ public sealed class FvarTable
     public DataLocation Location { get; }
 
     public int ConsumedLength { get; }
+
+    /// <summary>Replaces one axis's min/default/max triple; the write contract
+    /// (min<=default<=max) is enforced by the factory rebuild (card 4). The axis set,
+    /// order and instance block never move (OQ-T5-02-6 finite refusal for anything
+    /// beyond value replacement).</summary>
+    public ReadStatus TryWithAxisRange(int axisIndex, int minValue, int defaultValue,
+        int maxValue, out FvarTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (IsOutside(axisIndex, Axes.Count))
+            return AxisIndexFail(axisIndex, out diagnostic);
+        var axes = Replace(Axes, axisIndex, new FvarAxis(Axes[axisIndex].Tag, minValue,
+            defaultValue, maxValue, Axes[axisIndex].Flags, Axes[axisIndex].AxisNameID));
+        return Create(axes, Instances, out updated, out diagnostic, limits);
+    }
+
+    /// <summary>Replaces one axis's flag bits; the reserved mask stays a refusal
+    /// domain (HIDDEN_AXIS = 0x0001 is the only legal bit).</summary>
+    public ReadStatus TryWithAxisFlags(int axisIndex, ushort flags, out FvarTable? updated,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (IsOutside(axisIndex, Axes.Count))
+            return AxisIndexFail(axisIndex, out diagnostic);
+        var axes = Replace(Axes, axisIndex, new FvarAxis(Axes[axisIndex].Tag, Axes[axisIndex].MinValue,
+            Axes[axisIndex].DefaultValue, Axes[axisIndex].MaxValue, flags, Axes[axisIndex].AxisNameID));
+        return Create(axes, Instances, out updated, out diagnostic, limits);
+    }
+
+    /// <summary>Replaces one axis's name ID; the wire domain ([256,32768)) is the
+    /// factory's refusal domain - no name-table existence is consulted (card 1.2-II).</summary>
+    public ReadStatus TryWithAxisNameID(int axisIndex, ushort axisNameID, out FvarTable? updated,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (IsOutside(axisIndex, Axes.Count))
+            return AxisIndexFail(axisIndex, out diagnostic);
+        var axes = Replace(Axes, axisIndex, new FvarAxis(Axes[axisIndex].Tag, Axes[axisIndex].MinValue,
+            Axes[axisIndex].DefaultValue, Axes[axisIndex].MaxValue, Axes[axisIndex].Flags,
+            axisNameID));
+        return Create(axes, Instances, out updated, out diagnostic, limits);
+    }
+
+    /// <summary>Replaces one instance's coordinate vector; the count must equal the
+    /// axis count (the axis-count authority is preserved).</summary>
+    public ReadStatus TryWithInstanceCoordinates(int instanceIndex,
+        IReadOnlyList<int> coordinates, out FvarTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        ArgumentNullException.ThrowIfNull(coordinates);
+        if (IsOutside(instanceIndex, Instances.Count))
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, FvarLayout.InstanceCountAt, instanceIndex),
+                out diagnostic, unchecked((ulong)(long)instanceIndex), (ulong)Instances.Count);
+        FvarInstance previous = Instances[instanceIndex];
+        var instance = new FvarInstance(previous.SubfamilyNameID, previous.Flags,
+            coordinates.ToArray(), previous.PostScriptNameID);
+        return Create(Replace(Axes, -1, null), Replace(Instances, instanceIndex, instance),
+            out updated, out diagnostic, limits);
+    }
+
+    /// <summary>Replaces one instance's name IDs; flipping the postScriptNameID
+    /// presence on a single instance mixes the two instance shapes and refuses
+    /// (OQ-T5-02-6: the factory's one-shape rule).</summary>
+    public ReadStatus TryWithInstanceNameIDs(int instanceIndex, ushort subfamilyNameID,
+        ushort? postScriptNameID, out FvarTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (IsOutside(instanceIndex, Instances.Count))
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, FvarLayout.InstanceCountAt, instanceIndex),
+                out diagnostic, unchecked((ulong)(long)instanceIndex), (ulong)Instances.Count);
+        FvarInstance previous = Instances[instanceIndex];
+        var instance = new FvarInstance(subfamilyNameID, previous.Flags,
+            previous.Coordinates.ToArray(), postScriptNameID);
+        return Create(Replace(Axes, -1, null), Replace(Instances, instanceIndex, instance),
+            out updated, out diagnostic, limits);
+    }
+
+    private ReadStatus Create(IReadOnlyList<FvarAxis> axes, IReadOnlyList<FvarInstance> instances,
+        out FvarTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits) =>
+        FvarTableCompiler.TryCreate(axes, instances, out updated, out diagnostic, limits, Location);
+
+    private ReadStatus AxisIndexFail(int axisIndex, out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+            Location.AtLocal(DataField.Count, FvarLayout.AxisCountAt, axisIndex),
+            out diagnostic, unchecked((ulong)(long)axisIndex), (ulong)Axes.Count);
+
+    private static bool IsOutside(int index, int count) => index < 0 || index >= count;
+
+    private static IReadOnlyList<T> Replace<T>(IReadOnlyList<T> source, int index, T? value)
+        where T : class
+    {
+        var copy = new T[source.Count];
+        for (int i = 0; i < source.Count; i++)
+            copy[i] = i == index ? value! : source[i];
+        return copy;
+    }
 }

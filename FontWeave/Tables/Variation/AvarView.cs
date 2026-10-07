@@ -118,30 +118,11 @@ public readonly ref partial struct AvarView
                     VariationWire.F2Dot14(_data, position + 2));
                 position += AvarLayout.SegmentPairStride;
             }
-            maps[axis] = (pairs, Observe(pairs));
+            maps[axis] = (pairs, AvarTableCompiler.Observe(pairs));
         }
         model = new(maps, Location, Math.Max(position, AvarLayout.HeaderLength));
         diagnostic = default;
         return ReadStatus.Done;
     }
 
-    // The observation pass: required pairs over the raw records - the from values
-    // -1/0/+1 in F2DOT14 representation (-16384/0/16384); ignored records through
-    // the evaluator's kept view. (The corpus probe caught the first draft comparing
-    // the integral values against raw pairs - exactly the class of drift the
-    // frozen-facts reconciliation exists to catch.)
-    private static AvarMapObservation Observe(AvarMapPair[] pairs)
-    {
-        bool requiredMissing = !ContainsFrom(pairs, -16384) || !ContainsFrom(pairs, 0) ||
-            !ContainsFrom(pairs, 16384);
-        int ignored = pairs.Length - AvarTable.KeepConforming(pairs).Length;
-        return new(requiredMissing, ignored);
-    }
-
-    private static bool ContainsFrom(AvarMapPair[] pairs, int from)
-    {
-        foreach (AvarMapPair pair in pairs)
-            if (pair.From == from) return true;
-        return false;
-    }
 }

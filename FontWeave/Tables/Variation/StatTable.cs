@@ -6,7 +6,9 @@ namespace FontWeave.Tables.Variation;
 /// ordering value (UI composition semantics stay outside this table - card 3.3).</summary>
 public sealed class StatDesignAxis
 {
-    internal StatDesignAxis(uint axisTag, ushort axisNameID, ushort axisOrdering)
+    /// <summary>Creates one design-axis record; the DuplicateTag and name-ID
+    /// domains are enforced by <see cref="StatTableCompiler.TryCreate"/>.</summary>
+    public StatDesignAxis(uint axisTag, ushort axisNameID, ushort axisOrdering)
     {
         AxisTag = axisTag;
         AxisNameID = axisNameID;
@@ -27,7 +29,10 @@ public readonly record struct StatCombinationEntry(ushort AxisIndex, int Value);
 /// record's own format keep their type defaults. All Fixed values are raw.</summary>
 public sealed class StatAxisValue
 {
-    internal StatAxisValue(ushort format, ushort flags, ushort valueNameID, ushort axisIndex,
+    /// <summary>Creates one axis value in the given format; only the fields of that
+    /// format are consumed (the others keep their defaults), and the format 4
+    /// combination axis set and row count are part of the write contract.</summary>
+    public StatAxisValue(ushort format, ushort flags, ushort valueNameID, ushort axisIndex,
         int value, int nominalValue, int rangeMinValue, int rangeMaxValue, int linkedValue,
         StatCombinationEntry[] combination)
     {
@@ -125,4 +130,140 @@ public sealed class StatTable
     public DataLocation Location { get; }
 
     public int ConsumedLength { get; }
+
+    /// <summary>Replaces one design axis's ordering value; tags, name IDs and the
+    /// axis set never move (card 4, OQ-T5-02-6).</summary>
+    public ReadStatus TryWithAxisOrdering(int axisIndex, ushort axisOrdering,
+        out StatTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (axisIndex < 0 || axisIndex >= DesignAxes.Count)
+            return AxisIndexFail(axisIndex, DesignAxes.Count, out diagnostic);
+        var axes = new StatDesignAxis[DesignAxes.Count];
+        for (int i = 0; i < DesignAxes.Count; i++)
+        {
+            StatDesignAxis axis = DesignAxes[i];
+            axes[i] = i == axisIndex ? new(axis.AxisTag, axis.AxisNameID, axisOrdering) : axis;
+        }
+        return Create(axes, AxisValues, out updated, out diagnostic, limits);
+    }
+
+    /// <summary>Replaces one axis value's flag bits.</summary>
+    public ReadStatus TryWithAxisValueFlags(int valueIndex, ushort flags,
+        out StatTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (IsOutside(valueIndex))
+            return ValueIndexFail(valueIndex, out diagnostic);
+        return Create(DesignAxes.ToArray(), Replace(valueIndex, WithFlags(AxisValues[valueIndex], flags)),
+            out updated, out diagnostic, limits);
+    }
+
+    /// <summary>Replaces one axis value's name ID; the wire domain is the factory's
+    /// refusal domain - no name-table existence is consulted (card 1.2-II).</summary>
+    public ReadStatus TryWithAxisValueNameID(int valueIndex, ushort valueNameID,
+        out StatTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (IsOutside(valueIndex))
+            return ValueIndexFail(valueIndex, out diagnostic);
+        return Create(DesignAxes.ToArray(), Replace(valueIndex, WithNameID(AxisValues[valueIndex], valueNameID)),
+            out updated, out diagnostic, limits);
+    }
+
+    /// <summary>Replaces one axis value's value face: the value for formats 1 and 3,
+    /// the nominal value for format 2 (its range stays), and - with the entry index -
+    /// one combination entry's value for format 4, keeping the combination axis set
+    /// and row count (card 4).</summary>
+    public ReadStatus TryWithAxisValueValue(int valueIndex, int value,
+        out StatTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        TryWithAxisValueValue(valueIndex, null, value, out updated, out diagnostic, limits);
+
+    public ReadStatus TryWithAxisValueValue(int valueIndex, int? entryIndex, int value,
+        out StatTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (IsOutside(valueIndex))
+            return ValueIndexFail(valueIndex, out diagnostic);
+        StatAxisValue previous = AxisValues[valueIndex];
+        StatAxisValue replacement;
+        switch (previous.Format)
+        {
+            case 1 or 3:
+                replacement = WithValue(previous, value);
+                break;
+            case 2:
+                replacement = WithNominal(previous, value);
+                break;
+            default:
+                if (entryIndex is null || entryIndex.Value < 0 ||
+                    entryIndex.Value >= previous.Combination.Count)
+                    return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                        Location.AtLocal(DataField.Count, 0, valueIndex), out diagnostic,
+                        unchecked((ulong)(long)(entryIndex ?? -1)), (ulong)previous.Combination.Count);
+                var combination = new StatCombinationEntry[previous.Combination.Count];
+                for (int i = 0; i < combination.Length; i++)
+                    combination[i] = i == entryIndex.Value
+                        ? new(previous.Combination[i].AxisIndex, value)
+                        : previous.Combination[i];
+                replacement = WithCombination(previous, combination);
+                break;
+        }
+        return Create(DesignAxes.ToArray(), Replace(valueIndex, replacement),
+            out updated, out diagnostic, limits);
+    }
+
+    // Edits rebuild through the factory under the source's own version: 1.1/1.2
+    // round-trip, while a 1.0 source's edit refuses as the deprecated new-write
+    // domain (the compile round-trip of a 1.0 source stays unrestricted, card 4).
+    private ReadStatus Create(IReadOnlyList<StatDesignAxis> axes,
+        IReadOnlyList<StatAxisValue> values, out StatTable? updated,
+        out FontDiagnostic diagnostic, BuildLimits? limits) =>
+        StatTableCompiler.TryCreate(Version, axes, values, ElidedFallbackNameID,
+            out updated, out diagnostic, limits, Location);
+
+    private static StatAxisValue WithFlags(StatAxisValue value, ushort flags) =>
+        new(value.Format, flags, value.ValueNameID, value.AxisIndex, value.Value,
+            value.NominalValue, value.RangeMinValue, value.RangeMaxValue, value.LinkedValue,
+            value.Combination.ToArray());
+
+    private static StatAxisValue WithNameID(StatAxisValue value, ushort valueNameID) =>
+        new(value.Format, value.Flags, valueNameID, value.AxisIndex, value.Value,
+            value.NominalValue, value.RangeMinValue, value.RangeMaxValue, value.LinkedValue,
+            value.Combination.ToArray());
+
+    private static StatAxisValue WithValue(StatAxisValue value, int newValue) =>
+        new(value.Format, value.Flags, value.ValueNameID, value.AxisIndex, newValue,
+            value.NominalValue, value.RangeMinValue, value.RangeMaxValue, value.LinkedValue,
+            value.Combination.ToArray());
+
+    private static StatAxisValue WithNominal(StatAxisValue value, int nominal) =>
+        new(value.Format, value.Flags, value.ValueNameID, value.AxisIndex, value.Value,
+            nominal, value.RangeMinValue, value.RangeMaxValue, value.LinkedValue,
+            value.Combination.ToArray());
+
+    private static StatAxisValue WithCombination(StatAxisValue value, StatCombinationEntry[] combination) =>
+        new(value.Format, value.Flags, value.ValueNameID, value.AxisIndex, value.Value,
+            value.NominalValue, value.RangeMinValue, value.RangeMaxValue, value.LinkedValue,
+            combination);
+
+    private bool IsOutside(int valueIndex) => valueIndex < 0 || valueIndex >= AxisValues.Count;
+
+    private IReadOnlyList<StatAxisValue> Replace(int index, StatAxisValue value)
+    {
+        var copy = new StatAxisValue[AxisValues.Count];
+        for (int i = 0; i < copy.Length; i++)
+            copy[i] = i == index ? value : AxisValues[i];
+        return copy;
+    }
+
+    private ReadStatus AxisIndexFail(int index, int count, out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+            Location.AtLocal(DataField.Count, StatLayout.DesignAxisCountAt, index),
+            out diagnostic, unchecked((ulong)(long)index), (ulong)count);
+
+    private ReadStatus ValueIndexFail(int index, out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+            Location.AtLocal(DataField.Count, StatLayout.AxisValueCountAt, index),
+            out diagnostic, unchecked((ulong)(long)index), (ulong)AxisValues.Count);
 }

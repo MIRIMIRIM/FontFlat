@@ -54,6 +54,63 @@ public sealed class AvarTable
 
     public int ConsumedLength { get; }
 
+    /// <summary>Replaces one raw map pair, keeping the axis count and the map's row
+    /// count (card 4: no row insertion or removal, OQ-T5-02-6). The write-side shape
+    /// invariant applies to the edited target map: from strictly increasing and to
+    /// non-decreasing - a violation is a finite refusal, symmetric with the read
+    /// side's tolerance observation. The tolerance observation is recomputed.</summary>
+    public ReadStatus TryWithMapPair(int axisIndex, int pairIndex, int from, int to,
+        out AvarTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (axisIndex < 0 || axisIndex >= Maps.Count)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, AvarLayout.AxisCountAt, axisIndex),
+                out diagnostic, unchecked((ulong)(long)axisIndex), (ulong)Maps.Count);
+        AvarMapPair[] pairs = Maps[axisIndex].Pairs;
+        if (pairIndex < 0 || pairIndex >= pairs.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count,
+                    (ulong)(AvarLayout.HeaderLength +
+                        MapStart(axisIndex) + AvarLayout.SegmentMapFirstPairAt +
+                        pairIndex * AvarLayout.SegmentPairStride), pairIndex),
+                out diagnostic, unchecked((ulong)(long)pairIndex), (ulong)pairs.Length);
+        var edited = (AvarMapPair[])pairs.Clone();
+        edited[pairIndex] = new(from, to);
+        if (!IsConforming(edited))
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Payload,
+                    (ulong)(AvarLayout.HeaderLength + MapStart(axisIndex) +
+                        AvarLayout.SegmentMapFirstPairAt + pairIndex * AvarLayout.SegmentPairStride),
+                    pairIndex), out diagnostic, unchecked((ulong)(long)to), unchecked((ulong)(long)from));
+        var maps = new AvarMapPair[Maps.Count][];
+        for (int i = 0; i < Maps.Count; i++)
+            maps[i] = i == axisIndex ? edited : Maps[i].Pairs;
+        return AvarTableCompiler.TryCreate(maps, out updated, out diagnostic, limits, Location);
+    }
+
+    private long MapStart(int axisIndex)
+    {
+        long position = 0;
+        for (int i = 0; i < axisIndex; i++)
+            position += AvarLayout.SegmentMapFirstPairAt +
+                (long)Maps[i].Pairs.Length * AvarLayout.SegmentPairStride;
+        return position;
+    }
+
+    /// <summary>The write-side map shape: from strictly increasing, to non-decreasing
+    /// (card 4's "target map keeps its shape"; the read side observes, the write side
+    /// refuses).</summary>
+    internal static bool IsConforming(AvarMapPair[] pairs)
+    {
+        for (int i = 1; i < pairs.Length; i++)
+        {
+            if (pairs[i].From <= pairs[i - 1].From || pairs[i].To < pairs[i - 1].To)
+                return false;
+        }
+        return true;
+    }
+
     /// <summary>Maps one already-normalized coordinate through the axis's segment
     /// map. Identity (mapped == value, modified = false) when the axis carries no
     /// effective modification: an empty map or a map missing the required -1/0/+1
@@ -70,7 +127,7 @@ public sealed class AvarTable
         if (axisIndex < 0 || axisIndex >= Maps.Count)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.Count, AvarLayout.AxisCountAt, axisIndex),
-                out diagnostic, (ulong)(long)axisIndex, (ulong)Maps.Count);
+                out diagnostic, unchecked((ulong)(long)axisIndex), (ulong)Maps.Count);
         (AvarMapPair[] pairs, AvarMapObservation observation) = Maps[axisIndex];
         if (pairs.Length == 0 || observation.RequiredPairsMissing)
         {
