@@ -254,6 +254,44 @@ public sealed class LookupTable
             Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
     }
 
+    // The T4-04 edit APIs: one per contextual family, each re-running the family's
+    // explicit factory (same flags/context contract as creation).
+    public ReadStatus TryWithContextuals(IReadOnlyList<ContextualSubstTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gsub || LookupType != 5)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreateContextualSubst(NumGlyphs, subtables,
+            Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
+    }
+
+    public ReadStatus TryWithChainings(IReadOnlyList<ChainingSubstTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gsub || LookupType != 6)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreateChainingSubst(NumGlyphs, subtables,
+            Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
+    }
+
+    public ReadStatus TryWithReverseChains(IReadOnlyList<ReverseChainSubstTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gsub || LookupType != 8)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreateReverseChainSubst(NumGlyphs, subtables,
+            Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
+    }
+
     // The T4-05 edit APIs: one per supported GPOS positioning type, each re-running the
     // type's explicit factory (same flags/context contract as creation).
     public ReadStatus TryWithPairPositions(IReadOnlyList<PairPosTable> subtables,

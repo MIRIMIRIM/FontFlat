@@ -40,4 +40,29 @@ public sealed class ReverseChainSubstTable
     public DataLocation Location { get; }
 
     public int ConsumedLength { get; }
+
+    // The T4-04 edit API: one substitute slot, re-checked against the glyph domain
+    // so the edit stays spec-conforming (the chain shape cannot change).
+    public ReadStatus TryWithSubstitute(int index, ushort substitute, int numGlyphs,
+        out ReverseChainSubstTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (index < 0 || index >= _substitutes.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId, 0), out diagnostic,
+                unchecked((ulong)(long)index), (ulong)_substitutes.Length);
+        var budget = new BuildBudget(limits);
+        if (!budget.Work(1, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        if (substitute >= numGlyphs)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId, (ulong)index), out diagnostic,
+                substitute, (ulong)numGlyphs);
+        var copy = (ushort[])_substitutes.Clone();
+        copy[index] = substitute;
+        updated = new(Coverage, _backtrackCoverages, _lookaheadCoverages, copy, numGlyphs,
+            Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
 }

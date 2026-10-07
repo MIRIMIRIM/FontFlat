@@ -40,6 +40,13 @@ public sealed class ChainingRule
     public DataLocation Location { get; }
 
     public int ConsumedLength { get; }
+
+    internal ChainingRule WithRecord(int index, SequenceLookupRecord record)
+    {
+        var copy = (SequenceLookupRecord[])_records.Clone();
+        copy[index] = record;
+        return new(_backtrack, _input, _lookahead, copy, Location, ConsumedLength);
+    }
 }
 
 /// <summary>One chaining rule set (the shared declared header opened under the
@@ -62,6 +69,17 @@ public sealed class ChainingRuleSet
     public DataLocation Location { get; }
 
     public int ConsumedLength { get; }
+
+    internal ChainingRuleSet WithRule(int index, ChainingRule rule)
+    {
+        var copy = (ChainingRule[])_rules.Clone();
+        copy[index] = rule;
+        long consumed = ContextualRuleSetLayout.HeaderLength +
+            ContextualRuleSetLayout.OffsetStride * copy.Length;
+        foreach (var item in copy)
+            consumed += item.ConsumedLength;
+        return new(copy, Location, (int)consumed);
+    }
 }
 
 /// <summary>Owned GSUB type-6 subtable (ChainingContextSubst formats 1/2/3): the
@@ -127,4 +145,98 @@ public sealed class ChainingSubstTable
     public DataLocation Location { get; }
 
     public int ConsumedLength { get; }
+
+    // The T4-04 edit APIs: one record slot per chaining rule, re-run through the rule
+    // factory so every domain check re-fires (the write invariant: an edited model
+    // must be spec-conforming). Format 3's records are the owner's flat list, not a
+    // rule body, so the rule edits address formats 1/2 only.
+    public ReadStatus TryWithSequenceLookupIndex(int ruleSetIndex, int ruleIndex, int recordIndex,
+        ushort lookupListIndex, int lookupCount, out ChainingSubstTable? updated,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        ReadStatus status = Locate(ruleSetIndex, ruleIndex, recordIndex, out var rule,
+            out var ruleSet, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        return Replace(rule!, ruleSet!, ruleIndex, recordIndex,
+            new SequenceLookupRecord(rule!.LookupRecords[recordIndex].SequenceIndex, lookupListIndex),
+            ruleSetIndex, lookupCount, out updated, out diagnostic, limits);
+    }
+
+    public ReadStatus TryWithSequenceIndex(int ruleSetIndex, int ruleIndex, int recordIndex,
+        ushort sequenceIndex, out ChainingSubstTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        ReadStatus status = Locate(ruleSetIndex, ruleIndex, recordIndex, out var rule,
+            out var ruleSet, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        return Replace(rule!, ruleSet!, ruleIndex, recordIndex,
+            new SequenceLookupRecord(sequenceIndex, rule!.LookupRecords[recordIndex].LookupListIndex),
+            ruleSetIndex, lookupCount: -1, out updated, out diagnostic, limits);
+    }
+
+    private ReadStatus Locate(int ruleSetIndex, int ruleIndex, int recordIndex,
+        out ChainingRule? rule, out ChainingRuleSet? ruleSet, out FontDiagnostic diagnostic)
+    {
+        rule = null;
+        ruleSet = null;
+        var sets = RuleSets;
+        if (sets is null || ruleSetIndex < 0 || ruleSetIndex >= sets.Count)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, Format == 2 ? 10u : 4u), out diagnostic,
+                unchecked((ulong)(long)ruleSetIndex), (ulong)(sets?.Count ?? 0));
+        var set = sets[ruleSetIndex];
+        if (set is null)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Offset, 0, ruleSetIndex), out diagnostic);
+        if (ruleIndex < 0 || ruleIndex >= set.Rules.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, 0), out diagnostic,
+                unchecked((ulong)(long)ruleIndex), (ulong)set.Rules.Length);
+        var candidate = set.Rules[ruleIndex];
+        if (recordIndex < 0 || recordIndex >= candidate.LookupRecords.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                candidate.Location.AtLocal(DataField.Count, 2), out diagnostic,
+                unchecked((ulong)(long)recordIndex), (ulong)candidate.LookupRecords.Length);
+        rule = candidate;
+        ruleSet = set;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus Replace(ChainingRule rule, ChainingRuleSet set, int ruleIndex,
+        int recordIndex, SequenceLookupRecord record, int ruleSetIndex, int lookupCount,
+        out ChainingSubstTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits)
+    {
+        updated = null;
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(rule.ConsumedLength, rule.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        // Re-run the rule factory on the replacement record: the domain checks
+        // re-fire and the shape (record count) cannot change.
+        var candidate = new SequenceLookupRecord[rule.LookupRecords.Length];
+        for (int i = 0; i < candidate.Length; i++)
+            candidate[i] = i == recordIndex ? record : rule.LookupRecords[i];
+        ReadStatus status = ChainingSubstTableCompiler.TryCreateRule(rule.BacktrackSequence,
+            rule.InputSequence, rule.LookaheadSequence, candidate, lookupCount, out _,
+            out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        var updatedRule = rule.WithRecord(recordIndex, record);
+        var updatedSet = set.WithRule(ruleIndex, updatedRule);
+        updated = WithRuleSet(ruleSetIndex, updatedSet);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Single-slot replacement for the rule-set edit (null keeps the
+    /// spec-NULL offset).</summary>
+    internal ChainingSubstTable WithRuleSet(int index, ChainingRuleSet? ruleSet)
+    {
+        var copy = (ChainingRuleSet?[])_ruleSets.Clone();
+        copy[index] = ruleSet;
+        return new(Format, Coverage, BacktrackClassDef, InputClassDef, LookaheadClassDef, copy,
+            _backtrackCoverages, _inputCoverages, _lookaheadCoverages, _records, NumGlyphs,
+            Location, ConsumedLength);
+    }
 }

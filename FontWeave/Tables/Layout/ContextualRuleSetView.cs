@@ -32,7 +32,9 @@ public readonly ref partial struct ContextualRuleSetView
             status = InspectRule(record.RuleOffset, lookupCount, r, budget,
                 out int ruleConsumed, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            end = Math.Max(end, (long)record.RuleOffset + (long)ruleConsumed);
+            // Canonical extent (header + offset row + bodies), matching the owned
+            // model the compiler emits.
+            end += ruleConsumed;
         }
         consumed = (int)end;
         diagnostic = default;
@@ -60,7 +62,10 @@ public readonly ref partial struct ContextualRuleSetView
             status = ReadRule(record.RuleOffset, lookupCount, r, budget, out var rule, out diagnostic);
             if (status != ReadStatus.Done) return status;
             rules[r] = rule!;
-            end = Math.Max(end, (long)record.RuleOffset + (long)rule!.ConsumedLength);
+            // The owned extent is canonical (header + offset row + the bodies in
+            // order), not the source's scattered placement - the compilers emit the
+            // compact form and the edit helpers recompute the same value.
+            end += rule!.ConsumedLength;
         }
         if (!budget.Buffer(8L * ruleCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         model = new(rules, Location, (int)end);
@@ -86,7 +91,7 @@ public readonly ref partial struct ContextualRuleSetView
             status = InspectChainedRule(record.RuleOffset, lookupCount, r, budget,
                 out int ruleConsumed, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            end = Math.Max(end, (long)record.RuleOffset + (long)ruleConsumed);
+            end += ruleConsumed;
         }
         consumed = (int)end;
         diagnostic = default;
@@ -114,7 +119,9 @@ public readonly ref partial struct ContextualRuleSetView
                 out var rule, out diagnostic);
             if (status != ReadStatus.Done) return status;
             rules[r] = rule!;
-            end = Math.Max(end, (long)record.RuleOffset + (long)rule!.ConsumedLength);
+            // The owned extent is canonical (header + offset row + the bodies in
+            // order), not the source's scattered placement.
+            end += rule!.ConsumedLength;
         }
         if (!budget.Buffer(8L * ruleCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         model = new(rules, Location, (int)end);
@@ -262,8 +269,10 @@ public readonly ref partial struct ContextualRuleSetView
         int backtrackCount = ReadWire.U16(_data, cursor);
         cursor += 2;
         if (cursor + 2 * backtrackCount > _data.Length) return ShortBody(at, ordinal, out diagnostic);
-        if (materialize && backtrackCount != 0)
+        if (materialize)
         {
+            // Empty chains materialize as empty arrays - the owned rule model reads
+            // its spans and InputCount unconditionally.
             backtrack = new ushort[backtrackCount];
             for (int i = 0; i < backtrackCount; i++)
                 backtrack[i] = ReadWire.U16(_data, cursor + 2 * i);
@@ -280,7 +289,7 @@ public readonly ref partial struct ContextualRuleSetView
                 0UL, 1UL);
         int inputLength = inputGlyphCount - 1;
         if (cursor + 2 * inputLength > _data.Length) return ShortBody(at, ordinal, out diagnostic);
-        if (materialize && inputLength != 0)
+        if (materialize)
         {
             input = new ushort[inputLength];
             for (int i = 0; i < inputLength; i++)
@@ -292,7 +301,7 @@ public readonly ref partial struct ContextualRuleSetView
         int lookaheadCount = ReadWire.U16(_data, cursor);
         cursor += 2;
         if (cursor + 2 * lookaheadCount > _data.Length) return ShortBody(at, ordinal, out diagnostic);
-        if (materialize && lookaheadCount != 0)
+        if (materialize)
         {
             lookahead = new ushort[lookaheadCount];
             for (int i = 0; i < lookaheadCount; i++)

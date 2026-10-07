@@ -23,6 +23,14 @@ internal sealed record AlternateSlotPlan(AlternateSubstTable Child, AlternateSub
     ushort Target, int Length) : LookupSlotPlan(Target, Length);
 internal sealed record LigatureSlotPlan(LigatureSubstTable Child, LigaturePartPlan Part,
     ushort Target, int Length) : LookupSlotPlan(Target, Length);
+// T4-04 contextual-family slots (types 5/6/8): one subtable is one part, the same
+// one-part-per-subtable shape as the direct leaves.
+internal sealed record ContextualSlotPlan(ContextualSubstTable Child, ContextualSubstPartPlan Part,
+    ushort Target, int Length) : LookupSlotPlan(Target, Length);
+internal sealed record ChainingSlotPlan(ChainingSubstTable Child, ChainingSubstPartPlan Part,
+    ushort Target, int Length) : LookupSlotPlan(Target, Length);
+internal sealed record ReverseChainSlotPlan(ReverseChainSubstTable Child, ReverseChainSubstPartPlan Part,
+    ushort Target, int Length) : LookupSlotPlan(Target, Length);
 // The finite extension fallback (OQ-T4-03-1 wrap-all): one 8-byte ExtensionSubst
 // format-1 header per subtable, all headers placed first so every Offset16 subtable
 // target stays representable, and the wrapped leaf bodies placed after them, reachable
@@ -150,6 +158,96 @@ public static class LookupTableCompiler
         out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default) =>
         TryCreateRules(numGlyphs, subtables, 4, flags, markFilteringSet, context,
             out model, out diagnostic, new BuildBudget(limits), location);
+
+    // The T4-04 explicit contextual-family factories (types 5/6/8): the same
+    // caller-supplied source/kind/child identity rules, one shared body landing the
+    // typed payload in the matching contextual slot.
+    public static ReadStatus TryCreateContextualSubst(int numGlyphs, IReadOnlyList<ContextualSubstTable> subtables,
+        ushort flags, ushort? markFilteringSet, GdefLookupContext? context, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default) =>
+        TryCreateRuleFamily<ContextualSubstTable>(numGlyphs, subtables, 5, flags, markFilteringSet, context,
+            out model, out diagnostic, new BuildBudget(limits), location);
+
+    public static ReadStatus TryCreateChainingSubst(int numGlyphs, IReadOnlyList<ChainingSubstTable> subtables,
+        ushort flags, ushort? markFilteringSet, GdefLookupContext? context, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default) =>
+        TryCreateRuleFamily<ChainingSubstTable>(numGlyphs, subtables, 6, flags, markFilteringSet, context,
+            out model, out diagnostic, new BuildBudget(limits), location);
+
+    public static ReadStatus TryCreateReverseChainSubst(int numGlyphs, IReadOnlyList<ReverseChainSubstTable> subtables,
+        ushort flags, ushort? markFilteringSet, GdefLookupContext? context, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default) =>
+        TryCreateRuleFamily<ReverseChainSubstTable>(numGlyphs, subtables, 8, flags, markFilteringSet, context,
+            out model, out diagnostic, new BuildBudget(limits), location);
+
+    private static ReadStatus TryCreateRuleFamily<TLeaf>(int numGlyphs, IReadOnlyList<TLeaf> subtables,
+        ushort lookupType, ushort flags, ushort? markFilteringSet, GdefLookupContext? context,
+        out LookupTable? model, out FontDiagnostic diagnostic, BuildBudget budget,
+        DataLocation location = default) where TLeaf : class
+    {
+        ArgumentNullException.ThrowIfNull(subtables);
+        model = null;
+        ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = LookupTable.ValidateGsubSource(location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int count = subtables.Count;
+        if (count > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, LookupLayout.CountAt), out diagnostic,
+                (ulong)count, ushort.MaxValue);
+        if (!budget.Work(2L * count, location, out diagnostic) ||
+            !budget.Buffer(8L * count, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var copy = new TLeaf[count];
+        for (int i = 0; i < count; i++)
+        {
+            TLeaf? child = subtables[i];
+            if (child is null)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.AtLocal(DataField.Payload, LookupLayout.HeaderLength +
+                        (ulong)i * LookupLayout.OffsetStride, i), out diagnostic);
+            if (FamilyGlyphsOf(child) != numGlyphs || FamilyLocationOf(child).SourceId != location.SourceId ||
+                FamilyLocationOf(child).FaceIndex != location.FaceIndex)
+                return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
+                    location.AtLocal(DataField.None, 0, i), out diagnostic);
+            status = LookupTable.ValidateGsubSource(FamilyLocationOf(child), out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            copy[i] = child;
+        }
+        ContextualSubstTable[]? contextuales = null;
+        ChainingSubstTable[]? chainings = null;
+        ReverseChainSubstTable[]? reverseChains = null;
+        switch (lookupType)
+        {
+            case 5: contextuales = (ContextualSubstTable[])(object)copy; break;
+            case 6: chainings = (ChainingSubstTable[])(object)copy; break;
+            default: reverseChains = (ReverseChainSubstTable[])(object)copy; break;
+        }
+        var candidate = new LookupTable(LayoutLookupKind.Gsub, numGlyphs, lookupType, flags,
+            markFilteringSet, [], null, location: location, contextuales: contextuales,
+            chainings: chainings, reverseChains: reverseChains);
+        status = candidate.ValidateFlags(context, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        model = candidate;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static int FamilyGlyphsOf<TLeaf>(TLeaf child) where TLeaf : class => child switch
+    {
+        ContextualSubstTable model => model.NumGlyphs,
+        ChainingSubstTable model => model.NumGlyphs,
+        ReverseChainSubstTable model => model.NumGlyphs,
+        _ => throw new InvalidOperationException("Unknown contextual rule child."),
+    };
+
+    private static DataLocation FamilyLocationOf<TLeaf>(TLeaf child) where TLeaf : class => child switch
+    {
+        ContextualSubstTable model => model.Location,
+        ChainingSubstTable model => model.Location,
+        ReverseChainSubstTable model => model.Location,
+        _ => throw new InvalidOperationException("Unknown contextual rule child."),
+    };
 
     // The T4-05 explicit GPOS lookup factories (types 2/3): the same caller-supplied
     // source/kind/child identity rules as the substitution factories, kind fixed to
@@ -289,6 +387,9 @@ public static class LookupTableCompiler
         1 => child.Single is not null,
         2 => child.Multiple is not null,
         3 => child.Alternate is not null,
+        5 => child.Contextual is not null,
+        6 => child.Chaining is not null,
+        8 => child.ReverseChain is not null,
         _ => child.Ligature is not null,
     };
 
@@ -341,7 +442,7 @@ public static class LookupTableCompiler
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     location.AtLocal(DataField.Payload, LookupLayout.HeaderLength +
                         (ulong)i * LookupLayout.OffsetStride, i), out diagnostic);
-            if (child.ExtensionLookupType is not (1 or 2 or 3 or 4) ||
+            if (child.ExtensionLookupType is not (1 or 2 or 3 or 4 or 5 or 6 or 8) ||
                 !MatchesWrapperType(child))
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                     child.Location.AtLocal(DataField.Tag, ExtensionSubstLayout.TypeAt), out diagnostic,
@@ -448,6 +549,9 @@ public static class LookupTableCompiler
             2 => model.Multiples is not null,
             3 => model.Alternates is not null,
             4 => model.Ligatures is not null,
+            5 => model.Contextuals is not null,
+            6 => model.Chainings is not null,
+            8 => model.ReverseChains is not null,
             _ => model.Extensions is not null,
         };
 
@@ -469,9 +573,13 @@ public static class LookupTableCompiler
         bool multiples = model.Kind == LayoutLookupKind.Gsub && type == 2 && model.Multiples is not null;
         bool alternates = model.Kind == LayoutLookupKind.Gsub && type == 3 && model.Alternates is not null;
         bool ligatures = model.Kind == LayoutLookupKind.Gsub && type == 4 && model.Ligatures is not null;
+        bool contextuals = model.Kind == LayoutLookupKind.Gsub && type == 5 && model.Contextuals is not null;
+        bool chainings = model.Kind == LayoutLookupKind.Gsub && type == 6 && model.Chainings is not null;
+        bool reverseChains = model.Kind == LayoutLookupKind.Gsub && type == 8 && model.ReverseChains is not null;
         bool pairs = model.Kind == LayoutLookupKind.Gpos && type == 2 && model.PairPositions is not null;
         bool cursive = model.Kind == LayoutLookupKind.Gpos && type == 3 && model.CursiveAttachments is not null;
-        if (!(substitution || positioning || multiples || alternates || ligatures || pairs || cursive))
+        if (!(substitution || positioning || multiples || alternates || ligatures || contextuals ||
+            chainings || reverseChains || pairs || cursive))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, model.LookupType);
         ReadStatus status = model.Kind == LayoutLookupKind.Gsub
@@ -577,6 +685,12 @@ public static class LookupTableCompiler
                     out _, out diagnostic, fieldLocation),
                 3 => ExtensionSubstView.TryGetWrappedAlternateOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
                     out _, out diagnostic, fieldLocation),
+                5 => ExtensionSubstView.TryGetWrappedContextualOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
+                    out _, out diagnostic, fieldLocation),
+                6 => ExtensionSubstView.TryGetWrappedChainingOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
+                    out _, out diagnostic, fieldLocation),
+                8 => ExtensionSubstView.TryGetWrappedReverseOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
+                    out _, out diagnostic, fieldLocation),
                 _ => ExtensionSubstView.TryGetWrappedLigatureOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
                     out _, out diagnostic, fieldLocation),
             };
@@ -599,6 +713,9 @@ public static class LookupTableCompiler
         MultipleSlotPlan => 2,
         AlternateSlotPlan => 3,
         LigatureSlotPlan => 4,
+        ContextualSlotPlan => 5,
+        ChainingSlotPlan => 6,
+        ReverseChainSlotPlan => 8,
         // A GPOS slot can never reach here: the extension candidate is Gsub-only and
         // stays so (T4-05's pin - GPOS needing an outer extension is a finite refusal).
         _ => throw new InvalidOperationException("An extension slot cannot wrap another extension slot."),
@@ -620,6 +737,9 @@ public static class LookupTableCompiler
             2 => model.Kind == LayoutLookupKind.Gpos ? model.PairPositions!.Count : model.Multiples!.Count,
             3 => model.Kind == LayoutLookupKind.Gpos ? model.CursiveAttachments!.Count : model.Alternates!.Count,
             4 => model.Ligatures!.Count,
+            5 => model.Contextuals!.Count,
+            6 => model.Chainings!.Count,
+            8 => model.ReverseChains!.Count,
             _ => model.Extensions!.Count,
         };
         if (!budget.Work(sourceCount, model.Location, out diagnostic) ||
@@ -631,6 +751,9 @@ public static class LookupTableCompiler
         var multiples = new Dictionary<MultipleSubstTable, MultipleSubstPartPlan[]>(ReferenceEqualityComparer.Instance);
         var alternates = new Dictionary<AlternateSubstTable, AlternateSubstPartPlan[]>(ReferenceEqualityComparer.Instance);
         var ligatureSets = new Dictionary<LigatureSubstTable, LigaturePartPlan[]>(ReferenceEqualityComparer.Instance);
+        var contextuales = new Dictionary<ContextualSubstTable, ContextualSubstPartPlan[]>(ReferenceEqualityComparer.Instance);
+        var chainings = new Dictionary<ChainingSubstTable, ChainingSubstPartPlan[]>(ReferenceEqualityComparer.Instance);
+        var reverseChains = new Dictionary<ReverseChainSubstTable, ReverseChainSubstPartPlan[]>(ReferenceEqualityComparer.Instance);
         var pairs = new Dictionary<PairPosTable, PairPosPartPlan[]>(ReferenceEqualityComparer.Instance);
         var cursives = new Dictionary<CursivePosTable, CursivePosPartPlan[]>(ReferenceEqualityComparer.Instance);
         ReadStatus status;
@@ -729,6 +852,45 @@ public static class LookupTableCompiler
                     result[i] = ToParts(group!, child);
                     break;
                 }
+                case 5:
+                {
+                    ContextualSubstTable child = model.Contextuals![i];
+                    if (!contextuales.TryGetValue(child, out var group))
+                    {
+                        status = ContextualSubstTableCompiler.TryPlanSubtables(child, out group, out diagnostic, budget);
+                        if (status != ReadStatus.Done) return status;
+                        if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                        contextuales.Add(child, group!);
+                    }
+                    result[i] = ToParts(group!, child);
+                    break;
+                }
+                case 6:
+                {
+                    ChainingSubstTable child = model.Chainings![i];
+                    if (!chainings.TryGetValue(child, out var group))
+                    {
+                        status = ChainingSubstTableCompiler.TryPlanSubtables(child, out group, out diagnostic, budget);
+                        if (status != ReadStatus.Done) return status;
+                        if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                        chainings.Add(child, group!);
+                    }
+                    result[i] = ToParts(group!, child);
+                    break;
+                }
+                case 8:
+                {
+                    ReverseChainSubstTable child = model.ReverseChains![i];
+                    if (!reverseChains.TryGetValue(child, out var group))
+                    {
+                        status = ReverseChainSubstTableCompiler.TryPlanSubtables(child, out group, out diagnostic, budget);
+                        if (status != ReadStatus.Done) return status;
+                        if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                        reverseChains.Add(child, group!);
+                    }
+                    result[i] = ToParts(group!, child);
+                    break;
+                }
                 default:
                 {
                     // A type-7 read model: the wrapped leaves keep the extension
@@ -754,6 +916,24 @@ public static class LookupTableCompiler
                             if (status != ReadStatus.Done) return status;
                             if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
                             parts = ToParts(alternateGroup!, child.Alternate!);
+                            break;
+                        case 5:
+                            status = ContextualSubstTableCompiler.TryPlanSubtables(child.Contextual!, out var contextualGroup, out diagnostic, budget);
+                            if (status != ReadStatus.Done) return status;
+                            if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                            parts = ToParts(contextualGroup!, child.Contextual!);
+                            break;
+                        case 6:
+                            status = ChainingSubstTableCompiler.TryPlanSubtables(child.Chaining!, out var chainingGroup, out diagnostic, budget);
+                            if (status != ReadStatus.Done) return status;
+                            if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                            parts = ToParts(chainingGroup!, child.Chaining!);
+                            break;
+                        case 8:
+                            status = ReverseChainSubstTableCompiler.TryPlanSubtables(child.ReverseChain!, out var reverseGroup, out diagnostic, budget);
+                            if (status != ReadStatus.Done) return status;
+                            if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                            parts = ToParts(reverseGroup!, child.ReverseChain!);
                             break;
                         default:
                             status = LigatureSubstTableCompiler.TryPlanSubtables(child.Ligature!, out var ligatureGroup, out diagnostic, budget);
@@ -830,6 +1010,9 @@ public static class LookupTableCompiler
             SinglePosPartPlan part => new PositioningSlotPlan((SinglePosTable)leaf.Child, part, 0, length),
             MultipleSubstPartPlan part => new MultipleSlotPlan((MultipleSubstTable)leaf.Child, part, 0, length),
             AlternateSubstPartPlan part => new AlternateSlotPlan((AlternateSubstTable)leaf.Child, part, 0, length),
+            ContextualSubstPartPlan part => new ContextualSlotPlan((ContextualSubstTable)leaf.Child, part, 0, length),
+            ChainingSubstPartPlan part => new ChainingSlotPlan((ChainingSubstTable)leaf.Child, part, 0, length),
+            ReverseChainSubstPartPlan part => new ReverseChainSlotPlan((ReverseChainSubstTable)leaf.Child, part, 0, length),
             PairPosPartPlan part => new PairSlotPlan((PairPosTable)leaf.Child, part, 0, length),
             CursivePosPartPlan part => new CursiveSlotPlan((CursivePosTable)leaf.Child, part, 0, length),
             _ => new LigatureSlotPlan((LigatureSubstTable)leaf.Child, (LigaturePartPlan)leaf.Part, 0, length),
@@ -842,6 +1025,9 @@ public static class LookupTableCompiler
         SinglePosPartPlan plan => plan.Length,
         MultipleSubstPartPlan plan => plan.Length,
         AlternateSubstPartPlan plan => plan.Length,
+        ContextualSubstPartPlan plan => plan.Length,
+        ChainingSubstPartPlan plan => plan.Length,
+        ReverseChainSubstPartPlan plan => plan.Length,
         PairPosPartPlan plan => plan.Length,
         CursivePosPartPlan plan => plan.Length,
         _ => ((LigaturePartPlan)part).Length,
@@ -865,7 +1051,10 @@ public static class LookupTableCompiler
             3 when model.Kind == LayoutLookupKind.Gsub => LookupView.TryGetAlternateSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             3 => LookupView.TryGetCursivePosOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             4 => LookupView.TryGetLigatureSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
+            5 => LookupView.TryGetContextualSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
+            6 => LookupView.TryGetChainingSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             7 => LookupView.TryGetExtensionSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
+            8 => LookupView.TryGetReverseChainSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             _ => model.Kind == LayoutLookupKind.Gsub
                 ? LookupView.TryGetSingleSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation)
                 : LookupView.TryGetSinglePosOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
@@ -926,6 +1115,9 @@ public static class LookupTableCompiler
             1 => ExtensionSubstView.TryGetWrappedSingleOffsetValue(true, 0UL, (ulong)bodyDelta, out encoded, out _, location),
             2 => ExtensionSubstView.TryGetWrappedMultipleOffsetValue(true, 0UL, (ulong)bodyDelta, out encoded, out _, location),
             3 => ExtensionSubstView.TryGetWrappedAlternateOffsetValue(true, 0UL, (ulong)bodyDelta, out encoded, out _, location),
+            5 => ExtensionSubstView.TryGetWrappedContextualOffsetValue(true, 0UL, (ulong)bodyDelta, out encoded, out _, location),
+            6 => ExtensionSubstView.TryGetWrappedChainingOffsetValue(true, 0UL, (ulong)bodyDelta, out encoded, out _, location),
+            8 => ExtensionSubstView.TryGetWrappedReverseOffsetValue(true, 0UL, (ulong)bodyDelta, out encoded, out _, location),
             _ => ExtensionSubstView.TryGetWrappedLigatureOffsetValue(true, 0UL, (ulong)bodyDelta, out encoded, out _, location),
         };
         if (status != ReadStatus.Done)
@@ -954,6 +1146,15 @@ public static class LookupTableCompiler
                 break;
             case CursiveSlotPlan cursive:
                 CursivePosTableCompiler.WritePlanned(cursive.Child, cursive.Part, destination);
+                break;
+            case ContextualSlotPlan contextual:
+                ContextualSubstTableCompiler.WritePlanned(contextual.Child, contextual.Part, destination);
+                break;
+            case ChainingSlotPlan chaining:
+                ChainingSubstTableCompiler.WritePlanned(chaining.Child, chaining.Part, destination);
+                break;
+            case ReverseChainSlotPlan reverse:
+                ReverseChainSubstTableCompiler.WritePlanned(reverse.Child, reverse.Part, destination);
                 break;
             default:
                 var ligature = (LigatureSlotPlan)slot;
