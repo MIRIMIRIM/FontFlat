@@ -83,13 +83,46 @@ internal static class LookupLayout
     Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gpos },
     Selector = "LookupType", SelectorValues = new uint[] { 3 }, Minimum = "SubtablePrefix",
     Scan = ReferenceScan.OpenOnly)]
+// T4-06: the remaining six GPOS branches join with the same branch geometry - the
+// mark family (types 4/5/6), the GPOS contextual pair (types 7/8, reusing the
+// GSUB-common ContextualSubstView/ChainingSubstView structures per OQ-T4-06-3's
+// single-view resolution; the family-tag naming follows the reference) and the type-9
+// extension (the GPOS-family ExtensionPosView). Leaf semantics stay in the semantic
+// chain; the scan only proves header binding. Until the typed read lands (T4-06
+// commits 2/3) the kind-aware gate keeps these types at their metadata-only
+// boundary, so the declaration alone moves no whole-table behavior.
+[BinaryReference("MarkBasePos", "SubtableOffset", typeof(MarkBasePosView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gpos },
+    Selector = "LookupType", SelectorValues = new uint[] { 4 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
+[BinaryReference("MarkLigPos", "SubtableOffset", typeof(MarkLigPosView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gpos },
+    Selector = "LookupType", SelectorValues = new uint[] { 5 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
+[BinaryReference("MarkMarkPos", "SubtableOffset", typeof(MarkMarkPosView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gpos },
+    Selector = "LookupType", SelectorValues = new uint[] { 6 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
+[BinaryReference("ContextPos", "SubtableOffset", typeof(ContextualSubstView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gpos },
+    Selector = "LookupType", SelectorValues = new uint[] { 7 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
+[BinaryReference("ChainedContextPos", "SubtableOffset", typeof(ChainingSubstView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gpos },
+    Selector = "LookupType", SelectorValues = new uint[] { 8 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
+[BinaryReference("ExtensionPos", "SubtableOffset", typeof(ExtensionPosView),
+    Array = "SubtableOffsetRecord", WhenRoles = new long[] { (long)LayoutLookupKind.Gpos },
+    Selector = "LookupType", SelectorValues = new uint[] { 9 }, Minimum = "SubtablePrefix",
+    Scan = ReferenceScan.OpenOnly)]
 // The remainder set is now a GSUB type outside {1,2,3,4,5,6,7,8} (unknown values
 // only - types 5/6/8 have declared branches since T4-04, and until the typed read
 // lands the kind-aware gate keeps their metadata-only boundary) plus every GPOS
-// value outside {1,2,3} (types 4/5/6/7/8 keep the typed refusal in place, W11's
-// pin; type 7 has no GPOS extension branch and type 9 is T4-06's structure,
-// OQ-T4-03-8) and unknown values. The raw-observe/typed-refuse layering of unknown
-// types is unchanged.
+// value outside {1,...,9} (unknown values only since T4-06 declared the mark,
+// contextual and extension branches; until the typed read lands the kind-aware gate
+// keeps types 4-9 at their raw-observe/typed-refuse layering, W11's pin) and
+// unknown values. The raw-observe/typed-refuse layering of unknown types is
+// unchanged.
 [BinaryReference("UnknownTypeRaw", "SubtableOffset", Array = "SubtableOffsetRecord",
     Selector = "LookupType", DefaultRaw = true, Scan = ReferenceScan.Observe)]
 public readonly ref partial struct LookupView
