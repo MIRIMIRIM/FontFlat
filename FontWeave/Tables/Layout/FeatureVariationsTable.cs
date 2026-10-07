@@ -116,6 +116,29 @@ public sealed class FeatureVariationsTable
 
     public int ConsumedLength { get; }
 
+    /// <summary>Single-slot replacement for the condition-range edit (the record
+    /// count is the wire layout and cannot change).</summary>
+    internal ReadStatus WithConditionSet(int recordIndex, ConditionSetTable conditionSet,
+        out FeatureVariationsTable? updated, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        var copy = (FeatureVariationRecord[])_records.Clone();
+        copy[recordIndex] = new(conditionSet, _records[recordIndex].Substitution);
+        updated = new(copy, Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Single-slot replacement for the substitution-target edit.</summary>
+    internal ReadStatus WithSubstitution(int recordIndex, FeatureTableSubstTable substitution,
+        out FeatureVariationsTable? updated, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        var copy = (FeatureVariationRecord[])_records.Clone();
+        copy[recordIndex] = new(_records[recordIndex].ConditionSet, substitution);
+        updated = new(copy, Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
     /// <summary>Typed validation against the caller-supplied axis authority: an
     /// axisIndex outside the fvar axis count refuses InvalidIndex; a null fvar
     /// keeps the format/order/feature-domain checks and skips the axis domain

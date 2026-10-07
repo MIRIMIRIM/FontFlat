@@ -21,7 +21,9 @@ internal static class GposLayout
 /// <summary>The first GPOS root writer (T4-05 section 4.3, GsubTableCompiler 同构): one
 /// planned, atomically published whole-table emission for the static v1.0 slice with a
 /// null variations header. A v1.1 root or any nonzero FeatureVariations raw refuses at
-/// the VariationsOffsetField slot (the variable domain is T4-06/T5-02). Planning is
+/// the VariationsOffsetField slot - GPOS keeps this refusal unconditionally (the GSUB
+/// root lifted its own copy in T4-04; the GPOS v1.1/FV wiring is T4-06's registered
+/// scope, which also owns this comment's rewrite). Planning is
 /// budget-first with two bounded layout candidates - natural order
 /// (script→feature→lookup) and lookupList-first (OQ-T4-05-6); a refused candidate keeps
 /// its charged Work and no generic repacker exists. Scripts, features and lookups are
@@ -32,7 +34,8 @@ internal static class GposLayout
 public static class GposTableCompiler
 {
     /// <summary>Explicit root-model factory: version must be 1.0 and the variations raw
-    /// must be zero (both refusals land on the VariationsOffsetField slot); everything
+    /// must be zero (both refusals land on the VariationsOffsetField slot; the GPOS
+    /// refusal surface is T4-06's); everything
     /// else validates along LayoutListsTableCompiler.TryCreate with kind fixed to Gpos.</summary>
     public static ReadStatus TryCreate(uint version, uint featureVariationsOffsetRaw,
         ReadOnlySpan<LayoutScript> scripts, ReadOnlySpan<LayoutFeature> features,

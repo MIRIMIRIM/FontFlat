@@ -2,38 +2,51 @@ using FontWeave.Core;
 
 namespace FontWeave.Tables.Layout;
 
-/// <summary>The first GSUB root writer (T4-03 §4.3, GdefTableCompiler 同构): one
-/// planned, atomically published whole-table emission for the static v1.0 slice with a
-/// null variations header. A v1.1 root or any nonzero FeatureVariations raw refuses at
-/// the VariationsOffsetField slot (T4-02's ivs≠0 analog; the variable domain is
-/// T4-04/T5-02). Planning is budget-first with two bounded layout candidates - natural
-/// order (script→feature→lookup) and lookupList-first (OQ-T4-03-7); a refused
-/// candidate keeps its charged Work and no generic repacker exists. Scripts, features
-/// and lookups are all caller-supplied; their same-source/numGlyphs/kind validation
-/// follows the existing LayoutListsTableCompiler rules, and the three fragments are
-/// emitted through the existing PlanScripts/PlanFeatures/PlanLookups plans.</summary>
+/// <summary>The GSUB root writer (T4-03 §4.3 + T4-04 §4.3, GdefTableCompiler 同构):
+/// one planned, atomically published whole-table emission. Versions 1.0 (null
+/// variations) and 1.1 both write; a 1.1 root takes the optional typed
+/// FeatureVariations block (null = the variations offset writes 0, the legal
+/// no-variations 1.1 positive) and a nonzero raw without a typed block still
+/// refuses at the VariationsOffsetField slot (there is nothing to emit; GPOS keeps
+/// the same refusal unconditionally until T4-06). Planning is budget-first with two
+/// bounded layout candidates - natural order (script→feature→lookup) and
+/// lookupList-first (OQ-T4-03-7) - and the variations block is pinned LAST in both
+/// candidates: its root slot is the family's first Offset32 target, so an FV block
+/// beyond the 16-bit window is reachable while the three fragments keep their
+/// Offset16 refusal domain. A refused candidate keeps its charged Work and no
+/// generic repacker exists. Scripts, features and lookups are all caller-supplied;
+/// their same-source/numGlyphs/kind validation follows the existing
+/// LayoutListsTableCompiler rules, and the three fragments are emitted through the
+/// existing PlanScripts/PlanFeatures/PlanLookups plans.</summary>
 public static class GsubTableCompiler
 {
-    /// <summary>Explicit root-model factory: version must be 1.0 and the variations raw
-    /// must be zero (both refusals land on the VariationsOffsetField slot); everything
-    /// else validates along LayoutListsTableCompiler.TryCreate with kind fixed to Gsub.</summary>
+    /// <summary>Explicit root-model factory: version must be 1.0 or 1.1; a typed
+    /// variations block requires 1.1, and a nonzero raw without one refuses at the
+    /// VariationsOffsetField slot (both refusal shapes carry the offending raw in
+    /// Detail); everything else validates along LayoutListsTableCompiler.TryCreate
+    /// with kind fixed to Gsub.</summary>
     public static ReadStatus TryCreate(uint version, uint featureVariationsOffsetRaw,
         ReadOnlySpan<LayoutScript> scripts, ReadOnlySpan<LayoutFeature> features,
         ReadOnlySpan<LookupTable> lookups, int numGlyphs, out LayoutListsTable? model,
-        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default)
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default,
+        FeatureVariationsTable? variations = null)
     {
         model = null;
-        if (version != GsubLayout.Version10)
+        if (version is not (GsubLayout.Version10 or GsubLayout.Version11))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 location.AtLocal(DataField.Offset, GsubLayout.VariationsOffsetField),
                 out diagnostic, version, GsubLayout.Version10);
-        if (featureVariationsOffsetRaw != 0)
+        if (variations is not null && version != GsubLayout.Version11)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                location.AtLocal(DataField.Offset, GsubLayout.VariationsOffsetField),
+                out diagnostic, version, GsubLayout.Version11);
+        if (featureVariationsOffsetRaw != 0 && variations is null)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 location.AtLocal(DataField.Offset, GsubLayout.VariationsOffsetField),
                 out diagnostic, featureVariationsOffsetRaw, 0);
         return LayoutListsTableCompiler.TryCreate(version, featureVariationsOffsetRaw,
             scripts, features, lookups, numGlyphs, LayoutLookupKind.Gsub, out model,
-            out diagnostic, limits, location);
+            out diagnostic, limits, location, variations);
     }
 
     public static ReadStatus TryCompile(LayoutListsTable model, GdefLookupContext? context,
@@ -76,23 +89,29 @@ public static class GsubTableCompiler
         return ReadStatus.Done;
     }
 
-    private sealed record RootPlan(int Length, int[] SlotOffsets,
+    private sealed record RootPlan(int Length, int[] SlotOffsets, int VariationsAt,
+        FeatureVariationsPartPlan? VariationsPlan,
         LayoutListsTableCompiler.ScriptPlan Scripts,
         LayoutListsTableCompiler.FeaturePlan Features,
         LayoutListsTableCompiler.LookupPlan Lookups);
 
-    // The v1.0/null-variations root boundary mirrors the T4-02 store refusal: the raw
-    // value travels in Detail at the variations slot, before any byte is planned.
+    // The root version/variations boundary: 1.0 keeps a zero raw and no typed block;
+    // 1.1 with a nonzero raw but no typed block has nothing to emit and refuses at
+    // the variations slot (the raw travels in Detail, T4-02's store-refusal analog).
     private static ReadStatus CheckRoot(LayoutListsTable model, out FontDiagnostic diagnostic)
     {
-        if (model.Version != GsubLayout.Version10)
+        if (model.Version is not (GsubLayout.Version10 or GsubLayout.Version11))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Offset, GsubLayout.VariationsOffsetField),
                 out diagnostic, model.Version, GsubLayout.Version10);
-        if (model.FeatureVariationsOffsetRaw != 0)
+        if (model.FeatureVariationsOffsetRaw != 0 && model.FeatureVariations is null)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Offset, GsubLayout.VariationsOffsetField),
                 out diagnostic, model.FeatureVariationsOffsetRaw, 0);
+        if (model.FeatureVariations is not null && model.Version != GsubLayout.Version11)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                model.Location.AtLocal(DataField.Offset, GsubLayout.VariationsOffsetField),
+                out diagnostic, model.Version, GsubLayout.Version11);
         if (model.Kind != LayoutLookupKind.Gsub)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Tag, 0), out diagnostic, (ulong)model.Kind);
@@ -150,16 +169,20 @@ public static class GsubTableCompiler
         out RootPlan? plan, out FontDiagnostic diagnostic)
     {
         plan = null;
+        FeatureVariationsPartPlan? fvPlanOwned = null;
+        bool variations = model.Version == GsubLayout.Version11;
         var blocks = new (object Plan, int Size)[] { (scripts, scripts.Length),
             (features, features.Length), (lookups, lookups.Length) };
         if (lookupListFirst)
             (blocks[0], blocks[2]) = (blocks[2], blocks[0]);
         var offsets = new int[3];
-        long cursor = GsubLayout.Header10;
+        long cursor = variations ? GsubLayout.Header11 : GsubLayout.Header10;
         for (int i = 0; i < blocks.Length; i++)
         {
-            // Every root slot is an Offset16 from the root start; the placement refusal
-            // carries the offending cursor at the slot's own field location.
+            // Every fragment slot is an Offset16 from the root start; the placement
+            // refusal carries the offending cursor at the slot's own field location.
+            // The variations slot stays outside this bound: it is the root's first
+            // Offset32 target (T4-04 §4.3) and its block is pinned last.
             if (cursor > ushort.MaxValue)
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                     model.Location.AtLocal(DataField.Offset, GsubLayout.ScriptListOffsetField),
@@ -168,16 +191,33 @@ public static class GsubTableCompiler
             offsets[i] = (int)cursor;
             cursor += blocks[i].Size;
         }
+        int variationsAt = 0;
+        if (variations && model.FeatureVariations is not null)
+        {
+            // The typed variations block is the final root block in both candidates;
+            // the Offset32 slot needs no 16-bit bound (the FV>64K positive's
+            // enabler), the budget stays the width authority, and the plan runs the
+            // FV compiler's own preflight so every body and fixup is admitted before
+            // the root plan publishes.
+            variationsAt = (int)cursor;
+            ReadStatus status = FeatureVariationsTableCompiler.TryPlanSubtables(
+                model.FeatureVariations, out var fvPlan, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+            fvPlanOwned = fvPlan;
+            cursor += fvPlan!.Length;
+        }
         if (!budget.Output(cursor, model.Location, out diagnostic) ||
             !budget.Work(cursor, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        plan = new((int)cursor, offsets, scripts, features, lookups);
+        plan = new((int)cursor, offsets, variationsAt, fvPlanOwned, scripts, features, lookups);
         diagnostic = default;
         return ReadStatus.Done;
     }
 
     // Only a fully preflighted plan and destination reach this path. Absent-children
-    // encoding does not exist at the GSUB root: all three lists are required (their
-    // Offset16 slots are ZeroAllowed=false), and empty lists are 2-byte bodies.
+    // encoding does not exist for the three lists (their Offset16 slots are
+    // ZeroAllowed=false; empty lists are 2-byte bodies). A v1.1 root writes the
+    // 14-byte header through the generated variations-header writer - the slot raw
+    // is the planned FV position, or 0 for the legal no-variations 1.1 root.
     private static void WritePlanned(LayoutListsTable model, RootPlan plan, Span<byte> destination)
     {
         var location = model.Location;
@@ -185,9 +225,16 @@ public static class GsubTableCompiler
         WriteSlot(destination, location, GsubLayout.ScriptListOffsetField, plan.SlotOffsets[0]);
         WriteSlot(destination, location, GsubLayout.FeatureListOffsetField, plan.SlotOffsets[1]);
         WriteSlot(destination, location, GsubLayout.LookupListOffsetField, plan.SlotOffsets[2]);
+        if (model.Version == GsubLayout.Version11)
+            CoverageTableCompiler.RequireWritten(LayoutListsView.TryWriteVariationsHeaderAt(destination,
+                GsubLayout.VariationsOffsetField,
+                new LayoutListsView.VariationsHeaderData(0, (uint)plan.VariationsAt), out _, location));
         LayoutListsTableCompiler.WriteScripts(plan.Scripts, destination.Slice(plan.SlotOffsets[0], plan.Scripts.Length));
         LayoutListsTableCompiler.WriteFeatures(plan.Features, destination.Slice(plan.SlotOffsets[1], plan.Features.Length));
         LayoutListsTableCompiler.WriteLookups(plan.Lookups, destination.Slice(plan.SlotOffsets[2], plan.Lookups.Length));
+        if (plan.VariationsAt != 0)
+            FeatureVariationsTableCompiler.WritePlanned(model.FeatureVariations!, plan.VariationsPlan!,
+                destination.Slice(plan.VariationsAt));
     }
 
     private static void WriteSlot(Span<byte> destination, DataLocation location, int slotAt, int target)
