@@ -24,6 +24,36 @@ public sealed class JstfExtenderGlyphTable
     public IReadOnlyList<ushort> Glyphs => Array.AsReadOnly(_glyphs);
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
+
+    /// <summary>Atomically moves one extender glyph id (the card's extender edit
+    /// witness). The position is the wire-order ordinal; the replacement id answers
+    /// the caller's explicit numGlyphs authority here and is re-answered again by the
+    /// root factory on re-rooting (a model carries its read-time proof, never a
+    /// transfer). Structural changes - glyph additions or removals, reordering -
+    /// stay outside the surface (OQ-7). Consumers re-root through
+    /// JstfTableCompiler.TryCreate.</summary>
+    public ReadStatus TryWithExtenderGlyph(int position, ushort glyphId, int numGlyphs,
+        out JstfExtenderGlyphTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        if ((uint)position >= (uint)_glyphs.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId,
+                    (ulong)(JstfExtenderGlyphLayout.GlyphsAt + position * JstfExtenderGlyphLayout.GlyphStride),
+                    position),
+                out diagnostic, (ulong)position, (ulong)_glyphs.Length);
+        if (glyphId >= (ushort)numGlyphs)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId,
+                    (ulong)(JstfExtenderGlyphLayout.GlyphsAt + position * JstfExtenderGlyphLayout.GlyphStride),
+                    position),
+                out diagnostic, glyphId, (ulong)numGlyphs);
+        var glyphs = (ushort[])_glyphs.Clone();
+        glyphs[position] = glyphId;
+        updated = new(glyphs, Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
 }
 
 /// <summary>One JstfModList: the raw lookup indices in wire order (the increasing
@@ -46,6 +76,38 @@ public sealed class JstfModListTable
     public IReadOnlyList<ushort> LookupIndices => Array.AsReadOnly(_indices);
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
+
+    /// <summary>Atomically moves one lookup index (the card's modlist edit witness,
+    /// the T0-specified edit face). The position is the wire-order ordinal; the
+    /// replacement index answers the referencing slot's neighbor-table LookupList
+    /// count here - the caller supplies the same authority the read face was
+    /// answered with, and the root factory re-answers every domain again on
+    /// re-rooting. The order face is the OQ-2 observation, so a replacement may
+    /// legally land out of increasing order (the wire order is what the model
+    /// records); structural changes - index additions or removals - stay outside
+    /// the surface (OQ-7). Consumers re-root through JstfTableCompiler.TryCreate.</summary>
+    public ReadStatus TryWithLookupIndex(int position, ushort value, int domainLookupCount,
+        out JstfModListTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        if ((uint)position >= (uint)_indices.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Payload,
+                    (ulong)(JstfModListLayout.IndicesAt + position * JstfModListLayout.IndexStride),
+                    position),
+                out diagnostic, (ulong)position, (ulong)_indices.Length);
+        if (value >= domainLookupCount)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Payload,
+                    (ulong)(JstfModListLayout.IndicesAt + position * JstfModListLayout.IndexStride),
+                    position),
+                out diagnostic, value, (ulong)domainLookupCount);
+        var indices = (ushort[])_indices.Clone();
+        indices[position] = value;
+        updated = new(Domain, indices, Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
 }
 
 /// <summary>One JstfMax: the owned GPOS-shaped inline lookups in wire (design)
