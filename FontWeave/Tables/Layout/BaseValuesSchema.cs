@@ -5,7 +5,8 @@ namespace FontWeave.Tables.Layout;
 
 internal static class BaseValuesLayout
 {
-    internal const int HeaderLength = 4, BaseCoordCountAt = 2, CoordStride = 2;
+    internal const int HeaderLength = 4, DefaultBaselineIndexAt = 0,
+        BaseCoordCountAt = 2, CoordStride = 2;
 }
 
 // One BaseValues: the default baseline index stays a raw payload at the view level -
