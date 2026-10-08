@@ -68,7 +68,7 @@ public readonly ref partial struct CvarView
             serializedEnd: out int serializedEnd, diagnostic: out diagnostic);
         if (status != ReadStatus.Done) return status;
         model = new CvarTable(fvarAxisCount, cvtValueCount, tvcRaw, shared, tuples, Location,
-            Math.Max(CvarLayout.HeaderLength, serializedEnd));
+            Math.Max(CvarLayout.HeaderLength, serializedEnd), _data.ToArray());
         diagnostic = default;
         return ReadStatus.Done;
     }

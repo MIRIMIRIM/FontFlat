@@ -206,6 +206,92 @@ internal static class TupleVariationCodec
         }
     }
 
+    /// <summary>Exact encoded size of a full packed point number block for an
+    /// explicit increasing list: the count header plus the per-difference
+    /// minimum-width runs (the write path's measure - it must agree byte for
+    /// byte with <see cref="WritePointNumberValues"/>).</summary>
+    internal static int MeasurePointNumberValues(int[] points)
+    {
+        int bytes = PointNumberHeaderSize(points.Length);
+        uint last = 0;
+        var diffs = new uint[points.Length];
+        for (int i = 0; i < points.Length; i++)
+        {
+            diffs[i] = (uint)points[i] - last;
+            last = (uint)points[i];
+        }
+        int at = 0;
+        while (at < points.Length)
+        {
+            bool words = diffs[at] > byte.MaxValue;
+            int run = 1;
+            int limit = Math.Min(at + (PointRunCountMask + 1), points.Length);
+            while (run < limit && (diffs[at + run] > byte.MaxValue) == words) run++;
+            bytes += 1 + run * (words ? 2 : 1);
+            at += run;
+        }
+        return bytes;
+    }
+
+    /// <summary>Writes the packed point number block for an explicit increasing
+    /// list: count header, then per-point differences in minimum-width runs of at
+    /// most 128 elements, each run one width class (OQ-7 repack rule).</summary>
+    internal static void WritePointNumberValues(Span<byte> destination, int[] points)
+    {
+        WritePointNumberHeader(destination, points.Length);
+        int outAt = PointNumberHeaderSize(points.Length);
+        uint last = 0;
+        var diffs = new uint[points.Length];
+        for (int i = 0; i < points.Length; i++)
+        {
+            diffs[i] = (uint)points[i] - last;
+            last = (uint)points[i];
+        }
+        int at = 0;
+        while (at < points.Length)
+        {
+            bool words = diffs[at] > byte.MaxValue;
+            int run = 1;
+            int limit = Math.Min(at + (PointRunCountMask + 1), points.Length);
+            while (run < limit && (diffs[at + run] > byte.MaxValue) == words) run++;
+            destination[outAt++] = (byte)((words ? PointsAreWords : 0) | (run - 1));
+            for (int i = 0; i < run; i++)
+            {
+                if (words)
+                {
+                    BinaryPrimitives.WriteUInt16BigEndian(destination.Slice(outAt),
+                        (ushort)diffs[at + i]);
+                    outAt += 2;
+                }
+                else
+                {
+                    destination[outAt++] = (byte)diffs[at + i];
+                }
+            }
+            at += run;
+        }
+    }
+
+    /// <summary>Positions of every TupleVariationHeader inside the store window
+    /// (the dynamic stride walk, no semantic checks - the bytes were validated at
+    /// read; the byte-level edit path uses this to locate splicing targets).
+    /// Returns null when the headers do not fit the window.</summary>
+    internal static int[]? LocateTupleVariationHeaders(ReadOnlySpan<byte> data, int headerStart,
+        int windowEnd, int axisCount, int tupleCount)
+    {
+        if (tupleCount == 0) return Array.Empty<int>();
+        var positions = new int[tupleCount];
+        int at = headerStart + 4;
+        for (int t = 0; t < tupleCount; t++)
+        {
+            if (at + 4 > windowEnd) return null;
+            ushort tupleIndex = BinaryPrimitives.ReadUInt16BigEndian(data.Slice(at + 2, 2));
+            positions[t] = at;
+            at += TupleVariationHeaderSize(tupleIndex, axisCount);
+        }
+        return positions;
+    }
+
     /// <summary>The encoded size of the delta runs: zero runs carry no payload, an
     /// int8 run one byte per value, an int16 run two.</summary>
     internal static int MeasureDeltaRuns(short[] deltas)
