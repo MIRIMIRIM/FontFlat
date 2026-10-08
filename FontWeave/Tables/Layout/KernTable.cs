@@ -104,6 +104,19 @@ public sealed class KernFormat0Body : KernSubtableBody
 
     public int PairCount => _pairs.Length;
     public IReadOnlyList<KernPair> Pairs => Array.AsReadOnly(_pairs);
+    internal ReadOnlySpan<KernPair> PairsSpan => _pairs;
+
+    /// <summary>Atomically moves one pair's FWORD value (the card's pair-edit
+    /// witness). The full Int16 domain needs no re-proving - negative values are real
+    /// witnesses - and the order key is untouched, so the strict order the read face
+    /// proved (or the factory sorted) survives every value edit.</summary>
+    internal KernFormat0Body WithPairValue(int pairIndex, short value)
+    {
+        var pairs = (KernPair[])_pairs.Clone();
+        pairs[pairIndex] = new(pairs[pairIndex].Left, pairs[pairIndex].Right, value);
+        return new(pairs, SearchRange, EntrySelector, RangeShift, CanonicalSearchRange,
+            CanonicalEntrySelector, CanonicalRangeShift, Location, ConsumedLength);
+    }
     /// <summary>The observed wire search triple (OQ-2: an observation, never a refusal).</summary>
     public ushort SearchRange { get; }
     public ushort EntrySelector { get; }
@@ -192,6 +205,25 @@ public sealed class KernFormat2Body : KernSubtableBody
         return (short)_array[(left + right - KerningArrayOffset) / 2];
     }
 
+    /// <summary>Atomically moves one matrix cell (the card's class-edit witness, the
+    /// row/col ordinals being class-table ordinals). The class words and the array
+    /// window are untouched - only the cell's Int16 moves - so the premultiplication
+    /// convention the decode proved stays intact.</summary>
+    internal KernFormat2Body WithCellValue(int leftOrdinal, int rightOrdinal, short value)
+    {
+        var array = (ushort[])_array.Clone();
+        array[CellIndexOf(leftOrdinal, rightOrdinal)] = (ushort)value;
+        return new(RowWidth, LeftClassOffset, RightClassOffset, KerningArrayOffset,
+            LeftClassTable, RightClassTable, array, Canonicalizable, Location, ConsumedLength)
+        {
+            LeftIndices = LeftIndices, RightIndices = RightIndices,
+        };
+    }
+
+    private int CellIndexOf(int leftOrdinal, int rightOrdinal) =>
+        (LeftClassTable.ClassAt(leftOrdinal) +
+         RightClassTable.ClassAt(rightOrdinal) - KerningArrayOffset) / 2;
+
     /// <summary>The decoded matrix row/column indices, or null when the words do not
     /// follow the premultiplication convention (Canonicalizable false).</summary>
     internal ushort[]? LeftIndices { get; init; }
@@ -265,6 +297,65 @@ public sealed class KernSubtable
     /// <summary>Apple 0x2000 (variation). False under v0.</summary>
     public bool Variation => Dialect == KernDialect.Apple &&
         (Coverage & KernLayout.AppleVariation) != 0;
+
+    /// <summary>Atomically moves one format 0 pair's FWORD value (the card's pair
+    /// edit witness). The pair index is the model's wire-order ordinal; the full
+    /// Int16 value domain needs no re-proving. Consumers re-root through
+    /// KernTableCompiler.TryCreate. A non-format-0 subtable refuses
+    /// (UnsupportedOperation - structural change stays outside the surface, OQ-9).</summary>
+    public ReadStatus TryWithPairValue(int pairIndex, short value, out KernSubtable? updated,
+        out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        if (Body is not KernFormat0Body format0)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Payload, (ulong)KernSubtable0Layout.PairCountAt),
+                out diagnostic);
+        if ((uint)pairIndex >= (uint)format0.PairCount)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Payload,
+                    (ulong)(KernSubtable0Layout.PairsAt + pairIndex * KernLayout.PairStride),
+                    pairIndex),
+                out diagnostic, (ulong)pairIndex, (ulong)format0.PairCount);
+        updated = WithBody(format0.WithPairValue(pairIndex, value));
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Atomically moves one format 2 matrix cell (the card's class edit
+    /// witness). The row/column are class-table ordinals inside both tables' covered
+    /// ranges; a body whose class words do not decode (Canonicalizable false) refuses
+    /// instead of guessing the matrix (UnsupportedOperation), as does every
+    /// non-format-2 subtable. Consumers re-root through KernTableCompiler.TryCreate.</summary>
+    public ReadStatus TryWithKernValue(int row, int col, short value, out KernSubtable? updated,
+        out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        if (Body is not KernFormat2Body format2)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Payload, (ulong)KernSubtable2Layout.RowWidthAt),
+                out diagnostic);
+        if (!format2.Canonicalizable)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Offset, (ulong)KernSubtable2Layout.LeftClassOffsetAt),
+                out diagnostic);
+        if ((uint)row >= (uint)format2.LeftClassTable.GlyphCount)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId,
+                    (ulong)(format2.LeftClassOffset + KernClassTableLayout.FirstGlyphAt), row),
+                out diagnostic, (ulong)row, (ulong)format2.LeftClassTable.GlyphCount);
+        if ((uint)col >= (uint)format2.RightClassTable.GlyphCount)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId,
+                    (ulong)(format2.RightClassOffset + KernClassTableLayout.FirstGlyphAt), col),
+                out diagnostic, (ulong)col, (ulong)format2.RightClassTable.GlyphCount);
+        updated = WithBody(format2.WithCellValue(row, col, value));
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private KernSubtable WithBody(KernSubtableBody body) =>
+        new(Index, Offset, Length, Dialect, Format, Coverage, TupleIndex, body, Location);
 }
 
 /// <summary>Owned whole-kern slice: the dialect, the length-driven subtable sequence
