@@ -35,4 +35,60 @@ internal static class KernSubtable0Layout
 [BinaryElement("KernPair", "Left", WireType.UInt16, 0, DataField.GlyphId)]
 [BinaryElement("KernPair", "Right", WireType.UInt16, 2, DataField.GlyphId)]
 [BinaryElement("KernPair", "Value", WireType.Int16, 4, DataField.Payload)]
-public readonly ref partial struct KernSubtable0View { }
+public readonly ref partial struct KernSubtable0View
+{
+    // The typed format 0 body read over the exact declared-length slice. Hard faces:
+    // the declared-length contract (OQ-1 - declared < computed PairsEnd refuses, the
+    // OpenSans real negative witness; the length-driven sequence's authority), then
+    // the per-pair numGlyphs domain and strict order (OQ-4 / the T0 rejection face).
+    // The search triple is the OQ-2 observation face: recomputed under the frozen R6b
+    // convention and recorded, never refused.
+    internal ReadStatus ReadBody(int numGlyphs, bool materialize, out KernFormat0Body? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetLength(out ushort declared, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetPairCount(out ushort pairCount, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetPairsEnd(out ulong pairsEnd, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (declared < pairsEnd)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Length, 2),
+                out diagnostic, declared, pairsEnd);
+        if (!budget.Work(declared, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var pairs = materialize ? new KernPair[pairCount] : null;
+        long previousKey = -1;
+        for (int i = 0; i < pairCount; i++)
+        {
+            status = TryGetKernPair(i, out var pair, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = KernSemantics.CheckPair(numGlyphs, ref previousKey, pair.Left, pair.Right,
+                (ulong)(KernSubtable0Layout.PairsAt + i * KernSubtable0Layout.PairStride),
+                Location, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            if (pairs is not null)
+                pairs[i] = new(pair.Left, pair.Right, pair.Value);
+        }
+        status = TryGetSearchRange(out ushort searchRange, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetEntrySelector(out ushort entrySelector, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetRangeShift(out ushort rangeShift, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        KernSemantics.CanonicalSearchFields(pairCount, out int canonicalRange,
+            out int canonicalSelector, out int canonicalShift);
+        if (materialize)
+        {
+            if (!budget.Buffer(8L * pairCount + 16, Location, out diagnostic))
+                return ReadStatus.ResourceLimit;
+            model = new(pairs!, searchRange, entrySelector, rangeShift, canonicalRange,
+                canonicalSelector, canonicalShift, Location, declared);
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+}

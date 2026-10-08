@@ -34,4 +34,56 @@ internal static class KernAppleSubtable0Layout
 [BinaryElement("KernPair", "Left", WireType.UInt16, 0, DataField.GlyphId)]
 [BinaryElement("KernPair", "Right", WireType.UInt16, 2, DataField.GlyphId)]
 [BinaryElement("KernPair", "Value", WireType.Int16, 4, DataField.Payload)]
-public readonly ref partial struct KernAppleSubtable0View { }
+public readonly ref partial struct KernAppleSubtable0View
+{
+    // The Apple format 0 body read: the v0 face minus the version field (the dialect
+    // is fixed by the root, section 7), with the u32 declared length driving the same
+    // OQ-1 contract and the same OQ-2 search observation. The pair checks are the
+    // shared KernSemantics rules - the dialect head split never forks a rule.
+    internal ReadStatus ReadBody(int numGlyphs, bool materialize, out KernFormat0Body? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        ReadStatus status = TryGetLength(out uint declared, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetPairCount(out ushort pairCount, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetPairsEnd(out ulong pairsEnd, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (declared < pairsEnd)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Length, 0),
+                out diagnostic, declared, pairsEnd);
+        if (!budget.Work((long)declared, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var pairs = materialize ? new KernPair[pairCount] : null;
+        long previousKey = -1;
+        for (int i = 0; i < pairCount; i++)
+        {
+            status = TryGetKernPair(i, out var pair, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = KernSemantics.CheckPair(numGlyphs, ref previousKey, pair.Left, pair.Right,
+                (ulong)(KernAppleSubtable0Layout.PairsAt + i * KernAppleSubtable0Layout.PairStride),
+                Location, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            if (pairs is not null)
+                pairs[i] = new(pair.Left, pair.Right, pair.Value);
+        }
+        status = TryGetSearchRange(out ushort searchRange, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetEntrySelector(out ushort entrySelector, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetRangeShift(out ushort rangeShift, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        KernSemantics.CanonicalSearchFields(pairCount, out int canonicalRange,
+            out int canonicalSelector, out int canonicalShift);
+        if (materialize)
+        {
+            if (!budget.Buffer(8L * pairCount + 16, Location, out diagnostic))
+                return ReadStatus.ResourceLimit;
+            model = new(pairs!, searchRange, entrySelector, rangeShift, canonicalRange,
+                canonicalSelector, canonicalShift, Location, checked((int)declared));
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+}
