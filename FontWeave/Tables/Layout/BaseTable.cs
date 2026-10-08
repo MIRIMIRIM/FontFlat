@@ -34,6 +34,20 @@ public sealed class BaseCoordTable
     public bool HasVariationDevice => Device is { IsVariationDevice: true };
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
+
+    /// <summary>Atomically moves the baseline coordinate (the T0 slice's edit
+    /// witness). The domain is the full Int16 range - negative values are real
+    /// witnesses - so a coordinate edit never needs re-proving, exactly like the
+    /// AnchorTable edit; the format, fmt2 words and Device attachment are retained,
+    /// and consumers re-root through their owning tables.</summary>
+    public ReadStatus TryWithCoordinate(short coordinate, out BaseCoordTable? updated,
+        out FontDiagnostic diagnostic)
+    {
+        updated = new(Format, coordinate, ReferenceGlyph, BaseCoordPoint, Device,
+            Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
 }
 
 /// <summary>One BaseValues: the default baseline index (domain-checked against the
@@ -181,4 +195,30 @@ public sealed class BaseTable
     public uint ItemVariationStoreOffset { get; }
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
+
+    /// <summary>Replaces the owned item variation store under the source guard. The
+    /// store is a v1.1-only slot: a non-null store under 1.0 refuses exactly like the
+    /// root factory admission (UnsupportedOperation at the store slot); null is legal
+    /// in every version. The raw offset stays the source wire's header fact -
+    /// placement is a compile-time decision, never an edit outcome. In-place store
+    /// edits go through the store's own TryWithRegionAxes/TryWithDeltaRow first and
+    /// re-root here (the GdefTable edit shape).</summary>
+    public ReadStatus TryWithStore(VariationStoreTable? store, out BaseTable? updated,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (store is not null && Version != BaseLayout.Version11)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Offset, BaseLayout.ItemVariationStoreAt), out diagnostic);
+        if (store is not null &&
+            (store.Location.SourceId != Location.SourceId ||
+             store.Location.FaceIndex != Location.FaceIndex ||
+             Location.SourceId != 0 && store.Location.TableTag != Location.TableTag))
+            return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
+                Location.AtLocal(DataField.None, 0), out diagnostic);
+        updated = new(Version, NumGlyphs, HorizAxis, VertAxis, store, ItemVariationStoreOffset,
+            Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
 }
