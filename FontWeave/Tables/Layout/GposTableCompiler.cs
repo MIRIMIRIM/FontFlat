@@ -30,30 +30,41 @@ internal static class GposLayout
 /// all caller-supplied; their same-source/numGlyphs/kind validation follows the
 /// existing LayoutListsTableCompiler rules (kind fixed to Gpos), and the three
 /// fragments are emitted through the existing PlanScripts/PlanFeatures/PlanLookups
-/// plans - whose per-lookup planning carries the GPOS extension rejection pin.</summary>
+/// plans. T4-06 section 4.3 unlocks the v1.1 root: 1.0 (zero variations) and 1.1
+/// both write; a 1.1 root takes the optional typed FeatureVariations block (null =
+/// the variations offset writes 0, the legal no-variations 1.1 positive) and a
+/// nonzero raw without a typed block still refuses at the VariationsOffsetField
+/// slot; the variations block is pinned LAST (the Offset32 root slot needs no
+/// 16-bit bound, the GsubTableCompiler FV>64K enabler).</summary>
 public static class GposTableCompiler
 {
-    /// <summary>Explicit root-model factory: version must be 1.0 and the variations raw
-    /// must be zero (both refusals land on the VariationsOffsetField slot; the GPOS
-    /// refusal surface is T4-06's); everything
-    /// else validates along LayoutListsTableCompiler.TryCreate with kind fixed to Gpos.</summary>
+    /// <summary>Explicit root-model factory: version is 1.0 or 1.1; a typed variations
+    /// block requires 1.1, and a nonzero raw without one refuses at the
+    /// VariationsOffsetField slot (both shapes carry the offending raw in Detail, the
+    /// GsubTableCompiler form). Everything else validates along
+    /// LayoutListsTableCompiler.TryCreate with kind fixed to Gpos.</summary>
     public static ReadStatus TryCreate(uint version, uint featureVariationsOffsetRaw,
         ReadOnlySpan<LayoutScript> scripts, ReadOnlySpan<LayoutFeature> features,
         ReadOnlySpan<LookupTable> lookups, int numGlyphs, out LayoutListsTable? model,
-        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default)
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default,
+        FeatureVariationsTable? variations = null)
     {
         model = null;
-        if (version != GposLayout.Version10)
+        if (version is not (GposLayout.Version10 or GposLayout.Version11))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 location.AtLocal(DataField.Offset, GposLayout.VariationsOffsetField),
-                out diagnostic, version, GposLayout.Version10);
-        if (featureVariationsOffsetRaw != 0)
+                out diagnostic, version, GposLayout.Version11);
+        if (variations is not null && version != GposLayout.Version11)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                location.AtLocal(DataField.Offset, GposLayout.VariationsOffsetField),
+                out diagnostic, version, GposLayout.Version11);
+        if (featureVariationsOffsetRaw != 0 && variations is null)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 location.AtLocal(DataField.Offset, GposLayout.VariationsOffsetField),
                 out diagnostic, featureVariationsOffsetRaw, 0);
         return LayoutListsTableCompiler.TryCreate(version, featureVariationsOffsetRaw,
             scripts, features, lookups, numGlyphs, LayoutLookupKind.Gpos, out model,
-            out diagnostic, limits, location);
+            out diagnostic, limits, location, variations);
     }
 
     public static ReadStatus TryCompile(LayoutListsTable model, GdefLookupContext? context,
@@ -96,23 +107,29 @@ public static class GposTableCompiler
         return ReadStatus.Done;
     }
 
-    private sealed record RootPlan(int Length, int[] SlotOffsets,
+    private sealed record RootPlan(int Length, int[] SlotOffsets, int VariationsAt,
+        FeatureVariationsPartPlan? VariationsPlan,
         LayoutListsTableCompiler.ScriptPlan Scripts,
         LayoutListsTableCompiler.FeaturePlan Features,
         LayoutListsTableCompiler.LookupPlan Lookups);
 
-    // The v1.0/null-variations root boundary mirrors the T4-02 store refusal: the raw
-    // value travels in Detail at the variations slot, before any byte is planned.
+    // The root version/variations boundary: 1.0 keeps a zero raw and no typed block;
+    // 1.1 takes the optional block and a nonzero raw without one refuses at
+    // the variations slot (the raw travels in Detail, T4-02's store-refusal analog).
     private static ReadStatus CheckRoot(LayoutListsTable model, out FontDiagnostic diagnostic)
     {
-        if (model.Version != GposLayout.Version10)
+        if (model.Version is not (GposLayout.Version10 or GposLayout.Version11))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Offset, GposLayout.VariationsOffsetField),
-                out diagnostic, model.Version, GposLayout.Version10);
-        if (model.FeatureVariationsOffsetRaw != 0)
+                out diagnostic, model.Version, GposLayout.Version11);
+        if (model.FeatureVariationsOffsetRaw != 0 && model.FeatureVariations is null)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Offset, GposLayout.VariationsOffsetField),
                 out diagnostic, model.FeatureVariationsOffsetRaw, 0);
+        if (model.FeatureVariations is not null && model.Version != GposLayout.Version11)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                model.Location.AtLocal(DataField.Offset, GposLayout.VariationsOffsetField),
+                out diagnostic, model.Version, GposLayout.Version11);
         if (model.Kind != LayoutLookupKind.Gpos)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Tag, 0), out diagnostic, (ulong)model.Kind);
@@ -170,16 +187,20 @@ public static class GposTableCompiler
         out RootPlan? plan, out FontDiagnostic diagnostic)
     {
         plan = null;
+        FeatureVariationsPartPlan? fvPlanOwned = null;
+        bool variations = model.Version == GposLayout.Version11;
         var blocks = new (object Plan, int Size)[] { (scripts, scripts.Length),
             (features, features.Length), (lookups, lookups.Length) };
         if (lookupListFirst)
             (blocks[0], blocks[2]) = (blocks[2], blocks[0]);
         var offsets = new int[3];
-        long cursor = GposLayout.Header10;
+        long cursor = variations ? GposLayout.Header11 : GposLayout.Header10;
         for (int i = 0; i < blocks.Length; i++)
         {
             // Every root slot is an Offset16 from the root start; the placement refusal
-            // carries the offending cursor at the slot's own field location.
+            // carries the offending cursor at the slot's own field location. The
+            // variations slot stays outside this bound: it is the root's first
+            // Offset32 (the GsubTableCompiler FV>64K enabler).
             if (cursor > ushort.MaxValue)
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                     model.Location.AtLocal(DataField.Offset, GposLayout.ScriptListOffsetField),
@@ -188,9 +209,23 @@ public static class GposTableCompiler
             offsets[i] = (int)cursor;
             cursor += blocks[i].Size;
         }
+        int variationsAt = 0;
+        if (variations && model.FeatureVariations is not null)
+        {
+            // The typed variations block is the final root block in both candidates;
+            // the Offset32 slot needs no 16-bit bound and the budget stays the width
+            // authority; the plan runs the FV compiler's own preflight so every body
+            // and fixup is admitted before the root plan publishes.
+            variationsAt = (int)cursor;
+            ReadStatus status = FeatureVariationsTableCompiler.TryPlanSubtables(
+                model.FeatureVariations, out var fvPlan, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+            fvPlanOwned = fvPlan;
+            cursor += fvPlan!.Length;
+        }
         if (!budget.Output(cursor, model.Location, out diagnostic) ||
             !budget.Work(cursor, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        plan = new((int)cursor, offsets, scripts, features, lookups);
+        plan = new((int)cursor, offsets, variationsAt, fvPlanOwned, scripts, features, lookups);
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -205,9 +240,16 @@ public static class GposTableCompiler
         WriteSlot(destination, location, GposLayout.ScriptListOffsetField, plan.SlotOffsets[0]);
         WriteSlot(destination, location, GposLayout.FeatureListOffsetField, plan.SlotOffsets[1]);
         WriteSlot(destination, location, GposLayout.LookupListOffsetField, plan.SlotOffsets[2]);
+        if (model.Version == GposLayout.Version11)
+            CoverageTableCompiler.RequireWritten(LayoutListsView.TryWriteVariationsHeaderAt(destination,
+                GposLayout.VariationsOffsetField,
+                new LayoutListsView.VariationsHeaderData(0, (uint)plan.VariationsAt), out _, location));
         LayoutListsTableCompiler.WriteScripts(plan.Scripts, destination.Slice(plan.SlotOffsets[0], plan.Scripts.Length));
         LayoutListsTableCompiler.WriteFeatures(plan.Features, destination.Slice(plan.SlotOffsets[1], plan.Features.Length));
         LayoutListsTableCompiler.WriteLookups(plan.Lookups, destination.Slice(plan.SlotOffsets[2], plan.Lookups.Length));
+        if (plan.VariationsAt != 0)
+            FeatureVariationsTableCompiler.WritePlanned(model.FeatureVariations!, plan.VariationsPlan!,
+                destination.Slice(plan.VariationsAt));
     }
 
     private static void WriteSlot(Span<byte> destination, DataLocation location, int slotAt, int target)
