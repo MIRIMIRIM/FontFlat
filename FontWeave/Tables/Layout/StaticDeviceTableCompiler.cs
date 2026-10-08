@@ -22,6 +22,13 @@ public static class StaticDeviceTableCompiler
                 location.AtLocal(DataField.Count, StaticDeviceLayout.EndAt), out diagnostic,
                 (ulong)deltas.Length, (ulong)count);
         if (!budget.Work(2L * count, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        if (bits is < 1 or > 8)
+            // The 0x8000 factory shape carries start == end == 0, i.e. an empty
+            // VariationDevice; nothing is shiftable there and the old expression
+            // shifted by -1.
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Version, StaticDeviceLayout.FormatAt), out diagnostic,
+                0, (ulong)bits);
         int minimum = -(1 << (bits - 1)), maximum = (1 << (bits - 1)) - 1;
         int perWord = 16 / bits;
         for (int i = 0; i < count; i++)
