@@ -350,4 +350,44 @@ public sealed class LookupTable
         return LookupTableCompiler.TryCreateCursivePos(NumGlyphs, subtables,
             Flags, MarkFilteringSet, context, out updated, out diagnostic, limits, Location);
     }
+
+    // The T4-06 mark-family edit APIs (section 4.2): one per supported type, each
+    // re-running the family's explicit factory (the same flags/context contract as
+    // creation).
+    public ReadStatus TryWithMarkBases(IReadOnlyList<MarkBasePosTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gpos || LookupType != 4)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreateMarkBase(NumGlyphs, subtables, Flags, MarkFilteringSet,
+            context, out updated, out diagnostic, limits, Location);
+    }
+
+    public ReadStatus TryWithMarkLigs(IReadOnlyList<MarkLigPosTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gpos || LookupType != 5)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreateMarkLig(NumGlyphs, subtables, Flags, MarkFilteringSet,
+            context, out updated, out diagnostic, limits, Location);
+    }
+
+    public ReadStatus TryWithMarkMarks(IReadOnlyList<MarkMarkPosTable> subtables,
+        GdefLookupContext? context, out LookupTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Kind != LayoutLookupKind.Gpos || LookupType != 6)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, LookupType);
+        return LookupTableCompiler.TryCreateMarkMark(NumGlyphs, subtables, Flags, MarkFilteringSet,
+            context, out updated, out diagnostic, limits, Location);
+    }
+
 }

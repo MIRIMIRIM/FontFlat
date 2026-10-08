@@ -37,6 +37,58 @@ public sealed class MarkBasePosTable
     public int NumGlyphs { get; }
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
+
+    /// <summary>Atomically redirects one mark's class and anchor (the section 4.2
+    /// edit; the class stays inside the array-index domain and the anchor is
+    /// Required, so null refuses). The factory re-proves every value.</summary>
+    public ReadStatus TryWithMark(int markOrdinal, ushort markClass, AnchorTable anchor,
+        out MarkBasePosTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (markOrdinal < 0 || markOrdinal >= _marks.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, 0, markOrdinal), out diagnostic,
+                unchecked((ulong)(long)markOrdinal), (ulong)_marks.Length);
+        if (markClass >= ClassCount)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Payload, MarkArrayLayout.MinimumHeader, markOrdinal),
+                out diagnostic, markClass, (ulong)ClassCount);
+        if (anchor is null)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Offset, 2), out diagnostic, 0UL, 1UL);
+        var marks = (MarkRecord[])_marks.Clone();
+        marks[markOrdinal] = new(markClass, anchor);
+        return MarkPosTableCompiler.TryCreate(MarkCoverage.Glyphs, marks, BaseCoverage.Glyphs,
+            Flatten(_baseRows, ClassCount), ClassCount, NumGlyphs, out updated, out diagnostic, limits, Location);
+    }
+
+    /// <summary>Atomically sets one matrix anchor; null is the legal no-op (the
+    /// NULL<->non-NULL switch is a legal edit, section 4.2).</summary>
+    public ReadStatus TryWithMatrixAnchor(int baseOrdinal, int classOrdinal, AnchorTable? anchor,
+        out MarkBasePosTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (baseOrdinal < 0 || baseOrdinal >= _baseRows.Length || classOrdinal < 0 || classOrdinal >= ClassCount)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Payload, 0, baseOrdinal), out diagnostic,
+                unchecked((ulong)(long)(baseOrdinal < 0 ? baseOrdinal : classOrdinal)),
+                (ulong)(baseOrdinal >= _baseRows.Length ? _baseRows.Length : ClassCount));
+        var rows = (AnchorTable?[][])_baseRows.Clone();
+        var row = (AnchorTable?[])rows[baseOrdinal].Clone();
+        row[classOrdinal] = anchor;
+        rows[baseOrdinal] = row;
+        return MarkPosTableCompiler.TryCreate(MarkCoverage.Glyphs, _marks, BaseCoverage.Glyphs,
+            Flatten(rows, ClassCount), ClassCount, NumGlyphs, out updated, out diagnostic, limits, Location);
+    }
+
+    internal static AnchorTable?[] Flatten(AnchorTable?[][] rows, ushort classCount)
+    {
+        var cells = new AnchorTable?[rows.Length * classCount];
+        for (int i = 0; i < rows.Length; i++)
+            for (int c = 0; c < classCount; c++)
+                cells[i * classCount + c] = rows[i][c];
+        return cells;
+    }
 }
 
 /// <summary>One ligature attach body (GPOS lookup type 5): the component count plus
@@ -85,6 +137,32 @@ public sealed class MarkLigPosTable
     public int NumGlyphs { get; }
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
+
+    /// <summary>Atomically replaces one component row's anchors (the section 4.2
+    /// component edit); row length must stay the attach's class width and null
+    /// cells stay the legal no-op.</summary>
+    public ReadStatus TryWithComponentAnchors(int ligatureOrdinal, int componentOrdinal,
+        ReadOnlySpan<AnchorTable?> row, out MarkLigPosTable? updated, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        updated = null;
+        if (ligatureOrdinal < 0 || ligatureOrdinal >= _ligatures.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, 0, ligatureOrdinal), out diagnostic,
+                unchecked((ulong)(long)ligatureOrdinal), (ulong)_ligatures.Length);
+        var attach = _ligatures[ligatureOrdinal];
+        if (componentOrdinal < 0 || componentOrdinal >= attach.Components || row.Length != attach.ComponentRow(0).Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Payload, 0, componentOrdinal), out diagnostic,
+                unchecked((ulong)(long)componentOrdinal), (ulong)attach.Components);
+        var ligatures = (LigatureAttachTable[])_ligatures.Clone();
+        var rows = new AnchorTable?[attach.Components][];
+        for (int c = 0; c < attach.Components; c++)
+            rows[c] = c == componentOrdinal ? row.ToArray() : attach.ComponentRow(c).ToArray();
+        ligatures[ligatureOrdinal] = new(attach.ComponentCount, rows, attach.Location, attach.ConsumedLength);
+        return MarkPosTableCompiler.TryCreateLig(MarkCoverage.Glyphs, _marks, LigatureCoverage.Glyphs,
+            ligatures, NumGlyphs, out updated, out diagnostic, limits, Location);
+    }
 }
 
 /// <summary>A static GPOS type-6 fragment: the mark-1 side plus one Optional-anchor
@@ -113,6 +191,26 @@ public sealed class MarkMarkPosTable
     public int NumGlyphs { get; }
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
+
+    /// <summary>Atomically sets one mark-2 matrix anchor; null stays the legal
+    /// no-op (section 4.2's NULL<->non-NULL switch).</summary>
+    public ReadStatus TryWithMatrixAnchor(int mark2Ordinal, int classOrdinal, AnchorTable? anchor,
+        out MarkMarkPosTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (mark2Ordinal < 0 || mark2Ordinal >= _mark2Rows.Length || classOrdinal < 0 || classOrdinal >= ClassCount)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Payload, 0, mark2Ordinal), out diagnostic,
+                unchecked((ulong)(long)(mark2Ordinal < 0 ? mark2Ordinal : classOrdinal)),
+                (ulong)(mark2Ordinal >= _mark2Rows.Length ? _mark2Rows.Length : ClassCount));
+        var rows = (AnchorTable?[][])_mark2Rows.Clone();
+        var row = (AnchorTable?[])rows[mark2Ordinal].Clone();
+        row[classOrdinal] = anchor;
+        rows[mark2Ordinal] = row;
+        return MarkPosTableCompiler.TryCreateMark(MarkCoverage.Glyphs, _marks, Mark2Coverage.Glyphs,
+            MarkBasePosTable.Flatten(rows, ClassCount), ClassCount, NumGlyphs, out updated,
+            out diagnostic, limits, Location);
+    }
 }
 
 /// <summary>The one hand-written boundary OQ-T4-06-1 registered: the matrix rows of

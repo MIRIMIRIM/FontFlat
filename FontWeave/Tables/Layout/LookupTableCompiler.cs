@@ -37,7 +37,11 @@ internal sealed record ReverseChainSlotPlan(ReverseChainSubstTable Child, Revers
 // only through the per-extension Offset32 (spec: "the total size of the subtables
 // exceeds the 16-bit limits"). BodyTarget is the lookup-local body position.
 internal sealed record ExtensionSlotPlan(ushort WrappedType, LookupSlotPlan Wrapped,
-    ushort Target, int BodyTarget, int Length) : LookupSlotPlan(Target, Length);
+    ushort Target, int BodyTarget, int Length, bool GposFamily = false) : LookupSlotPlan(Target, Length);
+
+// T4-06 mark-family slot (types 4/5/6): one subtable is one part.
+internal sealed record MarkSlotPlan(object Child, MarkPosPartPlan Part,
+    ushort Target, int Length) : LookupSlotPlan(Target, Length);
 
 // The whole-lookup plan: flattened source→slot entry order, the unique placed slots
 // and the exact wire length (header + offset records + filter word + Σ part lengths).
@@ -136,6 +140,128 @@ public static class LookupTableCompiler
         status = candidate.ValidateFlags(context, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         model = candidate; diagnostic = default; return ReadStatus.Done;
+    }
+
+    // The T4-06 mark-family lookup factories (section 4.2): the same
+    // caller-supplied source/kind/child identity rules, one body per family.
+    public static ReadStatus TryCreateMarkBase(int numGlyphs, IReadOnlyList<MarkBasePosTable> subtables,
+        ushort flags, ushort? markFilteringSet, GdefLookupContext? context, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default)
+    {
+        ArgumentNullException.ThrowIfNull(subtables);
+        model = null;
+        var budget = new BuildBudget(limits);
+        ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = LookupTable.ValidateGposSource(location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int count = subtables.Count;
+        if (count is < 0 or > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, LookupLayout.CountAt), out diagnostic,
+                unchecked((ulong)(long)count), ushort.MaxValue);
+        if (!budget.Work(2L * count, location, out diagnostic) ||
+            !budget.Buffer(8L * count, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var copy = new MarkBasePosTable[count];
+        for (int i = 0; i < count; i++)
+        {
+            MarkBasePosTable? child = subtables[i];
+            if (child is null)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.AtLocal(DataField.Payload, 0, i), out diagnostic);
+            if (child.NumGlyphs != numGlyphs || child.Location.SourceId != location.SourceId || child.Location.FaceIndex != location.FaceIndex)
+                return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
+                    location.AtLocal(DataField.None, 0, i), out diagnostic);
+            status = LookupTable.ValidateGposSource(child.Location, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            copy[i] = child;
+        }
+        var candidate = new LookupTable(LayoutLookupKind.Gpos, numGlyphs, 4, flags, markFilteringSet, [], null, location, markBases: copy);
+        status = candidate.ValidateFlags(context, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        model = candidate;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    public static ReadStatus TryCreateMarkLig(int numGlyphs, IReadOnlyList<MarkLigPosTable> subtables,
+        ushort flags, ushort? markFilteringSet, GdefLookupContext? context, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default)
+    {
+        ArgumentNullException.ThrowIfNull(subtables);
+        model = null;
+        var budget = new BuildBudget(limits);
+        ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = LookupTable.ValidateGposSource(location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int count = subtables.Count;
+        if (count is < 0 or > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, LookupLayout.CountAt), out diagnostic,
+                unchecked((ulong)(long)count), ushort.MaxValue);
+        if (!budget.Work(2L * count, location, out diagnostic) ||
+            !budget.Buffer(8L * count, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var copy = new MarkLigPosTable[count];
+        for (int i = 0; i < count; i++)
+        {
+            MarkLigPosTable? child = subtables[i];
+            if (child is null)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.AtLocal(DataField.Payload, 0, i), out diagnostic);
+            if (child.NumGlyphs != numGlyphs || child.Location.SourceId != location.SourceId || child.Location.FaceIndex != location.FaceIndex)
+                return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
+                    location.AtLocal(DataField.None, 0, i), out diagnostic);
+            status = LookupTable.ValidateGposSource(child.Location, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            copy[i] = child;
+        }
+        var candidate = new LookupTable(LayoutLookupKind.Gpos, numGlyphs, 5, flags, markFilteringSet, [], null, location, markLigs: copy);
+        status = candidate.ValidateFlags(context, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        model = candidate;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    public static ReadStatus TryCreateMarkMark(int numGlyphs, IReadOnlyList<MarkMarkPosTable> subtables,
+        ushort flags, ushort? markFilteringSet, GdefLookupContext? context, out LookupTable? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default)
+    {
+        ArgumentNullException.ThrowIfNull(subtables);
+        model = null;
+        var budget = new BuildBudget(limits);
+        ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = LookupTable.ValidateGposSource(location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int count = subtables.Count;
+        if (count is < 0 or > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, LookupLayout.CountAt), out diagnostic,
+                unchecked((ulong)(long)count), ushort.MaxValue);
+        if (!budget.Work(2L * count, location, out diagnostic) ||
+            !budget.Buffer(8L * count, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var copy = new MarkMarkPosTable[count];
+        for (int i = 0; i < count; i++)
+        {
+            MarkMarkPosTable? child = subtables[i];
+            if (child is null)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.AtLocal(DataField.Payload, 0, i), out diagnostic);
+            if (child.NumGlyphs != numGlyphs || child.Location.SourceId != location.SourceId || child.Location.FaceIndex != location.FaceIndex)
+                return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
+                    location.AtLocal(DataField.None, 0, i), out diagnostic);
+            status = LookupTable.ValidateGposSource(child.Location, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            copy[i] = child;
+        }
+        var candidate = new LookupTable(LayoutLookupKind.Gpos, numGlyphs, 6, flags, markFilteringSet, [], null, location, markMarks: copy);
+        status = candidate.ValidateFlags(context, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        model = candidate;
+        diagnostic = default;
+        return ReadStatus.Done;
     }
 
     // The T4-03 explicit lookup factories (types 2/3/4): the same caller-supplied
@@ -501,21 +627,29 @@ public static class LookupTableCompiler
         return ReadStatus.Done;
     }
 
-    // Plan/preflight dispatcher (T4-03 §4.2): a Gsub type-7 read model has only the
-    // extension shape (round-trip fidelity); every other model plans direct first and
-    // - Gsub only - a refused direct width feeds the finite extension-wrapped candidate
-    // (wrap-all, OQ-T4-03-1) on the same budget. Refused candidates' Work stays
-    // charged; there is no third candidate and no repack retry. GPOS keeps exactly the
-    // direct candidate (its extension story is T4-05/06).
+    // Plan/preflight dispatcher (T4-03 section 4.2, T4-06 section 4.2): a
+    // wrapper-typed read model (GSUB 7 / GPOS 9) has only the extension shape
+    // (round-trip fidelity); every other model plans direct first and a refused
+    // direct width feeds the finite extension-wrapped candidate (wrap-all) on the
+    // same budget - both families since T4-06. Refused candidates' Work stays
+    // charged; there is no third candidate and no repack retry.
     internal static ReadStatus TryPlan(LookupTable model, GdefLookupContext? context,
         out LookupEmitPlan? plan, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         plan = null;
-        if (model.Kind == LayoutLookupKind.Gsub && model.LookupType == 7)
+        if (model.LookupType == 7 && model.Kind == LayoutLookupKind.Gsub)
         {
             // A metadata-only type-7 read model has no wrapped children to compile;
             // it keeps the shared unsupported-type refusal instead of planning.
             return model.Extensions is not null
+                ? PlanExtension(model, context, out plan, out diagnostic, budget)
+                : UnsupportedType(model, out diagnostic);
+        }
+        if (model.LookupType == 9 && model.Kind == LayoutLookupKind.Gpos)
+        {
+            // The same metadata-only rule for the GPOS wrapper; a typed type-9 read
+            // model re-emits type 9 with its wrapped leaves (round-trip fidelity).
+            return model.ExtensionPositions is not null
                 ? PlanExtension(model, context, out plan, out diagnostic, budget)
                 : UnsupportedType(model, out diagnostic);
         }
@@ -526,11 +660,10 @@ public static class LookupTableCompiler
             diagnostic = default;
             return ReadStatus.Done;
         }
-        // Candidate 2 runs only for a Gsub model whose typed payload exists (a
-        // metadata-only read model keeps the direct refusal verbatim) and whose direct
-        // refusal was a width refusal; budget refusals are never retried.
-        if (model.Kind != LayoutLookupKind.Gsub || status != ReadStatus.UnsupportedFormat ||
-            !HasTypedPayload(model))
+        // Candidate 2 runs only for a model whose typed payload exists (a
+        // metadata-only read model keeps the direct refusal verbatim) and whose
+        // direct refusal was a width refusal; budget refusals are never retried.
+        if (status != ReadStatus.UnsupportedFormat || !HasTypedPayload(model))
             return status;
         return PlanExtension(model, context, out plan, out diagnostic, budget);
     }
@@ -541,7 +674,12 @@ public static class LookupTableCompiler
             1 => model.SinglePositions is not null,
             2 => model.PairPositions is not null,
             3 => model.CursiveAttachments is not null,
-            _ => false,
+            4 => model.MarkBases is not null,
+            5 => model.MarkLigs is not null,
+            6 => model.MarkMarks is not null,
+            7 => model.Contextuals is not null,
+            8 => model.Chainings is not null,
+            _ => model.ExtensionPositions is not null,
         }
         : model.LookupType switch
         {
@@ -578,8 +716,15 @@ public static class LookupTableCompiler
         bool reverseChains = model.Kind == LayoutLookupKind.Gsub && type == 8 && model.ReverseChains is not null;
         bool pairs = model.Kind == LayoutLookupKind.Gpos && type == 2 && model.PairPositions is not null;
         bool cursive = model.Kind == LayoutLookupKind.Gpos && type == 3 && model.CursiveAttachments is not null;
+        bool markBases = model.Kind == LayoutLookupKind.Gpos && type == 4 && model.MarkBases is not null;
+        bool markLigs = model.Kind == LayoutLookupKind.Gpos && type == 5 && model.MarkLigs is not null;
+        bool markMarks = model.Kind == LayoutLookupKind.Gpos && type == 6 && model.MarkMarks is not null;
+        bool contextPos = model.Kind == LayoutLookupKind.Gpos && type == 7 && model.Contextuals is not null;
+        bool chainedPos = model.Kind == LayoutLookupKind.Gpos && type == 8 && model.Chainings is not null;
+        bool extensionPos = model.Kind == LayoutLookupKind.Gpos && type == 9 && model.ExtensionPositions is not null;
         if (!(substitution || positioning || multiples || alternates || ligatures || contextuals ||
-            chainings || reverseChains || pairs || cursive))
+            chainings || reverseChains || pairs || cursive || markBases || markLigs || markMarks ||
+            contextPos || chainedPos || extensionPos))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic, model.LookupType);
         ReadStatus status = model.Kind == LayoutLookupKind.Gsub
@@ -628,16 +773,22 @@ public static class LookupTableCompiler
     }
 
     // The finite extension-wrapped candidate: every source subtable becomes one
-    // 8-byte ExtensionSubst format-1 header wrapping its leaf part (wrap-all,
-    // OQ-T4-03-1); the leaf parts are the same plans the direct candidate used, so a
-    // part that is itself internally unreachable refuses again here. The emitted
-    // LookupType is 7 with extensionLookupType = the real type; a type-7 read model
-    // keeps its per-subtable wrapped types (uniform by construction on this path).
+    // 8-byte extension format-1 header wrapping its leaf part (wrap-all,
+    // OQ-T4-03-1; T4-06 section 4.2 unlocks the GPOS side with the same two-
+    // candidate shape - GPOS types 1-8 are all wrappable, so the GSUB type-8
+    // "extension does not shrink" exception does not arise). The leaf parts are
+    // the same plans the direct candidate used, so a part that is itself
+    // internally unreachable refuses again here. The emitted LookupType is the
+    // family's wrapper (GSUB 7 / GPOS 9) with extensionLookupType = the real
+    // type; a wrapper-typed read model keeps its per-subtable wrapped types.
     private static ReadStatus PlanExtension(LookupTable model, GdefLookupContext? context,
         out LookupEmitPlan? plan, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         plan = null;
-        ReadStatus status = LookupTable.ValidateGsubSource(model.Location, out diagnostic);
+        bool gpos = model.Kind == LayoutLookupKind.Gpos;
+        ReadStatus status = gpos
+            ? LookupTable.ValidateGposSource(model.Location, out diagnostic)
+            : LookupTable.ValidateGsubSource(model.Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = model.ValidateFlags(context, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
@@ -653,7 +804,8 @@ public static class LookupTableCompiler
         // grows accordingly; entries keep pointing at their (one) wrapped slot.
         var slots = new ExtensionSlotPlan[distinct];
         for (int i = 0; i < distinct; i++)
-            slots[i] = new ExtensionSlotPlan(WrappedOf(wrapped[i]), wrapped[i], 0, 0, wrapped[i].Length + 8);
+            slots[i] = new ExtensionSlotPlan(WrappedOf(wrapped[i], model), wrapped[i], 0, 0, wrapped[i].Length + 8,
+                model.Kind == LayoutLookupKind.Gpos);
         int headerLength = LookupLayout.HeaderLength + LookupLayout.OffsetStride * entryCount +
             (model.MarkFilteringSet.HasValue ? 2 : 0);
         long cursor = headerLength;
@@ -675,10 +827,27 @@ public static class LookupTableCompiler
             if (!budget.Work(1, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
             long bodyTarget = cursor;
             ushort extAt = slots[i].Target;
+            bool gposFamily = slots[i] is ExtensionSlotPlan { GposFamily: true };
             DataLocation fieldLocation = model.Location.AtLocal(DataField.Offset,
-                (ulong)extAt + ExtensionSubstLayout.OffsetAt);
+                (ulong)((long)extAt + (gposFamily ? ExtensionPosLayout.OffsetAt : ExtensionSubstLayout.OffsetAt)));
             status = slots[i].WrappedType switch
             {
+                1 when gposFamily => ExtensionPosView.TryGetWrappedSinglePosOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
+                    out _, out diagnostic, fieldLocation),
+                2 when gposFamily => ExtensionPosView.TryGetWrappedPairPosOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
+                    out _, out diagnostic, fieldLocation),
+                3 when gposFamily => ExtensionPosView.TryGetWrappedCursivePosOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
+                    out _, out diagnostic, fieldLocation),
+                4 when gposFamily => ExtensionPosView.TryGetWrappedMarkBasePosOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
+                    out _, out diagnostic, fieldLocation),
+                5 when gposFamily => ExtensionPosView.TryGetWrappedMarkLigPosOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
+                    out _, out diagnostic, fieldLocation),
+                6 when gposFamily => ExtensionPosView.TryGetWrappedMarkMarkPosOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
+                    out _, out diagnostic, fieldLocation),
+                7 when gposFamily => ExtensionPosView.TryGetWrappedContextPosOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
+                    out _, out diagnostic, fieldLocation),
+                8 when gposFamily => ExtensionPosView.TryGetWrappedChainedContextPosOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
+                    out _, out diagnostic, fieldLocation),
                 1 => ExtensionSubstView.TryGetWrappedSingleOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
                     out _, out diagnostic, fieldLocation),
                 2 => ExtensionSubstView.TryGetWrappedMultipleOffsetValue(true, 0UL, (ulong)(bodyTarget - extAt),
@@ -702,13 +871,83 @@ public static class LookupTableCompiler
             !budget.Output(cursor, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         int length = (int)cursor;
         if (!budget.Work(length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        plan = new(7, entries, slots, distinct, length);
+        plan = new(model.Kind == LayoutLookupKind.Gpos ? 9 : 7, entries, slots, distinct, length);
         diagnostic = default;
         return ReadStatus.Done;
     }
 
-    private static ushort WrappedOf(LookupSlotPlan slot) => slot switch
+    // The GPOS type-9 read model's wrapped leaf plans (the same leaf compilers the
+    // direct path uses; exactly one leaf per ExtensionPosTable).
+    private static LeafPartPlan[] PlanExtensionPosLeaf(ExtensionPosTable child, BuildBudget budget,
+        out ReadStatus status, out FontDiagnostic diagnostic)
     {
+        switch (child.ExtensionLookupType)
+        {
+            case 1:
+                status = SinglePosTableCompiler.TryPlanSubtables(child.Single!, out var g1, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(g1!, child.Single!) : [];
+            case 2:
+                status = PairPosTableCompiler.TryPlanSubtables(child.Pair!, out var g2, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(g2!, child.Pair!) : [];
+            case 3:
+                status = CursivePosTableCompiler.TryPlanSubtables(child.Cursive!, out var g3, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(g3!, child.Cursive!) : [];
+            case 4:
+                status = MarkPosTableCompiler.TryPlanSubtables(child.MarkBase!, out var g4, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(g4!, child.MarkBase!) : [];
+            case 5:
+                status = MarkPosTableCompiler.TryPlanSubtables(child.MarkLig!, out var g5, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(g5!, child.MarkLig!) : [];
+            case 6:
+                status = MarkPosTableCompiler.TryPlanSubtables(child.MarkMark!, out var g6, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(g6!, child.MarkMark!) : [];
+            case 7:
+                status = ContextualSubstTableCompiler.TryPlanSubtables(child.Contextual!, out var g7, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(g7!, child.Contextual!) : [];
+            default:
+                status = ChainingSubstTableCompiler.TryPlanSubtables(child.Chaining!, out var g8, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(g8!, child.Chaining!) : [];
+        }
+    }
+
+    private static LeafPartPlan[] PlanPosLeaf(SinglePosTable child, BuildBudget budget,
+        out ReadStatus status, out FontDiagnostic diagnostic)
+    {
+        status = SinglePosTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+        return status == ReadStatus.Done ? ToParts(group!, child) : [];
+    }
+
+    private static LeafPartPlan[] PlanPairLeaf(PairPosTable child, BuildBudget budget,
+        out ReadStatus status, out FontDiagnostic diagnostic)
+    {
+        status = PairPosTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+        return status == ReadStatus.Done ? ToParts(group!, child) : [];
+    }
+
+    private static LeafPartPlan[] PlanCursiveLeaf(CursivePosTable child, BuildBudget budget,
+        out ReadStatus status, out FontDiagnostic diagnostic)
+    {
+        status = CursivePosTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+        return status == ReadStatus.Done ? ToParts(group!, child) : [];
+    }
+
+    private static LeafPartPlan[] PlanContextualLeaf(ContextualSubstTable child, BuildBudget budget,
+        out ReadStatus status, out FontDiagnostic diagnostic)
+    {
+        status = ContextualSubstTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+        return status == ReadStatus.Done ? ToParts(group!, child) : [];
+    }
+
+    private static LeafPartPlan[] PlanChainingLeaf(ChainingSubstTable child, BuildBudget budget,
+        out ReadStatus status, out FontDiagnostic diagnostic)
+    {
+        status = ChainingSubstTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+        return status == ReadStatus.Done ? ToParts(group!, child) : [];
+    }
+
+    private static ushort WrappedOf(LookupSlotPlan slot, LookupTable model) => slot switch
+    {
+        ExtensionSlotPlan => throw new InvalidOperationException("An extension slot cannot wrap another extension slot."),
         SubstitutionSlotPlan => 1,
         MultipleSlotPlan => 2,
         AlternateSlotPlan => 3,
@@ -716,8 +955,13 @@ public static class LookupTableCompiler
         ContextualSlotPlan => 5,
         ChainingSlotPlan => 6,
         ReverseChainSlotPlan => 8,
-        // A GPOS slot can never reach here: the extension candidate is Gsub-only and
-        // stays so (T4-05's pin - GPOS needing an outer extension is a finite refusal).
+        // The T4-06 GPOS wrap-all arms: the direct GPOS leaves keep their real
+        // lookup type as the declared wrapped type (the mark slot takes the
+        // model's own 4/5/6).
+        PositioningSlotPlan => 1,
+        PairSlotPlan => 2,
+        CursiveSlotPlan => 3,
+        MarkSlotPlan => model.LookupType,
         _ => throw new InvalidOperationException("An extension slot cannot wrap another extension slot."),
     };
 
@@ -736,11 +980,12 @@ public static class LookupTableCompiler
             1 => model.Kind == LayoutLookupKind.Gsub ? model.SingleSubstitutions!.Count : model.SinglePositions!.Count,
             2 => model.Kind == LayoutLookupKind.Gpos ? model.PairPositions!.Count : model.Multiples!.Count,
             3 => model.Kind == LayoutLookupKind.Gpos ? model.CursiveAttachments!.Count : model.Alternates!.Count,
-            4 => model.Ligatures!.Count,
+            4 => model.Kind == LayoutLookupKind.Gpos ? model.MarkBases!.Count : model.Ligatures!.Count,
             5 => model.Contextuals!.Count,
             6 => model.Chainings!.Count,
-            8 => model.ReverseChains!.Count,
-            _ => model.Extensions!.Count,
+            7 => model.Kind == LayoutLookupKind.Gpos ? model.ExtensionPositions!.Count : model.Extensions!.Count,
+            8 => model.Kind == LayoutLookupKind.Gpos ? model.Chainings!.Count : model.ReverseChains!.Count,
+            _ => model.Kind == LayoutLookupKind.Gpos ? model.ExtensionPositions!.Count : model.Extensions!.Count,
         };
         if (!budget.Work(sourceCount, model.Location, out diagnostic) ||
             !budget.Buffer(8L * sourceCount, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
@@ -756,6 +1001,9 @@ public static class LookupTableCompiler
         var reverseChains = new Dictionary<ReverseChainSubstTable, ReverseChainSubstPartPlan[]>(ReferenceEqualityComparer.Instance);
         var pairs = new Dictionary<PairPosTable, PairPosPartPlan[]>(ReferenceEqualityComparer.Instance);
         var cursives = new Dictionary<CursivePosTable, CursivePosPartPlan[]>(ReferenceEqualityComparer.Instance);
+        var markBases = new Dictionary<MarkBasePosTable, MarkPosPartPlan>(ReferenceEqualityComparer.Instance);
+        var markLigs = new Dictionary<MarkLigPosTable, MarkPosPartPlan>(ReferenceEqualityComparer.Instance);
+        var markMarks = new Dictionary<MarkMarkPosTable, MarkPosPartPlan>(ReferenceEqualityComparer.Instance);
         ReadStatus status;
         for (int i = 0; i < sourceCount; i++)
         {
@@ -839,6 +1087,19 @@ public static class LookupTableCompiler
                     result[i] = ToParts(group!, child);
                     break;
                 }
+                case 4 when model.Kind == LayoutLookupKind.Gpos:
+                {
+                    MarkBasePosTable child = model.MarkBases![i];
+                    if (!markBases.TryGetValue(child, out MarkPosPartPlan? group))
+                    {
+                        status = MarkPosTableCompiler.TryPlanSubtables(child, out group, out diagnostic, budget);
+                        if (status != ReadStatus.Done) return status;
+                        if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                        markBases.Add(child, group!);
+                    }
+                    result[i] = ToParts(group!, child);
+                    break;
+                }
                 case 4:
                 {
                     LigatureSubstTable child = model.Ligatures![i];
@@ -878,6 +1139,19 @@ public static class LookupTableCompiler
                     result[i] = ToParts(group!, child);
                     break;
                 }
+                case 8 when model.Kind == LayoutLookupKind.Gpos:
+                {
+                    ChainingSubstTable child = model.Chainings![i];
+                    if (!chainings.TryGetValue(child, out ChainingSubstPartPlan[]? group))
+                    {
+                        status = ChainingSubstTableCompiler.TryPlanSubtables(child, out group, out diagnostic, budget);
+                        if (status != ReadStatus.Done) return status;
+                        if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                        chainings.Add(child, group!);
+                    }
+                    result[i] = ToParts(group!, child);
+                    break;
+                }
                 case 8:
                 {
                     ReverseChainSubstTable child = model.ReverseChains![i];
@@ -891,12 +1165,38 @@ public static class LookupTableCompiler
                     result[i] = ToParts(group!, child);
                     break;
                 }
+                case 9:
+                {
+                    // The GPOS type-9 read model: the wrapped leaves keep the
+                    // extension subtable's declared lookup type; re-emitting type 9
+                    // is the registered round-trip fidelity item (T4-05 section 4.2).
+                    ExtensionPosTable child = model.ExtensionPositions![i];
+                    LeafPartPlan[] parts = PlanExtensionPosLeaf(child, budget, out status, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    for (int j = 0; j < parts.Length; j++)
+                        parts[j] = parts[j] with { WrappedType = child.ExtensionLookupType };
+                    result[i] = parts;
+                    break;
+                }
                 default:
                 {
+                    LeafPartPlan[] parts;
+                    if (model.Kind == LayoutLookupKind.Gpos)
+                    {
+                        // The GPOS wrap-all candidate plans the direct-typed leaves
+                        // and keeps their real lookup type as the declared wrapped
+                        // type (section 4.2's two-candidate shape).
+                        parts = PlanGposWrapLeaf(model, type, i, budget, out status, out diagnostic);
+                        if (status != ReadStatus.Done) return status;
+                        if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                        for (int j = 0; j < parts.Length; j++)
+                            parts[j] = parts[j] with { WrappedType = (ushort)type };
+                        result[i] = parts;
+                        break;
+                    }
                     // A type-7 read model: the wrapped leaves keep the extension
                     // subtable's declared lookup type (uniform per model on this path).
                     ExtensionSubstTable child = model.Extensions![i];
-                    LeafPartPlan[] parts;
                     switch (child.ExtensionLookupType)
                     {
                         case 1:
@@ -966,6 +1266,67 @@ public static class LookupTableCompiler
         return parts;
     }
 
+    // The one-part-per-subtable mark families (one MarkPosPartPlan per leaf child).
+    private static LeafPartPlan[] ToParts(object part, object child) => [new LeafPartPlan(child, part, 0)];
+
+    // The GPOS wrap-all leaf planning (the direct-typed leaf keeps its real type as
+    // the declared wrapped type).
+    private static LeafPartPlan[] PlanGposWrapLeaf(LookupTable model, ushort type, int index,
+        BuildBudget budget, out ReadStatus status, out FontDiagnostic diagnostic)
+    {
+        switch (type)
+        {
+            case 4:
+            {
+                MarkBasePosTable child = model.MarkBases![index];
+                status = MarkPosTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(group!, child) : [];
+            }
+            case 5:
+            {
+                MarkLigPosTable child = model.MarkLigs![index];
+                status = MarkPosTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(group!, child) : [];
+            }
+            case 6:
+            {
+                MarkMarkPosTable child = model.MarkMarks![index];
+                status = MarkPosTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(group!, child) : [];
+            }
+            case 1:
+            {
+                SinglePosTable child = model.SinglePositions![index];
+                status = SinglePosTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(group!, child) : [];
+            }
+            case 2:
+            {
+                PairPosTable child = model.PairPositions![index];
+                status = PairPosTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(group!, child) : [];
+            }
+            case 3:
+            {
+                CursivePosTable child = model.CursiveAttachments![index];
+                status = CursivePosTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(group!, child) : [];
+            }
+            case 7:
+            {
+                ContextualSubstTable child = model.Contextuals![index];
+                status = ContextualSubstTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(group!, child) : [];
+            }
+            default:
+            {
+                ChainingSubstTable child = model.Chainings![index];
+                status = ChainingSubstTableCompiler.TryPlanSubtables(child, out var group, out diagnostic, budget);
+                return status == ReadStatus.Done ? ToParts(group!, child) : [];
+            }
+        }
+    }
+
     // Slot dedup keys on the leaf part plan instance; across children the instances
     // are distinct, so this equals the previous byte[]-reference semantics exactly.
     private static ReadStatus BuildSlots(LeafPartPlan[][] groups, DataLocation location,
@@ -1015,6 +1376,7 @@ public static class LookupTableCompiler
             ReverseChainSubstPartPlan part => new ReverseChainSlotPlan((ReverseChainSubstTable)leaf.Child, part, 0, length),
             PairPosPartPlan part => new PairSlotPlan((PairPosTable)leaf.Child, part, 0, length),
             CursivePosPartPlan part => new CursiveSlotPlan((CursivePosTable)leaf.Child, part, 0, length),
+            MarkPosPartPlan part => new MarkSlotPlan(leaf.Child, part, 0, length),
             _ => new LigatureSlotPlan((LigatureSubstTable)leaf.Child, (LigaturePartPlan)leaf.Part, 0, length),
         };
     }
@@ -1030,6 +1392,7 @@ public static class LookupTableCompiler
         ReverseChainSubstPartPlan plan => plan.Length,
         PairPosPartPlan plan => plan.Length,
         CursivePosPartPlan plan => plan.Length,
+        MarkPosPartPlan plan => plan.Length,
         _ => ((LigaturePartPlan)part).Length,
     };
 
@@ -1050,9 +1413,12 @@ public static class LookupTableCompiler
             2 => LookupView.TryGetPairPosOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             3 when model.Kind == LayoutLookupKind.Gsub => LookupView.TryGetAlternateSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             3 => LookupView.TryGetCursivePosOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
+            4 when model.Kind == LayoutLookupKind.Gpos => LookupView.TryGetMarkBasePosOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             4 => LookupView.TryGetLigatureSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             5 => LookupView.TryGetContextualSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             6 => LookupView.TryGetChainingSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
+            9 => LookupView.TryGetExtensionPosOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
+            7 when model.Kind == LayoutLookupKind.Gpos => LookupView.TryGetExtensionPosOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             7 => LookupView.TryGetExtensionSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             8 => LookupView.TryGetReverseChainSubstOffsetValue(true, 0UL, (ulong)cursor, out target, out diagnostic, fieldLocation),
             _ => model.Kind == LayoutLookupKind.Gsub
@@ -1105,6 +1471,29 @@ public static class LookupTableCompiler
         // The Offset32 value is the preflighted body delta relative to this extension
         // subtable's start; the generated helper owns the encoding and a failure here
         // is an invariant breach.
+        if (extension.GposFamily)
+        {
+            DataLocation gposLocation = model.Location;
+            CoverageTableCompiler.RequireWritten(ExtensionPosView.TryWritePosFormat(destination, 1, out _, gposLocation));
+            CoverageTableCompiler.RequireWritten(ExtensionPosView.TryWriteExtensionLookupType(destination,
+                extension.WrappedType, out _, gposLocation));
+            uint gposEncoded;
+            ReadStatus gposStatus = extension.WrappedType switch
+            {
+                1 => ExtensionPosView.TryGetWrappedSinglePosOffsetValue(true, 0UL, (ulong)bodyDelta, out gposEncoded, out _, gposLocation),
+                2 => ExtensionPosView.TryGetWrappedPairPosOffsetValue(true, 0UL, (ulong)bodyDelta, out gposEncoded, out _, gposLocation),
+                3 => ExtensionPosView.TryGetWrappedCursivePosOffsetValue(true, 0UL, (ulong)bodyDelta, out gposEncoded, out _, gposLocation),
+                4 => ExtensionPosView.TryGetWrappedMarkBasePosOffsetValue(true, 0UL, (ulong)bodyDelta, out gposEncoded, out _, gposLocation),
+                5 => ExtensionPosView.TryGetWrappedMarkLigPosOffsetValue(true, 0UL, (ulong)bodyDelta, out gposEncoded, out _, gposLocation),
+                6 => ExtensionPosView.TryGetWrappedMarkMarkPosOffsetValue(true, 0UL, (ulong)bodyDelta, out gposEncoded, out _, gposLocation),
+                7 => ExtensionPosView.TryGetWrappedContextPosOffsetValue(true, 0UL, (ulong)bodyDelta, out gposEncoded, out _, gposLocation),
+                _ => ExtensionPosView.TryGetWrappedChainedContextPosOffsetValue(true, 0UL, (ulong)bodyDelta, out gposEncoded, out _, gposLocation),
+            };
+            if (gposStatus != ReadStatus.Done)
+                throw new InvalidOperationException("A preflighted extension Offset32 fixup failed.");
+            CoverageTableCompiler.RequireWritten(ExtensionPosView.TryWriteExtensionOffset(destination, gposEncoded, out _, gposLocation));
+            return;
+        }
         DataLocation location = model.Location;
         CoverageTableCompiler.RequireWritten(ExtensionSubstView.TryWriteSubstFormat(destination, 1, out _, location));
         CoverageTableCompiler.RequireWritten(ExtensionSubstView.TryWriteExtensionLookupType(destination,
@@ -1123,6 +1512,22 @@ public static class LookupTableCompiler
         if (status != ReadStatus.Done)
             throw new InvalidOperationException("A preflighted extension Offset32 fixup failed.");
         CoverageTableCompiler.RequireWritten(ExtensionSubstView.TryWriteExtensionOffset(destination, encoded, out _, location));
+    }
+
+    private static void WriteMarkPlanned(object child, MarkPosPartPlan part, Span<byte> destination)
+    {
+        switch (child)
+        {
+            case MarkBasePosTable markBase:
+                MarkPosTableCompiler.WritePlanned(markBase, part, destination);
+                break;
+            case MarkLigPosTable markLig:
+                MarkPosTableCompiler.WritePlanned(markLig, part, destination);
+                break;
+            default:
+                MarkPosTableCompiler.WritePlanned((MarkMarkPosTable)child, part, destination);
+                break;
+        }
     }
 
     private static void WriteWrapped(LookupSlotPlan slot, Span<byte> destination)
@@ -1146,6 +1551,9 @@ public static class LookupTableCompiler
                 break;
             case CursiveSlotPlan cursive:
                 CursivePosTableCompiler.WritePlanned(cursive.Child, cursive.Part, destination);
+                break;
+            case MarkSlotPlan mark:
+                WriteMarkPlanned(mark.Child, mark.Part, destination);
                 break;
             case ContextualSlotPlan contextual:
                 ContextualSubstTableCompiler.WritePlanned(contextual.Child, contextual.Part, destination);
