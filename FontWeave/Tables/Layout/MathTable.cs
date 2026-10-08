@@ -62,6 +62,31 @@ public sealed class MathConstantsTable
     public int RecordCount => _values.Length;
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
+
+    /// <summary>Atomically moves one of the 51 value records (the card's constant
+    /// edit witness). The position is the wire-order ordinal (the semantic constant
+    /// order); the replacement value answers the FWORD domain. The fixed layout has
+    /// no structural face: record additions or removals stay outside the surface
+    /// (OQ-9); consumers re-root through MathTableCompiler.TryCreate.</summary>
+    public ReadStatus TryWithConstant(int ordinal, short value,
+        out MathConstantsTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        if ((uint)ordinal >= (uint)_values.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Payload,
+                    (ulong)(MathLayout.ConstantsValueRecordsAt +
+                        ordinal * MathLayout.ValueRecordSize), ordinal),
+                out diagnostic, unchecked((ulong)ordinal), (ulong)_values.Length);
+        var values = (MathValueRecord[])_values.Clone();
+        values[ordinal] = new(value, values[ordinal].DeviceOffset);
+        updated = new(ScriptPercentScaleDown, ScriptScriptPercentScaleDown,
+            DelimitedSubFormulaMinHeight, DisplayOperatorMinHeight, values,
+            (StaticDeviceTable?[])_devices.Clone(), RadicalDegreeBottomRaisePercent,
+            Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
 }
 
 /// <summary>One MathItalicsCorrectionInfo: the Optional Coverage and the counted
@@ -190,6 +215,36 @@ public sealed class MathGlyphConstructionTable
     public IReadOnlyList<MathGlyphVariantRecord> Variants => Array.AsReadOnly(_variants);
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
+
+    /// <summary>Atomically moves one variant record (the card's construction edit
+    /// witness). The position is the wire-order ordinal; the replacement glyph
+    /// answers the caller's explicit numGlyphs authority here and is re-answered
+    /// again by the root factory on re-rooting; the advance answers the UFWORD
+    /// domain. Structural changes - variant additions or removals, reordering -
+    /// stay outside the surface (OQ-9); consumers re-root through
+    /// MathTableCompiler.TryCreate.</summary>
+    public ReadStatus TryWithVariant(int position, ushort variantGlyph, ushort advance,
+        int numGlyphs, out MathGlyphConstructionTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        if ((uint)position >= (uint)_variants.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId,
+                    (ulong)(MathGlyphConstructionLayout.VariantRecordsAt +
+                        position * MathLayout.GlyphVariantRecordSize), position),
+                out diagnostic, unchecked((ulong)position), (ulong)_variants.Length);
+        if (variantGlyph >= (ushort)numGlyphs)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId,
+                    (ulong)(MathGlyphConstructionLayout.VariantRecordsAt +
+                        position * MathLayout.GlyphVariantRecordSize), position),
+                out diagnostic, variantGlyph, (ulong)numGlyphs);
+        var variants = (MathGlyphVariantRecord[])_variants.Clone();
+        variants[position] = new(variantGlyph, advance);
+        updated = new(Assembly, variants, Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
 }
 
 /// <summary>One GlyphAssembly: the italics correction record (with its Optional device
@@ -217,6 +272,87 @@ public sealed class MathGlyphAssemblyTable
     public IReadOnlyList<GlyphPartRecord> Parts => Array.AsReadOnly(_parts);
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
+
+    private ReadStatus TryWithPart(int position, GlyphPartRecord part, out GlyphPartRecord[] parts,
+        out FontDiagnostic diagnostic)
+    {
+        parts = Array.Empty<GlyphPartRecord>();
+        if ((uint)position >= (uint)_parts.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId,
+                    (ulong)(MathGlyphAssemblyLayout.PartRecordsAt +
+                        position * MathLayout.GlyphPartSize), position),
+                out diagnostic, unchecked((ulong)position), (ulong)_parts.Length);
+        var clone = (GlyphPartRecord[])_parts.Clone();
+        clone[position] = part;
+        parts = clone;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Atomically moves one part glyph id (the card's assembly edit
+    /// witness). The position is the wire-order ordinal; the replacement id answers
+    /// the caller's explicit numGlyphs authority here and is re-answered again by
+    /// the root factory on re-rooting. Structural changes - part additions,
+    /// removals or reordering - stay outside the surface (OQ-9); consumers re-root
+    /// through MathTableCompiler.TryCreate.</summary>
+    public ReadStatus TryWithPartGlyph(int position, ushort glyphId, int numGlyphs,
+        out MathGlyphAssemblyTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        if ((uint)position >= (uint)_parts.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId,
+                    (ulong)(MathGlyphAssemblyLayout.PartRecordsAt +
+                        position * MathLayout.GlyphPartSize), position),
+                out diagnostic, unchecked((ulong)position), (ulong)_parts.Length);
+        if (glyphId >= (ushort)numGlyphs)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId,
+                    (ulong)(MathGlyphAssemblyLayout.PartRecordsAt +
+                        position * MathLayout.GlyphPartSize), position),
+                out diagnostic, glyphId, (ulong)numGlyphs);
+        ReadStatus status = TryWithPart(position,
+            new GlyphPartRecord(glyphId, _parts[position].StartConnectorLength,
+                _parts[position].EndConnectorLength, _parts[position].FullAdvance,
+                _parts[position].PartFlags), out var parts, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        updated = new(ItalicsCorrection, ItalicsCorrectionDevice, parts, Location,
+            ConsumedLength);
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Atomically moves one part flags word. The reserved ridge 0xFFFE is
+    /// the OQ-5 observation - the raw word is recorded, never judged, so any value
+    /// within the u16 domain lands.</summary>
+    public ReadStatus TryWithPartFlags(int position, ushort partFlags,
+        out MathGlyphAssemblyTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        ReadStatus status = TryWithPart(position,
+            new GlyphPartRecord(_parts[position].GlyphId, _parts[position].StartConnectorLength,
+                _parts[position].EndConnectorLength, _parts[position].FullAdvance,
+                partFlags), out var parts, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        updated = new(ItalicsCorrection, ItalicsCorrectionDevice, parts, Location,
+            ConsumedLength);
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Atomically moves one part advance measurement (the UFWORD domain).</summary>
+    public ReadStatus TryWithPartAdvance(int position, ushort fullAdvance,
+        out MathGlyphAssemblyTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        ReadStatus status = TryWithPart(position,
+            new GlyphPartRecord(_parts[position].GlyphId, _parts[position].StartConnectorLength,
+                _parts[position].EndConnectorLength, fullAdvance,
+                _parts[position].PartFlags), out var parts, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        updated = new(ItalicsCorrection, ItalicsCorrectionDevice, parts, Location,
+            ConsumedLength);
+        return ReadStatus.Done;
+    }
 }
 
 /// <summary>One MathVariants: the minConnectorOverlap word, the two Optional coverages,
