@@ -981,8 +981,8 @@ public static class LookupTableCompiler
             2 => model.Kind == LayoutLookupKind.Gpos ? model.PairPositions!.Count : model.Multiples!.Count,
             3 => model.Kind == LayoutLookupKind.Gpos ? model.CursiveAttachments!.Count : model.Alternates!.Count,
             4 => model.Kind == LayoutLookupKind.Gpos ? model.MarkBases!.Count : model.Ligatures!.Count,
-            5 => model.Contextuals!.Count,
-            6 => model.Chainings!.Count,
+            5 => model.Kind == LayoutLookupKind.Gpos ? model.MarkLigs!.Count : model.Contextuals!.Count,
+            6 => model.Kind == LayoutLookupKind.Gpos ? model.MarkMarks!.Count : model.Chainings!.Count,
             7 => model.Kind == LayoutLookupKind.Gpos ? model.ExtensionPositions!.Count : model.Extensions!.Count,
             8 => model.Kind == LayoutLookupKind.Gpos ? model.Chainings!.Count : model.ReverseChains!.Count,
             _ => model.Kind == LayoutLookupKind.Gpos ? model.ExtensionPositions!.Count : model.Extensions!.Count,
@@ -1113,6 +1113,19 @@ public static class LookupTableCompiler
                     result[i] = ToParts(group!, child);
                     break;
                 }
+                case 5 when model.Kind == LayoutLookupKind.Gpos:
+                {
+                    MarkLigPosTable child = model.MarkLigs![i];
+                    if (!markLigs.TryGetValue(child, out MarkPosPartPlan? group))
+                    {
+                        status = MarkPosTableCompiler.TryPlanSubtables(child, out group, out diagnostic, budget);
+                        if (status != ReadStatus.Done) return status;
+                        if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                        markLigs.Add(child, group!);
+                    }
+                    result[i] = ToParts(group!, child);
+                    break;
+                }
                 case 5:
                 {
                     ContextualSubstTable child = model.Contextuals![i];
@@ -1122,6 +1135,19 @@ public static class LookupTableCompiler
                         if (status != ReadStatus.Done) return status;
                         if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
                         contextuales.Add(child, group!);
+                    }
+                    result[i] = ToParts(group!, child);
+                    break;
+                }
+                case 6 when model.Kind == LayoutLookupKind.Gpos:
+                {
+                    MarkMarkPosTable child = model.MarkMarks![i];
+                    if (!markMarks.TryGetValue(child, out MarkPosPartPlan? group))
+                    {
+                        status = MarkPosTableCompiler.TryPlanSubtables(child, out group, out diagnostic, budget);
+                        if (status != ReadStatus.Done) return status;
+                        if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                        markMarks.Add(child, group!);
                     }
                     result[i] = ToParts(group!, child);
                     break;

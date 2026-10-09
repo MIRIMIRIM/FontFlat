@@ -220,12 +220,17 @@ public static class MarkPosTableCompiler
     private static void WriteMarkArray(Span<byte> destination, MarkRecord[] marks, MarkPosPartPlan plan,
         DataLocation location)
     {
-        CoverageTableCompiler.RequireWritten(MarkArrayView.TryWriteMarkCount(destination,
+        // MarkArrayView writers address from the array's own start; callers pass the
+        // whole subtable span, so rebase once here — writing at the subtable start
+        // would clobber the format word (the three families share this helper).
+        Span<byte> body = destination.Slice(plan.MarkArrayTarget,
+            MarkArrayLayout.MinimumHeader + marks.Length * MarkArrayLayout.RecordStride);
+        CoverageTableCompiler.RequireWritten(MarkArrayView.TryWriteMarkCount(body,
             (ushort)marks.Length, out _, location));
         for (int i = 0; i < marks.Length; i++)
         {
             ushort anchor = (ushort)(plan.AnchorTargets[marks[i].Anchor] - plan.MarkArrayTarget);
-            CoverageTableCompiler.RequireWritten(MarkArrayView.TryWriteMarkRecordAt(destination,
+            CoverageTableCompiler.RequireWritten(MarkArrayView.TryWriteMarkRecordAt(body,
                 MarkArrayLayout.MinimumHeader + (ulong)i * MarkArrayLayout.RecordStride,
                 new MarkArrayView.MarkRecordData(i, marks[i].Class, anchor), out _, location));
         }
