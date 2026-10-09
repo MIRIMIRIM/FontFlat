@@ -202,7 +202,7 @@ internal static class TupleVariationCodec
         else
         {
             destination[0] = (byte)(0x80 | (count >> 8));
-            destination[1] = (byte)count;
+            destination[1] = (byte)(count & 0xFF);
         }
     }
 
