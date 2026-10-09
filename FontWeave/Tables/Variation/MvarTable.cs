@@ -98,4 +98,74 @@ public sealed class MvarTable
         return Store!.TryGetDeltaSet(index.Outer, index.Inner, out hasVariation, out deltas,
             out diagnostic, limits);
     }
+
+    /// <summary>Replaces one record's (outer, inner) pair; the tag set never moves
+    /// (card 4 edit API, OQ-T5-04-9): adding or removing records, retagging or
+    /// rewriting the declared valueRecordSize have no surface at all - the structural
+    /// refusal is the absence of the API. The sentinel pair is a legal value (it
+    /// keeps its no-variation meaning), the u16 domains are enforced, and a tag
+    /// outside the records is NotFound, never an insert.</summary>
+    public ReadStatus TryWithRecordDeltaSet(uint valueTag, int outer, int inner,
+        out MvarTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (outer is < 0 or > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Tag, 0), out diagnostic,
+                unchecked((ulong)(long)outer), (ulong)ushort.MaxValue);
+        if (inner is < 0 or > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Tag, 0), out diagnostic,
+                unchecked((ulong)(long)inner), (ulong)ushort.MaxValue);
+        int ordinal = _records.Length - 1;
+        while (ordinal >= 0 && _records[ordinal].ValueTag != valueTag) ordinal--;
+        if (ordinal < 0)
+            return ReadWire.Fail(ReadStatus.NotFound, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Tag, 0), out diagnostic, valueTag,
+                (ulong)_records.Length);
+        var records = (MvarValueRecord[])_records.Clone();
+        records[ordinal] = new(valueTag, (ushort)outer, (ushort)inner);
+        return MvarTableCompiler.TryCreate(Store, records, ValueRecordSize,
+            Store?.AxisCount ?? 0, out updated, out diagnostic, limits, Location);
+    }
+
+    /// <summary>Replaces one region's axis triples through the store owner; the row
+    /// layout, width classes and records never move (card 4 edit API).</summary>
+    public ReadStatus TryWithRegionAxes(int region, ReadOnlySpan<VariationRegionAxis> axes,
+        out MvarTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Store is null)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, MvarLayout.ValueRecordCountAt),
+                out diagnostic, (ulong)(long)region, 0);
+        ReadStatus status = VariationStoreTableCompiler.TryWithRegionAxes(Store, region, axes,
+            out var store, out diagnostic, limits);
+        if (status != ReadStatus.Done) return status;
+        return Rebuild(store!, out updated, out diagnostic, limits);
+    }
+
+    /// <summary>Replaces one delta row's values; the owning subtable's width classes
+    /// are kept and their domains enforced per slot (the T5-01 finite-refusal
+    /// family).</summary>
+    public ReadStatus TryWithDeltaRow(int outer, int inner, ReadOnlySpan<int> deltas,
+        out MvarTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        if (Store is null)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, MvarLayout.ValueRecordCountAt),
+                out diagnostic, (ulong)(long)outer, 0);
+        ReadStatus status = VariationStoreTableCompiler.TryWithDeltaRow(Store, outer, inner,
+            deltas, out var store, out diagnostic, limits);
+        if (status != ReadStatus.Done) return status;
+        return Rebuild(store!, out updated, out diagnostic, limits);
+    }
+
+    // Re-roots the edited store under the same records, stride and source identity
+    // through the factory's guards - the root itself is not rebuilt.
+    private ReadStatus Rebuild(VariationStoreTable store, out MvarTable? updated,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        MvarTableCompiler.TryCreate(store, _records, ValueRecordSize, store.AxisCount,
+            out updated, out diagnostic, limits, Location);
 }

@@ -122,4 +122,88 @@ public sealed class VvarTable
         return Store.TryGetDeltaSet(index.Outer, index.Inner, out hasVariation, out deltas,
             out diagnostic, limits);
     }
+
+    /// <summary>Replaces one region's axis triples through the store owner; the row
+    /// layout, width classes and maps never move (card 4 edit API). The glyph-count
+    /// context and source identity are preserved.</summary>
+    public ReadStatus TryWithRegionAxes(int region, ReadOnlySpan<VariationRegionAxis> axes,
+        out VvarTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        ReadStatus status = VariationStoreTableCompiler.TryWithRegionAxes(Store, region, axes,
+            out var store, out diagnostic, limits);
+        if (status != ReadStatus.Done) return status;
+        return Rebuild(store!, AdvanceHeightMapping, TsbMapping, BsbMapping, VOrgMapping,
+            out updated, out diagnostic, limits);
+    }
+
+    /// <summary>Replaces one delta row's values; the owning subtable's width classes
+    /// are kept and their domains enforced per slot (the T5-01 finite-refusal
+    /// family).</summary>
+    public ReadStatus TryWithDeltaRow(int outer, int inner, ReadOnlySpan<int> deltas,
+        out VvarTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        ReadStatus status = VariationStoreTableCompiler.TryWithDeltaRow(Store, outer, inner,
+            deltas, out var store, out diagnostic, limits);
+        if (status != ReadStatus.Done) return status;
+        return Rebuild(store!, AdvanceHeightMapping, TsbMapping, BsbMapping, VOrgMapping,
+            out updated, out diagnostic, limits);
+    }
+
+    /// <summary>Replaces one logical map entry; the target (outer, inner) pair must be
+    /// representable in the map's own entryFormat (card 4 edit API). Editing the
+    /// advance map of an implicit-domain table is a finite refusal - the edit would
+    /// silently switch the table's dereference domain (the implicit-to-explicit
+    /// boundary, OQ-T5-04-9).</summary>
+    public ReadStatus TryWithMapping(VvarMetric metric, int entryIndex, DeltaSetIndex entry,
+        out VvarTable? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        updated = null;
+        DeltaSetIndexMapTable? map = metric switch
+        {
+            VvarMetric.AdvanceHeight => AdvanceHeightMapping,
+            VvarMetric.Tsb => TsbMapping,
+            VvarMetric.Bsb => BsbMapping,
+            _ => VOrgMapping,
+        };
+        if (map is null)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Offset, metric switch
+                {
+                    VvarMetric.AdvanceHeight => VvarLayout.AdvHeightMapAt,
+                    VvarMetric.Tsb => VvarLayout.TsbMapAt,
+                    VvarMetric.Bsb => VvarLayout.BsbMapAt,
+                    _ => VvarLayout.VOrgMapAt,
+                }), out diagnostic, (ulong)metric, 0);
+        ReadStatus status = DeltaSetIndexMapTableCompiler.TryWithMapping(map, entryIndex, entry,
+            out var replaced, out diagnostic, limits);
+        if (status != ReadStatus.Done) return status;
+        return Rebuild(Store, metric switch
+        {
+            VvarMetric.AdvanceHeight => replaced,
+            _ => AdvanceHeightMapping,
+        }, metric switch
+        {
+            VvarMetric.Tsb => replaced,
+            _ => TsbMapping,
+        }, metric switch
+        {
+            VvarMetric.Bsb => replaced,
+            _ => BsbMapping,
+        }, metric switch
+        {
+            VvarMetric.VOrg => replaced,
+            _ => VOrgMapping,
+        }, out updated, out diagnostic, limits);
+    }
+
+    // Re-roots the edited children under the same glyph-count context and source
+    // identity through the factory's guards - the root itself is not rebuilt.
+    private ReadStatus Rebuild(VariationStoreTable store, DeltaSetIndexMapTable? advanceMap,
+        DeltaSetIndexMapTable? tsbMap, DeltaSetIndexMapTable? bsbMap,
+        DeltaSetIndexMapTable? vOrgMap, out VvarTable? updated,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        VvarTableCompiler.TryCreate(store, advanceMap, tsbMap, bsbMap, vOrgMap, Store.AxisCount,
+            NumGlyphs, out updated, out diagnostic, limits, Location);
 }
