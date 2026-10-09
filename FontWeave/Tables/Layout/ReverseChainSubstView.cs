@@ -125,7 +125,10 @@ public readonly ref partial struct ReverseChainSubstView
                     ReverseChainSubstLayout.BacktrackArrayAt +
                     (ulong)ordinal * ReverseChainSubstLayout.OffsetStride, ordinal),
                 out diagnostic, record.CoverageOffset, (ulong)_data.Length);
-        int target = ReverseChainSubstLayout.BacktrackArrayAt + record.CoverageOffset;
+        // The cache key is the coverage's actual position (offset from the subtable
+        // start); keying on the offsets-row position would collide with a lookahead
+        // coverage whose raw offset equals BacktrackArrayAt + a backtrack offset.
+        int target = (int)record.CoverageOffset;
         if (cache is not null && cache.TryGetValue(subtableStart + target, out var cached))
         {
             model = cached;

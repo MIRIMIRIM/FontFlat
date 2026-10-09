@@ -328,6 +328,10 @@ public readonly ref partial struct FeatureTableSubstView
         if (status != ReadStatus.Done) return status;
         if (!budget.Buffer(16L * substitutionCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         var records = substitutionCount == 0 ? [] : new FeatureSubstitutionRecord[substitutionCount];
+        // The span covers the alternate feature bodies, not just the records array:
+        // the FeatureVariations loop derives its own consumed from this value, so a
+        // records-only span under-reports the whole table (consumed = full span).
+        long end = FeatureTableSubstLayout.RecordsAt + FeatureTableSubstLayout.RecordStride * (long)substitutionCount;
         for (int i = 0; i < substitutionCount; i++)
         {
             status = TryOpenAlternateFeature(i, out var feature, out _, out diagnostic);
@@ -337,8 +341,9 @@ public readonly ref partial struct FeatureTableSubstView
             status = TryGetSubstitutionRecord(i, out var record, out diagnostic);
             if (status != ReadStatus.Done) return status;
             records[i] = new(record.FeatureIndex, featureModel!);
+            if (record.AlternateFeatureOffset != 0)
+                end = Math.Max(end, (long)record.AlternateFeatureOffset + featureModel!.ConsumedLength);
         }
-        long end = FeatureTableSubstLayout.RecordsAt + FeatureTableSubstLayout.RecordStride * (long)substitutionCount;
         if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         model = new(records, Location, (int)end);
         diagnostic = default;

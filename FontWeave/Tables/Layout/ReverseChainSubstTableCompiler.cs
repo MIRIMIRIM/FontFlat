@@ -142,6 +142,7 @@ public static class ReverseChainSubstTableCompiler
         foreach (var chain in model.LookaheadCoverages)
             bytes += 2 + CoverageTableCompiler.Measure(chain);
         bytes += 2 + 2L * model.Substitutes.Length;
+        bytes += CoverageTableCompiler.Measure(model.Coverage);
         if (bytes > ushort.MaxValue)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Offset, ReverseChainSubstLayout.CoverageOffsetField),
