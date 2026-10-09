@@ -133,8 +133,10 @@ public readonly ref partial struct Cff2View
         // single-FD face without FDSelect (spec L361-366).
         int[] fdIndex = new int[numGlyphs];
         int fdSelectEnd = 0;
+        int fdSelectFormat = -1;
         if (fdSelectEntry is not null)
         {
+            fdSelectFormat = _data[TopDictOffsetValue(fdSelectEntry)];
             status = TopDictOffset(fdSelectEntry, out int fdSelectOffset, out diagnostic);
             if (status != ReadStatus.Done) return status;
             status = ValidateFdSelect(fdSelectOffset, fdArray.Count, numGlyphs, out fdIndex,
@@ -173,8 +175,8 @@ public readonly ref partial struct Cff2View
             if (fontDict.Private is not null)
                 consumed = Math.Max(consumed, fontDict.PrivateOffset + fontDict.PrivateSize);
         model = new Cff2Table(minor, headerSize, [.. topEntries],
-            storeEntry is not null, globalSubrBytes, charStringBytes, fontDicts, fdIndex,
-            store, stats, Location, consumed);
+            storeEntry is not null, globalSubrBytes, charStringBytes, fontDicts,
+            fdSelectFormat, fdIndex, store, stats, Location, consumed);
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -185,6 +187,14 @@ public readonly ref partial struct Cff2View
             if (entry.Operator == op)
                 return entry;
         throw new InvalidOperationException("A validated CFF2 table lost a required TopDICT key.");
+    }
+
+    private int TopDictOffsetValue(Cff2DictEntry entry)
+    {
+        ReadStatus status = EntryIntegers(entry, out int[] operands, out _);
+        if (status != ReadStatus.Done)
+            throw new InvalidOperationException("A validated CFF2 TopDICT offset went unreadable.");
+        return operands[0];
     }
 
     /// <summary>Wire end of the FDSelect block in its own format; validation has

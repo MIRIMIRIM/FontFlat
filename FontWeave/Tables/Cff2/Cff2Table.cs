@@ -80,7 +80,7 @@ public sealed class Cff2Table
 
     internal Cff2Table(byte minorVersion, byte headerSize, Cff2DictEntry[] topDict,
         bool hasVariationStore, byte[][] globalSubrs, byte[][] charStrings,
-        Cff2FontDict[] fontDicts, int[] fdIndex, VariationStoreTable? store,
+        Cff2FontDict[] fontDicts, int fdSelectFormat, int[] fdIndex, VariationStoreTable? store,
         Cff2CharstringStats charstringStats, DataLocation location, int consumedLength)
     {
         MinorVersion = minorVersion;
@@ -90,6 +90,7 @@ public sealed class Cff2Table
         _globalSubrs = globalSubrs;
         _charStrings = charStrings;
         _fontDicts = fontDicts;
+        FdSelectFormat = fdSelectFormat;
         _fdIndex = fdIndex;
         Store = store;
         CharstringStats = charstringStats;
@@ -128,6 +129,15 @@ public sealed class Cff2Table
 
     public int FontDictCount => _fontDicts.Length;
 
+    /// <summary>The FDSelect wire format the table carries: 0, 3 or 4; -1 when the
+    /// table has no FDSelect (the single-FD face). Preserved verbatim so the
+    /// compiler's re-emission keeps the source's format family.</summary>
+    public int FdSelectFormat { get; }
+
+    /// <summary>Whether the table carries an FDSelect block (exactly the more-than-
+    /// one-FontDICT face, spec L366/L390).</summary>
+    public bool HasFdSelect => FdSelectFormat != -1;
+
     /// <summary>Per-GID FontDICT index (glyph 0 first); a table without FDSelect maps
     /// every glyph to FontDICT 0 (the single-FD face).</summary>
     public IReadOnlyList<int> FdIndex => Array.AsReadOnly(_fdIndex);
@@ -159,4 +169,114 @@ public sealed class Cff2Table
                 return entry;
         return null;
     }
+
+    // ---- the edit API family (card T5-05 §4.1, OQ-T5-05-9) ----
+    // Three supported edits, each returning a new owned model and never mutating
+    // the source; every other change - FontDICT or charstring set changes, FDSelect
+    // changes, TopDICT key add/remove/reorder, FontMatrix rewrites, version
+    // upgrades - has no edit surface at all, which is the family's finite refusal.
+
+    /// <summary>Rewrites one PrivateDICT single-integer hint-domain scalar (StdHW,
+    /// StdVW, BlueScale, BlueShift, BlueFuzz, LanguageGroup, ExpansionFactor). The
+    /// key must already exist, carry exactly one integer operand and stay
+    /// blend-free: a blend-interleaved operand region is the evaluation domain and
+    /// refuses (OQ-T5-05-9), as do the structural keys (the 0x13 offset and the
+    /// 0x16 variation selector), the blend modifier itself, array keys and no-op
+    /// rewrites (the Cff1PrivateValueEdit family shape).</summary>
+    public ReadStatus TryWithPrivateScalar(int fdIndex, int op, int value,
+        out Cff2Table? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        if (fdIndex < 0 || fdIndex >= _fontDicts.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.FdIndex, 0, fdIndex), out diagnostic,
+                unchecked((ulong)(long)fdIndex), (uint)_fontDicts.Length);
+        var privateDict = _fontDicts[fdIndex].Private;
+        if (privateDict is null)
+            return UnsupportedOperation((uint)op, out diagnostic);
+        if (op is not (Cff2Operators.StdHW or Cff2Operators.StdVW or Cff2Operators.BlueScale
+            or Cff2Operators.BlueShift or Cff2Operators.BlueFuzz or Cff2Operators.LanguageGroup
+            or Cff2Operators.ExpansionFactor))
+            return UnsupportedOperation((uint)op, out diagnostic);
+        Cff2DictEntry? target = null;
+        foreach (var entry in privateDict.Entries)
+        {
+            if (entry.Operator == op)
+            {
+                target = entry;
+                break;
+            }
+        }
+        if (target is null || target.BlendOperands
+            || target.Operands.Count != 1 || target.Operands[0].IsReal
+            || target.Operands[0].Value == value)
+            return UnsupportedOperation((uint)op, out diagnostic);
+        var operand = new Cff2Operand(value, null);
+        var rewritten = new Cff2DictEntry(op, [operand],
+            Cff2TableCompiler.EncodeEntryRaw(op, [operand]), 0);
+        var entries = new List<Cff2DictEntry>(privateDict.Entries.Count);
+        foreach (var entry in privateDict.Entries)
+            entries.Add(ReferenceEquals(entry, target) ? rewritten : entry);
+        var updatedPrivate = new Cff2PrivateDict(entries, privateDict.LocalSubrs,
+            entries.Sum(static entry => entry.BlendCount), privateDict.VsindexValue);
+        var fontDicts = (Cff2FontDict[])_fontDicts.Clone();
+        fontDicts[fdIndex] = new Cff2FontDict(_fontDicts[fdIndex].Entry, updatedPrivate);
+        updated = new Cff2Table(MinorVersion, HeaderSize, TopDictInternal, HasVariationStore,
+            _globalSubrs, _charStrings, fontDicts, FdSelectFormat, _fdIndex, Store,
+            CharstringStats, Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Replaces one glyph's charstring bytes (byte-level substitution, no
+    /// interpretation): the zero-length non-printing form stays legal and the
+    /// 65535-byte per-item bound (spec L795) is re-enforced on the incoming bytes.</summary>
+    public ReadStatus TryWithCharString(int glyphId, byte[] charstring,
+        out Cff2Table? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        ArgumentNullException.ThrowIfNull(charstring);
+        if (glyphId < 0 || glyphId >= _charStrings.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId, 0, glyphId), out diagnostic,
+                unchecked((ulong)(long)glyphId), (uint)_charStrings.Length);
+        if (charstring.Length > Cff2Operators.MaxCharstringLength)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Length, 0, glyphId), out diagnostic,
+                (uint)charstring.Length, (uint)Cff2Operators.MaxCharstringLength);
+        var charStrings = (byte[][])_charStrings.Clone();
+        charStrings[glyphId] = (byte[])charstring.Clone();
+        updated = new Cff2Table(MinorVersion, HeaderSize, TopDictInternal, HasVariationStore,
+            _globalSubrs, charStrings, _fontDicts, FdSelectFormat, _fdIndex, Store,
+            CharstringStats, Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Re-roots one variation region's axis triples through the T5-01
+    /// compiler (the store edit family); the static face has no store and refuses.
+    /// The triple count is the store's declared axis count, per the region layout.</summary>
+    public ReadStatus TryWithRegionAxes(int region, ReadOnlySpan<VariationRegionAxis> axes,
+        out Cff2Table? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        if (Store is null)
+            return UnsupportedOperation((uint)region, out diagnostic);
+        if (axes.Length != Store.AxisCount)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Store.Location.AtLocal(DataField.Count, 0), out diagnostic,
+                (uint)axes.Length, (uint)Store.AxisCount);
+        ReadStatus status = VariationStoreTableCompiler.TryWithRegionAxes(Store, region, axes,
+            out var updatedStore, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        updated = new Cff2Table(MinorVersion, HeaderSize, TopDictInternal, HasVariationStore,
+            _globalSubrs, _charStrings, _fontDicts, FdSelectFormat, _fdIndex, updatedStore,
+            CharstringStats, Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus UnsupportedOperation(ulong detail, out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+            Location.AtLocal(DataField.Payload, detail), out diagnostic, detail);
 }
