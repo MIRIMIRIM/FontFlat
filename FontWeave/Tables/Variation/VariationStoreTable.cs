@@ -51,7 +51,7 @@ public sealed class VariationStoreTable
         if (outer < 0 || outer >= _data.Length)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.Count, ItemVariationStoreLayout.DataCountAt),
-                out diagnostic, (ulong)(long)outer, (ulong)_data.Length);
+                out diagnostic, unchecked((ulong)(long)outer), (ulong)_data.Length);
         ItemVariationDataTable? subtable = _data[outer];
         if (subtable is null)
         {
@@ -63,7 +63,7 @@ public sealed class VariationStoreTable
         if (inner < 0 || inner >= subtable.ItemCount)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 subtable.Location.AtLocal(DataField.Count, ItemVariationDataLayout.ItemCountAt),
-                out diagnostic, (ulong)(long)inner, subtable.ItemCount);
+                out diagnostic, unchecked((ulong)(long)inner), subtable.ItemCount);
         deltas = subtable.Rows[inner];
         hasVariation = true;
         diagnostic = default;

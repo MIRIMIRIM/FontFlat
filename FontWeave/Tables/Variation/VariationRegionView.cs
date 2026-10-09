@@ -110,19 +110,19 @@ public readonly ref partial struct VariationRegionListView
     {
         if (start < -F2Dot14One || start > F2Dot14One)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                location, out diagnostic, (ulong)(long)start, (ulong)F2Dot14One);
+                location, out diagnostic, unchecked((ulong)(long)start), (ulong)F2Dot14One);
         if (peak < -F2Dot14One || peak > F2Dot14One)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                location.AtLocal(DataField.Payload, 2), out diagnostic, (ulong)(long)peak, (ulong)F2Dot14One);
+                location.AtLocal(DataField.Payload, 2), out diagnostic, unchecked((ulong)(long)peak), (ulong)F2Dot14One);
         if (end < -F2Dot14One || end > F2Dot14One)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                location.AtLocal(DataField.Payload, 4), out diagnostic, (ulong)(long)end, (ulong)F2Dot14One);
+                location.AtLocal(DataField.Payload, 4), out diagnostic, unchecked((ulong)(long)end), (ulong)F2Dot14One);
         if (start > peak)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                location.AtLocal(DataField.Payload, 2), out diagnostic, (ulong)(long)peak, (ulong)(long)start);
+                location.AtLocal(DataField.Payload, 2), out diagnostic, unchecked((ulong)(long)peak), unchecked((ulong)(long)start));
         if (peak > end)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                location.AtLocal(DataField.Payload, 4), out diagnostic, (ulong)(long)end, (ulong)(long)peak);
+                location.AtLocal(DataField.Payload, 4), out diagnostic, unchecked((ulong)(long)end), unchecked((ulong)(long)peak));
         // start < 0 and end > 0 oppose signs; legal only through the peak-zero exception.
         if (start < 0 && end > 0 && peak != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
