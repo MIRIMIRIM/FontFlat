@@ -71,13 +71,24 @@ public readonly ref partial struct MvarView
             long declaredEnd = (long)MvarLayout.RecordsAt + (long)recordCount * recordSize;
             if (!budget.Work(recordCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
             if (declaredEnd > _data.Length)
+            {
+                // The first incomplete record pins the truncation at its own tag
+                // slot (the T4-10 row-granular convention, the line's adjudicated
+                // face - not the declaring stride field); the need is the first
+                // 8 record bytes at any positive stride (OQ-T5-04-1 lean).
+                int incomplete = (int)((_data.Length - MvarLayout.RecordsAt) / recordSize);
+                if (incomplete >= recordCount) incomplete = recordCount - 1;
                 return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                    Location.AtLocal(DataField.Length, MvarLayout.ValueRecordSizeAt),
-                    out diagnostic, (ulong)_data.Length, (ulong)declaredEnd);
+                    Location.AtLocal(DataField.Tag,
+                        (ulong)(MvarLayout.RecordsAt + incomplete * recordSize), incomplete),
+                    out diagnostic, (ulong)_data.Length,
+                    (ulong)(MvarLayout.RecordsAt + incomplete * recordSize) + 8UL);
+            }
             // "records must be given in binary order of the valueTag values" (spec
             // L61/L75): strict increase, duplicates included (OQ-T5-04-3 - the L79
             // scan-to-find semantics are undefined under duplicates and no
-            // disambiguation rule is invented).
+            // disambiguation rule is invented). The refusal names the offending
+            // tag against the PREVIOUS tag (the T4-01/T4-11 order-face convention).
             uint previous = ReadWire.U32(_data, MvarLayout.RecordsAt);
             for (int ordinal = 1; ordinal < recordCount; ordinal++)
             {
@@ -86,7 +97,7 @@ public readonly ref partial struct MvarView
                     return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                         Location.AtLocal(DataField.Tag,
                             (ulong)(MvarLayout.RecordsAt + ordinal * recordSize), ordinal),
-                        out diagnostic, tag, previous + 1UL);
+                        out diagnostic, tag, previous);
                 previous = tag;
             }
         }

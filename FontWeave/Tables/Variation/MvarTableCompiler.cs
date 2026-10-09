@@ -66,7 +66,7 @@ public static class MvarTableCompiler
                     location.AtLocal(DataField.Tag, (ulong)(MvarLayout.RecordsAt +
                         ordinal * valueRecordSize), ordinal),
                     out diagnostic, records[ordinal].ValueTag,
-                    records[ordinal - 1].ValueTag + 1UL);
+                    records[ordinal - 1].ValueTag);
         }
         if (!budget.Work(records.Count, location, out diagnostic)) return ReadStatus.ResourceLimit;
         model = new(store, records.ToArray(), valueRecordSize, location, 0);
