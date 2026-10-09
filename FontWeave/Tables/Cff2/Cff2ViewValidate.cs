@@ -45,9 +45,14 @@ public readonly ref partial struct Cff2View
         if (status != ReadStatus.Done) return status;
         bool hasStore = TryFindEntry(topEntries, Cff2Operators.TopVariationStore, out var storeEntry);
         // The store<->fvar signature coupling, both directions (OQ-T5-05-7 lean).
+        // Positions: the 0x18 entry's operator slot, or the TopDICT end (the
+        // GlobalSubrINDEX derivation, read below) for the missing-store direction.
+        status = TryGetGlobalSubrsAt(out ulong globalSubrsAt, out diagnostic);
+        if (status != ReadStatus.Done) return status;
         if (hasStore != fvarAxisCount.HasValue)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.AtLocal(DataField.Signature, 0), out diagnostic,
+                Location.At(DataField.Payload, storeEntry is not null
+                    ? (ulong)storeEntry.EntryStart : globalSubrsAt), out diagnostic,
                 hasStore ? 0ul : unchecked((ulong)(long)fvarAxisCount!.Value),
                 hasStore ? 1ul : 0ul);
         // Required TopDICT keys (spec L339/L357 "Required"): 0x11 and 0x0c24.
@@ -57,8 +62,6 @@ public readonly ref partial struct Cff2View
             return MissingRequired(topDictStart, Cff2Operators.TopFdArray, out diagnostic);
 
         // GlobalSubrINDEX at headerSize + topDictSize (the declared runtime derivation).
-        status = TryGetGlobalSubrsAt(out ulong globalSubrsAt, out diagnostic);
-        if (status != ReadStatus.Done) return status;
         if (globalSubrsAt > (ulong)_data.Length)
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
                 Location.At(DataField.Offset, Cff2Layout.HeaderSizeAt), out diagnostic,
@@ -77,14 +80,15 @@ public readonly ref partial struct Cff2View
         status = LocateIndex(charStringsOffset, out var charStrings, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (charStrings.Count != numGlyphs)
-            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.At(DataField.Count, (uint)charStringsOffset), out diagnostic,
                 (uint)charStrings.Count, (uint)numGlyphs);
         status = ScanCharStrings(charStrings, out var stats, out diagnostic);
         if (status != ReadStatus.Done) return status;
         // No store -> no blend/vsindex in CharStrings (spec L1428, OQ-T5-05-6 lean).
         if (!hasStore && (stats.BlendCount > 0 || stats.VsindexCount > 0))
-            return NoStoreBlendRefusal(stats.BlendCount + stats.VsindexCount, out diagnostic);
+            return NoStoreBlendRefusal(stats.BlendCount + stats.VsindexCount,
+                (ulong)charStringsOffset, out diagnostic);
 
         // FDArray (FontDICTINDEX): INDEX validity, at least one FontDICT (L368),
         // then the single-0x12 walks with the `0 0` empty-private coupling (L461).
@@ -102,16 +106,17 @@ public readonly ref partial struct Cff2View
         var privates = new Cff2PrivateDict?[fdArray.Count];
         int privateBlendTotal = 0;
         bool privateVsindexPresent = false;
+        int firstPrivateBlendAt = -1;
         for (int fd = 0; fd < fdArray.Count; fd++)
         {
             status = ValidateFontDict(fdArray, fd, privates, ref privateBlendTotal,
-                ref privateVsindexPresent, out diagnostic);
+                ref privateVsindexPresent, ref firstPrivateBlendAt, out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
         // No store -> no blend/vsindex in the PrivateDICTs either (OQ-T5-05-6).
         if (!hasStore && (privateBlendTotal > 0 || privateVsindexPresent))
             return NoStoreBlendRefusal(privateBlendTotal + (privateVsindexPresent ? 1 : 0),
-                out diagnostic);
+                (ulong)firstPrivateBlendAt, out diagnostic);
 
         // FDSelect: the L366/L390 presence coupling and the format 0/3/4 domains
         // (OQ-T5-05-8 lean; format 4 has zero corpus hosts and is pinned synthetic).
@@ -119,11 +124,11 @@ public readonly ref partial struct Cff2View
         if (fdArray.Count == 1 && hasFdSelect)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 Location.At(DataField.Payload, (uint)fdSelectEntry!.EntryStart), out diagnostic,
-                (uint)fdArray.Count, 1ul);
+                (uint)Cff2Operators.TopFdSelect, 0ul);
         if (fdArray.Count > 1 && !hasFdSelect)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Payload, (uint)fdArrayEntry!.EntryStart), out diagnostic,
-                (uint)fdArray.Count, 1ul);
+                Location.At(DataField.Payload, globalSubrsAt), out diagnostic,
+                (uint)Cff2Operators.TopFdSelect, 1ul);
         if (hasFdSelect)
         {
             status = TopDictOffset(fdSelectEntry!, out int fdSelectOffset, out diagnostic);
@@ -149,12 +154,12 @@ public readonly ref partial struct Cff2View
     }
 
     private ReadStatus MissingRequired(int topDictStart, int op, out FontDiagnostic diagnostic) =>
-        ReadWire.Fail(ReadStatus.NotFound, DiagnosticCode.TableNotFound,
-            Location.At(DataField.Payload, (uint)topDictStart), out diagnostic, (uint)op);
-
-    private ReadStatus NoStoreBlendRefusal(int count, out FontDiagnostic diagnostic) =>
         ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-            Location.AtLocal(DataField.Signature, 0), out diagnostic, (uint)count, 0ul);
+            Location.At(DataField.Payload, (uint)topDictStart), out diagnostic, (uint)op, 1ul);
+
+    private ReadStatus NoStoreBlendRefusal(int count, ulong at, out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+            Location.At(DataField.Payload, at), out diagnostic, (uint)count, 0ul);
 
     /// <summary>One FontDICT walk: only key 0x12 exists in the scope, its two operands
     /// are the exact [size offset] pair from the table start, and an empty PrivateDICT
@@ -162,7 +167,8 @@ public readonly ref partial struct Cff2View
     /// refusal. The PrivateDICT itself is walked under the 16-operator whitelist with
     /// its ordering restrictions and LocalSubrINDEX bounds.</summary>
     private ReadStatus ValidateFontDict(IndexSpan fdArray, int fd, Cff2PrivateDict?[] privates,
-        ref int privateBlendTotal, ref bool privateVsindexPresent, out FontDiagnostic diagnostic)
+        ref int privateBlendTotal, ref bool privateVsindexPresent, ref int firstPrivateBlendAt,
+        out FontDiagnostic diagnostic)
     {
         diagnostic = default;
         ReadStatus status = IndexItemBounds(fdArray, fd, out int fontDictStart, out int fontDictLength,
@@ -180,16 +186,22 @@ public readonly ref partial struct Cff2View
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 Location.At(DataField.Payload, (uint)entry.EntryStart), out diagnostic,
                 unchecked((ulong)(long)privateOffset), 0ul);
-        if (privateSize < 0 || (long)privateOffset + privateSize > _data.Length)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                Location.At(DataField.Offset, (uint)Math.Max(0, privateOffset)), out diagnostic,
-                (ulong)Math.Max(0, (long)privateOffset + privateSize), (ulong)_data.Length);
         if (privateSize == 0)
         {
             privates[fd] = null;
             diagnostic = default;
             return ReadStatus.Done;
         }
+        status = TryGetHeaderSize(out byte headerSize, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (privateOffset < headerSize)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
+                Location.At(DataField.Payload, (uint)entry.EntryStart), out diagnostic,
+                (uint)privateOffset, headerSize);
+        if ((long)privateOffset + privateSize > _data.Length)
+            return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
+                Location.At(DataField.Payload, (uint)Math.Max(0, privateOffset)), out diagnostic,
+                (ulong)_data.Length, (ulong)Math.Max(0, (long)privateOffset + privateSize));
         status = ParseDict(privateOffset, privateSize, Cff2DictScope.Private,
             out var privateEntries, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -198,6 +210,10 @@ public readonly ref partial struct Cff2View
         int? vsindexValue = null;
         foreach (var key in privateEntries)
         {
+            if ((key.Operator == Cff2Operators.PrivateBlend
+                    || key.Operator == Cff2Operators.PrivateVsindex)
+                && firstPrivateBlendAt < 0)
+                firstPrivateBlendAt = key.EntryStart;
             if (Cff2Operators.ViolatesPrivateOrdering(key.Operator, blueValuesSeen, familyBluesSeen,
                     out int required))
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
@@ -218,11 +234,12 @@ public readonly ref partial struct Cff2View
                 if (status != ReadStatus.Done) return status;
                 long relative = subrOperands[0];
                 // The LocalSubrINDEX offset is from the PrivateDICT start (L516).
-                if (relative < 0)
+                long localSubrsAt = (long)privateOffset + relative;
+                if (localSubrsAt >= _data.Length)
                     return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                        Location.At(DataField.Offset, (uint)key.EntryStart), out diagnostic,
-                        unchecked((ulong)relative), (ulong)(_data.Length - privateOffset));
-                status = LocateIndex(privateOffset + (int)relative, out var localIndex,
+                        Location.At(DataField.Payload, (uint)key.EntryStart), out diagnostic,
+                        unchecked((ulong)localSubrsAt), (ulong)_data.Length);
+                status = LocateIndex((int)localSubrsAt, out var localIndex,
                     out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 localSubrs = new byte[localIndex.Count][];
@@ -390,7 +407,7 @@ public readonly ref partial struct Cff2View
             default:
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     Location.At(DataField.Version, (uint)fdSelectOffset), out diagnostic,
-                    (uint)format, 4ul);
+                    (uint)format, 0ul);
         }
     }
 

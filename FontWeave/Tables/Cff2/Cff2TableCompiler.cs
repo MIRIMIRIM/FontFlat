@@ -283,11 +283,6 @@ public static class Cff2TableCompiler
         {
             var privateDict = model.FontDictsInternal[fd].Private;
             if (privateDict is null) continue;
-            foreach (var entry in privateDict.Entries)
-            {
-                if (entry.Operator == Cff2Operators.PrivateLocalSubrs && entry.BlendOperands)
-                    return Unsupported(model.Location, out diagnostic, (uint)entry.Operator);
-            }
             int length = 0;
             for (int iteration = 0; iteration < 5; iteration++)
             {
@@ -525,20 +520,16 @@ public static class Cff2TableCompiler
     }
 
     /// <summary>Wire length of one DICT under the replacements: replaced keys emit
-    /// the replacement integers, blend-interleaved entries their raw bytes, and
-    /// every other entry a minimal re-encode of its operands (reals verbatim).</summary>
+    /// the replacement integers and every other entry a minimal re-encode of its
+    /// operands (reals verbatim; blend-region integers are plain wire integers and
+    /// re-encode like any operand - the entry model of the frozen wire oracle).</summary>
     internal static int DictLength(IReadOnlyList<Cff2DictEntry> entries,
         Dictionary<int, int[]>? replacements)
     {
         long length = 0;
         foreach (var entry in entries)
         {
-            if (entry.BlendOperands)
-            {
-                length += entry.RawBytes.Length;
-                continue; // the raw bytes already carry the operator (the EmitDict twin)
-            }
-            else if (replacements is not null
+            if (replacements is not null
                 && replacements.TryGetValue(entry.Operator, out var values))
             {
                 foreach (int value in values)
@@ -561,15 +552,6 @@ public static class Cff2TableCompiler
     {
         foreach (var entry in entries)
         {
-            if (entry.BlendOperands)
-            {
-                // The product never interprets a blend operand sequence, so the
-                // region re-emits byte-for-byte (the real-operand policy's blend
-                // twin; the pairing semantics are the evaluation domain).
-                entry.RawBytes.CopyTo(output.AsSpan(at));
-                at += entry.RawBytes.Length;
-                continue;
-            }
             if (replacements is not null
                 && replacements.TryGetValue(entry.Operator, out var values))
             {

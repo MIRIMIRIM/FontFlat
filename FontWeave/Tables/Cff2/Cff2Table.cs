@@ -13,12 +13,15 @@ public readonly record struct Cff2Operand(int Value, byte[]? RealBytes)
 }
 
 /// <summary>One decoded CFF2 DICT entry: operator, operand list, the entry's raw wire
-/// bytes and the number of PrivateDICT blend operators in the operand region (the
-/// blend-modified shape; blend itself creates no key-value pair, spec L247-256).</summary>
+/// bytes and the private-blend flag (1 when the entry IS a `defaults deltas count
+/// blend` 0x17 group of the PrivateDICT operand stream - the frozen wire oracle's
+/// entry model, where a blend legally repeats as its own variable-arity entry;
+/// spec L1487-1496, L247-256).</summary>
 public sealed record Cff2DictEntry(int Operator, IReadOnlyList<Cff2Operand> Operands,
     byte[] RawBytes, int BlendCount)
 {
-    /// <summary>The entry's byte position inside the CFF2 table (diagnostic face).</summary>
+    /// <summary>The entry's operator byte position inside the CFF2 table - the
+    /// diagnostic position the frozen wire oracle pins.</summary>
     public int EntryStart { get; internal init; }
 
     public bool BlendOperands => BlendCount > 0;
@@ -179,9 +182,10 @@ public sealed class Cff2Table
     /// <summary>Rewrites one PrivateDICT single-integer hint-domain scalar (StdHW,
     /// StdVW, BlueScale, BlueShift, BlueFuzz, LanguageGroup, ExpansionFactor). The
     /// key must already exist, carry exactly one integer operand and stay
-    /// blend-free: a blend-interleaved operand region is the evaluation domain and
-    /// refuses (OQ-T5-05-9), as do the structural keys (the 0x13 offset and the
-    /// 0x16 variation selector), the blend modifier itself, array keys and no-op
+    /// blend-free: a key whose operand stream carries a following blend region (the
+    /// `key defaults deltas count blend` shape) is the evaluation domain and refuses
+    /// (OQ-T5-05-9), as do the structural keys (the 0x13 offset and the 0x16
+    /// variation selector), the blend groups themselves, array keys and no-op
     /// rewrites (the Cff1PrivateValueEdit family shape).</summary>
     public ReadStatus TryWithPrivateScalar(int fdIndex, int op, int value,
         out Cff2Table? updated, out FontDiagnostic diagnostic)
@@ -199,17 +203,24 @@ public sealed class Cff2Table
             or Cff2Operators.ExpansionFactor))
             return UnsupportedOperation((uint)op, out diagnostic);
         Cff2DictEntry? target = null;
-        foreach (var entry in privateDict.Entries)
+        int targetIndex = -1;
+        for (int i = 0; i < privateDict.Entries.Count; i++)
         {
-            if (entry.Operator == op)
+            if (privateDict.Entries[i].Operator == op)
             {
-                target = entry;
+                target = privateDict.Entries[i];
+                targetIndex = i;
                 break;
             }
         }
         if (target is null || target.BlendOperands
             || target.Operands.Count != 1 || target.Operands[0].IsReal
             || target.Operands[0].Value == value)
+            return UnsupportedOperation((uint)op, out diagnostic);
+        // The blend region of a key is the 0x17 group entries that follow it in the
+        // operand stream; a scalar under blend deltas is the evaluation domain.
+        if (targetIndex + 1 < privateDict.Entries.Count
+            && privateDict.Entries[targetIndex + 1].BlendOperands)
             return UnsupportedOperation((uint)op, out diagnostic);
         var operand = new Cff2Operand(value, null);
         var rewritten = new Cff2DictEntry(op, [operand],

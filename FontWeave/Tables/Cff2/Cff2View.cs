@@ -51,8 +51,10 @@ internal static class Cff2Operators
             or StemSnapH or StemSnapV or LanguageGroup or ExpansionFactor;
 
     /// <summary>Exact operand count for a whitelist operator; -1 means an array key
-    /// (one or more operands). The private blend operator never reaches this table -
-    /// it is an operand-stream modifier, not a key (spec L247-256).</summary>
+    /// or the blend operator (one or more operands). The private blend is a
+    /// variable-arity entry of the operand stream - each `defaults deltas count
+    /// blend` group is one 0x17 entry that legally repeats inside one PrivateDICT
+    /// (spec L1487-1496; the frozen wire oracle's entry model).</summary>
     internal static int Arity(Cff2DictScope scope, int op) => scope switch
     {
         Cff2DictScope.Top => op switch
@@ -64,12 +66,21 @@ internal static class Cff2Operators
         Cff2DictScope.FontDict => op is FontPrivateDict ? 2 : -2,
         _ => op switch
         {
+            BlueValues or OtherBlues or FamilyBlues or FamilyOtherBlues
+                or StemSnapH or StemSnapV or PrivateBlend => -1,
             PrivateLocalSubrs or PrivateVsindex or StdHW or StdVW
                 or BlueScale or BlueShift or BlueFuzz or LanguageGroup or ExpansionFactor => 1,
-            BlueValues or OtherBlues or FamilyBlues or FamilyOtherBlues
-                or StemSnapH or StemSnapV => -1,
             _ => -2
         }
+    };
+
+    /// <summary>The smallest whitelist operator of a scope - the Expected face of an
+    /// unknown-operator refusal (the frozen wire oracle's shape).</summary>
+    internal static int ScopeFloor(Cff2DictScope scope) => scope switch
+    {
+        Cff2DictScope.Top => TopCharStrings,
+        Cff2DictScope.FontDict => FontPrivateDict,
+        _ => BlueValues
     };
 
     /// <summary>The two PrivateDICT ordering restrictions (spec "Operator ordering
@@ -233,29 +244,26 @@ public readonly ref partial struct Cff2View
     // ---- DICT walk (TopDICT / FontDICT / PrivateDICT scopes) ----
 
     /// <summary>Strict DICT entry decode over one scope's whitelist: exact per-key
-    /// arity (arrays take one or more), duplicate-key refusal (spec L248 "must not be
-    /// defined more than once"), operand-stack cap 513 (L193), stack-empty after every
-    /// key operator (L254; the private blend operator is the exception and stays in
-    /// the operand stream as a recorded modifier), 29 = the DICT-only int32 prefix,
-    /// 255 = CharString-only and invalid here (card §3).</summary>
+    /// arity in the Top/Font scopes (the PrivateDICT wire is variable-arity - blend
+    /// regions and hint arrays - so only key presence stays checkable there),
+    /// duplicate-key refusal with the private blend exempt (spec L248; a blend
+    /// legally repeats, the corpus peak is 34 per dict), operand-stack cap 513
+    /// (L193), stack-empty after every key (L254; the residual face applies to
+    /// every scope at the DICT end), 29 = the DICT-only int32 prefix, 255 =
+    /// CharString-only and invalid here (card §3). An entry's EntryStart is its
+    /// operator byte position - the diagnostic face the frozen wire oracle pins.</summary>
     private ReadStatus ParseDict(int start, int length, Cff2DictScope scope,
         out List<Cff2DictEntry> entries, out FontDiagnostic diagnostic)
     {
         entries = [];
         int end = start + length;
         int at = start;
-        int entryStart = start;
-        int operandStart = start;
-        bool blendOperands = false;
-        int blendCount = 0;
+        int regionStart = start;
         var operands = new List<Cff2Operand>(8);
         while (at < end)
         {
-            if (operands.Count == 0 && !blendOperands)
-            {
-                entryStart = at;
-                operandStart = at;
-            }
+            if (operands.Count == 0)
+                regionStart = at;
             byte b = _data[at++];
             if (b is >= 32 and <= 246)
             {
@@ -310,56 +318,52 @@ public readonly ref partial struct Cff2View
                         return FailDictTruncated(at, out diagnostic);
                     op = 0x0c00 | _data[at++];
                 }
-                if (scope == Cff2DictScope.Private && op == Cff2Operators.PrivateBlend)
-                {
-                    // Not a key: blend modifies the pending operands in place
-                    // (spec L247-256). The pairing with a blendable key stays an
-                    // observation (OQ-T5-05-6); the walk keeps accumulating.
-                    blendOperands = true;
-                    blendCount++;
-                    continue;
-                }
                 int arity = Cff2Operators.Arity(scope, op);
                 if (arity == -2)
                     return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                         Location.At(DataField.Payload, (uint)operatorStart), out diagnostic,
-                        (uint)op);
-                // Exact arity is decidable only where blend cannot occur (Top/Font);
-                // a blend-modified PrivateDICT operand region carries default values,
-                // n*k deltas and n itself on the wire (spec L1487-1496), so the key's
-                // lexical operand count is inflated and only non-emptiness stays
-                // checkable (the card's PrivateDICT hard list has no arity face).
-                if (operands.Count == 0 ||
-                    (scope != Cff2DictScope.Private && arity >= 0 && operands.Count != arity))
+                        (uint)op, (uint)Cff2Operators.ScopeFloor(scope));
+                // Exact arity and key presence are decidable only where blend cannot
+                // occur (Top/Font); a PrivateDICT key may legally arrive with an
+                // empty operand list (a default-only face) or an inflated blend
+                // region, so the private walk keeps only the whitelist, duplicates
+                // (blend exempt) and the 513 cap.
+                if (scope != Cff2DictScope.Private &&
+                    (operands.Count == 0 || (arity >= 0 && operands.Count != arity)))
                     return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                        Location.At(DataField.Payload, (uint)entryStart), out diagnostic,
+                        Location.At(DataField.Payload, (uint)operatorStart), out diagnostic,
                         (uint)operands.Count, (uint)Math.Max(0, arity));
+                bool duplicate = false;
                 foreach (var existing in entries)
                 {
                     if (existing.Operator == op)
-                        return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.DuplicateTag,
-                            Location.At(DataField.Payload, (uint)entryStart), out diagnostic,
-                            (uint)op);
+                    {
+                        duplicate = !(scope == Cff2DictScope.Private && op == Cff2Operators.PrivateBlend);
+                        break;
+                    }
                 }
+                if (duplicate)
+                    return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.DuplicateTag,
+                        Location.At(DataField.Payload, (uint)operatorStart), out diagnostic,
+                        (uint)op);
                 entries.Add(new Cff2DictEntry(op, [.. operands],
-                    _data.Slice(entryStart, at - entryStart).ToArray(), blendCount)
-                { EntryStart = entryStart });
+                    _data.Slice(regionStart, at - regionStart).ToArray(),
+                    op == Cff2Operators.PrivateBlend ? 1 : 0)
+                { EntryStart = operatorStart });
                 operands.Clear();
-                blendOperands = false;
-                blendCount = 0;
             }
             if (operands.Count > Cff2Operators.MaxDictOperandStack)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    Location.At(DataField.Payload, (uint)operandStart), out diagnostic,
-                    (uint)operands.Count, (uint)Cff2Operators.MaxDictOperandStack);
+                    Location.At(DataField.Payload, (uint)at),
+                    out diagnostic, (uint)operands.Count, (uint)Cff2Operators.MaxDictOperandStack);
         }
-        // The stack-empty end face (L254) is decidable only without blend operands;
-        // a PrivateDICT's trailing region stays outside the hard list for the same
-        // lexical reason as the arity face above.
-        if (scope != Cff2DictScope.Private && (operands.Count != 0 || blendOperands))
+        // The stack-empty end face (L254): every scope's DICT must end on a key
+        // operator; dangling operands refuse at the DICT end (the frozen wire
+        // oracle's residual shape).
+        if (operands.Count != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(DataField.Payload, (uint)entryStart), out diagnostic,
-                (uint)operands.Count);
+                Location.At(DataField.Payload, (uint)end), out diagnostic,
+                (uint)operands.Count, 0ul);
         diagnostic = default;
         return ReadStatus.Done;
     }
