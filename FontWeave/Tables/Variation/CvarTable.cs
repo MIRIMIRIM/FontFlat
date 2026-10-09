@@ -76,7 +76,8 @@ public sealed class CvarTable
                 Location.AtLocal(DataField.Payload, 0), out diagnostic, 0, 1);
         if (!budget.Input(_tableBytes.Length, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
-        int runStart = RunStart(headerAt);
+        status = RunStart(headerAt, out int runStart, out diagnostic);
+        if (status != ReadStatus.Done) return status;
         int runSize = BinaryPrimitives.ReadUInt16BigEndian(_tableBytes.AsSpan(headerAt, 2));
         bool hasPrivate = (TupleIndexAt(headerAt) & TupleVariationCodec.PrivatePointNumbersFlag) != 0;
         int pointBytes = 0;
@@ -189,17 +190,38 @@ public sealed class CvarTable
     private ushort TupleIndexAt(int headerAt) =>
         BinaryPrimitives.ReadUInt16BigEndian(_tableBytes.AsSpan(headerAt + 2, 2));
 
-    private int RunStart(int headerAt)
+    // The serialized run start of the tuple whose header sits at headerAt: the
+    // store's dataOffset plus the declared sizes of the preceding runs. The
+    // shared CVT point number data (when flagged) sits at dataOffset before the
+    // first run - the walk must skip it or the splice would target the shared
+    // bytes.
+    private ReadStatus RunStart(int headerAt, out int runStart, out FontDiagnostic diagnostic)
     {
         int dataOffset = BinaryPrimitives.ReadUInt16BigEndian(_tableBytes.AsSpan(6, 2));
         int cursor = dataOffset;
-        int at = CvarLayout.HeaderLength;
+        // The shared CVT point number data (when flagged) sits at dataOffset
+        // before the first run - skip it first, then add the declared sizes of
+        // the preceding runs.
+        if ((TupleVariationCountRaw & TupleVariationCodec.SharedPointNumbersFlag) != 0)
+        {
+            ReadStatus status = TupleVariationCodec.TryDecodePointNumbers(_tableBytes, cursor,
+                _tableBytes.Length, Location, 0, out _, out int consumed, out diagnostic);
+            if (status != ReadStatus.Done)
+            {
+                runStart = 0;
+                return status;
+            }
+            cursor += consumed;
+        }
+        int at = CvarLayout.HeaderLength; // the TVH array follows the 8-byte header
         while (at < headerAt)
         {
             cursor += BinaryPrimitives.ReadUInt16BigEndian(_tableBytes.AsSpan(at, 2));
             at += TupleVariationCodec.TupleVariationHeaderSize(TupleIndexAt(at), AxisCount);
         }
-        return cursor;
+        runStart = cursor;
+        diagnostic = default;
+        return ReadStatus.Done;
     }
 
     private ReadStatus Splice(int headerAt, int runStart, int oldRunSize, byte[] newRun,

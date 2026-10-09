@@ -224,8 +224,12 @@ internal static class TupleVariationCodec
         while (at < points.Length)
         {
             bool words = diffs[at] > byte.MaxValue;
+            // The run bound is the elements left in this run class, capped at the
+            // 128 the control byte encodes - a bound mixed with the absolute
+            // position indexes past the list on every run after the first
+            // (>128 point numbers).
+            int limit = Math.Min(PointRunCountMask + 1, points.Length - at);
             int run = 1;
-            int limit = Math.Min(at + (PointRunCountMask + 1), points.Length);
             while (run < limit && (diffs[at + run] > byte.MaxValue) == words) run++;
             bytes += 1 + run * (words ? 2 : 1);
             at += run;
@@ -251,8 +255,8 @@ internal static class TupleVariationCodec
         while (at < points.Length)
         {
             bool words = diffs[at] > byte.MaxValue;
+            int limit = Math.Min(PointRunCountMask + 1, points.Length - at);
             int run = 1;
-            int limit = Math.Min(at + (PointRunCountMask + 1), points.Length);
             while (run < limit && (diffs[at + run] > byte.MaxValue) == words) run++;
             destination[outAt++] = (byte)((words ? PointsAreWords : 0) | (run - 1));
             for (int i = 0; i < run; i++)
@@ -417,6 +421,7 @@ internal static class TupleVariationStoreReader
         // re-read on materialization.
         var indexes = new ushort[tupleCount];
         var sizes = new ushort[tupleCount];
+        var headerPositions = new int[tupleCount];
         for (int t = 0; t < tupleCount; t++)
         {
             if (at + 4 > windowEnd)
@@ -445,6 +450,7 @@ internal static class TupleVariationStoreReader
             if (materialize && !budget.Buffer(headerSize, location, out diagnostic))
                 return ReadStatus.ResourceLimit;
             if (!budget.Work(1, location, out diagnostic)) return ReadStatus.ResourceLimit;
+            headerPositions[t] = at;
             indexes[t] = tupleIndex;
             sizes[t] = variationDataSize;
             at += headerSize;
@@ -489,7 +495,10 @@ internal static class TupleVariationStoreReader
         {
             ushort tupleIndex = indexes[t];
             ushort variationDataSize = sizes[t];
-            int headerAt = headerStart + 4 + 4 * t;
+            // The header position comes from the dynamic stride walk above - a
+            // fixed 4-byte stride would misplace every tuple after one with an
+            // embedded peak or intermediate region.
+            int headerAt = headerPositions[t];
             int runStart = cursor;
             int runEnd = runStart + variationDataSize;
             if (runEnd > windowEnd)

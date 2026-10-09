@@ -108,7 +108,10 @@ public static class CvarTableCompiler
         long runLength = 0;
         foreach (var tuple in tuples)
             runLength += MeasureRun(tuple);
-        int dataOffset = CvarLayout.HeaderLength + headersLength + sharedLength;
+        // headersLength counts the [tvc][dataOffset] pair from the store start,
+        // so the serialized data begins at headerStart + strides + shared - the
+        // header length contributes only its extra four bytes.
+        int dataOffset = CvarLayout.HeaderLength - 4 + headersLength + sharedLength;
         if (dataOffset > ushort.MaxValue)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 location.AtLocal(DataField.Offset, CvarLayout.DataOffsetAt), out diagnostic,

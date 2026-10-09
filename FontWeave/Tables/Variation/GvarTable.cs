@@ -138,7 +138,8 @@ public sealed class GvarTable
                 (ulong)yDeltas.Length, (ulong)xDeltas.Length);
         if (!budget.Input(_tableBytes.Length, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
-        int runStart = TupleRunStart(blockStart, headerAt);
+        status = TupleRunStart(blockStart, headerAt, out int runStart, out diagnostic);
+        if (status != ReadStatus.Done) return status;
         int runSize = System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(
             _tableBytes.AsSpan(headerAt, 2));
         bool hasPrivate = (tupleIndex & TupleVariationCodec.PrivatePointNumbersFlag) != 0;
@@ -331,10 +332,29 @@ public sealed class GvarTable
     }
 
     // The serialized run start of the tuple whose header sits at headerAt: the
-    // block's dataOffset plus the declared sizes of the preceding runs.
-    private int TupleRunStart(int blockStart, int headerAt)
+    // block's dataOffset plus the declared sizes of the preceding runs. The
+    // block's shared point number data (when flagged) sits at dataOffset before
+    // the first run - the walk must skip it or the splice would target the
+    // shared bytes.
+    private ReadStatus TupleRunStart(int blockStart, int headerAt, out int runStart,
+        out FontDiagnostic diagnostic)
     {
         int cursor = blockStart + ReadU16(blockStart + 2);
+        // The block's shared point number data (when flagged) sits at dataOffset
+        // before the first run - skip it first, then add the declared sizes of
+        // the preceding runs.
+        if ((ReadU16(blockStart) & TupleVariationCodec.SharedPointNumbersFlag) != 0)
+        {
+            ReadStatus status = TupleVariationCodec.TryDecodePointNumbers(_tableBytes, cursor,
+                _tableBytes.Length, Location, blockStart, out _, out int consumed,
+                out diagnostic);
+            if (status != ReadStatus.Done)
+            {
+                runStart = 0;
+                return status;
+            }
+            cursor += consumed;
+        }
         int at = blockStart + 4;
         while (at < headerAt)
         {
@@ -342,7 +362,9 @@ public sealed class GvarTable
             ushort tupleIndex = ReadU16(at + 2);
             at += TupleVariationCodec.TupleVariationHeaderSize(tupleIndex, AxisCount);
         }
-        return cursor;
+        runStart = cursor;
+        diagnostic = default;
+        return ReadStatus.Done;
     }
 
     private ushort ReadU16(int at) =>
