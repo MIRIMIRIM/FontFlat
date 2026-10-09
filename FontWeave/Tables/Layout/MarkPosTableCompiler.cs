@@ -568,11 +568,12 @@ public static class MarkPosTableCompiler
             var attach = model.Ligatures[i];
             int classCount = 0;
             for (int c = 0; c < attach.Components; c++) classCount = attach.ComponentRow(c).Length;
-            // LigatureArray entries are array-relative; attachAt is subtable-relative,
-            // so rebase each entry or every target shifts by the array's own position.
+            // LigatureArray entries are offsets from the array start - the count
+            // word included - while attachAt is subtable-relative; AttachArrayTarget
+            // skips the count word, so rebase against MatrixTarget (the array head).
             BinaryPrimitives.WriteUInt16BigEndian(destination.Slice(
                 (int)(plan.AttachArrayTarget + (long)i * LigatureArrayLayout.OffsetStride)),
-                (ushort)(attachAt - plan.AttachArrayTarget));
+                (ushort)(attachAt - plan.MatrixTarget));
             BinaryPrimitives.WriteUInt16BigEndian(destination.Slice((int)attachAt), attach.ComponentCount);
             for (int c = 0; c < attach.Components; c++)
                 WriteMatrixRow(destination,
