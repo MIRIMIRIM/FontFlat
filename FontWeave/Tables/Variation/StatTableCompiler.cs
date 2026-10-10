@@ -220,7 +220,11 @@ public static class StatTableCompiler
             out _, location));
         RequireWritten(StatView.TryWriteDesignAxisCount(destination, (ushort)model.DesignAxes.Count,
             out _, location));
-        RequireWritten(StatView.TryWriteDesignAxesOffset(destination, (uint)plan.AxesAt,
+        // The design-axis offsets share the axis-value offsets' two-sided existence
+        // domain: a table with no design axes carries the null pointer, not the
+        // plan's cursor placement (the read face's ValidateExistence is two-way).
+        RequireWritten(StatView.TryWriteDesignAxesOffset(destination,
+            model.DesignAxes.Count == 0 ? 0 : (uint)plan.AxesAt,
             out _, location));
         RequireWritten(StatView.TryWriteAxisValueCount(destination, (ushort)model.AxisValues.Count,
             out _, location));

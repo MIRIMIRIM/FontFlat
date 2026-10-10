@@ -72,8 +72,8 @@ public readonly ref partial struct FvarView
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     Location.AtLocal(DataField.Payload,
                         (ulong)(axesOffset + ordinal * FvarLayout.AxisStride + 4), ordinal),
-                    out diagnostic, (ulong)(long)axis.DefaultValue,
-                    (ulong)(long)Math.Min(axis.MinValue, axis.MaxValue));
+                    out diagnostic, unchecked((ulong)(long)axis.DefaultValue),
+                    unchecked((ulong)(long)Math.Min(axis.MinValue, axis.MaxValue)));
             if ((axis.Flags & FvarLayout.AxisFlagReservedMask) != 0)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     Location.AtLocal(DataField.Flags,
