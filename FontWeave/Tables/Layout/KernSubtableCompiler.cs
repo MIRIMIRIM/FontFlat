@@ -104,6 +104,13 @@ public static class KernSubtableCompiler
         if (numGlyphsStatus != ReadStatus.Done) return numGlyphsStatus;
         int rows = leftCount > 0 ? left.Max() + 1 : 0;
         int columns = rightCount > 0 ? right.Max() + 1 : 0;
+        // A format-2 matrix needs both class dimensions: an empty one would place
+        // the kerning array's base exactly at the declared length, a dangling shape
+        // the read face refuses.
+        if (rows == 0 || columns == 0)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, KernSubtable2Layout.ArrayOffsetAt),
+                out diagnostic, (ulong)leftCount, (ulong)rightCount);
         if (rows > ushort.MaxValue / 2 || columns > ushort.MaxValue / 2 ||
             (long)rows * columns * 2 > ushort.MaxValue)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
@@ -145,7 +152,7 @@ public static class KernSubtableCompiler
         }
         var array = new ushort[rows * columns];
         for (int k = 0; k < array.Length; k++)
-            array[k] = (ushort)cells[k];
+            array[k] = unchecked((ushort)cells[k]);
         var leftModel = new KernClassTable(leftFirstGlyph, leftClasses, location,
             KernClassTableLayout.HeaderLength + KernClassTableLayout.ClassStride * leftCount,
             leftFirstGlyph + leftCount, leftFirstGlyph + leftCount <= numGlyphs);
@@ -324,8 +331,9 @@ public static class KernSubtableCompiler
                     {
                         int at = arrayAt + (i * columns + j) * 2;
                         if (at + 2 > length) continue; // beyond the last full row cell
-                        destination[at] = (byte)((ushort)format2.ValueAt(i, j) >> 8);
-                        destination[at + 1] = (byte)(ushort)format2.ValueAt(i, j);
+                        ushort cell = unchecked((ushort)format2.ValueAt(i, j));
+                        destination[at] = (byte)(cell >> 8);
+                        destination[at + 1] = (byte)(cell & 0xFF);
                     }
                 diagnostic = default;
                 return ReadStatus.Done;

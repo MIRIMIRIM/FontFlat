@@ -193,7 +193,9 @@ public sealed class KernFormat2Body : KernSubtableBody
                 Location.AtLocal(DataField.GlyphId, (ulong)KernSubtable2Layout.ArrayOffsetAt),
                 out diagnostic, ((ulong)leftGlyph << 16) | rightGlyph, 0ul);
         int cell = (left + right - KerningArrayOffset) / 2;
-        value = (short)_array[cell];
+        // Negative kerning values are the sign bit of the stored u16; the narrowing
+        // reinterpretation must not overflow in checked builds (283b40a family).
+        value = unchecked((short)_array[cell]);
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -202,7 +204,7 @@ public sealed class KernFormat2Body : KernSubtableBody
     {
         int left = LeftClassTable.ClassAt(leftOrdinal);
         int right = RightClassTable.ClassAt(rightOrdinal);
-        return (short)_array[(left + right - KerningArrayOffset) / 2];
+        return unchecked((short)_array[(left + right - KerningArrayOffset) / 2]);
     }
 
     /// <summary>Atomically moves one matrix cell (the card's class-edit witness, the
@@ -212,7 +214,7 @@ public sealed class KernFormat2Body : KernSubtableBody
     internal KernFormat2Body WithCellValue(int leftOrdinal, int rightOrdinal, short value)
     {
         var array = (ushort[])_array.Clone();
-        array[CellIndexOf(leftOrdinal, rightOrdinal)] = (ushort)value;
+        array[CellIndexOf(leftOrdinal, rightOrdinal)] = unchecked((ushort)value);
         return new(RowWidth, LeftClassOffset, RightClassOffset, KerningArrayOffset,
             LeftClassTable, RightClassTable, array, Canonicalizable, Location, ConsumedLength)
         {
