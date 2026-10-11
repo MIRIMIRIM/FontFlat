@@ -22,6 +22,23 @@ public abstract class ColrPaint
     /// the L476 emission order).</summary>
     public int Id { get; internal set; }
 
+    /// <summary>Replaces one translate/scale/rotate/skew node's scalar words in
+    /// wire order; the per-class overrides carry the arity.</summary>
+    internal ColrPaint WithScalars(ushort[] scalars) => this switch
+    {
+        ColrPaintTranslate n => n.WithScalarWords(scalars),
+        ColrPaintScale n => n.WithScalarWords(scalars),
+        ColrPaintScaleAroundCenter n => n.WithScalarWords(scalars),
+        ColrPaintScaleUniform n => n.WithScalarWords(scalars),
+        ColrPaintScaleUniformAroundCenter n => n.WithScalarWords(scalars),
+        ColrPaintRotate n => n.WithScalarWords(scalars),
+        ColrPaintRotateAroundCenter n => n.WithScalarWords(scalars),
+        ColrPaintSkew n => n.WithScalarWords(scalars),
+        ColrPaintSkewAroundCenter n => n.WithScalarWords(scalars),
+        _ => throw new System.InvalidOperationException(
+            "A non-scalar paint has no scalar words."),
+    };
+
     /// <summary>The wire paint format byte.</summary>
     public byte Format { get; }
 
@@ -34,7 +51,7 @@ public abstract class ColrPaint
 /// address the slice's paint entries in bottom-up z order (spec L725).</summary>
 public sealed class ColrPaintLayers : ColrPaint
 {
-    internal ColrPaintLayers(int id, uint firstLayerIndex, int[] layerNodeIds) :
+    public ColrPaintLayers(int id, uint firstLayerIndex, int[] layerNodeIds) :
         base(id, 1)
     {
         FirstLayerIndex = firstLayerIndex;
@@ -50,7 +67,7 @@ public sealed class ColrPaintLayers : ColrPaint
 /// sentinel) and the raw F2DOT14 alpha.</summary>
 public sealed class ColrPaintSolid : ColrPaint
 {
-    internal ColrPaintSolid(int id, ushort paletteIndex, ushort alpha) : base(id, 2)
+    public ColrPaintSolid(int id, ushort paletteIndex, ushort alpha) : base(id, 2)
     {
         PaletteIndex = paletteIndex;
         Alpha = alpha;
@@ -64,7 +81,7 @@ public sealed class ColrPaintSolid : ColrPaint
 /// static ColorLine the colorLineOffset addresses (from the paint's own start).</summary>
 public sealed class ColrPaintLinearGradient : ColrPaint
 {
-    internal ColrPaintLinearGradient(int id, short x0, short y0, short x1, short y1,
+    public ColrPaintLinearGradient(int id, short x0, short y0, short x1, short y1,
         short x2, short y2, ColrColorLine colorLine) : base(id, 4)
     {
         X0 = x0; Y0 = y0; X1 = x1; Y1 = y1; X2 = x2; Y2 = y2;
@@ -78,13 +95,16 @@ public sealed class ColrPaintLinearGradient : ColrPaint
     public short X2 { get; internal set; }
     public short Y2 { get; internal set; }
     public ColrColorLine ColorLine { get; internal set; }
+
+    internal ColrPaint WithColorLine(ColrColorLine colorLine) =>
+        new ColrPaintLinearGradient(Id, X0, Y0, X1, Y1, X2, Y2, colorLine);
 }
 
 /// <summary>PaintRadialGradient (format 6): raw FWORD centers and UFWORD radii
 /// plus the static ColorLine.</summary>
 public sealed class ColrPaintRadialGradient : ColrPaint
 {
-    internal ColrPaintRadialGradient(int id, short x0, short y0, ushort radius0,
+    public ColrPaintRadialGradient(int id, short x0, short y0, ushort radius0,
         short x1, short y1, ushort radius1, ColrColorLine colorLine) : base(id, 6)
     {
         X0 = x0; Y0 = y0; Radius0 = radius0; X1 = x1; Y1 = y1; Radius1 = radius1;
@@ -98,13 +118,16 @@ public sealed class ColrPaintRadialGradient : ColrPaint
     public short Y1 { get; internal set; }
     public ushort Radius1 { get; internal set; }
     public ColrColorLine ColorLine { get; internal set; }
+
+    internal ColrPaint WithColorLine(ColrColorLine colorLine) =>
+        new ColrPaintRadialGradient(Id, X0, Y0, Radius0, X1, Y1, Radius1, colorLine);
 }
 
 /// <summary>PaintSweepGradient (format 8): raw FWORD center and F2DOT14 angles
 /// plus the static ColorLine.</summary>
 public sealed class ColrPaintSweepGradient : ColrPaint
 {
-    internal ColrPaintSweepGradient(int id, short centerX, short centerY,
+    public ColrPaintSweepGradient(int id, short centerX, short centerY,
         ushort startAngle, ushort endAngle, ColrColorLine colorLine) : base(id, 8)
     {
         CenterX = centerX; CenterY = centerY;
@@ -117,6 +140,9 @@ public sealed class ColrPaintSweepGradient : ColrPaint
     public ushort StartAngle { get; internal set; }
     public ushort EndAngle { get; internal set; }
     public ColrColorLine ColorLine { get; internal set; }
+
+    internal ColrPaint WithColorLine(ColrColorLine colorLine) =>
+        new ColrPaintSweepGradient(Id, CenterX, CenterY, StartAngle, EndAngle, colorLine);
 }
 
 /// <summary>PaintGlyph (format 10): the child paint that fills this glyph's
@@ -124,7 +150,7 @@ public sealed class ColrPaintSweepGradient : ColrPaint
 /// line).</summary>
 public sealed class ColrPaintGlyph : ColrPaint
 {
-    internal ColrPaintGlyph(int id, int paintNodeId, ushort glyphId) : base(id, 10)
+    public ColrPaintGlyph(int id, int paintNodeId, ushort glyphId) : base(id, 10)
     {
         PaintNodeId = paintNodeId;
         GlyphId = glyphId;
@@ -139,7 +165,7 @@ public sealed class ColrPaintGlyph : ColrPaint
 /// L1032). The target is the referenced glyph's BGL root node.</summary>
 public sealed class ColrPaintColrGlyph : ColrPaint
 {
-    internal ColrPaintColrGlyph(int id, ushort glyphId, int targetNodeId) : base(id, 11)
+    public ColrPaintColrGlyph(int id, ushort glyphId, int targetNodeId) : base(id, 11)
     {
         GlyphId = glyphId;
         TargetNodeId = targetNodeId;
@@ -153,7 +179,7 @@ public sealed class ColrPaintColrGlyph : ColrPaint
 /// Affine2x3 the transformOffset addresses, six raw Fixed words.</summary>
 public sealed class ColrPaintTransform : ColrPaint
 {
-    internal ColrPaintTransform(int id, int paintNodeId, ColrAffine2x3 transform) :
+    public ColrPaintTransform(int id, int paintNodeId, ColrAffine2x3 transform) :
         base(id, 12)
     {
         PaintNodeId = paintNodeId;
@@ -167,7 +193,7 @@ public sealed class ColrPaintTransform : ColrPaint
 /// <summary>PaintTranslate (format 14): raw FWORD offsets.</summary>
 public sealed class ColrPaintTranslate : ColrPaint
 {
-    internal ColrPaintTranslate(int id, int paintNodeId, short dx, short dy) :
+    public ColrPaintTranslate(int id, int paintNodeId, short dx, short dy) :
         base(id, 14)
     {
         PaintNodeId = paintNodeId;
@@ -177,12 +203,16 @@ public sealed class ColrPaintTranslate : ColrPaint
     public int PaintNodeId { get; internal set; }
     public short Dx { get; internal set; }
     public short Dy { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintTranslate(Id, PaintNodeId, unchecked((short)scalars[0]),
+            unchecked((short)scalars[1]));
 }
 
 /// <summary>PaintScale (format 16): raw F2DOT14 factors.</summary>
 public sealed class ColrPaintScale : ColrPaint
 {
-    internal ColrPaintScale(int id, int paintNodeId, ushort scaleX, ushort scaleY) :
+    public ColrPaintScale(int id, int paintNodeId, ushort scaleX, ushort scaleY) :
         base(id, 16)
     {
         PaintNodeId = paintNodeId;
@@ -192,13 +222,16 @@ public sealed class ColrPaintScale : ColrPaint
     public int PaintNodeId { get; internal set; }
     public ushort ScaleX { get; internal set; }
     public ushort ScaleY { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintScale(Id, PaintNodeId, scalars[0], scalars[1]);
 }
 
 /// <summary>PaintScaleAroundCenter (format 18): raw F2DOT14 factors and FWORD
 /// center.</summary>
 public sealed class ColrPaintScaleAroundCenter : ColrPaint
 {
-    internal ColrPaintScaleAroundCenter(int id, int paintNodeId, ushort scaleX,
+    public ColrPaintScaleAroundCenter(int id, int paintNodeId, ushort scaleX,
         ushort scaleY, short centerX, short centerY) : base(id, 18)
     {
         PaintNodeId = paintNodeId;
@@ -210,12 +243,16 @@ public sealed class ColrPaintScaleAroundCenter : ColrPaint
     public ushort ScaleY { get; internal set; }
     public short CenterX { get; internal set; }
     public short CenterY { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintScaleAroundCenter(Id, PaintNodeId, scalars[0], scalars[1],
+            unchecked((short)scalars[2]), unchecked((short)scalars[3]));
 }
 
 /// <summary>PaintScaleUniform (format 20): one raw F2DOT14 factor.</summary>
 public sealed class ColrPaintScaleUniform : ColrPaint
 {
-    internal ColrPaintScaleUniform(int id, int paintNodeId, ushort scale) :
+    public ColrPaintScaleUniform(int id, int paintNodeId, ushort scale) :
         base(id, 20)
     {
         PaintNodeId = paintNodeId;
@@ -224,12 +261,15 @@ public sealed class ColrPaintScaleUniform : ColrPaint
 
     public int PaintNodeId { get; internal set; }
     public ushort Scale { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintScaleUniform(Id, PaintNodeId, scalars[0]);
 }
 
 /// <summary>PaintScaleUniformAroundCenter (format 22).</summary>
 public sealed class ColrPaintScaleUniformAroundCenter : ColrPaint
 {
-    internal ColrPaintScaleUniformAroundCenter(int id, int paintNodeId, ushort scale,
+    public ColrPaintScaleUniformAroundCenter(int id, int paintNodeId, ushort scale,
         short centerX, short centerY) : base(id, 22)
     {
         PaintNodeId = paintNodeId;
@@ -240,12 +280,16 @@ public sealed class ColrPaintScaleUniformAroundCenter : ColrPaint
     public ushort Scale { get; internal set; }
     public short CenterX { get; internal set; }
     public short CenterY { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintScaleUniformAroundCenter(Id, PaintNodeId, scalars[0],
+            unchecked((short)scalars[1]), unchecked((short)scalars[2]));
 }
 
 /// <summary>PaintRotate (format 24): one raw F2DOT14 angle.</summary>
 public sealed class ColrPaintRotate : ColrPaint
 {
-    internal ColrPaintRotate(int id, int paintNodeId, ushort angle) : base(id, 24)
+    public ColrPaintRotate(int id, int paintNodeId, ushort angle) : base(id, 24)
     {
         PaintNodeId = paintNodeId;
         Angle = angle;
@@ -253,12 +297,15 @@ public sealed class ColrPaintRotate : ColrPaint
 
     public int PaintNodeId { get; internal set; }
     public ushort Angle { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintRotate(Id, PaintNodeId, scalars[0]);
 }
 
 /// <summary>PaintRotateAroundCenter (format 26).</summary>
 public sealed class ColrPaintRotateAroundCenter : ColrPaint
 {
-    internal ColrPaintRotateAroundCenter(int id, int paintNodeId, ushort angle,
+    public ColrPaintRotateAroundCenter(int id, int paintNodeId, ushort angle,
         short centerX, short centerY) : base(id, 26)
     {
         PaintNodeId = paintNodeId;
@@ -269,12 +316,16 @@ public sealed class ColrPaintRotateAroundCenter : ColrPaint
     public ushort Angle { get; internal set; }
     public short CenterX { get; internal set; }
     public short CenterY { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintRotateAroundCenter(Id, PaintNodeId, scalars[0],
+            unchecked((short)scalars[1]), unchecked((short)scalars[2]));
 }
 
 /// <summary>PaintSkew (format 28): two raw F2DOT14 angles.</summary>
 public sealed class ColrPaintSkew : ColrPaint
 {
-    internal ColrPaintSkew(int id, int paintNodeId, ushort xSkewAngle,
+    public ColrPaintSkew(int id, int paintNodeId, ushort xSkewAngle,
         ushort ySkewAngle) : base(id, 28)
     {
         PaintNodeId = paintNodeId;
@@ -284,12 +335,15 @@ public sealed class ColrPaintSkew : ColrPaint
     public int PaintNodeId { get; internal set; }
     public ushort XSkewAngle { get; internal set; }
     public ushort YSkewAngle { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintSkew(Id, PaintNodeId, scalars[0], scalars[1]);
 }
 
 /// <summary>PaintSkewAroundCenter (format 30).</summary>
 public sealed class ColrPaintSkewAroundCenter : ColrPaint
 {
-    internal ColrPaintSkewAroundCenter(int id, int paintNodeId, ushort xSkewAngle,
+    public ColrPaintSkewAroundCenter(int id, int paintNodeId, ushort xSkewAngle,
         ushort ySkewAngle, short centerX, short centerY) : base(id, 30)
     {
         PaintNodeId = paintNodeId;
@@ -302,6 +356,10 @@ public sealed class ColrPaintSkewAroundCenter : ColrPaint
     public ushort YSkewAngle { get; internal set; }
     public short CenterX { get; internal set; }
     public short CenterY { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintSkewAroundCenter(Id, PaintNodeId, scalars[0], scalars[1],
+            unchecked((short)scalars[2]), unchecked((short)scalars[3]));
 }
 
 /// <summary>PaintComposite (format 32): the source paint over the backdrop paint
@@ -330,7 +388,7 @@ public sealed class ColrPaintComposite : ColrPaint
 /// (OQ-T6-02-8's correction).</summary>
 public sealed class ColrColorLine
 {
-    internal ColrColorLine(byte extend, ColrColorStop[] stops)
+    public ColrColorLine(byte extend, ColrColorStop[] stops)
     {
         Extend = extend;
         StopArray = stops;

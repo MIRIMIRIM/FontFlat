@@ -11,7 +11,7 @@ namespace FontWeave.Tables;
 /// Structural changes - base glyph additions, removals or reordering, layer
 /// count changes, version writes - have no edit surface (OQ-T6-01-9); the three
 /// layer edits return a new owned model and never mutate the source.</summary>
-public static class ColrTableCompiler
+public static partial class ColrTableCompiler
 {
     /// <summary>Explicit root-model factory from owned parts (card §4.1): the
     /// root re-answers the structural invariants the read side enforces - the
@@ -121,6 +121,10 @@ public static class ColrTableCompiler
     {
         bytes = null;
         ArgumentNullException.ThrowIfNull(model);
+        // Version 1 emits through the canonical parents-first plan
+        // (ColrTableCompilerV1); version 0 keeps the T6-01 majority-order plan.
+        if (model.Version == 1)
+            return TryCompileV1(model, out bytes, out diagnostic, limits);
         var budget = new BuildBudget(limits);
         // Defensive shape re-answers (unreachable for TryReadTable/TryCreate
         // models): the compiled plan must keep the read side's minimum shape.

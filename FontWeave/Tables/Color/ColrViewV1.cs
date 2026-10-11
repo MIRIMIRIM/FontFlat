@@ -133,6 +133,7 @@ public readonly ref partial struct ColrView
         // L547).
         var layerTargets = new uint[layerPaintCount];
         var layerReferenced = new bool[layerPaintCount];
+        var layerSourceOffsets = new uint[layerPaintCount];
         if (layerList != 0)
         {
             status = TryRequireLayerPaintOffsetExtent(out diagnostic);
@@ -141,6 +142,7 @@ public readonly ref partial struct ColrView
             {
                 status = TryGetLayerPaintOffset(unchecked((int)i), out var entry, out diagnostic);
                 if (status != ReadStatus.Done) return status;
+                layerSourceOffsets[i] = entry.PaintOffset;
                 ulong target = layerList + entry.PaintOffset;
                 if (target >= (ulong)_data.Length)
                     return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
@@ -257,9 +259,21 @@ public readonly ref partial struct ColrView
                 11L * clips.Length + 64L * nodeTotal + 8L * walk.StopCount,
                 Location, out diagnostic))
             return ReadStatus.ResourceLimit;
+        // The source-position arrays address by canonical ordinal (the edit
+        // diagnostics' coordinate), while the walk collected them in visit
+        // order - the same permutation the nodes themselves ride.
+        var paintSources = new uint[nodeTotal];
+        var colorLineSources = new uint[nodeTotal];
+        for (int i = 0; i < nodeTotal; i++)
+        {
+            paintSources[ordinal[i]] = walk.SourcePositions[i];
+            colorLineSources[ordinal[i]] = walk.ColorLinePositions[i];
+        }
         model = new(compatBase, compatLayers, baseGlyphPaints, layerNodeIds, clips,
             orderedPaints, numGlyphs, compatBaseOffset, compatLayerOffset,
-            varIndexMap, store, Location,
+            varIndexMap, store, clipList,
+            paintSources, colorLineSources,
+            layerSourceOffsets, Location,
             (int)Math.Min(walk.MaxEnd, (ulong)_data.Length));
         diagnostic = default;
         return ReadStatus.Done;
@@ -478,6 +492,8 @@ public readonly ref partial struct ColrView
         walk.Path.Add(target);
         walk.Depths.Add(depth);
         walk.Sequences.Add(walk.Sequence++);
+        walk.SourcePositions.Add(target);
+        walk.ColorLinePositions.Add(0);
         walk.MaxEnd = Math.Max(walk.MaxEnd, target + (ulong)PaintSize(format));
         // A placeholder holds the visited slot while the children visit; the
         // concrete node replaces it before this frame returns.
@@ -832,6 +848,7 @@ public readonly ref partial struct ColrView
         if (!budget.Work(4L * numStops, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         walk.StopCount += numStops;
         walk.MaxEnd = Math.Max(walk.MaxEnd, colorLineTarget + 3 + 6UL * numStops);
+        walk.ColorLinePositions[walk.ColorLinePositions.Count - 1] = colorLineTarget;
         colorLine = new ColrColorLine(extend, stops);
         diagnostic = default;
         return ReadStatus.Done;
@@ -1069,6 +1086,8 @@ public readonly ref partial struct ColrView
         internal readonly List<int> Depths = [];
         internal readonly List<int> Sequences = [];
         internal readonly List<(int Parent, int Child)> Edges = [];
+        internal readonly List<uint> SourcePositions = [];
+        internal readonly List<uint> ColorLinePositions = [];
         internal int Sequence;
         internal ulong MaxEnd;
         internal uint StopCount;

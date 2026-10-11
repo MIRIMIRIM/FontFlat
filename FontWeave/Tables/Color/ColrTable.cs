@@ -23,7 +23,7 @@ public readonly record struct ColrLayerRecord(ushort GlyphId, ushort PaletteInde
 /// and edited through the ColrTableCompiler API family. The wire offsets are the
 /// source coordinates the model was read from (canonical positions for
 /// factory-built models), so row diagnostics stay addressable.</summary>
-public sealed class ColrTable
+public sealed partial class ColrTable
 {
     private readonly ColrBaseGlyphRecord[] _baseGlyphs;
     private readonly ColrLayerRecord[] _layers;
@@ -50,6 +50,8 @@ public sealed class ColrTable
         ColrBaseGlyphPaint[] baseGlyphPaints, int[] layerPaintNodeIds, ColrClip[] clips,
         ColrPaint[] paints, int numGlyphs, uint baseGlyphRecordsOffset,
         uint layerRecordsOffset, uint varIndexMapOffset, uint itemVariationStoreOffset,
+        uint clipListOffset, uint[] paintSourcePositions,
+        uint[] colorLineSourcePositions, uint[] layerSourceOffsets,
         DataLocation location, int consumedLength)
     {
         _baseGlyphs = baseGlyphs;
@@ -64,6 +66,10 @@ public sealed class ColrTable
         LayerRecordsOffset = layerRecordsOffset;
         VarIndexMapOffset = varIndexMapOffset;
         ItemVariationStoreOffset = itemVariationStoreOffset;
+        ClipListOffset = clipListOffset;
+        PaintSourcePositions = paintSourcePositions;
+        ColorLineSourcePositions = colorLineSourcePositions;
+        LayerSourceOffsets = layerSourceOffsets;
         Location = location;
         ConsumedLength = consumedLength;
     }
@@ -107,6 +113,23 @@ public sealed class ColrTable
     /// presence observation are the whole surface (OQ-T6-02-5, T6-03 opens it).</summary>
     public uint VarIndexMapOffset { get; }
     public uint ItemVariationStoreOffset { get; }
+
+    /// <summary>The source ClipList offset (the diagnostics' coordinate; a
+    /// factory model carries 0, its plan being computed at compile time).</summary>
+    internal uint ClipListOffset { get; }
+
+    /// <summary>Every paint node's source position (wire offsets; factory
+    /// models carry zeros - they address by node id alone).</summary>
+    internal uint[] PaintSourcePositions { get; } = [];
+
+    /// <summary>Every gradient node's ColorLine source position (0 when the
+    /// node carries no color line).</summary>
+    internal uint[] ColorLineSourcePositions { get; } = [];
+
+    /// <summary>Every LayerList entry's raw source paint offset word (the dead
+    /// entries' only surviving identity - a live entry's word is recomputed
+    /// from the re-planned node position at compile time).</summary>
+    internal uint[] LayerSourceOffsets { get; } = [];
 
     /// <summary>The base glyph records' array start in the coordinates the model
     /// was read from (wire offsets, or the canonical plan for factory models).</summary>
@@ -280,7 +303,9 @@ public sealed class ColrTable
                 (ColrBaseGlyphPaint[])_baseGlyphPaints.Clone(),
                 (int[])_layerPaintNodeIds.Clone(), (ColrClip[])_clips.Clone(),
                 _paints, NumGlyphs, BaseGlyphRecordsOffset, LayerRecordsOffset,
-                VarIndexMapOffset, ItemVariationStoreOffset, Location, ConsumedLength)
+                VarIndexMapOffset, ItemVariationStoreOffset, ClipListOffset,
+                PaintSourcePositions, ColorLineSourcePositions, LayerSourceOffsets,
+                Location, ConsumedLength)
             : new((ColrBaseGlyphRecord[])_baseGlyphs.Clone(), layers, NumGlyphs,
                 BaseGlyphRecordsOffset, LayerRecordsOffset, Location, ConsumedLength);
     // The paint array reference is shared, not cloned: paint nodes are immutable
