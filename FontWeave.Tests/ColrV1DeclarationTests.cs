@@ -124,18 +124,15 @@ public sealed class ColrV1DeclarationTests
     }
 
     [Fact]
-    public void WholeTableV1WireRefusesWithThePinnedVersionFaceUntilCommit2()
+    public void BareV1HeaderNowRunsTheReadChainAndHitsTheBglWindowFace()
     {
+        // Commit 2 replaced the interim version refuse: a 34-byte v1 header with
+        // the BaseGlyphList at 34 reads its count window (which truncates here -
+        // the face the read chain produces for the bare header).
         ReadStatus status = ColrView.TryOpen(V1Header(), out var view, out _, Source);
         Assert.Equal(ReadStatus.Done, status);
-        Assert.Equal(ReadStatus.UnsupportedFormat, view.ValidateTable(16, 4,
-            out var diagnostic));
-        Assert.Equal(DiagnosticCode.UnsupportedVersion, diagnostic.Code);
-        Assert.Equal(DataField.Version, diagnostic.Location.Field);
-        Assert.Equal(1uL, diagnostic.Detail);
-        Assert.Equal(0uL, diagnostic.Expected);
-        Assert.Equal(ReadStatus.UnsupportedFormat, view.TryFindBaseGlyph(9, out _, out diagnostic));
-        Assert.Equal(DiagnosticCode.UnsupportedVersion, diagnostic.Code);
+        Assert.Equal(ReadStatus.Truncated, view.ValidateTable(16, 4, out var diagnostic));
+        Assert.Equal(DiagnosticCode.TruncatedData, diagnostic.Code);
     }
 
     [Fact]

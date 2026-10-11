@@ -24,20 +24,19 @@ public readonly ref partial struct ColrView
     internal ReadStatus ValidateTable(int numGlyphs, int? cpalNumPaletteEntries,
         out FontDiagnostic diagnostic, BuildBudget budget)
     {
-        // The version gate first (the T4-01 priority line): a v1 wire - including
-        // the 27 corpus hosts that carry v0 compatibility records - refuses here
-        // before any record byte is read (OQ-T6-01-12; the v1 face is T6-02 on
-        // this same View). Commit 1 declared the v1 structures, so the generated
-        // gate accepts version 1 now; the whole-table walk keeps refusing v1
-        // wires with the exact face the SupportedVersions={0} gate produced
-        // (UnsupportedVersion at the version field, Detail = the version) until
-        // the v1 read chain lands in T6-02 commit 2 - a v1 wire reads as nothing
-        // in the interim, never as a half-answered v0.
+        // The version gate first (the T4-01 priority line); version 1 dispatches
+        // to the v1 half of this View (the compat grace, the three arrays, the
+        // ClipList and the paint graph walk - ColrViewV1), version 0 keeps the
+        // frozen T6-01 walk below byte for byte (OQ-T6-01-12's witness pool
+        // became the accepted domain in T6-02; the v0 path never moved).
         ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (version == ColrLayout.Version1)
-            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                Location.AtLocal(DataField.Version, 0), out diagnostic, version);
+        {
+            status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            return ValidateTableV1(numGlyphs, cpalNumPaletteEntries, out diagnostic, budget);
+        }
         status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = TryGetNumBaseGlyphRecords(out ushort numBase, out diagnostic);
@@ -133,7 +132,19 @@ public readonly ref partial struct ColrView
         out FontDiagnostic diagnostic, BuildBudget budget)
     {
         model = null;
-        ReadStatus status = ValidateTable(numGlyphs, cpalNumPaletteEntries, out diagnostic, budget);
+        // Version 1 materializes through the one v1 walk (the validate-only walk
+        // and the materializing walk are the same code, so a model only exists
+        // for fully validated wires); version 0 keeps the T6-01 read below.
+        ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (version == ColrLayout.Version1)
+        {
+            status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            return ReadTableV1(numGlyphs, cpalNumPaletteEntries, true, out model,
+                out diagnostic, budget);
+        }
+        status = ValidateTable(numGlyphs, cpalNumPaletteEntries, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         status = TryGetNumBaseGlyphRecords(out ushort numBase, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -183,11 +194,8 @@ public readonly ref partial struct ColrView
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.GlyphId, 0), out diagnostic,
                 unchecked((ulong)(long)glyphId), ushort.MaxValue);
-        ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);
+        ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (version == ColrLayout.Version1)
-            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                Location.AtLocal(DataField.Version, 0), out diagnostic, version);
         status = TryRequireBaseGlyphRecordExtent(out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = TryGetNumBaseGlyphRecords(out ushort numBase, out diagnostic);
