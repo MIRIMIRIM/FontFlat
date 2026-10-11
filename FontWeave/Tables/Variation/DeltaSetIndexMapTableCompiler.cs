@@ -42,7 +42,7 @@ public static class DeltaSetIndexMapTableCompiler
             ReadStatus status = CheckRepresentable(entryFormat, entry, location, out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
-        model = new(entryFormat, entries.ToArray(), location, 0);
+        model = new(0, entryFormat, entries.ToArray(), location, 0);
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -99,7 +99,8 @@ public static class DeltaSetIndexMapTableCompiler
         DeltaSetIndexMapLayout.EntriesAt +
         DeltaSetIndexMapView.PackedEntrySize(model.EntryFormat) * model.MapCount;
 
-    /// <summary>Root-writer emission for one map body at the slice origin.</summary>
+    /// <summary>Root-writer emission for one map body at the slice origin (format 0;
+    /// T6-03 §4 widens the emission to the model's own format word).</summary>
     internal static void WritePlanned(DeltaSetIndexMapTable model, Span<byte> destination)
     {
         var location = model.Location;
@@ -107,8 +108,8 @@ public static class DeltaSetIndexMapTableCompiler
             out _, location));
         CoverageTableCompiler.RequireWritten(DeltaSetIndexMapView.TryWriteEntryFormat(destination,
             model.EntryFormat, out _, location));
-        CoverageTableCompiler.RequireWritten(DeltaSetIndexMapView.TryWriteMapCount(destination,
-            (ushort)model.MapCount, out _, location));
+        global::System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(
+            destination.Slice(DeltaSetIndexMapLayout.MapCountAt, 2), (ushort)model.MapCount);
         int entrySize = DeltaSetIndexMapView.PackedEntrySize(model.EntryFormat);
         int innerBits = DeltaSetIndexMapView.InnerBitCount(model.EntryFormat);
         int at = DeltaSetIndexMapLayout.EntriesAt;

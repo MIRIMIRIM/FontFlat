@@ -68,24 +68,27 @@ public readonly ref partial struct ItemVariationDataView
     }
 
     /// <summary>Typed materialization of every delta row. LONG_WORDS rows are refused
-    /// here (OQ-T5-01-1): the T5-01 product consumers are HVAR-domain and the spec
-    /// limits long words to COLR (T6-03); structural observation stays legal above.</summary>
+    /// here by default (OQ-T5-01-1): the pre-T6-03 product consumers are HVAR-domain
+    /// and the spec limits long words to COLR. The COLR typed consumption (T6-03 §2,
+    /// OQ-T6-03-5) passes allowLongWords - the decode loop below already carries both
+    /// width classes, so the gate is the only change and the default path keeps its
+    /// frozen refusal shape byte for byte. Structural observation stays legal above.</summary>
     public ReadStatus TryRead(out ItemVariationDataTable? model, out FontDiagnostic diagnostic,
-        BuildLimits? limits = null)
+        BuildLimits? limits = null, bool allowLongWords = false)
     {
         model = null;
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return TryRead(out model, out diagnostic, budget);
+        return TryRead(out model, out diagnostic, budget, allowLongWords);
     }
 
     internal ReadStatus TryRead(out ItemVariationDataTable? model, out FontDiagnostic diagnostic,
-        BuildBudget budget)
+        BuildBudget budget, bool allowLongWords = false)
     {
         model = null;
         ReadStatus status = TryGetWordDeltaCount(out ushort wordDeltaCount, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if ((wordDeltaCount & ItemVariationDataLayout.LongWordsFlag) != 0)
+        if ((wordDeltaCount & ItemVariationDataLayout.LongWordsFlag) != 0 && !allowLongWords)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 Location.AtLocal(DataField.Flags, ItemVariationDataLayout.WordDeltaCountAt),
                 out diagnostic, wordDeltaCount, 0);

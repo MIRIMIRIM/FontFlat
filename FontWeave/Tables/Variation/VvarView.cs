@@ -127,9 +127,16 @@ public readonly ref partial struct VvarView
                 break;
         }
         if (status != ReadStatus.Done || !present) return status;
+        // The format-0 re-anchor (OQ-T6-03-4): the shared map's version domain widened
+        // to {0,1} for COLR, so the VVAR face checks the format explicitly - the
+        // diagnostic is the old version-gate refusal, byte for byte.
+        status = mapView.RequireFormatZero(out diagnostic);
+        if (status != ReadStatus.Done) return status;
         status = mapView.Validate(out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
-        if (mapView.MapCount == 0)
+        status = mapView.TryGetMapCount(out ushort mapCount, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (mapCount == 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 mapView.Location.AtLocal(DataField.Count, DeltaSetIndexMapLayout.MapCountAt),
                 out diagnostic, 0, 1);
@@ -170,6 +177,8 @@ public readonly ref partial struct VvarView
                 status = TryOpenVOrgMapping(out mapView, out _, out diagnostic);
                 break;
         }
+        if (status != ReadStatus.Done) return status;
+        status = mapView.RequireFormatZero(out diagnostic);
         if (status != ReadStatus.Done) return status;
         return mapView.TryRead(out map, out diagnostic, budget);
     }

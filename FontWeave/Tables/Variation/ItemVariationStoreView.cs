@@ -55,20 +55,21 @@ public readonly ref partial struct ItemVariationStoreView
     }
 
     /// <summary>Typed materialization of the whole store: regions and every non-NULL
-    /// VarData subtable fully decoded (LONG_WORDS refused by the VarData typed read,
-    /// OQ-T5-01-1). All rows are materialized - the witness scale is bounded and the
-    /// row-keyed API keeps a lazy path open for larger stores (card 3.2).</summary>
+    /// VarData subtable fully decoded (LONG_WORDS refused by the VarData typed read
+    /// unless the COLR consumption passes allowLongWords - OQ-T5-01-1/OQ-T6-03-5).
+    /// All rows are materialized - the witness scale is bounded and the row-keyed API
+    /// keeps a lazy path open for larger stores (card 3.2).</summary>
     public ReadStatus TryRead(int axisCount, out VariationStoreTable? model,
-        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, bool allowLongWords = false)
     {
         model = null;
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return TryRead(axisCount, out model, out diagnostic, budget);
+        return TryRead(axisCount, out model, out diagnostic, budget, allowLongWords);
     }
 
     internal ReadStatus TryRead(int axisCount, out VariationStoreTable? model,
-        out FontDiagnostic diagnostic, BuildBudget budget)
+        out FontDiagnostic diagnostic, BuildBudget budget, bool allowLongWords = false)
     {
         model = null;
         ReadStatus status = Validate(axisCount, out int regionCount, out diagnostic, budget);
@@ -90,7 +91,7 @@ public readonly ref partial struct ItemVariationStoreView
                 out bool varDataPresent, out diagnostic);
             if (status != ReadStatus.Done) return status;
             if (!varDataPresent) continue;
-            status = varDataView.TryRead(out var varData, out diagnostic, budget);
+            status = varDataView.TryRead(out var varData, out diagnostic, budget, allowLongWords);
             if (status != ReadStatus.Done) return status;
             data[outer] = varData;
             status = TryGetDataOffsets(outer, out var offsetRecord, out diagnostic);

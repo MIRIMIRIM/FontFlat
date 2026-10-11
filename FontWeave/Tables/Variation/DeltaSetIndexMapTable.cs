@@ -12,22 +12,29 @@ public readonly record struct DeltaSetIndex(ushort Outer, ushort Inner)
     public bool IsNoVariationData => Outer == 0xFFFF && Inner == 0xFFFF;
 }
 
-/// <summary>Owned DeltaSetIndexMap (format 0): every logical entry decoded to its
-/// (outer, inner) pair. Entries beyond the declared count never exist here - the
-/// last-entry fallback is a dereference-time rule keyed on the caller's index
-/// (spec: "greater than or equal to mapCount ... the last logical entry").</summary>
+/// <summary>Owned DeltaSetIndexMap: every logical entry decoded to its (outer, inner)
+/// pair, with the source format word (0 = the HVAR face's u16-count form, 1 = the
+/// COLR-era u32-count form - T6-03 §2; the entry decode is format-independent).
+/// Entries beyond the declared count never exist here - the last-entry fallback is a
+/// dereference-time rule keyed on the caller's index (spec: "greater than or equal to
+/// mapCount ... the last logical entry").</summary>
 public sealed class DeltaSetIndexMapTable
 {
     private readonly DeltaSetIndex[] _entries;
 
-    internal DeltaSetIndexMapTable(byte entryFormat, DeltaSetIndex[] entries,
+    internal DeltaSetIndexMapTable(byte format, byte entryFormat, DeltaSetIndex[] entries,
         DataLocation location, int consumedLength)
     {
+        Format = format;
         EntryFormat = entryFormat;
         _entries = entries;
         Location = location;
         ConsumedLength = consumedLength;
     }
+
+    /// <summary>The source map format word (0 or 1; re-emitted verbatim by the
+    /// compiler - T6-03 §4).</summary>
+    public byte Format { get; }
 
     public byte EntryFormat { get; }
     public int MapCount => _entries.Length;
