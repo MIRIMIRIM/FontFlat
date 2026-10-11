@@ -27,9 +27,17 @@ public readonly ref partial struct ColrView
         // The version gate first (the T4-01 priority line): a v1 wire - including
         // the 27 corpus hosts that carry v0 compatibility records - refuses here
         // before any record byte is read (OQ-T6-01-12; the v1 face is T6-02 on
-        // this same View).
-        ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
+        // this same View). Commit 1 declared the v1 structures, so the generated
+        // gate accepts version 1 now; the whole-table walk keeps refusing v1
+        // wires with the exact face the SupportedVersions={0} gate produced
+        // (UnsupportedVersion at the version field, Detail = the version) until
+        // the v1 read chain lands in T6-02 commit 2 - a v1 wire reads as nothing
+        // in the interim, never as a half-answered v0.
+        ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        if (version == ColrLayout.Version1)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+                Location.AtLocal(DataField.Version, 0), out diagnostic, version);
         status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = TryGetNumBaseGlyphRecords(out ushort numBase, out diagnostic);
@@ -175,8 +183,11 @@ public readonly ref partial struct ColrView
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.GlyphId, 0), out diagnostic,
                 unchecked((ulong)(long)glyphId), ushort.MaxValue);
-        ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
+        ReadStatus status = TryRequireKnownVersion(out ulong version, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        if (version == ColrLayout.Version1)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+                Location.AtLocal(DataField.Version, 0), out diagnostic, version);
         status = TryRequireBaseGlyphRecordExtent(out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = TryGetNumBaseGlyphRecords(out ushort numBase, out diagnostic);
