@@ -96,23 +96,33 @@ public static class DeltaSetIndexMapTableCompiler
     }
 
     internal static int Measure(DeltaSetIndexMapTable model) =>
-        DeltaSetIndexMapLayout.EntriesAt +
+        DeltaSetIndexMapView.EntriesBase(model.Format) +
         DeltaSetIndexMapView.PackedEntrySize(model.EntryFormat) * model.MapCount;
 
-    /// <summary>Root-writer emission for one map body at the slice origin (format 0;
-    /// T6-03 §4 widens the emission to the model's own format word).</summary>
+    /// <summary>Root-writer emission for one map body at the slice origin, in the
+    /// model's own format word: format 0 keeps its frozen u16-count face byte for
+    /// byte, format 1 writes the u32 count and starts the entries two bytes later
+    /// (T6-03 §4 - the declared widening of the T5-01 emission).</summary>
     internal static void WritePlanned(DeltaSetIndexMapTable model, Span<byte> destination)
     {
         var location = model.Location;
-        CoverageTableCompiler.RequireWritten(DeltaSetIndexMapView.TryWriteFormat(destination, 0,
-            out _, location));
+        CoverageTableCompiler.RequireWritten(DeltaSetIndexMapView.TryWriteFormat(destination,
+            model.Format, out _, location));
         CoverageTableCompiler.RequireWritten(DeltaSetIndexMapView.TryWriteEntryFormat(destination,
             model.EntryFormat, out _, location));
-        global::System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(
-            destination.Slice(DeltaSetIndexMapLayout.MapCountAt, 2), (ushort)model.MapCount);
+        if (model.Format == 0)
+        {
+            global::System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(
+                destination.Slice(DeltaSetIndexMapLayout.MapCountAt, 2), (ushort)model.MapCount);
+        }
+        else
+        {
+            global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(
+                destination.Slice(DeltaSetIndexMapLayout.MapCountAt, 4), (uint)model.MapCount);
+        }
         int entrySize = DeltaSetIndexMapView.PackedEntrySize(model.EntryFormat);
         int innerBits = DeltaSetIndexMapView.InnerBitCount(model.EntryFormat);
-        int at = DeltaSetIndexMapLayout.EntriesAt;
+        int at = DeltaSetIndexMapView.EntriesBase(model.Format);
         for (int i = 0; i < model.MapCount; i++)
         {
             _ = model.TryGetMapping(i, out var entry);

@@ -32,11 +32,12 @@ internal static class ColrLayout
         PaintSkewAroundCenterSize = 12, PaintCompositeSize = 8;
     // The fourteen var paint formats (3/5/7/9/13/15/17/19/21/23/25/27/29/31,
     // T6-03 §0's size table): each is its static twin plus a trailing u32
-    // varIndexBase (packed, no padding); PaintVarTransform carries two Offset24s
-    // and no own varIndexBase (it rides the VarAffine2x3).
+    // varIndexBase (packed, no padding), except PaintVarTransform - the
+    // snapshot's own field table (L1050-1056) has three fields (7B), the var
+    // slots riding the VarAffine2x3's own trailing word.
     internal const int PaintVarSolidSize = 9, PaintVarLinearGradientSize = 20,
         PaintVarRadialGradientSize = 20, PaintVarSweepGradientSize = 16,
-        PaintVarTransformSize = 11, PaintVarTranslateSize = 12,
+        PaintVarTransformSize = 7, PaintVarTranslateSize = 12,
         PaintVarScaleSize = 12, PaintVarScaleAroundCenterSize = 16,
         PaintVarScaleUniformSize = 10, PaintVarScaleUniformAroundCenterSize = 14,
         PaintVarRotateSize = 10, PaintVarRotateAroundCenterSize = 14,

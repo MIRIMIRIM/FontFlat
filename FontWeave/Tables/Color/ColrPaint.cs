@@ -24,7 +24,9 @@ public abstract class ColrPaint
     public int Id { get; internal set; }
 
     /// <summary>Replaces one translate/scale/rotate/skew node's scalar words in
-    /// wire order; the per-class overrides carry the arity.</summary>
+    /// wire order; the per-class overrides carry the arity. The var twins stay
+    /// their own records - a value-level edit never flips the static/var face
+    /// (the T6-03 conversion refusal).</summary>
     internal ColrPaint WithScalars(ushort[] scalars) => this switch
     {
         ColrPaintTranslate n => n.WithScalarWords(scalars),
@@ -36,8 +38,72 @@ public abstract class ColrPaint
         ColrPaintRotateAroundCenter n => n.WithScalarWords(scalars),
         ColrPaintSkew n => n.WithScalarWords(scalars),
         ColrPaintSkewAroundCenter n => n.WithScalarWords(scalars),
+        ColrPaintVarTranslate n => n.WithScalarWords(scalars),
+        ColrPaintVarScale n => n.WithScalarWords(scalars),
+        ColrPaintVarScaleAroundCenter n => n.WithScalarWords(scalars),
+        ColrPaintVarScaleUniform n => n.WithScalarWords(scalars),
+        ColrPaintVarScaleUniformAroundCenter n => n.WithScalarWords(scalars),
+        ColrPaintVarRotate n => n.WithScalarWords(scalars),
+        ColrPaintVarRotateAroundCenter n => n.WithScalarWords(scalars),
+        ColrPaintVarSkew n => n.WithScalarWords(scalars),
+        ColrPaintVarSkewAroundCenter n => n.WithScalarWords(scalars),
         _ => throw new System.InvalidOperationException(
             "A non-scalar paint has no scalar words."),
+    };
+
+    /// <summary>Replaces one var node's own varIndexBase (the full u32 domain
+    /// with the 0xFFFFFFFF sentinel through); PaintVarTransform carries none -
+    /// its slots ride the VarAffine2x3 and answer through the transform edit.</summary>
+    internal ColrPaint WithVarIndexBase(uint varIndexBase) => this switch
+    {
+        ColrPaintVarSolid n => new ColrPaintVarSolid(Id, n.PaletteIndex, n.Alpha,
+            varIndexBase),
+        ColrPaintVarLinearGradient n => new ColrPaintVarLinearGradient(Id, n.X0, n.Y0,
+            n.X1, n.Y1, n.X2, n.Y2, n.ColorLine, varIndexBase),
+        ColrPaintVarRadialGradient n => new ColrPaintVarRadialGradient(Id, n.X0, n.Y0,
+            n.Radius0, n.X1, n.Y1, n.Radius1, n.ColorLine, varIndexBase),
+        ColrPaintVarSweepGradient n => new ColrPaintVarSweepGradient(Id, n.CenterX,
+            n.CenterY, n.StartAngle, n.EndAngle, n.ColorLine, varIndexBase),
+        ColrPaintVarTranslate n => new ColrPaintVarTranslate(Id, n.PaintNodeId, n.Dx,
+            n.Dy, varIndexBase),
+        ColrPaintVarScale n => new ColrPaintVarScale(Id, n.PaintNodeId, n.ScaleX,
+            n.ScaleY, varIndexBase),
+        ColrPaintVarScaleAroundCenter n => new ColrPaintVarScaleAroundCenter(Id,
+            n.PaintNodeId, n.ScaleX, n.ScaleY, n.CenterX, n.CenterY, varIndexBase),
+        ColrPaintVarScaleUniform n => new ColrPaintVarScaleUniform(Id, n.PaintNodeId,
+            n.Scale, varIndexBase),
+        ColrPaintVarScaleUniformAroundCenter n => new ColrPaintVarScaleUniformAroundCenter(
+            Id, n.PaintNodeId, n.Scale, n.CenterX, n.CenterY, varIndexBase),
+        ColrPaintVarRotate n => new ColrPaintVarRotate(Id, n.PaintNodeId, n.Angle,
+            varIndexBase),
+        ColrPaintVarRotateAroundCenter n => new ColrPaintVarRotateAroundCenter(Id,
+            n.PaintNodeId, n.Angle, n.CenterX, n.CenterY, varIndexBase),
+        ColrPaintVarSkew n => new ColrPaintVarSkew(Id, n.PaintNodeId, n.XSkewAngle,
+            n.YSkewAngle, varIndexBase),
+        ColrPaintVarSkewAroundCenter n => new ColrPaintVarSkewAroundCenter(Id,
+            n.PaintNodeId, n.XSkewAngle, n.YSkewAngle, n.CenterX, n.CenterY, varIndexBase),
+        _ => throw new System.InvalidOperationException(
+            "A non-var paint carries no varIndexBase."),
+    };
+
+    /// <summary>The node's own varIndexBase word (0 for the static family and
+    /// for PaintVarTransform, whose slots ride the VarAffine2x3).</summary>
+    internal uint OwnVarIndexBase => this switch
+    {
+        ColrPaintVarSolid n => n.VarIndexBase,
+        ColrPaintVarLinearGradient n => n.VarIndexBase,
+        ColrPaintVarRadialGradient n => n.VarIndexBase,
+        ColrPaintVarSweepGradient n => n.VarIndexBase,
+        ColrPaintVarTranslate n => n.VarIndexBase,
+        ColrPaintVarScale n => n.VarIndexBase,
+        ColrPaintVarScaleAroundCenter n => n.VarIndexBase,
+        ColrPaintVarScaleUniform n => n.VarIndexBase,
+        ColrPaintVarScaleUniformAroundCenter n => n.VarIndexBase,
+        ColrPaintVarRotate n => n.VarIndexBase,
+        ColrPaintVarRotateAroundCenter n => n.VarIndexBase,
+        ColrPaintVarSkew n => n.VarIndexBase,
+        ColrPaintVarSkewAroundCenter n => n.VarIndexBase,
+        _ => 0,
     };
 
     /// <summary>The wire paint format byte.</summary>
@@ -453,9 +519,6 @@ public sealed class ColrPaintVarSolid : ColrPaint
 
     internal ColrPaint WithScalarWords(ushort[] scalars) =>
         new ColrPaintVarSolid(Id, PaletteIndex, scalars[0], VarIndexBase);
-
-    internal ColrPaint WithVarIndexBase(uint varIndexBase) =>
-        new ColrPaintVarSolid(Id, PaletteIndex, Alpha, varIndexBase);
 }
 
 /// <summary>A variable ColorStop: stopOffset (+0) and alpha (+1) are the

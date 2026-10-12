@@ -1,4 +1,5 @@
 using FontWeave.Core;
+using FontWeave.Tables.Variation;
 
 namespace FontWeave.Tables;
 
@@ -6,14 +7,17 @@ namespace FontWeave.Tables;
 /// coordinator's correction pinned): header (34 for v1) → the v0 compatibility
 /// arrays (layer records then base records, the T6-01 OQ-T6-01-8 order) →
 /// BaseGlyphList → LayerList → ClipList (the ClipBoxes tail-placed after the
-/// rows) → the paint node region in canonical ordinal order (parents first,
-/// children later - a re-used paint table occurs later in the file than any of
-/// the paint tables that use it), each node's auxiliary ColorLine/Affine2x3
-/// immediately behind its node. Because the read assigned the ordinals in
-/// exactly this order and every plan position is fixed before the first byte
-/// lands, the whole table is one forward write pass; every offset value is a
-/// single forward emission from its own base. varIndexMap/ItemVariationStore
-/// emit 0 (T6-02 has no var content to write - T6-03 opens the slots). Shared
+/// rows, each in its own format) → the paint node region in canonical ordinal
+/// order (parents first, children later - a re-used paint table occurs later in
+/// the file than any of the paint tables that use it), each node's auxiliary
+/// ColorLine/VarColorLine/Affine2x3/VarAffine2x3 immediately behind its node →
+/// VarIndexMap → ItemVariationStore tail-placed (T6-03 §4, OQ-T6-03-9 - the two
+/// side structures the graph cannot reach, so the paint region's fixup surface
+/// stays untouched). Because the read assigned the ordinals in exactly this
+/// order and every plan position is fixed before the first byte lands, the
+/// whole table is one forward write pass; every offset value is a single
+/// forward emission from its own base. Models without var content keep both
+/// header slots at 0 (the T6-02 static hosts' byte-for-byte face). Shared
 /// identity holds by construction (a shared node is one object with one
 /// ordinal); equal nodes never merge (zero hash-consing, OQ-T6-02-14).</summary>
 public static partial class ColrTableCompiler
@@ -30,11 +34,16 @@ public static partial class ColrTableCompiler
     /// orphan cycle refuses too). There are no cross-model children, so the
     /// SameSource guard surface is empty by construction. The paints must
     /// arrive in canonical ordinal order (paints[i].Id == i) - the order is the
-    /// model's own addressing, not a plan the compiler picks.</summary>
+    /// model's own addressing, not a plan the compiler picks. The variation
+    /// slots (T6-03 §4) ride their own pre-validated models: var paints demand
+    /// a store (the OQ-T6-03-2 mirror), a map demands one too (the OQ-8
+    /// dangling mirror), while a format-2 clip box needs neither (OQ-3).</summary>
     public static ReadStatus TryCreate(IReadOnlyList<ColrBaseGlyphPaint> baseGlyphPaints,
         IReadOnlyList<int> layerPaintNodeIds, IReadOnlyList<ColrClip> clips,
         IReadOnlyList<ColrPaint> paints, int numGlyphs, int? cpalNumPaletteEntries,
-        out ColrTable? model, out FontDiagnostic diagnostic, BuildLimits? limits = null,
+        out ColrTable? model, out FontDiagnostic diagnostic,
+        DeltaSetIndexMapTable? varIndexMap = null,
+        VariationStoreTable? itemVariationStore = null, BuildLimits? limits = null,
         DataLocation location = default)
     {
         model = null;
@@ -51,6 +60,23 @@ public static partial class ColrTableCompiler
         if (!budget.Work(24L * paints.Count + 6L * baseGlyphPaints.Count +
                 4L * layerPaintNodeIds.Count + 11L * clips.Count, location, out diagnostic))
             return ReadStatus.ResourceLimit;
+        // The presence matrix faces (the read side's OQ-2/OQ-8 mirrors): a var
+        // paint without a store and a map without a store refuse before the
+        // walk; a store alone stays legal (the implicit-identity shape).
+        bool hasVarPaint = false;
+        foreach (var paint in paints)
+        {
+            if (paint.Format is 3 or 5 or 7 or 9 or 13 or 15 or 17 or 19 or 21
+                or 23 or 25 or 27 or 29 or 31)
+            {
+                hasVarPaint = true;
+                break;
+            }
+        }
+        if ((hasVarPaint || varIndexMap is not null) && itemVariationStore is null)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Offset, 30), out diagnostic,
+                itemVariationStore is null ? 1UL : 0UL, 0UL);
         for (int i = 0; i < paints.Count; i++)
         {
             if (paints[i].Id != i)
@@ -119,7 +145,8 @@ public static partial class ColrTableCompiler
             if (status != ReadStatus.Done) return status;
         }
         model = new([], [], [.. baseGlyphPaints], [.. layerPaintNodeIds], [.. clips],
-            [.. paints], numGlyphs, 0, 0, 0, 0, 0, null, null, [], [], [], location, 0);
+            [.. paints], numGlyphs, 0, 0, 0, 0, 0, varIndexMap, itemVariationStore,
+            [], [], [], location, 0);
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -154,10 +181,16 @@ public static partial class ColrTableCompiler
             length += 4L + 4L * model.LayerPaintNodeIds.Count;
         }
         uint clipListAt = 0;
+        long clipBoxesLength = 0;
         if (model.ClipCount > 0)
         {
             clipListAt = (uint)length;
-            length += 5L + 16L * model.ClipCount;   // 7-byte rows + 9-byte boxes
+            // The rows take 7 bytes each; each box takes its own format's size
+            // (9 on format 1, 13 with the trailing varIndexBase on format 2).
+            foreach (var clip in model.Clips)
+                clipBoxesLength += clip.Box.Format == 2
+                    ? ColrLayout.ClipBoxFormat2Size : ColrLayout.ClipBoxFormat1Size;
+            length += 5L + 7L * model.ClipCount + clipBoxesLength;
         }
         uint paintRegionAt = (uint)length;
         var nodeAt = new uint[model.PaintCount];
@@ -168,18 +201,33 @@ public static partial class ColrTableCompiler
             var node = model.Paints[i];
             nodeAt[i] = (uint)length;
             length += PaintNodeSize(node);
-            var colorLine = ColorLineOf(node);
-            if (colorLine is { } line)
+            long colorLineLength = ColorLineLengthOf(node);
+            if (colorLineLength > 0)
             {
                 colorLineAt[i] = (uint)length;
-                length += ColrLayout.ColorLineHeaderSize +
-                    (long)line.Stops.Count * ColrLayout.ColorStopSize;
+                length += colorLineLength;
             }
-            if (node is ColrPaintTransform)
+            if (node is ColrPaintTransform or ColrPaintVarTransform)
             {
                 affineAt[i] = (uint)length;
-                length += ColrLayout.Affine2x3Size;
+                length += node is ColrPaintTransform
+                    ? ColrLayout.Affine2x3Size : ColrLayout.VarAffine2x3Size;
             }
+        }
+        // The two variation slots' bodies, tail-placed in canonical order -
+        // map then store (OQ-T6-03-9): both are side structures the paint
+        // graph cannot reach, so the paint region's fixup surface stays
+        // untouched and every offset remains one forward emission.
+        uint varIndexMapAt = 0, itemVariationStoreAt = 0;
+        if (model.VarIndexMap is { } map)
+        {
+            varIndexMapAt = (uint)length;
+            length += DeltaSetIndexMapTableCompiler.Measure(map);
+        }
+        if (model.ItemVariationStore is { } store)
+        {
+            itemVariationStoreAt = (uint)length;
+            length += VariationStoreTableCompiler.Measure(store);
         }
         if (length > int.MaxValue)
             return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
@@ -189,7 +237,7 @@ public static partial class ColrTableCompiler
         // offset must fit its 3-byte word (the plan makes them all forward, so
         // the region span is the maximum face).
         if (length - paintRegionAt > 0x1000000 || model.ClipCount > 0 &&
-            (ulong)(5L + 16L * model.ClipCount) > 0x1000000)
+            (ulong)(5L + 7L * model.ClipCount + clipBoxesLength) > 0x1000000)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 model.Location.AtLocal(DataField.Offset, paintRegionAt), out diagnostic,
                 (ulong)(length - paintRegionAt), 0x1000000UL);
@@ -213,12 +261,14 @@ public static partial class ColrTableCompiler
         // version-conditional scalars (its write family covers unconditional
         // fixed positions only - a registered generation-face observation), so
         // the compiler writes the five fixed 32-bit words directly; the window
-        // is the plan's own header, already capacity-checked.
+        // is the plan's own header, already capacity-checked. The two variation
+        // slots emit their plan positions when the model carries the slots and
+        // stay 0 otherwise (the T6-02 static hosts' byte-for-byte face).
         WriteU32(output, 14, bglAt);
         WriteU32(output, 18, llAt);
         WriteU32(output, 22, clipListAt);
-        WriteU32(output, 26, 0);             // varIndexMap: T6-03 opens the slot
-        WriteU32(output, 30, 0);             // ItemVariationStore: same boundary
+        WriteU32(output, 26, varIndexMapAt);
+        WriteU32(output, 30, itemVariationStoreAt);
         // The compatibility arrays (layer records then base records, the T6-01
         // OQ-T6-01-8 order), rows byte-for-byte in field order.
         for (int i = 0; i < model.LayerCount; i++)
@@ -274,24 +324,31 @@ public static partial class ColrTableCompiler
             }
         }
         // ClipList: format 1, the count, the rows (start/end immediate, the
-        // boxOffset a forward Offset24), the boxes tail-placed after the rows.
+        // boxOffset a forward Offset24), the boxes tail-placed after the rows
+        // in each row's own format (1 or 2; the format-2 box carries its
+        // varIndexBase verbatim - OQ-T6-03-3).
         if (model.ClipCount > 0)
         {
             output[(int)clipListAt] = 1;
             WriteU32(output, (int)clipListAt + 1, (uint)model.ClipCount);
+            long boxCursor = 0;
             for (int i = 0; i < model.ClipCount; i++)
             {
                 var clip = model.Clips[i];
                 ulong rowAt = clipListAt + 5 + (ulong)i * ColrLayout.ClipRecordSize;
-                uint boxAt = clipListAt + 5 + (uint)(7 * model.ClipCount + 9 * i);
+                uint boxAt = clipListAt + 5 + (uint)(7L * model.ClipCount + boxCursor);
+                boxCursor += clip.Box.Format == 2
+                    ? ColrLayout.ClipBoxFormat2Size : ColrLayout.ClipBoxFormat1Size;
                 WriteU16(output, (int)rowAt, clip.StartGlyphId);
                 WriteU16(output, (int)rowAt + 2, clip.EndGlyphId);
                 WriteU24(output, (int)rowAt + 4, boxAt - clipListAt);
-                output[(int)boxAt] = 1;
+                output[(int)boxAt] = clip.Box.Format;
                 WriteS16(output, (int)boxAt + 1, clip.Box.XMin);
                 WriteS16(output, (int)boxAt + 3, clip.Box.YMin);
                 WriteS16(output, (int)boxAt + 5, clip.Box.XMax);
                 WriteS16(output, (int)boxAt + 7, clip.Box.YMax);
+                if (clip.Box.Format == 2)
+                    WriteU32(output, (int)boxAt + 9, clip.Box.VarIndexBase);
             }
         }
         // The paint region, ordinal order (parents first); the auxiliaries ride
@@ -301,10 +358,33 @@ public static partial class ColrTableCompiler
             var node = model.Paints[i];
             WritePaintNode(output, nodeAt[i], node, nodeAt);
             if (colorLineAt[i] > 0)
-                WriteColorLine(output, colorLineAt[i], ColorLineOf(node)!);
+            {
+                if (node is ColrPaintVarLinearGradient varLinear)
+                    WriteVarColorLine(output, colorLineAt[i], varLinear.ColorLine);
+                else if (node is ColrPaintVarRadialGradient varRadial)
+                    WriteVarColorLine(output, colorLineAt[i], varRadial.ColorLine);
+                else if (node is ColrPaintVarSweepGradient varSweep)
+                    WriteVarColorLine(output, colorLineAt[i], varSweep.ColorLine);
+                else
+                    WriteColorLine(output, colorLineAt[i], ColorLineOf(node)!);
+            }
             if (affineAt[i] > 0)
-                WriteAffine(output, affineAt[i], ((ColrPaintTransform)node).Transform);
+            {
+                if (node is ColrPaintVarTransform varTransform)
+                    WriteVarAffine(output, affineAt[i], varTransform.Transform);
+                else
+                    WriteAffine(output, affineAt[i], ((ColrPaintTransform)node).Transform);
+            }
         }
+        // The variation bodies at their tail positions, each through its own
+        // compiler (the map's format word is the model's own; the store re-emits
+        // its width classes - the LONG_WORDS rows keep their int32 face).
+        if (model.VarIndexMap is { } mapModel)
+            DeltaSetIndexMapTableCompiler.WritePlanned(mapModel,
+                output.AsSpan((int)varIndexMapAt));
+        if (model.ItemVariationStore is { } storeModel)
+            VariationStoreTableCompiler.WritePlanned(storeModel,
+                output.AsSpan((int)itemVariationStoreAt));
         budget.RecordCompiledTable(output.Length);
         bytes = output;
         diagnostic = default;
@@ -418,6 +498,59 @@ public static partial class ColrTableCompiler
                 WriteS16(output, p + 8, skewAroundCenter.CenterX);
                 WriteS16(output, p + 10, skewAroundCenter.CenterY);
                 break;
+            // The fourteen var twins (T6-03 §4): the static word order plus the
+            // trailing varIndexBase (fmt13's rides the VarAffine2x3 behind the
+            // node), the auxiliaries right behind their nodes.
+            case ColrPaintVarSolid varSolid:
+                WriteU16(output, p + 1, varSolid.PaletteIndex);
+                WriteU16(output, p + 3, varSolid.Alpha);
+                WriteU32(output, p + 5, varSolid.VarIndexBase);
+                break;
+            case ColrPaintVarLinearGradient varLinear:
+                WriteU24(output, p + 1, (uint)PaintNodeSize(node));
+                WriteS16(output, p + 4, varLinear.X0);
+                WriteS16(output, p + 6, varLinear.Y0);
+                WriteS16(output, p + 8, varLinear.X1);
+                WriteS16(output, p + 10, varLinear.Y1);
+                WriteS16(output, p + 12, varLinear.X2);
+                WriteS16(output, p + 14, varLinear.Y2);
+                WriteU32(output, p + 16, varLinear.VarIndexBase);
+                break;
+            case ColrPaintVarRadialGradient varRadial:
+                WriteU24(output, p + 1, (uint)PaintNodeSize(node));
+                WriteS16(output, p + 4, varRadial.X0);
+                WriteS16(output, p + 6, varRadial.Y0);
+                WriteU16(output, p + 8, varRadial.Radius0);
+                WriteS16(output, p + 10, varRadial.X1);
+                WriteS16(output, p + 12, varRadial.Y1);
+                WriteU16(output, p + 14, varRadial.Radius1);
+                WriteU32(output, p + 16, varRadial.VarIndexBase);
+                break;
+            case ColrPaintVarSweepGradient varSweep:
+                WriteU24(output, p + 1, (uint)PaintNodeSize(node));
+                WriteS16(output, p + 4, varSweep.CenterX);
+                WriteS16(output, p + 6, varSweep.CenterY);
+                WriteU16(output, p + 8, varSweep.StartAngle);
+                WriteU16(output, p + 10, varSweep.EndAngle);
+                WriteU32(output, p + 12, varSweep.VarIndexBase);
+                break;
+            case ColrPaintVarTransform varTransform:
+                WriteU24(output, p + 1, nodeAt[varTransform.PaintNodeId] - at);
+                WriteU24(output, p + 4, (uint)PaintNodeSize(node)); // the affine, right behind
+                break;
+            case ColrPaintVarTranslate or ColrPaintVarScale
+                or ColrPaintVarScaleAroundCenter or ColrPaintVarScaleUniform
+                or ColrPaintVarScaleUniformAroundCenter or ColrPaintVarRotate
+                or ColrPaintVarRotateAroundCenter or ColrPaintVarSkew
+                or ColrPaintVarSkewAroundCenter:
+            {
+                var (childNodeId, words, baseOffset) = VarScalarParts(node);
+                WriteU24(output, p + 1, nodeAt[childNodeId] - at);
+                for (int k = 0; k < words.Length; k++)
+                    WriteU16(output, p + 4 + 2 * k, words[k]);
+                WriteU32(output, p + baseOffset, node.OwnVarIndexBase);
+                break;
+            }
             default: // ColrPaintComposite
                 var composite = (ColrPaintComposite)node;
                 WriteU24(output, p + 1, nodeAt[composite.SourceNodeId] - at);
@@ -431,23 +564,81 @@ public static partial class ColrTableCompiler
     {
         1 => ColrLayout.PaintColrLayersSize,
         2 => ColrLayout.PaintSolidSize,
+        3 => ColrLayout.PaintVarSolidSize,
         4 => ColrLayout.PaintLinearGradientSize,
+        5 => ColrLayout.PaintVarLinearGradientSize,
         6 => ColrLayout.PaintRadialGradientSize,
+        7 => ColrLayout.PaintVarRadialGradientSize,
         8 => ColrLayout.PaintSweepGradientSize,
+        9 => ColrLayout.PaintVarSweepGradientSize,
         10 => ColrLayout.PaintGlyphSize,
         11 => ColrLayout.PaintColrGlyphSize,
         12 => ColrLayout.PaintTransformSize,
+        13 => ColrLayout.PaintVarTransformSize,
         14 => ColrLayout.PaintTranslateSize,
+        15 => ColrLayout.PaintVarTranslateSize,
         16 => ColrLayout.PaintScaleSize,
+        17 => ColrLayout.PaintVarScaleSize,
         18 => ColrLayout.PaintScaleAroundCenterSize,
+        19 => ColrLayout.PaintVarScaleAroundCenterSize,
         20 => ColrLayout.PaintScaleUniformSize,
+        21 => ColrLayout.PaintVarScaleUniformSize,
         22 => ColrLayout.PaintScaleUniformAroundCenterSize,
+        23 => ColrLayout.PaintVarScaleUniformAroundCenterSize,
         24 => ColrLayout.PaintRotateSize,
+        25 => ColrLayout.PaintVarRotateSize,
         26 => ColrLayout.PaintRotateAroundCenterSize,
+        27 => ColrLayout.PaintVarRotateAroundCenterSize,
         28 => ColrLayout.PaintSkewSize,
+        29 => ColrLayout.PaintVarSkewSize,
         30 => ColrLayout.PaintSkewAroundCenterSize,
+        31 => ColrLayout.PaintVarSkewAroundCenterSize,
         _ => ColrLayout.PaintCompositeSize,
     };
+
+    /// <summary>A node's color-line auxiliary length in bytes (0 = none): the
+    /// static lines' 6-byte stops or the var lines' 10-byte stops (T6-03 §4).</summary>
+    private static long ColorLineLengthOf(ColrPaint node) => node switch
+    {
+        ColrPaintLinearGradient linear => StaticColorLineLength(linear.ColorLine),
+        ColrPaintRadialGradient radial => StaticColorLineLength(radial.ColorLine),
+        ColrPaintSweepGradient sweep => StaticColorLineLength(sweep.ColorLine),
+        ColrPaintVarLinearGradient varLinear => VarColorLineLength(varLinear.ColorLine),
+        ColrPaintVarRadialGradient varRadial => VarColorLineLength(varRadial.ColorLine),
+        ColrPaintVarSweepGradient varSweep => VarColorLineLength(varSweep.ColorLine),
+        _ => 0,
+    };
+
+    private static long StaticColorLineLength(ColrColorLine line) =>
+        ColrLayout.ColorLineHeaderSize + (long)line.Stops.Count * ColrLayout.ColorStopSize;
+
+    private static long VarColorLineLength(ColrVarColorLine line) =>
+        ColrLayout.ColorLineHeaderSize + (long)line.Stops.Count * ColrLayout.VarColorStopSize;
+
+    /// <summary>The var scalar family's wire parts: the child ordinal, the
+    /// scalar words in wire order, and the varIndexBase's own offset (§0's
+    /// per-format field order).</summary>
+    private static (int ChildNodeId, ushort[] Words, int BaseOffset) VarScalarParts(
+        ColrPaint node) => node switch
+    {
+        ColrPaintVarTranslate n => (n.PaintNodeId, [RawWord(n.Dx), RawWord(n.Dy)], 8),
+        ColrPaintVarScale n => (n.PaintNodeId, [n.ScaleX, n.ScaleY], 8),
+        ColrPaintVarScaleAroundCenter n => (n.PaintNodeId,
+            [n.ScaleX, n.ScaleY, RawWord(n.CenterX), RawWord(n.CenterY)], 12),
+        ColrPaintVarScaleUniform n => (n.PaintNodeId, [n.Scale], 6),
+        ColrPaintVarScaleUniformAroundCenter n => (n.PaintNodeId,
+            [n.Scale, RawWord(n.CenterX), RawWord(n.CenterY)], 10),
+        ColrPaintVarRotate n => (n.PaintNodeId, [n.Angle], 6),
+        ColrPaintVarRotateAroundCenter n => (n.PaintNodeId,
+            [n.Angle, RawWord(n.CenterX), RawWord(n.CenterY)], 10),
+        ColrPaintVarSkew n => (n.PaintNodeId, [n.XSkewAngle, n.YSkewAngle], 8),
+        ColrPaintVarSkewAroundCenter n => (n.PaintNodeId,
+            [n.XSkewAngle, n.YSkewAngle, RawWord(n.CenterX), RawWord(n.CenterY)], 12),
+        _ => throw new System.InvalidOperationException(
+            "A non-scalar var paint has no scalar words."),
+    };
+
+    private static ushort RawWord(short value) => unchecked((ushort)value);
 
     /// <summary>The owned-graph walk: the read walk's face set over node ids
     /// instead of wire offsets. The caller drives the root order (BGL glyph
@@ -509,8 +700,10 @@ public static partial class ColrTableCompiler
                     out diagnostic),
                 ColrPaintTransform transform => VisitChild(nodeId, transform.PaintNodeId,
                     depth, budget, out diagnostic),
-                ColrPaintTranslate translate => VisitChild(nodeId, translate.PaintNodeId,
-                    depth, budget, out diagnostic),
+                ColrPaintVarTransform varTransform => VisitChild(nodeId,
+                    varTransform.PaintNodeId, depth, budget, out diagnostic),
+                ColrPaintTranslate translate => VisitChild(nodeId, translate.PaintNodeId, depth, budget,
+                    out diagnostic),
                 ColrPaintScale scale => VisitChild(nodeId, scale.PaintNodeId, depth, budget,
                     out diagnostic),
                 ColrPaintScaleAroundCenter scaleAroundCenter => VisitChild(nodeId,
@@ -528,9 +721,28 @@ public static partial class ColrTableCompiler
                     out diagnostic),
                 ColrPaintSkewAroundCenter skewAroundCenter => VisitChild(nodeId,
                     skewAroundCenter.PaintNodeId, depth, budget, out diagnostic),
+                ColrPaintVarTranslate varTranslate => VisitChild(nodeId,
+                    varTranslate.PaintNodeId, depth, budget, out diagnostic),
+                ColrPaintVarScale varScale => VisitChild(nodeId, varScale.PaintNodeId,
+                    depth, budget, out diagnostic),
+                ColrPaintVarScaleAroundCenter varScaleAroundCenter => VisitChild(nodeId,
+                    varScaleAroundCenter.PaintNodeId, depth, budget, out diagnostic),
+                ColrPaintVarScaleUniform varScaleUniform => VisitChild(nodeId,
+                    varScaleUniform.PaintNodeId, depth, budget, out diagnostic),
+                ColrPaintVarScaleUniformAroundCenter varScaleUniformAroundCenter =>
+                    VisitChild(nodeId, varScaleUniformAroundCenter.PaintNodeId, depth,
+                        budget, out diagnostic),
+                ColrPaintVarRotate varRotate => VisitChild(nodeId, varRotate.PaintNodeId,
+                    depth, budget, out diagnostic),
+                ColrPaintVarRotateAroundCenter varRotateAroundCenter => VisitChild(nodeId,
+                    varRotateAroundCenter.PaintNodeId, depth, budget, out diagnostic),
+                ColrPaintVarSkew varSkew => VisitChild(nodeId, varSkew.PaintNodeId, depth,
+                    budget, out diagnostic),
+                ColrPaintVarSkewAroundCenter varSkewAroundCenter => VisitChild(nodeId,
+                    varSkewAroundCenter.PaintNodeId, depth, budget, out diagnostic),
                 ColrPaintComposite composite => VisitComposite(composite, depth, budget,
                     out diagnostic),
-                _ => VisitDomains(nodeId, out diagnostic), // solid + gradients
+                _ => VisitDomains(nodeId, out diagnostic), // solids + gradients
             };
             if (status != ReadStatus.Done) return status;
             Path.Remove(nodeId);
@@ -626,12 +838,29 @@ public static partial class ColrTableCompiler
                             Location.AtLocal(DataField.Payload, 1, nodeId), out diagnostic,
                             solid.PaletteIndex, unchecked((ulong)(long)entries));
                     break;
+                case ColrPaintVarSolid varSolid:
+                    // The var palette entry is immutable (no var slot) - the
+                    // same cross-table domain as the static face.
+                    if (CpalEntries is int varEntries &&
+                        varSolid.PaletteIndex != ColrLayout.ForegroundPaletteIndex &&
+                        varSolid.PaletteIndex >= (uint)varEntries)
+                        return ReadWire.Fail(ReadStatus.InvalidIndex,
+                            DiagnosticCode.IndexOutOfRange,
+                            Location.AtLocal(DataField.Payload, 1, nodeId), out diagnostic,
+                            varSolid.PaletteIndex, unchecked((ulong)(long)varEntries));
+                    break;
                 case ColrPaintLinearGradient linear:
                     return VisitColorLine(linear.ColorLine, nodeId, out diagnostic);
                 case ColrPaintRadialGradient radial:
                     return VisitColorLine(radial.ColorLine, nodeId, out diagnostic);
                 case ColrPaintSweepGradient sweep:
                     return VisitColorLine(sweep.ColorLine, nodeId, out diagnostic);
+                case ColrPaintVarLinearGradient varLinear:
+                    return VisitVarColorLine(varLinear.ColorLine, nodeId, out diagnostic);
+                case ColrPaintVarRadialGradient varRadial:
+                    return VisitVarColorLine(varRadial.ColorLine, nodeId, out diagnostic);
+                case ColrPaintVarSweepGradient varSweep:
+                    return VisitVarColorLine(varSweep.ColorLine, nodeId, out diagnostic);
             }
             return Done(out diagnostic);
         }
@@ -652,6 +881,26 @@ public static partial class ColrTableCompiler
             }
             return Done(out diagnostic);
         }
+
+        /// <summary>The var line's stop domain: the palette entry re-answers the
+        /// cross-table authority (immutable, no slot); the stopOffset and alpha
+        /// words are byte-faithful with no value domain of their own.</summary>
+        private ReadStatus VisitVarColorLine(ColrVarColorLine colorLine, int nodeId,
+            out FontDiagnostic diagnostic)
+        {
+            for (int i = 0; i < colorLine.Stops.Count; i++)
+            {
+                var stop = colorLine.Stops[i];
+                if (CpalEntries is int entries &&
+                    stop.PaletteIndex != ColrLayout.ForegroundPaletteIndex &&
+                    stop.PaletteIndex >= (uint)entries)
+                    return ReadWire.Fail(ReadStatus.InvalidIndex,
+                        DiagnosticCode.IndexOutOfRange,
+                        Location.AtLocal(DataField.Payload, 7UL + 10UL * (ulong)i, i),
+                        out diagnostic, stop.PaletteIndex, unchecked((ulong)(long)entries));
+            }
+            return Done(out diagnostic);
+        }
     }
 
     private static void WriteColorLine(byte[] output, uint at, ColrColorLine colorLine)
@@ -667,6 +916,22 @@ public static partial class ColrTableCompiler
         }
     }
 
+    /// <summary>The variable ColorLine (T6-03 §4): the same 3-byte head, the
+    /// 10-byte stops carrying each stop's own varIndexBase verbatim.</summary>
+    private static void WriteVarColorLine(byte[] output, uint at, ColrVarColorLine colorLine)
+    {
+        output[(int)at] = colorLine.Extend;
+        WriteU16(output, (int)at + 1, (uint)colorLine.Stops.Count);
+        for (int i = 0; i < colorLine.Stops.Count; i++)
+        {
+            var stop = colorLine.Stops[i];
+            WriteU16(output, (int)at + 3 + 10 * i, unchecked((ushort)stop.StopOffset));
+            WriteU16(output, (int)at + 5 + 10 * i, stop.PaletteIndex);
+            WriteU16(output, (int)at + 7 + 10 * i, stop.Alpha);
+            WriteU32(output, (int)at + 9 + 10 * i, stop.VarIndexBase);
+        }
+    }
+
     private static void WriteAffine(byte[] output, uint at, ColrAffine2x3 affine)
     {
         WriteU32(output, (int)at, affine.Xx);
@@ -675,6 +940,19 @@ public static partial class ColrTableCompiler
         WriteU32(output, (int)at + 12, affine.Yy);
         WriteU32(output, (int)at + 16, affine.Dx);
         WriteU32(output, (int)at + 20, affine.Dy);
+    }
+
+    /// <summary>The variable Affine2x3 (T6-03 §4): the six Fixed words plus the
+    /// trailing varIndexBase - the only var base PaintVarTransform carries.</summary>
+    private static void WriteVarAffine(byte[] output, uint at, ColrVarAffine2x3 affine)
+    {
+        WriteU32(output, (int)at, affine.Xx);
+        WriteU32(output, (int)at + 4, affine.Yx);
+        WriteU32(output, (int)at + 8, affine.Xy);
+        WriteU32(output, (int)at + 12, affine.Yy);
+        WriteU32(output, (int)at + 16, affine.Dx);
+        WriteU32(output, (int)at + 20, affine.Dy);
+        WriteU32(output, (int)at + 24, affine.VarIndexBase);
     }
 
     private static void WriteU16(byte[] output, int at, uint value)
