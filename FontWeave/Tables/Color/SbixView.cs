@@ -63,8 +63,7 @@ public readonly ref partial struct SbixView
                 Location.AtLocal(DataField.Flags, 2), out diagnostic, flags, 1UL);
         if ((flags & SbixLayout.FlagsReservedMask) != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.AtLocal(DataField.Flags, 2), out diagnostic,
-                (ulong)(flags & SbixLayout.FlagsReservedMask), 0UL);
+                Location.AtLocal(DataField.Flags, 2), out diagnostic, flags, 0UL);
         status = TryGetNumStrikes(out uint numStrikes, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!budget.Work((long)_data.Length + 8L * (long)numStrikes +

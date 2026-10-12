@@ -601,7 +601,7 @@ public sealed class SvgSbixReadTests
         Assert.Equal(ReadStatus.InvalidFormat, view2.ValidateTable(1, out diagnostic));
         Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
         Assert.Equal(DataField.Flags, diagnostic.Location.Field);
-        Assert.Equal(0x0004UL, diagnostic.Detail);
+        Assert.Equal(0x0005UL, diagnostic.Detail); // the whole flags word
         Assert.Equal(0UL, diagnostic.Expected);
     }
 
