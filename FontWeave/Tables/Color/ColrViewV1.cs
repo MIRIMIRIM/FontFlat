@@ -77,15 +77,13 @@ public readonly ref partial struct ColrView
                 out diagnostic,
                 store != 0 ? 0UL : unchecked((ulong)(long)fvarAxisCount!.Value),
                 store != 0 ? 1UL : 0UL);
-        // The variation slots' content faces (T6-03 §3): the map first (its
-        // dangling form is a header relation), then the store. A map without a
-        // store has no semantics (L643's "in conjunction with"); a store without
-        // a map is the legal implicit-identity form (L1556).
+        // The variation slots' content faces (T6-03 §3): each target opens and
+        // validates first (window/extent bounds), the presence relations after -
+        // the family error-priority order (T4-01: bounds before relations). A
+        // map without a store has no semantics (L643's "in conjunction with");
+        // a store without a map is the legal implicit-identity form (L1556).
         DeltaSetIndexMapTable? varIndexMapModel = null;
         VariationStoreTable? storeModel = null;
-        if (varIndexMap != 0 && store == 0)
-            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.AtLocal(DataField.Offset, 26), out diagnostic, varIndexMap, 0UL);
         if (varIndexMap != 0)
         {
             status = DeltaSetIndexMapView.TryOpen(_data.Slice((int)varIndexMap),
@@ -123,6 +121,9 @@ public readonly ref partial struct ColrView
                 out diagnostic, budget, allowLongWords: true);
             if (status != ReadStatus.Done) return status;
         }
+        if (varIndexMap != 0 && store == 0)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Offset, 26), out diagnostic, varIndexMap, 0UL);
         status = TryGetNumBaseGlyphPaintRecords(out uint paintCount, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = TryGetNumLayerPaints(out uint layerPaintCount, out diagnostic);

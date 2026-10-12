@@ -414,7 +414,9 @@ public sealed class ColrV1ReadTests
         // OQ-T6-03-8's matrix over the old receipt window: the map slot's
         // out-of-window face stays mechanical, but a map with no
         // ItemVariationStore is now the dangling form and refuses (L643's
-        // "in conjunction with" - a map alone has no semantics).
+        // "in conjunction with" - a map alone has no semantics). The map's
+        // own faces run first (D2 ruling 2026-10-12: existence/bounds before
+        // the presence relation), so this zero-count map refuses in Count.
         var w2 = NewWire();
         w2.Patch32(14, 34);
         w2.Patch32(26, 34);                  // varIndexMap window at 34
@@ -424,10 +426,10 @@ public sealed class ColrV1ReadTests
         Assert.Equal(ReadStatus.Done, status);
         Assert.Equal(ReadStatus.InvalidFormat, view2.ValidateTable(256, 4, out diagnostic));
         Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
-        Assert.Equal(DataField.Offset, diagnostic.Location.Field);
-        Assert.Equal(26uL, diagnostic.Location.Offset);
-        Assert.Equal(34uL, diagnostic.Detail);
-        Assert.Equal(0uL, diagnostic.Expected);
+        Assert.Equal(DataField.Count, diagnostic.Location.Field);
+        Assert.Equal(36uL, diagnostic.Location.Offset);
+        Assert.Equal(0uL, diagnostic.Detail);
+        Assert.Equal(1uL, diagnostic.Expected);
         Assert.Equal(ReadStatus.InvalidFormat,
             view2.TryReadTable(256, 4, out var model2, out diagnostic));
         Assert.Null(model2);
