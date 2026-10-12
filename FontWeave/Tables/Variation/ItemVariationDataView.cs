@@ -144,5 +144,5 @@ public readonly ref partial struct ItemVariationDataView
         global::System.Buffers.Binary.BinaryPrimitives.ReadInt16BigEndian(RawBytes.Slice(at));
 
     private int ReadInt32(int at) =>
-        (int)global::System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(RawBytes.Slice(at));
+        global::System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(RawBytes.Slice(at));
 }
