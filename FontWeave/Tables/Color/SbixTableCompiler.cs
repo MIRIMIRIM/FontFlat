@@ -72,7 +72,7 @@ public static class SbixTableCompiler
                 }
             }
         }
-        long length = PlanCanonicalLength(strikes.Count, numGlyphs, strikes);
+        long length = PlanCanonicalLayout(strikes.Count, numGlyphs, strikes);
         if (!budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         model = new(version, flags, numGlyphs, [.. strikes], location, (int)length);
         diagnostic = default;
@@ -120,7 +120,7 @@ public static class SbixTableCompiler
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 model.Location.AtLocal(DataField.Flags, 2), out diagnostic,
                 (ulong)(model.Flags & SbixLayout.FlagsReservedMask), 0UL);
-        long length = PlanCanonicalLength(model.StrikeCount, model.NumGlyphs, model.Strikes);
+        long length = PlanCanonicalLayout(model.StrikeCount, model.NumGlyphs, model.Strikes);
         if (!budget.Work(length, model.Location, out diagnostic) ||
             !budget.Buffer(length, model.Location, out diagnostic) ||
             !budget.Output(length, model.Location, out diagnostic))
@@ -188,7 +188,7 @@ public static class SbixTableCompiler
     /// <summary>The canonical layout's single forward plan: header(8) →
     /// strikeOffsets → the strikes packed in input order, each = head(4) →
     /// offsets(4·(numGlyphs+1)) → the non-empty slots' bytes.</summary>
-    private static long PlanCanonicalLength(int strikeCount, int numGlyphs,
+    private static long PlanCanonicalLayout(int strikeCount, int numGlyphs,
         IReadOnlyList<SbixStrike> strikes)
     {
         long length = SbixLayout.StrikeOffsetsAt + 4L * strikeCount;

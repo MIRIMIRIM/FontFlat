@@ -495,8 +495,9 @@ public sealed class SvgSbixReadTests
         // The normalized span answers Done with a zero-length slice.
         Assert.Equal(ReadStatus.Done, view.TryGetGlyphSpan(0, 1, out var span, out diagnostic));
         Assert.Equal(0, span.Length);
-        Assert.Equal(ReadStatus.Done, view.TryGetGlyphHeader(0, 1, out _, out _, out _, out bool present, out diagnostic));
-        Assert.False(present);
+        Assert.Equal(ReadStatus.Done, view.TryGetGlyphHeader(0, 1, out _, out _, out _, out diagnostic));
+        Assert.Equal(ReadStatus.Done, view.TryGetGlyphOffsets(0, 1, out uint anchor, out uint next, out diagnostic));
+        Assert.Equal(0u, anchor); // the NULL form's raw anchor
     }
 
     [Fact]

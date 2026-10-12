@@ -75,7 +75,7 @@ public static class SvgTableCompiler
                     record.StartGlyphID, previousEnd);
             previousEnd = record.EndGlyphID;
         }
-        long length = PlanCanonicalLength(records.Count, documents);
+        long length = PlanCanonicalLayout(records.Count, documents);
         if (!budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         model = new(version, reserved, SvgLayout.HeaderLength, [.. records],
             [.. documents], location, (int)length);
@@ -122,7 +122,7 @@ public static class SvgTableCompiler
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 model.Location.AtLocal(DataField.Count, SvgLayout.HeaderListOffsetAt),
                 out diagnostic, 0UL, 1UL);
-        long length = PlanCanonicalLength(model.RecordCount, model.Documents);
+        long length = PlanCanonicalLayout(model.RecordCount, model.Documents);
         if (!budget.Work(length, model.Location, out diagnostic) ||
             !budget.Buffer(length, model.Location, out diagnostic) ||
             !budget.Output(length, model.Location, out diagnostic))
@@ -198,7 +198,7 @@ public static class SvgTableCompiler
     /// <summary>The canonical layout's single forward plan: header(10) →
     /// numEntries + records (12n) → the distinct documents in first-occurrence
     /// record order.</summary>
-    private static long PlanCanonicalLength(int recordCount, IReadOnlyList<byte[]> documents)
+    private static long PlanCanonicalLayout(int recordCount, IReadOnlyList<byte[]> documents)
     {
         long length = SvgLayout.HeaderLength + 2L + (long)recordCount * SvgLayout.RecordStride;
         foreach (var document in documents)

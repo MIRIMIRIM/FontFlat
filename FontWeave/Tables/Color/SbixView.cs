@@ -20,6 +20,16 @@ namespace FontWeave.Tables;
 /// array windows, per-strike head, per-strike array, ascent, per-glyph slots.</summary>
 public readonly ref partial struct SbixView
 {
+    // The card-pinned public constants (card T6-04 section 2's member list):
+    // the graphicType closed set and the flags segments ride the View so
+    // consumers share one declaration surface with the read side.
+    public const uint GraphicTypeJpg = SbixLayout.GraphicTypeJpg,
+        GraphicTypePng = SbixLayout.GraphicTypePng,
+        GraphicTypeTiff = SbixLayout.GraphicTypeTiff,
+        GraphicTypeDupe = SbixLayout.GraphicTypeDupe;
+    public const ushort FlagsBit0 = SbixLayout.FlagsBit0,
+        FlagsBit1 = SbixLayout.FlagsBit1, FlagsReservedMask = SbixLayout.FlagsReservedMask;
+
     public ReadStatus ValidateTable(int numGlyphs, out FontDiagnostic diagnostic,
         BuildLimits? limits = null)
     {
@@ -338,15 +348,14 @@ public readonly ref partial struct SbixView
     }
 
     /// <summary>One glyph's GlyphData head: the raw origin placement pair and
-    /// the graphicType tag; present=false for the normalized empty slots
-    /// (OQ-T6-04-11's dual form).</summary>
+    /// the graphicType tag. The normalized empty slots (OQ-T6-04-11's dual
+    /// form) answer zeros - the empty face itself is TryGetGlyphSpan's
+    /// zero-length span.</summary>
     public ReadStatus TryGetGlyphHeader(int strikeIndex, int glyphId, out short originOffsetX,
-        out short originOffsetY, out uint graphicType, out bool present,
-        out FontDiagnostic diagnostic)
+        out short originOffsetY, out uint graphicType, out FontDiagnostic diagnostic)
     {
         originOffsetX = originOffsetY = 0;
         graphicType = 0;
-        present = false;
         ReadStatus status = TryGetGlyphWindow(strikeIndex, glyphId, out ulong absoluteAt,
             out uint span, out bool empty, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -362,18 +371,16 @@ public readonly ref partial struct SbixView
         originOffsetX = global::System.Buffers.Binary.BinaryPrimitives.ReadInt16BigEndian(header);
         originOffsetY = global::System.Buffers.Binary.BinaryPrimitives.ReadInt16BigEndian(header.Slice(2));
         graphicType = global::System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(header.Slice(4));
-        present = true;
         diagnostic = default;
         return ReadStatus.Done;
     }
 
-    /// <summary>One glyph's opaque payload bytes (past the 8-byte head);
-    /// present=false for the normalized empty slots.</summary>
+    /// <summary>One glyph's opaque payload bytes (past the 8-byte head); the
+    /// normalized empty slots answer a zero-length span.</summary>
     public ReadStatus TryGetGlyphPayload(int strikeIndex, int glyphId,
-        out ReadOnlySpan<byte> payload, out bool present, out FontDiagnostic diagnostic)
+        out ReadOnlySpan<byte> payload, out FontDiagnostic diagnostic)
     {
         payload = default;
-        present = false;
         ReadStatus status = TryGetGlyphWindow(strikeIndex, glyphId, out ulong absoluteAt,
             out uint span, out bool empty, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -384,7 +391,6 @@ public readonly ref partial struct SbixView
         }
         payload = _data.Slice((int)absoluteAt + SbixLayout.GlyphDataHeaderLength,
             (int)(span - SbixLayout.GlyphDataHeaderLength));
-        present = true;
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -396,19 +402,44 @@ public readonly ref partial struct SbixView
     {
         targetGlyphId = 0;
         ReadStatus status = TryGetGlyphHeader(strikeIndex, glyphId, out _, out _,
-            out uint graphicType, out bool present, out diagnostic);
+            out uint graphicType, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (!present || graphicType != SbixLayout.GraphicTypeDupe)
+        if (graphicType != SbixLayout.GraphicTypeDupe)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
                 Location.AtLocal(DataField.Tag, 0, glyphId), out diagnostic, graphicType, 0UL);
-        status = TryGetGlyphPayload(strikeIndex, glyphId, out var payload, out present,
-            out diagnostic);
+        status = TryGetGlyphPayload(strikeIndex, glyphId, out var payload, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (payload.Length < 2)
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
                 Location.AtLocal(DataField.Payload, 0, glyphId), out diagnostic,
                 (ulong)payload.Length, 2UL);
         targetGlyphId = global::System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(payload);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>One glyph slot's raw strike-relative anchor pair (the
+    /// dual-form distinction face: a zero anchor is the NULL form, equal
+    /// consecutive anchors the zero-span form - OQ-T6-04-11). The values are
+    /// raw wire anchors, never normalized.</summary>
+    public ReadStatus TryGetGlyphOffsets(int strikeIndex, int glyphId, out uint anchor,
+        out uint next, out FontDiagnostic diagnostic)
+    {
+        anchor = next = 0;
+        ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(glyphId, Location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TryGetStrike(strikeIndex, out _, out _, out ulong offsetsAt, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        for (int k = glyphId; k <= glyphId + 1; k++)
+        {
+            if (!TrySlice(_data, offsetsAt + 4UL * (ulong)k, 4, out var slot))
+                return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
+                    Location.AtLocal(DataField.Offset, offsetsAt + 4UL * (ulong)k, k),
+                    out diagnostic, (ulong)_data.Length, offsetsAt + 4UL * (ulong)k + 4UL);
+            uint value = global::System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(slot);
+            if (k == glyphId) anchor = value;
+            else next = value;
+        }
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -514,7 +545,7 @@ public readonly ref partial struct SbixView
                 if (status != ReadStatus.Done) return status;
                 if (empty) continue;
                 status = TryGetGlyphHeader(i, gid, out short originX, out short originY,
-                    out uint graphicType, out _, out diagnostic);
+                    out uint graphicType, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 var payload = new byte[span - SbixLayout.GlyphDataHeaderLength];
                 _data.Slice((int)absoluteAt + SbixLayout.GlyphDataHeaderLength,
