@@ -16,6 +16,9 @@ internal static class SvgLayout
     // product does not model (the T6-03 fmt13 line), and reserved is
     // unconditionally present.
     internal const int HeaderLength = 10;
+    // The packed header word positions (0/2/6), named for the partial's
+    // diagnostic locations.
+    internal const int HeaderListOffsetAt = 2, HeaderReservedAt = 6;
     // One SVGDocumentRecord: u16 startGlyphID + u16 endGlyphID +
     // Offset32 svgDocOffset + u32 svgDocLength (spec V L79-82). svgDocOffset is
     // relative to the SVGDocumentList start, NOT the table start (OQ-T6-04-5's

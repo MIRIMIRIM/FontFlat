@@ -36,6 +36,19 @@ internal static class SbixLayout
     // (set to 0)" - the MVAR/MERG reserved-word refusal family.
     internal const ushort FlagsBit0 = 0x0001, FlagsBit1 = 0x0002,
         FlagsReservedMask = 0xFFFC;
+
+    /// <summary>The graphicType closed set's membership (OQ-T6-04-12): only
+    /// 'jpg ', 'png ', 'tiff' and 'dupe' are OpenType-defined; Apple-only
+    /// 'pdf '/'mask' and unknown tags refuse as UnsupportedFormat.</summary>
+    internal static bool IsGraphicTypeDefined(uint graphicType) =>
+        graphicType is GraphicTypeJpg or GraphicTypePng or GraphicTypeTiff
+            or GraphicTypeDupe;
+
+    /// <summary>The empty-slot dual form (OQ-T6-04-11): a NULL anchor
+    /// (offset 0, Apple's "no data") or a zero span (the OT L72 length
+    /// derivation over equal consecutive offsets) - both normalize to empty.</summary>
+    internal static bool IsEmptySlot(uint anchor, uint next) =>
+        anchor == 0 || next == 0 || anchor == next;
 }
 
 // sbix v1 (card T6-04 §2, OQ-T6-04-9): the single-View line for the 'sbix' tag.
