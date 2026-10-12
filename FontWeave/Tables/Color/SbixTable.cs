@@ -18,7 +18,9 @@ public sealed class SbixStrike
 {
     private readonly SbixGlyph?[] _glyphs;
 
-    internal SbixStrike(ushort ppem, ushort ppi, SbixGlyph?[] glyphs)
+    /// <summary>Creates one strike over the given slots (null = the normalized
+    /// empty); the factory and edit paths share this owned-part shape.</summary>
+    public SbixStrike(ushort ppem, ushort ppi, SbixGlyph?[] glyphs)
     {
         Ppem = ppem;
         Ppi = ppi;
@@ -172,11 +174,6 @@ public sealed class SbixTable
             var targetSlot = _strikes[strikeIndex].GlyphsInternal[target];
             if (targetSlot is null)
                 return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                    Location.AtLocal(DataField.GlyphId,
-                        StrikeDataAt(strikeIndex, glyphId) + SbixLayout.GlyphDataHeaderLength,
-                        glyphId), out diagnostic, (uint)target, 0UL);
-            if (target == glyphId)
-                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     Location.AtLocal(DataField.GlyphId,
                         StrikeDataAt(strikeIndex, glyphId) + SbixLayout.GlyphDataHeaderLength,
                         glyphId), out diagnostic, (uint)target, 0UL);
