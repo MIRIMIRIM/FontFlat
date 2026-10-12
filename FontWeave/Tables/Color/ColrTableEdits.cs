@@ -173,8 +173,9 @@ public sealed partial class ColrTable
             (ColrBaseGlyphPaint[])_baseGlyphPaints.Clone(),
             (int[])_layerPaintNodeIds.Clone(), clips, _paints, NumGlyphs,
             BaseGlyphRecordsOffset, LayerRecordsOffset, VarIndexMapOffset,
-            ItemVariationStoreOffset, ClipListOffset, PaintSourcePositions,
-            ColorLineSourcePositions, LayerSourceOffsets, Location, ConsumedLength);
+            ItemVariationStoreOffset, ClipListOffset, VarIndexMap,
+            ItemVariationStore, PaintSourcePositions, ColorLineSourcePositions,
+            LayerSourceOffsets, Location, ConsumedLength);
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -214,8 +215,9 @@ public sealed partial class ColrTable
             (ColrBaseGlyphPaint[])_baseGlyphPaints.Clone(),
             (int[])_layerPaintNodeIds.Clone(), (ColrClip[])_clips.Clone(), paints,
             NumGlyphs, BaseGlyphRecordsOffset, LayerRecordsOffset, VarIndexMapOffset,
-            ItemVariationStoreOffset, ClipListOffset, PaintSourcePositions,
-            ColorLineSourcePositions, LayerSourceOffsets, Location, ConsumedLength);
+            ItemVariationStoreOffset, ClipListOffset, VarIndexMap,
+            ItemVariationStore, PaintSourcePositions, ColorLineSourcePositions,
+            LayerSourceOffsets, Location, ConsumedLength);
 
     // The source coordinates the edit diagnostics name: read models carry the
     // wire positions they were read from; factory models carry zeros and

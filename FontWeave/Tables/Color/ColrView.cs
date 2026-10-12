@@ -8,21 +8,34 @@ namespace FontWeave.Tables;
 /// domains (the T4-10 MATH variantGlyph line), and cpalNumPaletteEntries is the
 /// explicit cross-table authority for the layer paletteIndex domain; null skips
 /// that domain (OQ-T6-01-4: the container-level COLR⟹CPAL requirement is the
-/// joint validator's business, and a CPAL-only face is legal, spec L157). Error
+/// joint validator's business, and a CPAL-only face is legal, spec L157). The
+/// v1 face takes fvarAxisCount (T6-03 §3, OQ-T6-03-1) as the store⟡fvar
+/// signature authority: it must be given exactly when the table declares an
+/// ItemVariationStore, and it feeds the store's region-axis domain. Error
 /// priority follows the T4-01 line: version, presence, bounds, relations, value
 /// domains. Pure validation materializes nothing.</summary>
 public readonly ref partial struct ColrView
 {
+    /// <summary>The frozen two-input gate (cards T6-01/T6-02): a null
+    /// fvarAxisCount, i.e. the non-variable face.</summary>
     public ReadStatus ValidateTable(int numGlyphs, int? cpalNumPaletteEntries,
-        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+        out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        ValidateTable(numGlyphs, cpalNumPaletteEntries, null, out diagnostic, limits);
+
+    public ReadStatus ValidateTable(int numGlyphs, int? cpalNumPaletteEntries,
+        int? fvarAxisCount, out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return ValidateTable(numGlyphs, cpalNumPaletteEntries, out diagnostic, budget);
+        return ValidateTable(numGlyphs, cpalNumPaletteEntries, fvarAxisCount, out diagnostic, budget);
     }
 
     internal ReadStatus ValidateTable(int numGlyphs, int? cpalNumPaletteEntries,
-        out FontDiagnostic diagnostic, BuildBudget budget)
+        out FontDiagnostic diagnostic, BuildBudget budget) =>
+        ValidateTable(numGlyphs, cpalNumPaletteEntries, null, out diagnostic, budget);
+
+    internal ReadStatus ValidateTable(int numGlyphs, int? cpalNumPaletteEntries,
+        int? fvarAxisCount, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         // The version gate first (the T4-01 priority line); version 1 dispatches
         // to the v1 half of this View (the compat grace, the three arrays, the
@@ -35,7 +48,8 @@ public readonly ref partial struct ColrView
         {
             status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            return ValidateTableV1(numGlyphs, cpalNumPaletteEntries, out diagnostic, budget);
+            return ValidateTableV1(numGlyphs, cpalNumPaletteEntries, fvarAxisCount,
+                out diagnostic, budget);
         }
         status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -119,17 +133,31 @@ public readonly ref partial struct ColrView
 
     /// <summary>Reads the complete declared slice into an owned
     /// <see cref="ColrTable"/> with the caller's numGlyphs receipt.</summary>
-    public ReadStatus TryReadTable(int numGlyphs, int? cpalNumPaletteEntries, out ColrTable? model,
-        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    /// <summary>Reads the complete declared slice into an owned
+    /// <see cref="ColrTable"/> with the caller's numGlyphs receipt (the
+    /// non-variable two-input face).</summary>
+    public ReadStatus TryReadTable(int numGlyphs, int? cpalNumPaletteEntries,
+        out ColrTable? model, out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        TryReadTable(numGlyphs, cpalNumPaletteEntries, null, out model, out diagnostic, limits);
+
+    public ReadStatus TryReadTable(int numGlyphs, int? cpalNumPaletteEntries,
+        int? fvarAxisCount, out ColrTable? model, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
     {
         model = null;
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return TryReadTable(numGlyphs, cpalNumPaletteEntries, out model, out diagnostic, budget);
+        return TryReadTable(numGlyphs, cpalNumPaletteEntries, fvarAxisCount, out model,
+            out diagnostic, budget);
     }
 
-    internal ReadStatus TryReadTable(int numGlyphs, int? cpalNumPaletteEntries, out ColrTable? model,
-        out FontDiagnostic diagnostic, BuildBudget budget)
+    internal ReadStatus TryReadTable(int numGlyphs, int? cpalNumPaletteEntries,
+        out ColrTable? model, out FontDiagnostic diagnostic, BuildBudget budget) =>
+        TryReadTable(numGlyphs, cpalNumPaletteEntries, null, out model, out diagnostic, budget);
+
+    internal ReadStatus TryReadTable(int numGlyphs, int? cpalNumPaletteEntries,
+        int? fvarAxisCount, out ColrTable? model, out FontDiagnostic diagnostic,
+        BuildBudget budget)
     {
         model = null;
         // Version 1 materializes through the one v1 walk (the validate-only walk
@@ -141,8 +169,8 @@ public readonly ref partial struct ColrView
         {
             status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            return ReadTableV1(numGlyphs, cpalNumPaletteEntries, true, out model,
-                out diagnostic, budget);
+            return ReadTableV1(numGlyphs, cpalNumPaletteEntries, fvarAxisCount, true,
+                out model, out diagnostic, budget);
         }
         status = ValidateTable(numGlyphs, cpalNumPaletteEntries, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;

@@ -364,16 +364,16 @@ public sealed class ColrV1WriteTests
     [Fact]
     public void VarSlotsEmitZeroAndShortDestinationLeavesTheSpanUntouched()
     {
+        // The no-variation host: both header slots read 0 and a model without
+        // var content compiles with both words at 0 (the T6-02 static face;
+        // T6-03 emits real words only for models that carry the var slots).
         var w = NewWire();
         w.Patch32(14, 34);
-        w.Patch32(26, 34);                       // varIndexMap present-but-unread
         w.U32(0);
         byte[] wire = w.ToBytes();
         ColrTable model = Read(wire);
         byte[] compiled = Compile(model);
-        // The receipt rides the model, but the compiler has no var content to
-        // write - the slot emits 0 (T6-03 opens it).
-        Assert.Equal(34u, model.VarIndexMapOffset);
+        Assert.Equal(0u, model.VarIndexMapOffset);
         Assert.Equal(0u, ReadU32(compiled, 26));
         Assert.Equal(0u, ReadU32(compiled, 30));
 

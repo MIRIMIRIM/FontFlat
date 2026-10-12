@@ -119,7 +119,7 @@ public static partial class ColrTableCompiler
             if (status != ReadStatus.Done) return status;
         }
         model = new([], [], [.. baseGlyphPaints], [.. layerPaintNodeIds], [.. clips],
-            [.. paints], numGlyphs, 0, 0, 0, 0, 0, [], [], [], location, 0);
+            [.. paints], numGlyphs, 0, 0, 0, 0, 0, null, null, [], [], [], location, 0);
         diagnostic = default;
         return ReadStatus.Done;
     }

@@ -1,4 +1,5 @@
 using FontWeave.Core;
+using FontWeave.Tables.Variation;
 
 namespace FontWeave.Tables;
 
@@ -46,11 +47,15 @@ public sealed partial class ColrTable
         ConsumedLength = consumedLength;
     }
 
+    /// <summary>The v1 constructor (card T6-03 §2): the two variation slots are
+    /// the materialized models, NULL = the absent/implicit face (a NULL map with
+    /// a present store is the implicit-identity form, L1556).</summary>
     internal ColrTable(ColrBaseGlyphRecord[] baseGlyphs, ColrLayerRecord[] layers,
         ColrBaseGlyphPaint[] baseGlyphPaints, int[] layerPaintNodeIds, ColrClip[] clips,
         ColrPaint[] paints, int numGlyphs, uint baseGlyphRecordsOffset,
         uint layerRecordsOffset, uint varIndexMapOffset, uint itemVariationStoreOffset,
-        uint clipListOffset, uint[] paintSourcePositions,
+        uint clipListOffset, DeltaSetIndexMapTable? varIndexMap,
+        VariationStoreTable? itemVariationStore, uint[] paintSourcePositions,
         uint[] colorLineSourcePositions, uint[] layerSourceOffsets,
         DataLocation location, int consumedLength)
     {
@@ -67,6 +72,8 @@ public sealed partial class ColrTable
         VarIndexMapOffset = varIndexMapOffset;
         ItemVariationStoreOffset = itemVariationStoreOffset;
         ClipListOffset = clipListOffset;
+        VarIndexMap = varIndexMap;
+        ItemVariationStore = itemVariationStore;
         PaintSourcePositions = paintSourcePositions;
         ColorLineSourcePositions = colorLineSourcePositions;
         LayerSourceOffsets = layerSourceOffsets;
@@ -109,10 +116,20 @@ public sealed partial class ColrTable
     public IReadOnlyList<ColrPaint> Paints => _paints is { } paints ? Array.AsReadOnly(paints) : [];
 
     /// <summary>The v1 variation slots' receipts: the source offsets (0 =
-    /// absent). T6-02 reads neither target's contents - the window check and the
-    /// presence observation are the whole surface (OQ-T6-02-5, T6-03 opens it).</summary>
+    /// absent). The contents are the materialized models below (T6-03 opens the
+    /// window T6-02 left as a receipt).</summary>
     public uint VarIndexMapOffset { get; }
     public uint ItemVariationStoreOffset { get; }
+
+    /// <summary>The materialized varIndexMap, NULL when the header slot is 0
+    /// (the map itself may still be absent with a live store - the implicit
+    /// identity, L1556).</summary>
+    public DeltaSetIndexMapTable? VarIndexMap { get; }
+
+    /// <summary>The materialized ItemVariationStore, NULL when the header slot
+    /// is 0. The (outer, inner) dereference is the store model's own product
+    /// face (T4-02b) - COLR adds no second dereference name.</summary>
+    public VariationStoreTable? ItemVariationStore { get; }
 
     /// <summary>The source ClipList offset (the diagnostics' coordinate; a
     /// factory model carries 0, its plan being computed at compile time).</summary>
@@ -304,6 +321,7 @@ public sealed partial class ColrTable
                 (int[])_layerPaintNodeIds.Clone(), (ColrClip[])_clips.Clone(),
                 _paints, NumGlyphs, BaseGlyphRecordsOffset, LayerRecordsOffset,
                 VarIndexMapOffset, ItemVariationStoreOffset, ClipListOffset,
+                VarIndexMap, ItemVariationStore,
                 PaintSourcePositions, ColorLineSourcePositions, LayerSourceOffsets,
                 Location, ConsumedLength)
             : new((ColrBaseGlyphRecord[])_baseGlyphs.Clone(), layers, NumGlyphs,

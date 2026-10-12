@@ -21,9 +21,7 @@ internal static class ColrLayout
     internal const int BaseGlyphPaintRecordSize = 6, LayerPaintOffsetStride = 4;
     internal const int ClipRecordSize = 7, ClipBoxFormat1Size = 9;
     // The 18 static paint formats' packed lengths (format byte included, no
-    // alignment padding; spec L859-1393). The fourteen var twins
-    // (3/5/7/9/13/15/17/19/21/23/25/27/29/31) are T6-03's declared domain and
-    // refuse as UnsupportedFormat here (OQ-T6-02-4).
+    // alignment padding; spec L859-1393).
     internal const int PaintColrLayersSize = 6, PaintSolidSize = 5,
         PaintLinearGradientSize = 16, PaintRadialGradientSize = 16,
         PaintSweepGradientSize = 12, PaintGlyphSize = 6, PaintColrGlyphSize = 3,
@@ -32,6 +30,30 @@ internal static class ColrLayout
         PaintScaleUniformAroundCenterSize = 10, PaintRotateSize = 6,
         PaintRotateAroundCenterSize = 10, PaintSkewSize = 8,
         PaintSkewAroundCenterSize = 12, PaintCompositeSize = 8;
+    // The fourteen var paint formats (3/5/7/9/13/15/17/19/21/23/25/27/29/31,
+    // T6-03 §0's size table): each is its static twin plus a trailing u32
+    // varIndexBase (packed, no padding); PaintVarTransform carries two Offset24s
+    // and no own varIndexBase (it rides the VarAffine2x3).
+    internal const int PaintVarSolidSize = 9, PaintVarLinearGradientSize = 20,
+        PaintVarRadialGradientSize = 20, PaintVarSweepGradientSize = 16,
+        PaintVarTransformSize = 11, PaintVarTranslateSize = 12,
+        PaintVarScaleSize = 12, PaintVarScaleAroundCenterSize = 16,
+        PaintVarScaleUniformSize = 10, PaintVarScaleUniformAroundCenterSize = 14,
+        PaintVarRotateSize = 10, PaintVarRotateAroundCenterSize = 14,
+        PaintVarSkewSize = 12, PaintVarSkewAroundCenterSize = 16;
+    // The var sub-structures: one VarColorStop is stopOffset + paletteIndex
+    // (immutable, no slot) + alpha + u32 varIndexBase = 10 bytes (L802-809); a
+    // VarColorLine is the 3-byte ColorLine head plus 10-byte stops (L811-815,
+    // no row-level varIndexBase); a VarAffine2x3 is six Fixed words plus u32
+    // varIndexBase = 28 bytes (L1071-1081); a format-2 ClipBox is four FWORDs
+    // plus u32 varIndexBase = 13 bytes (L761-770).
+    internal const int VarColorStopSize = 10, VarAffine2x3Size = 28,
+        ClipBoxFormat2Size = 13;
+    // The variation-word contract (L1544-1556): 0xFFFFFFFF marks "no variable
+    // data" for a whole table or record; the per-node slot count is capped at
+    // six (the gradient twins and the VarAffine2x3).
+    internal const uint VarIndexBaseNoData = 0xFFFFFFFFu;
+    internal const int MaxVarSlots = 6;
     // The paint sub-structures: a ColorLine is extend + numStops + the stops
     // (3-byte head, spec L817-823), one ColorStop is 6 bytes (L794-800), and an
     // Affine2x3 is six Fixed words = 24 bytes (L1060-1069).

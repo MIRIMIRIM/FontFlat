@@ -1,4 +1,5 @@
 using FontWeave.Core;
+using FontWeave.Tables.Variation;
 
 namespace FontWeave.Tables;
 
@@ -410,8 +411,12 @@ public readonly record struct ColrColorStop(short StopOffset, ushort PaletteInde
 public readonly record struct ColrAffine2x3(uint Xx, uint Yx, uint Xy, uint Yy, uint Dx, uint Dy);
 
 /// <summary>A format-1 ClipBox: four raw FWORDs, preserved verbatim with no
-/// order relation between them (the spec carries none, card §3).</summary>
-public readonly record struct ColrClipBox(short XMin, short YMin, short XMax, short YMax);
+/// order relation between them (the spec carries none, card §3). Format 2
+/// (T6-03 §3, OQ-T6-03-3) adds the u32 varIndexBase and degrades to this
+/// static face when the table carries no ItemVariationStore (L1554: the word
+/// is ignored and should be zero - kept verbatim as an observation).</summary>
+public readonly record struct ColrClipBox(short XMin, short YMin, short XMax, short YMax,
+    byte Format = 1, uint VarIndexBase = 0);
 
 /// <summary>One Clip: the inclusive glyph range and the box that bounds it. The
 /// range is a projection key, not a paint graph member (spec L729: every color
@@ -420,3 +425,366 @@ public readonly record struct ColrClip(ushort StartGlyphId, ushort EndGlyphId, C
 
 /// <summary>One BaseGlyphPaintRecord: the base glyph and its root paint node.</summary>
 public readonly record struct ColrBaseGlyphPaint(ushort GlyphId, int PaintNodeId);
+
+// ---- the version 1 variable paint family (card T6-03 §2; the L1531-1562
+// contract). Every node carries its scalar words exactly like its static twin
+// plus the raw u32 varIndexBase (0xFFFFFFFF = the no-variable-data sentinel,
+// L1550); the palette entries stay immutable (no var slot, the cross-table
+// domain is the static family's). No delta evaluation happens here - the
+// resolution of (varIndexBase, slot) onto the variation store is the read
+// chain's domain check, and the numeric application is the renderer's (L1560,
+// oracle-only family discipline).
+
+/// <summary>PaintVarSolid (format 3): the alpha slot is variable (+0), the
+/// palette entry is not.</summary>
+public sealed class ColrPaintVarSolid : ColrPaint
+{
+    public ColrPaintVarSolid(int id, ushort paletteIndex, ushort alpha,
+        uint varIndexBase) : base(id, 3)
+    {
+        PaletteIndex = paletteIndex;
+        Alpha = alpha;
+        VarIndexBase = varIndexBase;
+    }
+
+    public ushort PaletteIndex { get; internal set; }
+    public ushort Alpha { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarSolid(Id, PaletteIndex, scalars[0], VarIndexBase);
+
+    internal ColrPaint WithVarIndexBase(uint varIndexBase) =>
+        new ColrPaintVarSolid(Id, PaletteIndex, Alpha, varIndexBase);
+}
+
+/// <summary>A variable ColorStop: stopOffset (+0) and alpha (+1) are the
+/// variable slots; the palette entry is immutable (L802-809).</summary>
+public readonly record struct ColrVarColorStop(short StopOffset, ushort PaletteIndex,
+    ushort Alpha, uint VarIndexBase);
+
+/// <summary>A variable ColorLine: the same 3-byte head and wire-ordered stops
+/// as the static face, each stop carrying its own varIndexBase (L811-815 -
+/// the line itself carries none).</summary>
+public sealed class ColrVarColorLine
+{
+    public ColrVarColorLine(byte extend, ColrVarColorStop[] stops)
+    {
+        Extend = extend;
+        StopArray = stops;
+    }
+
+    public byte Extend { get; internal set; }
+    public IReadOnlyList<ColrVarColorStop> Stops => StopArray;
+    internal readonly ColrVarColorStop[] StopArray;
+}
+
+/// <summary>A variable Affine2x3: six raw Fixed words (+0..+5, the L1546
+/// example's slot order) plus the u32 varIndexBase - 28 bytes (L1071-1081).</summary>
+public readonly record struct ColrVarAffine2x3(uint Xx, uint Yx, uint Xy, uint Yy,
+    uint Dx, uint Dy, uint VarIndexBase);
+
+/// <summary>PaintVarLinearGradient (format 5): six variable FWORD slots
+/// (+0..+5) and the VarColorLine the colorLineOffset addresses.</summary>
+public sealed class ColrPaintVarLinearGradient : ColrPaint
+{
+    public ColrPaintVarLinearGradient(int id, short x0, short y0, short x1, short y1,
+        short x2, short y2, ColrVarColorLine colorLine, uint varIndexBase) : base(id, 5)
+    {
+        X0 = x0; Y0 = y0; X1 = x1; Y1 = y1; X2 = x2; Y2 = y2;
+        ColorLine = colorLine;
+        VarIndexBase = varIndexBase;
+    }
+
+    public short X0 { get; internal set; }
+    public short Y0 { get; internal set; }
+    public short X1 { get; internal set; }
+    public short Y1 { get; internal set; }
+    public short X2 { get; internal set; }
+    public short Y2 { get; internal set; }
+    public ColrVarColorLine ColorLine { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithVarColorLine(ColrVarColorLine colorLine) =>
+        new ColrPaintVarLinearGradient(Id, X0, Y0, X1, Y1, X2, Y2, colorLine, VarIndexBase);
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarLinearGradient(Id, unchecked((short)scalars[0]),
+            unchecked((short)scalars[1]), unchecked((short)scalars[2]),
+            unchecked((short)scalars[3]), unchecked((short)scalars[4]),
+            unchecked((short)scalars[5]), ColorLine, VarIndexBase);
+}
+
+/// <summary>PaintVarRadialGradient (format 7): six variable slots (+0..+5:
+/// x0, y0, radius0, x1, y1, radius1).</summary>
+public sealed class ColrPaintVarRadialGradient : ColrPaint
+{
+    public ColrPaintVarRadialGradient(int id, short x0, short y0, ushort radius0,
+        short x1, short y1, ushort radius1, ColrVarColorLine colorLine,
+        uint varIndexBase) : base(id, 7)
+    {
+        X0 = x0; Y0 = y0; Radius0 = radius0; X1 = x1; Y1 = y1; Radius1 = radius1;
+        ColorLine = colorLine;
+        VarIndexBase = varIndexBase;
+    }
+
+    public short X0 { get; internal set; }
+    public short Y0 { get; internal set; }
+    public ushort Radius0 { get; internal set; }
+    public short X1 { get; internal set; }
+    public short Y1 { get; internal set; }
+    public ushort Radius1 { get; internal set; }
+    public ColrVarColorLine ColorLine { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithVarColorLine(ColrVarColorLine colorLine) =>
+        new ColrPaintVarRadialGradient(Id, X0, Y0, Radius0, X1, Y1, Radius1,
+            colorLine, VarIndexBase);
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarRadialGradient(Id, unchecked((short)scalars[0]),
+            unchecked((short)scalars[1]), scalars[2], unchecked((short)scalars[3]),
+            unchecked((short)scalars[4]), scalars[5], ColorLine, VarIndexBase);
+}
+
+/// <summary>PaintVarSweepGradient (format 9): four variable slots (+0..+3:
+/// centerX, centerY, startAngle, endAngle).</summary>
+public sealed class ColrPaintVarSweepGradient : ColrPaint
+{
+    public ColrPaintVarSweepGradient(int id, short centerX, short centerY,
+        ushort startAngle, ushort endAngle, ColrVarColorLine colorLine,
+        uint varIndexBase) : base(id, 9)
+    {
+        CenterX = centerX; CenterY = centerY;
+        StartAngle = startAngle; EndAngle = endAngle;
+        ColorLine = colorLine;
+        VarIndexBase = varIndexBase;
+    }
+
+    public short CenterX { get; internal set; }
+    public short CenterY { get; internal set; }
+    public ushort StartAngle { get; internal set; }
+    public ushort EndAngle { get; internal set; }
+    public ColrVarColorLine ColorLine { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithVarColorLine(ColrVarColorLine colorLine) =>
+        new ColrPaintVarSweepGradient(Id, CenterX, CenterY, StartAngle, EndAngle,
+            colorLine, VarIndexBase);
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarSweepGradient(Id, unchecked((short)scalars[0]),
+            unchecked((short)scalars[1]), scalars[2], scalars[3], ColorLine,
+            VarIndexBase);
+}
+
+/// <summary>PaintVarTransform (format 13): the child paint and the
+/// VarAffine2x3 the transformOffset addresses. The format itself carries no
+/// varIndexBase - the slots live in the 28-byte VarAffine2x3 (L1050-1056).</summary>
+public sealed class ColrPaintVarTransform : ColrPaint
+{
+    public ColrPaintVarTransform(int id, int paintNodeId, ColrVarAffine2x3 transform) :
+        base(id, 13)
+    {
+        PaintNodeId = paintNodeId;
+        Transform = transform;
+    }
+
+    public int PaintNodeId { get; internal set; }
+    public ColrVarAffine2x3 Transform { get; internal set; }
+}
+
+/// <summary>PaintVarTranslate (format 15): dx (+0), dy (+1).</summary>
+public sealed class ColrPaintVarTranslate : ColrPaint
+{
+    public ColrPaintVarTranslate(int id, int paintNodeId, short dx, short dy,
+        uint varIndexBase) : base(id, 15)
+    {
+        PaintNodeId = paintNodeId;
+        Dx = dx; Dy = dy;
+        VarIndexBase = varIndexBase;
+    }
+
+    public int PaintNodeId { get; internal set; }
+    public short Dx { get; internal set; }
+    public short Dy { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarTranslate(Id, PaintNodeId, unchecked((short)scalars[0]),
+            unchecked((short)scalars[1]), VarIndexBase);
+}
+
+/// <summary>PaintVarScale (format 17): scaleX (+0), scaleY (+1).</summary>
+public sealed class ColrPaintVarScale : ColrPaint
+{
+    public ColrPaintVarScale(int id, int paintNodeId, ushort scaleX, ushort scaleY,
+        uint varIndexBase) : base(id, 17)
+    {
+        PaintNodeId = paintNodeId;
+        ScaleX = scaleX; ScaleY = scaleY;
+        VarIndexBase = varIndexBase;
+    }
+
+    public int PaintNodeId { get; internal set; }
+    public ushort ScaleX { get; internal set; }
+    public ushort ScaleY { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarScale(Id, PaintNodeId, scalars[0], scalars[1], VarIndexBase);
+}
+
+/// <summary>PaintVarScaleAroundCenter (format 19): scaleX/Y (+0/+1),
+/// centerX/Y (+2/+3).</summary>
+public sealed class ColrPaintVarScaleAroundCenter : ColrPaint
+{
+    public ColrPaintVarScaleAroundCenter(int id, int paintNodeId, ushort scaleX,
+        ushort scaleY, short centerX, short centerY, uint varIndexBase) : base(id, 19)
+    {
+        PaintNodeId = paintNodeId;
+        ScaleX = scaleX; ScaleY = scaleY; CenterX = centerX; CenterY = centerY;
+        VarIndexBase = varIndexBase;
+    }
+
+    public int PaintNodeId { get; internal set; }
+    public ushort ScaleX { get; internal set; }
+    public ushort ScaleY { get; internal set; }
+    public short CenterX { get; internal set; }
+    public short CenterY { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarScaleAroundCenter(Id, PaintNodeId, scalars[0], scalars[1],
+            unchecked((short)scalars[2]), unchecked((short)scalars[3]), VarIndexBase);
+}
+
+/// <summary>PaintVarScaleUniform (format 21): scale (+0).</summary>
+public sealed class ColrPaintVarScaleUniform : ColrPaint
+{
+    public ColrPaintVarScaleUniform(int id, int paintNodeId, ushort scale,
+        uint varIndexBase) : base(id, 21)
+    {
+        PaintNodeId = paintNodeId;
+        Scale = scale;
+        VarIndexBase = varIndexBase;
+    }
+
+    public int PaintNodeId { get; internal set; }
+    public ushort Scale { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarScaleUniform(Id, PaintNodeId, scalars[0], VarIndexBase);
+}
+
+/// <summary>PaintVarScaleUniformAroundCenter (format 23): scale (+0),
+/// centerX/Y (+1/+2).</summary>
+public sealed class ColrPaintVarScaleUniformAroundCenter : ColrPaint
+{
+    public ColrPaintVarScaleUniformAroundCenter(int id, int paintNodeId, ushort scale,
+        short centerX, short centerY, uint varIndexBase) : base(id, 23)
+    {
+        PaintNodeId = paintNodeId;
+        Scale = scale; CenterX = centerX; CenterY = centerY;
+        VarIndexBase = varIndexBase;
+    }
+
+    public int PaintNodeId { get; internal set; }
+    public ushort Scale { get; internal set; }
+    public short CenterX { get; internal set; }
+    public short CenterY { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarScaleUniformAroundCenter(Id, PaintNodeId, scalars[0],
+            unchecked((short)scalars[1]), unchecked((short)scalars[2]), VarIndexBase);
+}
+
+/// <summary>PaintVarRotate (format 25): angle (+0).</summary>
+public sealed class ColrPaintVarRotate : ColrPaint
+{
+    public ColrPaintVarRotate(int id, int paintNodeId, ushort angle,
+        uint varIndexBase) : base(id, 25)
+    {
+        PaintNodeId = paintNodeId;
+        Angle = angle;
+        VarIndexBase = varIndexBase;
+    }
+
+    public int PaintNodeId { get; internal set; }
+    public ushort Angle { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarRotate(Id, PaintNodeId, scalars[0], VarIndexBase);
+}
+
+/// <summary>PaintVarRotateAroundCenter (format 27): angle (+0), centerX/Y
+/// (+1/+2).</summary>
+public sealed class ColrPaintVarRotateAroundCenter : ColrPaint
+{
+    public ColrPaintVarRotateAroundCenter(int id, int paintNodeId, ushort angle,
+        short centerX, short centerY, uint varIndexBase) : base(id, 27)
+    {
+        PaintNodeId = paintNodeId;
+        Angle = angle; CenterX = centerX; CenterY = centerY;
+        VarIndexBase = varIndexBase;
+    }
+
+    public int PaintNodeId { get; internal set; }
+    public ushort Angle { get; internal set; }
+    public short CenterX { get; internal set; }
+    public short CenterY { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarRotateAroundCenter(Id, PaintNodeId, scalars[0],
+            unchecked((short)scalars[1]), unchecked((short)scalars[2]), VarIndexBase);
+}
+
+/// <summary>PaintVarSkew (format 29): xSkewAngle (+0), ySkewAngle (+1).</summary>
+public sealed class ColrPaintVarSkew : ColrPaint
+{
+    public ColrPaintVarSkew(int id, int paintNodeId, ushort xSkewAngle,
+        ushort ySkewAngle, uint varIndexBase) : base(id, 29)
+    {
+        PaintNodeId = paintNodeId;
+        XSkewAngle = xSkewAngle; YSkewAngle = ySkewAngle;
+        VarIndexBase = varIndexBase;
+    }
+
+    public int PaintNodeId { get; internal set; }
+    public ushort XSkewAngle { get; internal set; }
+    public ushort YSkewAngle { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarSkew(Id, PaintNodeId, scalars[0], scalars[1], VarIndexBase);
+}
+
+/// <summary>PaintVarSkewAroundCenter (format 31): xSkew/ySkew (+0/+1),
+/// centerX/Y (+2/+3).</summary>
+public sealed class ColrPaintVarSkewAroundCenter : ColrPaint
+{
+    public ColrPaintVarSkewAroundCenter(int id, int paintNodeId, ushort xSkewAngle,
+        ushort ySkewAngle, short centerX, short centerY, uint varIndexBase) :
+        base(id, 31)
+    {
+        PaintNodeId = paintNodeId;
+        XSkewAngle = xSkewAngle; YSkewAngle = ySkewAngle;
+        CenterX = centerX; CenterY = centerY;
+        VarIndexBase = varIndexBase;
+    }
+
+    public int PaintNodeId { get; internal set; }
+    public ushort XSkewAngle { get; internal set; }
+    public ushort YSkewAngle { get; internal set; }
+    public short CenterX { get; internal set; }
+    public short CenterY { get; internal set; }
+    public uint VarIndexBase { get; internal set; }
+
+    internal ColrPaint WithScalarWords(ushort[] scalars) =>
+        new ColrPaintVarSkewAroundCenter(Id, PaintNodeId, scalars[0], scalars[1],
+            unchecked((short)scalars[2]), unchecked((short)scalars[3]), VarIndexBase);
+}

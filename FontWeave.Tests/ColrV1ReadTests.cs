@@ -281,11 +281,25 @@ public sealed class ColrV1ReadTests
             out diag));
         Assert.Equal(DiagnosticCode.IndexOutOfRange, diag.Code);
 
-        // (f) ClipBox format 2 (the other T6-03 boundary witness).
-        Assert.Equal(ReadStatus.UnsupportedFormat, ClipCase(256,
-            m => m.Patch8(60 + 5 + 14, 2), out diag));
-        Assert.Equal(DiagnosticCode.UnsupportedOperation, diag.Code);
-        Assert.Equal(2uL, diag.Detail);
+        // (f) ClipBox format 2 without a store (OQ-T6-03-3's degraded face, the
+        // L1554 "must be ignored / should be set to zero" wording): the box
+        // reads, the varIndexBase rides verbatim as an observation.
+        byte[] wireF = ClipFixture(out Wire wF, out _);
+        wF.Patch8(60 + 5 + 14, 2);           // the first clip's box goes format 2
+        wireF = wF.ToBytes();
+        status = ColrView.TryOpen(wireF, out var viewF, out _, Source);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(ReadStatus.Done, viewF.ValidateTable(256, 4, out diag));
+        Assert.Equal(ReadStatus.Done, viewF.TryGetClipBox(15, out var box2, out diag));
+        Assert.Equal(2, box2.Format);
+        Assert.Equal(0x01000000u, box2.VarIndexBase);   // box 2's head rides beneath
+        Assert.Equal((short)-10, box2.XMin);
+        Assert.Equal((short)100, box2.XMax);
+        status = viewF.TryReadTable(256, 4, out var modelF, out diag);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(modelF);
+        Assert.Equal(2, modelF!.Clips[0].Box.Format);
+        Assert.Equal(1, modelF.Clips[1].Box.Format);
     }
 
     private static byte[] ClipFixture(out Wire w, out int clipList)
@@ -397,7 +411,10 @@ public sealed class ColrV1ReadTests
         Assert.Equal(0uL, diagnostic.Detail);
         Assert.Equal(1uL, diagnostic.Expected);
 
-        // OQ-T6-02-5: the variation slots' window receipt (present, unread).
+        // OQ-T6-03-8's matrix over the old receipt window: the map slot's
+        // out-of-window face stays mechanical, but a map with no
+        // ItemVariationStore is now the dangling form and refuses (L643's
+        // "in conjunction with" - a map alone has no semantics).
         var w2 = NewWire();
         w2.Patch32(14, 34);
         w2.Patch32(26, 34);                  // varIndexMap window at 34
@@ -405,11 +422,15 @@ public sealed class ColrV1ReadTests
         byte[] wire2 = w2.ToBytes();
         status = ColrView.TryOpen(wire2, out var view2, out _, Source);
         Assert.Equal(ReadStatus.Done, status);
-        Assert.Equal(ReadStatus.Done, view2.ValidateTable(256, 4, out diagnostic));
-        Assert.Equal(ReadStatus.Done, view2.TryReadTable(256, 4, out var model, out diagnostic));
-        Assert.NotNull(model);
-        Assert.Equal(34u, model!.VarIndexMapOffset);
-        Assert.Equal(0u, model.ItemVariationStoreOffset);
+        Assert.Equal(ReadStatus.InvalidFormat, view2.ValidateTable(256, 4, out diagnostic));
+        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+        Assert.Equal(DataField.Offset, diagnostic.Location.Field);
+        Assert.Equal(26uL, diagnostic.Location.Offset);
+        Assert.Equal(34uL, diagnostic.Detail);
+        Assert.Equal(0uL, diagnostic.Expected);
+        Assert.Equal(ReadStatus.InvalidFormat,
+            view2.TryReadTable(256, 4, out var model2, out diagnostic));
+        Assert.Null(model2);
 
         // The same slot outside the window refuses mechanically.
         var w3 = NewWire();
@@ -499,7 +520,9 @@ public sealed class ColrV1ReadTests
         Assert.Equal(33uL, diagnostic.Detail);
         Assert.Equal(0uL, diagnostic.Expected);
 
-        // (b) var paint format (the T6-03 boundary).
+        // (b) a var paint with no ItemVariationStore - the L871 must-not is the
+        // structural refusal at the format word (OQ-T6-03-2), a value face and
+        // no longer the T6-02 UnsupportedFormat boundary.
         var w2 = NewWire();
         w2.Patch32(14, 34);
         w2.U32(1);
@@ -508,8 +531,12 @@ public sealed class ColrV1ReadTests
         byte[] wire2 = w2.ToBytes();
         status = ColrView.TryOpen(wire2, out var view2, out _, Source);
         Assert.Equal(ReadStatus.Done, status);
-        Assert.Equal(ReadStatus.UnsupportedFormat, view2.ValidateTable(256, 4, out diagnostic));
+        Assert.Equal(ReadStatus.InvalidFormat, view2.ValidateTable(256, 4, out diagnostic));
+        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+        Assert.Equal(DataField.Version, diagnostic.Location.Field);
+        Assert.Equal(44uL, diagnostic.Location.Offset);
         Assert.Equal(3uL, diagnostic.Detail);
+        Assert.Equal(0uL, diagnostic.Expected);
 
         // (c) the two-node PaintColrGlyph cycle (the corpus witness shape).
         var w3 = NewWire();

@@ -1,4 +1,5 @@
 using FontWeave.Core;
+using FontWeave.Tables.Variation;
 
 namespace FontWeave.Tables;
 
@@ -23,9 +24,9 @@ public readonly ref partial struct ColrView
     internal const int MaxPaintGraphNodes = 1 << 20;
 
     internal ReadStatus ValidateTableV1(int numGlyphs, int? cpalNumPaletteEntries,
-        out FontDiagnostic diagnostic, BuildBudget budget)
+        int? fvarAxisCount, out FontDiagnostic diagnostic, BuildBudget budget)
     {
-        return ReadTableV1(numGlyphs, cpalNumPaletteEntries, false, out _,
+        return ReadTableV1(numGlyphs, cpalNumPaletteEntries, fvarAxisCount, false, out _,
             out diagnostic, budget);
     }
 
@@ -34,7 +35,7 @@ public readonly ref partial struct ColrView
     /// returned, so a materialized model exists only for fully validated
     /// wires.</summary>
     internal ReadStatus ReadTableV1(int numGlyphs, int? cpalNumPaletteEntries,
-        bool materialize, out ColrTable? model, out FontDiagnostic diagnostic,
+        int? fvarAxisCount, bool materialize, out ColrTable? model, out FontDiagnostic diagnostic,
         BuildBudget budget)
     {
         model = null;
@@ -44,9 +45,8 @@ public readonly ref partial struct ColrView
         // against L630-633): a v1 table without a BaseGlyphList has no v1 color
         // definitions at all, so the text asymmetry is the hard face (OQ-T6-02-1;
         // corpus 175/175 nonzero). layerList/clipList stay legal at zero (L637/
-        // L639); the variation slots get only their window receipt below
-        // (OQ-T6-02-5 - refusing nonzero would reject 29 legal variable hosts at
-        // the structural layer, and the contents are T6-03's to open).
+        // L639); the variation slots get their window receipts below and then
+        // their content faces (T6-03 §3).
         if (baseGlyphList == 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 Location.AtLocal(DataField.Offset, 14), out diagnostic, 0UL, 1UL);
@@ -66,6 +66,63 @@ public readonly ref partial struct ColrView
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
                 Location.AtLocal(DataField.Offset, 30), out diagnostic,
                 store, (ulong)_data.Length);
+        // The store<->fvar signature coupling (OQ-T6-03-1, the CFF2 OQ-T5-05-7
+        // line): an ItemVariationStore is declared only together with the
+        // caller's fvar axis-count authority, in both directions. It sits behind
+        // the window receipts so the frozen malformed-host pin (out-of-window
+        // store offset) keeps its first hit.
+        if ((store != 0) != (fvarAxisCount is not null))
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Signature, store != 0 ? 30UL : 0UL),
+                out diagnostic,
+                store != 0 ? 0UL : unchecked((ulong)(long)fvarAxisCount!.Value),
+                store != 0 ? 1UL : 0UL);
+        // The variation slots' content faces (T6-03 §3): the map first (its
+        // dangling form is a header relation), then the store. A map without a
+        // store has no semantics (L643's "in conjunction with"); a store without
+        // a map is the legal implicit-identity form (L1556).
+        DeltaSetIndexMapTable? varIndexMapModel = null;
+        VariationStoreTable? storeModel = null;
+        if (varIndexMap != 0 && store == 0)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Offset, 26), out diagnostic, varIndexMap, 0UL);
+        if (varIndexMap != 0)
+        {
+            status = DeltaSetIndexMapView.TryOpen(_data.Slice((int)varIndexMap),
+                out var mapView, out diagnostic,
+                Location.AtLocal(DataField.None, varIndexMap));
+            if (status != ReadStatus.Done) return status;
+            status = mapView.Validate(out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+            // The non-NULL-means-non-empty rule (the T5-01 OQ-3 frozen ruling
+            // re-answered on the COLR path, OQ-T6-03-8).
+            status = mapView.TryGetLogicalMapCount(out uint mapCount, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            if (mapCount == 0)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    mapView.Location.AtLocal(DataField.Count,
+                        DeltaSetIndexMapLayout.MapCountAt), out diagnostic, 0UL, 1UL);
+            // Both models materialize in every mode: the var index resolution is
+            // the validate-time full enumeration (OQ-T6-03-7) and the store's
+            // dereference probe is its domain face - they are the walk's scratch
+            // state here, returned only through the read mode's model.
+            status = mapView.TryRead(out varIndexMapModel, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+        }
+        if (store != 0)
+        {
+            status = ItemVariationStoreView.TryOpen(_data.Slice((int)store),
+                out var storeView, out diagnostic,
+                Location.AtLocal(DataField.None, store));
+            if (status != ReadStatus.Done) return status;
+            status = storeView.Validate(fvarAxisCount!.Value, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+            // The COLR typed consumption passes the LONG_WORDS gate (OQ-T6-03-5;
+            // the spec limits long words to COLR, so the shared default stays shut).
+            status = storeView.TryRead(fvarAxisCount.Value, out storeModel,
+                out diagnostic, budget, allowLongWords: true);
+            if (status != ReadStatus.Done) return status;
+        }
         status = TryGetNumBaseGlyphPaintRecords(out uint paintCount, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = TryGetNumLayerPaints(out uint layerPaintCount, out diagnostic);
@@ -153,15 +210,20 @@ public readonly ref partial struct ColrView
             }
         }
         // ClipList: the format gate, the record window, the per-row relations
-        // and the ClipBox windows and format gates (OQ-T6-02-4/9/10).
-        status = ValidateClipList(clipList, numGlyphs, materialize, out var clips,
-            out diagnostic);
+        // and the ClipBox windows and format gates (OQ-T6-02-4/9/10; the
+        // format-2 box rides its varIndexBase through the store face, OQ-T6-03-3).
+        status = ValidateClipList(clipList, numGlyphs, varIndexMapModel, storeModel,
+            materialize, out var clips, out diagnostic);
         if (status != ReadStatus.Done) return status;
         // The paint graph walk (OQ-T6-02-6/7/8/11/12): roots are the BGL records
         // in glyph order - the spec's lookup preference order (L653) is also the
         // deterministic walk order.
         var walk = new PaintWalk(numGlyphs, cpalNumPaletteEntries, layerList,
-            layerTargets, layerReferenced, baseRoots, materialize);
+            layerTargets, layerReferenced, baseRoots, materialize)
+        {
+            VarIndexMap = varIndexMapModel,
+            Store = storeModel,
+        };
         walk.MaxEnd = Math.Max(baseGlyphList + 4 + 6UL * paintCount,
             layerList + 4 + 4UL * layerPaintCount);
         foreach (uint root in rootOrder)
@@ -271,7 +333,7 @@ public readonly ref partial struct ColrView
         }
         model = new(compatBase, compatLayers, baseGlyphPaints, layerNodeIds, clips,
             orderedPaints, numGlyphs, compatBaseOffset, compatLayerOffset,
-            varIndexMap, store, clipList,
+            varIndexMap, store, clipList, varIndexMapModel, storeModel,
             paintSources, colorLineSources,
             layerSourceOffsets, Location,
             (int)Math.Min(walk.MaxEnd, (ulong)_data.Length));
@@ -359,11 +421,15 @@ public readonly ref partial struct ColrView
     /// window, then per row the glyph domain (OQ-T6-02-10's lean), the strict
     /// startGlyphID ascent (L737), the no-overlap relation (L747, equal starts
     /// included), the reversed-range refusal (OQ-T6-02-9's lean - an empty range
-    /// has no semantics) and the ClipBox window and format gate (OQ-T6-02-4).
-    /// The boxes' four FWORDs are read verbatim with no order relation (the spec
-    /// carries none).</summary>
-    private ReadStatus ValidateClipList(uint clipList, int numGlyphs, bool materialize,
-        out ColrClip[] clips, out FontDiagnostic diagnostic)
+    /// has no semantics) and the ClipBox windows and format gates (OQ-T6-02-4).
+    /// Format 2 is T6-03's second box face (OQ-T6-03-3): 13 bytes with a u32
+    /// varIndexBase; without a store the word degrades to an observation
+    /// (L1554's ignored/should-be-zero), with one it resolves through the same
+    /// slot walk as every var table. The boxes' four FWORDs are read verbatim
+    /// with no order relation (the spec carries none).</summary>
+    private ReadStatus ValidateClipList(uint clipList, int numGlyphs,
+        DeltaSetIndexMapTable? varIndexMap, VariationStoreTable? store,
+        bool materialize, out ColrClip[] clips, out FontDiagnostic diagnostic)
     {
         clips = [];
         if (clipList == 0)
@@ -425,21 +491,37 @@ public readonly ref partial struct ColrView
                 return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
                     Location.AtLocal(DataField.Offset, row + 4, unchecked((int)i)),
                     out diagnostic, box, (ulong)_data.Length);
-            if (box + ColrLayout.ClipBoxFormat1Size > (ulong)_data.Length)
-                return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                    Location.AtLocal(DataField.Payload, box), out diagnostic,
-                    (ulong)_data.Length, box + ColrLayout.ClipBoxFormat1Size);
             byte boxFormat = _data[(int)box];
-            if (boxFormat != 1)
+            if (boxFormat != 1 && boxFormat != 2)
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                     Location.AtLocal(DataField.Version, box), out diagnostic,
                     boxFormat, 1UL);
+            int boxSize = boxFormat == 1 ? ColrLayout.ClipBoxFormat1Size
+                : ColrLayout.ClipBoxFormat2Size;
+            if (box + (ulong)boxSize > (ulong)_data.Length)
+                return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
+                    Location.AtLocal(DataField.Payload, box), out diagnostic,
+                    (ulong)_data.Length, box + (ulong)boxSize);
+            uint boxVarIndexBase = boxFormat == 2
+                ? ReadWire.U32(_data, (int)box + 9) : 0;
+            if (boxFormat == 2 && store is not null)
+            {
+                ReadStatus slotStatus = ResolveVarSlots(boxVarIndexBase, 4,
+                    box + 9, varIndexMap, store, out diagnostic);
+                if (slotStatus != ReadStatus.Done) return slotStatus;
+            }
             if (materialize)
-                clips[i] = new ColrClip(start, end, new ColrClipBox(
-                    RawFword((int)box + 1),
-                    RawFword((int)box + 3),
-                    RawFword((int)box + 5),
-                    RawFword((int)box + 7)));
+                clips[i] = new ColrClip(start, end, boxFormat == 1
+                    ? new ColrClipBox(
+                        RawFword((int)box + 1),
+                        RawFword((int)box + 3),
+                        RawFword((int)box + 5),
+                        RawFword((int)box + 7))
+                    : new ColrClipBox(
+                        RawFword((int)box + 1),
+                        RawFword((int)box + 3),
+                        RawFword((int)box + 5),
+                        RawFword((int)box + 7), 2, boxVarIndexBase));
             previousStart = start;
             previousEnd = end;
         }
@@ -477,13 +559,10 @@ public readonly ref partial struct ColrView
         // The format gate (OQ-T6-02-3 lean): unknown formats refuse as
         // UnsupportedFormat - the L590 "should be ignored" wording is the
         // renderer's recovery semantics, not a license to drop declared-domain
-        // bytes silently. The fourteen var formats refuse the same way
-        // (OQ-T6-02-4: spec-legal v1 faces that are T6-03's declared domain;
-        // T6-03 flips them to accepted).
+        // bytes silently. The fourteen var formats are T6-03's declared domain
+        // and dispatch below (OQ-T6-03-2's must-not face answers inside their
+        // visitors, where the ItemVariationStore presence is the question).
         if (format is < 1 or > 32)
-            return RefusePaintFormat(target, format, out diagnostic);
-        if (format is 3 or 5 or 7 or 9 or 13 or 15 or 17 or 19 or 21 or 23 or 25 or 27
-                or 29 or 31)
             return RefusePaintFormat(target, format, out diagnostic);
         ReadStatus status = RequirePaintHead(target, format, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -507,8 +586,14 @@ public readonly ref partial struct ColrView
             case 2:
                 status = VisitPaintSolid(target, nodeIdx, walk, out diagnostic);
                 break;
+            case 3:
+                status = VisitPaintVarSolid(target, nodeIdx, walk, out diagnostic);
+                break;
             case 4 or 6 or 8:
                 status = VisitPaintGradient(target, format, nodeIdx, walk, budget, out diagnostic);
+                break;
+            case 5 or 7 or 9:
+                status = VisitPaintVarGradient(target, format, nodeIdx, walk, budget, out diagnostic);
                 break;
             case 10:
                 status = VisitPaintGlyph(target, nodeIdx, walk, budget, out diagnostic);
@@ -518,6 +603,13 @@ public readonly ref partial struct ColrView
                 break;
             case 12:
                 status = VisitPaintTransform(target, nodeIdx, walk, budget, out diagnostic);
+                break;
+            case 13:
+                status = VisitPaintVarTransform(target, nodeIdx, walk, budget, out diagnostic);
+                break;
+            case 15 or 17 or 19 or 21 or 23 or 25 or 27 or 29 or 31:
+                status = VisitPaintVarScalarFamily(target, format, nodeIdx, walk, budget,
+                    out diagnostic);
                 break;
             case 14 or 16 or 18 or 20 or 22 or 24 or 26 or 28 or 30:
                 status = VisitPaintScalarFamily(target, format, nodeIdx, walk, budget, out diagnostic);
@@ -723,6 +815,288 @@ public readonly ref partial struct ColrView
                 RawFword((int)target + 8), RawFword((int)target + 10)),
         };
         StoreNode(walk, nodeIdx, built);
+        return ReadStatus.Done;
+    }
+
+    // ---- the var paint visitors (card T6-03 §3) ----
+
+    /// <summary>The var family's store-presence must-not face (OQ-T6-03-2): all
+    /// fourteen formats "must not be used ... if the COLR table does not have an
+    /// ItemVariationStore subtable" (L871 through L1312) - a structural refusal
+    /// at the format word, never an observation.</summary>
+    private ReadStatus RequireVarStore(PaintWalk walk, uint target, byte format,
+        out FontDiagnostic diagnostic)
+    {
+        if (walk.Store is null)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Version, target), out diagnostic, format, 0UL);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The var-index resolution chain (OQ-T6-03-7's validate-time full
+    /// enumeration): each slot's delta-set index resolves through the map (the
+    /// last-entry soften, L1548; the 0xFFFF/0xFFFF entry sentinel, L1552) or -
+    /// without a map - splits the u32 index into high/low 16 directly (L1556),
+    /// and the result answers the store's domains through
+    /// VariationStoreTable.TryGetDeltaSet (the T4-02b dereference API used as
+    /// the validate-time probe - no delta row is materialized, L1560 stays
+    /// oracle-only).</summary>
+    private ReadStatus ResolveVarSlots(uint varIndexBase, int slotCount,
+        ulong fieldPosition, DeltaSetIndexMapTable? map, VariationStoreTable store,
+        out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        // The per-record sentinel: no variable data (L1550), exempt from every
+        // domain below.
+        if (varIndexBase == ColrLayout.VarIndexBaseNoData)
+            return ReadStatus.Done;
+        // The sequence must not wrap past u32 (L1548's "do not wrap on overflow
+        // and must not exceed"): base+slotCount-1 staying representable is the
+        // structural translation (OQ-T6-03-6; the 6-slot violation window is
+        // [0xFFFFFFFB, 0xFFFFFFFE]).
+        if (slotCount > 0 && varIndexBase > 0xFFFFFFFFu - (uint)(slotCount - 1))
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Payload, fieldPosition), out diagnostic,
+                varIndexBase, 0xFFFFFFFFu - (uint)(slotCount - 1));
+        for (int slot = 0; slot < slotCount; slot++)
+        {
+            uint index = varIndexBase + (uint)slot;
+            ReadStatus status;
+            if (map is { } mapModel)
+            {
+                // index >= mapCount uses the last entry (L1548); an empty map
+                // never reaches here (the open chain refuses it, OQ-T6-03-8).
+                _ = mapModel.TryGetMapping(index < (uint)mapModel.MapCount
+                    ? (int)index : mapModel.MapCount - 1, out var entry);
+                if (entry.IsNoVariationData) continue;
+                status = store.TryGetDeltaSet(entry.Outer, entry.Inner, out _, out _,
+                    out diagnostic);
+            }
+            else
+            {
+                // The implicit identity (L1556): the u32 index IS the delta-set
+                // index, outer = the high half, inner = the low half.
+                status = store.TryGetDeltaSet((int)(index >> 16), (int)(index & 0xFFFF),
+                    out _, out _, out diagnostic);
+            }
+            if (status != ReadStatus.Done) return status; // the store's InvalidIndex face
+        }
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus VisitPaintVarSolid(uint target, int nodeIdx, PaintWalk walk,
+        out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        ReadStatus status = RequireVarStore(walk, target, 3, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        ushort paletteIndex = ReadWire.U16(_data, (int)target + 1);
+        status = RequirePaletteIndex(target + 1, paletteIndex, walk, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        uint varIndexBase = ReadWire.U32(_data, (int)target + 5);
+        status = ResolveVarSlots(varIndexBase, 1, target + 5, walk.VarIndexMap,
+            walk.Store!, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        StoreNode(walk, nodeIdx, new ColrPaintVarSolid(0, paletteIndex,
+            ReadWire.U16(_data, (int)target + 3), varIndexBase));
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The var gradient twins (5/7/9): a VarColorLine behind the
+    /// colorLineOffset, the static scalars, and the node's varIndexBase with
+    /// 6/6/4 slots (§0's per-format field order).</summary>
+    private ReadStatus VisitPaintVarGradient(uint target, byte format, int nodeIdx,
+        PaintWalk walk, BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        ReadStatus status = RequireVarStore(walk, target, format, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        uint colorLineTarget = target + U24((int)target + 1);
+        status = ReadVarColorLine(target, colorLineTarget, walk, budget,
+            out var colorLine, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int slots = format == 9 ? 4 : 6;
+        uint varIndexBase = ReadWire.U32(_data, (int)target + (format == 9 ? 12 : 16));
+        status = ResolveVarSlots(varIndexBase, slots,
+            target + (uint)(format == 9 ? 12 : 16), walk.VarIndexMap, walk.Store!,
+            out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        ColrPaint built = format switch
+        {
+            5 => new ColrPaintVarLinearGradient(0,
+                RawFword((int)target + 4), RawFword((int)target + 6),
+                RawFword((int)target + 8), RawFword((int)target + 10),
+                RawFword((int)target + 12), RawFword((int)target + 14),
+                colorLine!, varIndexBase),
+            7 => new ColrPaintVarRadialGradient(0,
+                RawFword((int)target + 4), RawFword((int)target + 6),
+                ReadWire.U16(_data, (int)target + 8),
+                RawFword((int)target + 10), RawFword((int)target + 12),
+                ReadWire.U16(_data, (int)target + 14), colorLine!, varIndexBase),
+            _ => new ColrPaintVarSweepGradient(0,
+                RawFword((int)target + 4), RawFword((int)target + 6),
+                ReadWire.U16(_data, (int)target + 8),
+                ReadWire.U16(_data, (int)target + 10), colorLine!, varIndexBase),
+        };
+        StoreNode(walk, nodeIdx, built);
+        return ReadStatus.Done;
+    }
+
+    /// <summary>PaintVarTransform (13): the VarAffine2x3 window (28 bytes) and
+    /// its six slots ride the transformOffset; the format itself carries no
+    /// varIndexBase. The frozen static-transform witness face (the Affine2x3
+    /// windows running past the table end) re-answers over the wider window.</summary>
+    private ReadStatus VisitPaintVarTransform(uint target, int nodeIdx, PaintWalk walk,
+        BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        ReadStatus status = RequireVarStore(walk, target, 13, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        uint transformTarget = target + U24((int)target + 4);
+        if (transformTarget >= (ulong)_data.Length)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                Location.AtLocal(DataField.Offset, target + 4), out diagnostic,
+                transformTarget, (ulong)_data.Length);
+        if (transformTarget + ColrLayout.VarAffine2x3Size > (ulong)_data.Length)
+            return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
+                Location.AtLocal(DataField.Payload, transformTarget), out diagnostic,
+                (ulong)_data.Length, transformTarget + (ulong)ColrLayout.VarAffine2x3Size);
+        uint varIndexBase = ReadWire.U32(_data, (int)transformTarget + 24);
+        status = ResolveVarSlots(varIndexBase, 6, transformTarget + 24, walk.VarIndexMap,
+            walk.Store!, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var transform = new ColrVarAffine2x3(
+            ReadWire.U32(_data, (int)transformTarget),
+            ReadWire.U32(_data, (int)transformTarget + 4),
+            ReadWire.U32(_data, (int)transformTarget + 8),
+            ReadWire.U32(_data, (int)transformTarget + 12),
+            ReadWire.U32(_data, (int)transformTarget + 16),
+            ReadWire.U32(_data, (int)transformTarget + 20),
+            varIndexBase);
+        walk.MaxEnd = Math.Max(walk.MaxEnd,
+            transformTarget + (ulong)ColrLayout.VarAffine2x3Size);
+        uint paintTarget = target + U24((int)target + 1);
+        status = VisitDirectEdge(target, nodeIdx, target + 1, paintTarget,
+            walk, budget, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        StoreNode(walk, nodeIdx, new ColrPaintVarTransform(0, walk.Visited[paintTarget],
+            transform));
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The var scalar twins (15/17/19/21/23/25/27/29/31): the static
+    /// family's faces (child edge, scalars) plus the node's varIndexBase with
+    /// 2/2/4/1/3/1/3/2/4 slots (§0's per-format field order).</summary>
+    private ReadStatus VisitPaintVarScalarFamily(uint target, byte format, int nodeIdx,
+        PaintWalk walk, BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        ReadStatus status = RequireVarStore(walk, target, format, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        uint paintTarget = target + U24((int)target + 1);
+        status = VisitDirectEdge(target, nodeIdx, target + 1, paintTarget,
+            walk, budget, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int child = walk.Visited[paintTarget];
+        ushort w4 = ReadWire.U16(_data, (int)target + 4);
+        ushort w6 = ReadWire.U16(_data, (int)target + 6);
+        ushort w8 = ReadWire.U16(_data, (int)target + 8);
+        ushort w10 = ReadWire.U16(_data, (int)target + 10);
+        int slots = format switch
+        {
+            21 or 25 => 1,
+            23 or 27 => 3,
+            19 or 31 => 4,
+            _ => 2, // 15, 17, 29
+        };
+        uint baseAt = format switch
+        {
+            21 or 25 => 6,
+            23 or 27 => 10,
+            19 or 31 => 12,
+            _ => 8, // 15, 17, 29
+        };
+        uint varIndexBase = ReadWire.U32(_data, (int)target + (int)baseAt);
+        status = ResolveVarSlots(varIndexBase, slots, target + baseAt, walk.VarIndexMap,
+            walk.Store!, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        ColrPaint built = format switch
+        {
+            15 => new ColrPaintVarTranslate(0, child, RawFword((int)target + 4),
+                RawFword((int)target + 6), varIndexBase),
+            17 => new ColrPaintVarScale(0, child, w4, w6, varIndexBase),
+            19 => new ColrPaintVarScaleAroundCenter(0, child, w4, w6,
+                RawFword((int)target + 8), RawFword((int)target + 10), varIndexBase),
+            21 => new ColrPaintVarScaleUniform(0, child, w4, varIndexBase),
+            23 => new ColrPaintVarScaleUniformAroundCenter(0, child, w4,
+                RawFword((int)target + 6), RawFword((int)target + 8), varIndexBase),
+            25 => new ColrPaintVarRotate(0, child, w4, varIndexBase),
+            27 => new ColrPaintVarRotateAroundCenter(0, child, w4,
+                RawFword((int)target + 6), RawFword((int)target + 8), varIndexBase),
+            29 => new ColrPaintVarSkew(0, child, w4, w6, varIndexBase),
+            _ => new ColrPaintVarSkewAroundCenter(0, child, w4, w6,
+                RawFword((int)target + 8), RawFword((int)target + 10), varIndexBase),
+        };
+        StoreNode(walk, nodeIdx, built);
+        return ReadStatus.Done;
+    }
+
+    /// <summary>A variable ColorLine read (spec L811-845): the static line's
+    /// observations carry over verbatim (the Extend byte, the wire stop order,
+    /// the empty line) with 10-byte stops - each stop's paletteIndex re-answers
+    /// the cross-table domain and its two slots (stopOffset +0, alpha +1)
+    /// resolve through the var chain (L802-809).</summary>
+    private ReadStatus ReadVarColorLine(uint paintTarget, uint colorLineTarget,
+        PaintWalk walk, BuildBudget budget, out ColrVarColorLine? colorLine,
+        out FontDiagnostic diagnostic)
+    {
+        colorLine = null;
+        if (colorLineTarget >= (ulong)_data.Length)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                Location.AtLocal(DataField.Offset, paintTarget + 1), out diagnostic,
+                colorLineTarget, (ulong)_data.Length);
+        if (colorLineTarget + ColrLayout.ColorLineHeaderSize > (ulong)_data.Length)
+            return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
+                Location.AtLocal(DataField.Count, colorLineTarget + 1), out diagnostic,
+                (ulong)_data.Length, colorLineTarget + (ulong)ColrLayout.ColorLineHeaderSize);
+        byte extend = _data[(int)colorLineTarget];
+        ushort numStops = ReadWire.U16(_data, (int)colorLineTarget + 1);
+        var stops = new ColrVarColorStop[numStops];
+        for (uint i = 0; i < numStops; i++)
+        {
+            ulong stop = colorLineTarget + 3 + (ulong)i * ColrLayout.VarColorStopSize;
+            if (stop + ColrLayout.VarColorStopSize > (ulong)_data.Length)
+            {
+                ulong available = (ulong)_data.Length - stop;
+                ulong fieldStart = available switch
+                {
+                    < 2 => stop,
+                    < 4 => stop + 2,
+                    < 6 => stop + 4,
+                    _ => stop + 6,
+                };
+                return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
+                    Location.AtLocal(DataField.Payload, fieldStart, unchecked((int)i)),
+                    out diagnostic, (ulong)_data.Length, stop + ColrLayout.VarColorStopSize);
+            }
+            ushort paletteIndex = ReadWire.U16(_data, (int)stop + 2);
+            ReadStatus status = RequirePaletteIndex(stop + 2, paletteIndex, walk, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            uint stopVarIndexBase = ReadWire.U32(_data, (int)stop + 6);
+            status = ResolveVarSlots(stopVarIndexBase, 2, stop + 6, walk.VarIndexMap,
+                walk.Store!, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            stops[i] = new ColrVarColorStop(RawFword((int)stop), paletteIndex,
+                ReadWire.U16(_data, (int)stop + 4), stopVarIndexBase);
+        }
+        if (!budget.Work(6L * numStops, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        walk.StopCount += numStops;
+        walk.MaxEnd = Math.Max(walk.MaxEnd,
+            colorLineTarget + 3 + (ulong)ColrLayout.VarColorStopSize * numStops);
+        walk.ColorLinePositions[walk.ColorLinePositions.Count - 1] = colorLineTarget;
+        colorLine = new ColrVarColorLine(extend, stops);
+        diagnostic = default;
         return ReadStatus.Done;
     }
 
@@ -948,6 +1322,62 @@ public readonly ref partial struct ColrView
                 if (target + 10 > length) return TruncateAt(target, 8, 10, DataField.Payload, length, out diagnostic);
                 if (target + 12 > length) return TruncateAt(target, 10, 12, DataField.Payload, length, out diagnostic);
                 break;
+            // The fourteen var twins (T6-03 §0's size table): the static head's
+            // faces plus the trailing u32 varIndexBase word.
+            case 3:
+                if (target + 3 > length) return TruncateAt(target, 1, 3, DataField.Payload, length, out diagnostic);
+                if (target + 5 > length) return TruncateAt(target, 3, 5, DataField.Payload, length, out diagnostic);
+                if (target + 9 > length) return TruncateAt(target, 5, 9, DataField.Payload, length, out diagnostic);
+                break;
+            case 5 or 7:
+                if (target + 4 > length) return TruncateAt(target, 1, 4, DataField.Offset, length, out diagnostic);
+                if (target + 6 > length) return TruncateAt(target, 4, 6, DataField.Payload, length, out diagnostic);
+                if (target + 8 > length) return TruncateAt(target, 6, 8, DataField.Payload, length, out diagnostic);
+                if (target + 10 > length) return TruncateAt(target, 8, 10, DataField.Payload, length, out diagnostic);
+                if (target + 12 > length) return TruncateAt(target, 10, 12, DataField.Payload, length, out diagnostic);
+                if (target + 14 > length) return TruncateAt(target, 12, 14, DataField.Payload, length, out diagnostic);
+                if (target + 16 > length) return TruncateAt(target, 14, 16, DataField.Payload, length, out diagnostic);
+                if (target + 20 > length) return TruncateAt(target, 16, 20, DataField.Payload, length, out diagnostic);
+                break;
+            case 9:
+                if (target + 4 > length) return TruncateAt(target, 1, 4, DataField.Offset, length, out diagnostic);
+                if (target + 6 > length) return TruncateAt(target, 4, 6, DataField.Payload, length, out diagnostic);
+                if (target + 8 > length) return TruncateAt(target, 6, 8, DataField.Payload, length, out diagnostic);
+                if (target + 10 > length) return TruncateAt(target, 8, 10, DataField.Payload, length, out diagnostic);
+                if (target + 12 > length) return TruncateAt(target, 10, 12, DataField.Payload, length, out diagnostic);
+                if (target + 16 > length) return TruncateAt(target, 12, 16, DataField.Payload, length, out diagnostic);
+                break;
+            case 13:
+                if (target + 4 > length) return TruncateAt(target, 1, 4, DataField.Offset, length, out diagnostic);
+                if (target + 7 > length) return TruncateAt(target, 4, 7, DataField.Offset, length, out diagnostic);
+                break;
+            case 15 or 17 or 29:
+                if (target + 4 > length) return TruncateAt(target, 1, 4, DataField.Offset, length, out diagnostic);
+                if (target + 6 > length) return TruncateAt(target, 4, 6, DataField.Payload, length, out diagnostic);
+                if (target + 8 > length) return TruncateAt(target, 6, 8, DataField.Payload, length, out diagnostic);
+                if (target + 12 > length) return TruncateAt(target, 8, 12, DataField.Payload, length, out diagnostic);
+                break;
+            case 19 or 31:
+                if (target + 4 > length) return TruncateAt(target, 1, 4, DataField.Offset, length, out diagnostic);
+                if (target + 6 > length) return TruncateAt(target, 4, 6, DataField.Payload, length, out diagnostic);
+                if (target + 8 > length) return TruncateAt(target, 6, 8, DataField.Payload, length, out diagnostic);
+                if (target + 10 > length) return TruncateAt(target, 8, 10, DataField.Payload, length, out diagnostic);
+                if (target + 12 > length) return TruncateAt(target, 10, 12, DataField.Payload, length, out diagnostic);
+                if (target + 14 > length) return TruncateAt(target, 12, 14, DataField.Payload, length, out diagnostic);
+                if (target + 16 > length) return TruncateAt(target, 14, 16, DataField.Payload, length, out diagnostic);
+                break;
+            case 21 or 25:
+                if (target + 4 > length) return TruncateAt(target, 1, 4, DataField.Offset, length, out diagnostic);
+                if (target + 6 > length) return TruncateAt(target, 4, 6, DataField.Payload, length, out diagnostic);
+                if (target + 10 > length) return TruncateAt(target, 6, 10, DataField.Payload, length, out diagnostic);
+                break;
+            case 23 or 27:
+                if (target + 4 > length) return TruncateAt(target, 1, 4, DataField.Offset, length, out diagnostic);
+                if (target + 6 > length) return TruncateAt(target, 4, 6, DataField.Payload, length, out diagnostic);
+                if (target + 8 > length) return TruncateAt(target, 6, 8, DataField.Payload, length, out diagnostic);
+                if (target + 10 > length) return TruncateAt(target, 8, 10, DataField.Payload, length, out diagnostic);
+                if (target + 14 > length) return TruncateAt(target, 10, 14, DataField.Payload, length, out diagnostic);
+                break;
             default: // 32
                 if (target + 4 > length) return TruncateAt(target, 1, 4, DataField.Offset, length, out diagnostic);
                 if (target + 5 > length) return TruncateAt(target, 4, 5, DataField.Payload, length, out diagnostic);
@@ -976,21 +1406,35 @@ public readonly ref partial struct ColrView
     {
         1 => ColrLayout.PaintColrLayersSize,
         2 => ColrLayout.PaintSolidSize,
+        3 => ColrLayout.PaintVarSolidSize,
         4 => ColrLayout.PaintLinearGradientSize,
+        5 => ColrLayout.PaintVarLinearGradientSize,
         6 => ColrLayout.PaintRadialGradientSize,
+        7 => ColrLayout.PaintVarRadialGradientSize,
         8 => ColrLayout.PaintSweepGradientSize,
+        9 => ColrLayout.PaintVarSweepGradientSize,
         10 => ColrLayout.PaintGlyphSize,
         11 => ColrLayout.PaintColrGlyphSize,
         12 => ColrLayout.PaintTransformSize,
+        13 => ColrLayout.PaintVarTransformSize,
         14 => ColrLayout.PaintTranslateSize,
+        15 => ColrLayout.PaintVarTranslateSize,
         16 => ColrLayout.PaintScaleSize,
+        17 => ColrLayout.PaintVarScaleSize,
         18 => ColrLayout.PaintScaleAroundCenterSize,
+        19 => ColrLayout.PaintVarScaleAroundCenterSize,
         20 => ColrLayout.PaintScaleUniformSize,
+        21 => ColrLayout.PaintVarScaleUniformSize,
         22 => ColrLayout.PaintScaleUniformAroundCenterSize,
+        23 => ColrLayout.PaintVarScaleUniformAroundCenterSize,
         24 => ColrLayout.PaintRotateSize,
+        25 => ColrLayout.PaintVarRotateSize,
         26 => ColrLayout.PaintRotateAroundCenterSize,
+        27 => ColrLayout.PaintVarRotateAroundCenterSize,
         28 => ColrLayout.PaintSkewSize,
+        29 => ColrLayout.PaintVarSkewSize,
         30 => ColrLayout.PaintSkewAroundCenterSize,
+        31 => ColrLayout.PaintVarSkewAroundCenterSize,
         _ => ColrLayout.PaintCompositeSize, // 32
     };
 
@@ -1010,6 +1454,38 @@ public readonly ref partial struct ColrView
                 break;
             case ColrPaintTransform transform:
                 transform.PaintNodeId = ordinal[transform.PaintNodeId];
+                break;
+            case ColrPaintVarTransform varTransform:
+                varTransform.PaintNodeId = ordinal[varTransform.PaintNodeId];
+                break;
+            case ColrPaintVarTranslate varTranslate:
+                varTranslate.PaintNodeId = ordinal[varTranslate.PaintNodeId];
+                break;
+            case ColrPaintVarScale varScale:
+                varScale.PaintNodeId = ordinal[varScale.PaintNodeId];
+                break;
+            case ColrPaintVarScaleAroundCenter varScaleAroundCenter:
+                varScaleAroundCenter.PaintNodeId = ordinal[varScaleAroundCenter.PaintNodeId];
+                break;
+            case ColrPaintVarScaleUniform varScaleUniform:
+                varScaleUniform.PaintNodeId = ordinal[varScaleUniform.PaintNodeId];
+                break;
+            case ColrPaintVarScaleUniformAroundCenter varScaleUniformAroundCenter:
+                varScaleUniformAroundCenter.PaintNodeId =
+                    ordinal[varScaleUniformAroundCenter.PaintNodeId];
+                break;
+            case ColrPaintVarRotate varRotate:
+                varRotate.PaintNodeId = ordinal[varRotate.PaintNodeId];
+                break;
+            case ColrPaintVarRotateAroundCenter varRotateAroundCenter:
+                varRotateAroundCenter.PaintNodeId =
+                    ordinal[varRotateAroundCenter.PaintNodeId];
+                break;
+            case ColrPaintVarSkew varSkew:
+                varSkew.PaintNodeId = ordinal[varSkew.PaintNodeId];
+                break;
+            case ColrPaintVarSkewAroundCenter varSkewAroundCenter:
+                varSkewAroundCenter.PaintNodeId = ordinal[varSkewAroundCenter.PaintNodeId];
                 break;
             case ColrPaintTranslate translate:
                 translate.PaintNodeId = ordinal[translate.PaintNodeId];
@@ -1077,6 +1553,11 @@ public readonly ref partial struct ColrView
         internal bool[] LayerReferenced;
         internal Dictionary<ushort, uint> BaseRoots;
         internal bool Materialize;
+        // The opened variation faces (T6-03 §3): NULL = absent; a var node with
+        // a NULL store refuses at its format word (OQ-T6-03-2), and the slot
+        // resolution keys on the map's absence for the implicit identity.
+        internal DeltaSetIndexMapTable? VarIndexMap;
+        internal VariationStoreTable? Store;
 
         internal readonly Dictionary<uint, int> Visited = new();
         internal readonly HashSet<uint> Path = [];
@@ -1227,6 +1708,28 @@ public readonly ref partial struct ColrView
                 (uint)glyphId);
         uint boxOffset = U24((int)hitRow + 4);
         ulong box = clipList + boxOffset;
+        if (box >= (ulong)_data.Length)
+            return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
+                Location.AtLocal(DataField.Payload, box), out diagnostic,
+                (ulong)_data.Length, box + ColrLayout.ClipBoxFormat1Size);
+        byte boxFormat = _data[(int)box];
+        if (boxFormat == 2)
+        {
+            // The format-2 projection (OQ-T6-03-3): 13 bytes, the varIndexBase
+            // riding verbatim - the read-side face carries no store authority,
+            // so the resolution stays the whole-table walk's.
+            if (box + ColrLayout.ClipBoxFormat2Size > (ulong)_data.Length)
+                return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
+                    Location.AtLocal(DataField.Payload, box), out diagnostic,
+                    (ulong)_data.Length, box + ColrLayout.ClipBoxFormat2Size);
+            clipBox = new ColrClipBox(
+                RawFword((int)box + 1),
+                RawFword((int)box + 3),
+                RawFword((int)box + 5),
+                RawFword((int)box + 7), 2, ReadWire.U32(_data, (int)box + 9));
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
         if (box + ColrLayout.ClipBoxFormat1Size > (ulong)_data.Length)
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
                 Location.AtLocal(DataField.Payload, box), out diagnostic,
