@@ -19,7 +19,18 @@ public enum DiagnosticCode : ushort
     OverlappingRange = 11, StorageBeforeRecords = 12, WrongSourceFace = 13,
     GlyphNotMapped = 14, DuplicateGlyph = 15, DestinationTooSmall = 16,
     UnsupportedOperation = 17, UnknownTable = 18, SignatureRequiresDrop = 19,
-    UnexpectedTrailingData = 20, DeprecatedValue = 21
+    UnexpectedTrailingData = 20, DeprecatedValue = 21,
+
+    // Subset-operation policy refusals (S1a card §6 rejection faces). Each value names
+    // one frozen refusal category; the category's diagnosticKeywordContract words are
+    // registered here so validation gates can key text on the numeric wire contract.
+    StaticProfileRequired = 22,      // S0-RF-001-VF: "fvar", "variable", "static profile"
+    LayoutFamilyUnsupported = 23,    // S0-RF-004-LAYOUT: "layout", "NoLayout", "S2"
+    NotdefExcluded = 24,             // S0-RF-005-NOTDEF: ".notdef", "GID 0", "exclude"
+    SubsetModeRequired = 25,         // S0-RF-006-MODE: "mode", "SubsetMode"
+    CmapFormatUnsupported = 26,      // S0-RF-007..010: "cmap", "format <n>", "unsupported"
+    PostVersionDeprecated = 27,      // S0-RF-011-POST25: "post", "2.5", "deprecated"
+    OutlineProfileUnsupported = 28   // S1a admission: "profile", "glyf", "loca", "CFF"
 }
 
 public enum DataField : ushort
