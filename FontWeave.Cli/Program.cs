@@ -4,6 +4,17 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using FontWeave;
+using FontWeave.Containers;
+using FontWeave.Core;
+using FontWeave.Inspection;
+using CompiledFont = FontWeave.Operations.CompiledFont;
+using HeadMetadataEdit = FontWeave.Tables.HeadMetadataEdit;
+using MetadataEditOperation = FontWeave.Operations.MetadataEditOperation;
+using MetadataEditOptions = FontWeave.Operations.MetadataEditOptions;
+using NameEditPlan = FontWeave.Tables.NameEditPlan;
+using NameReplacement = FontWeave.Tables.NameReplacement;
+using TypedHeadView = FontWeave.Tables.HeadView;
+using TypedUnknownTablePolicy = FontWeave.Operations.UnknownTablePolicy;
 
 namespace FontWeave.Cli;
 
@@ -16,14 +27,20 @@ internal static class Program
     {
         if (args.Length == 0 || args is ["--help"])
         {
-            Console.WriteLine("FontWeave M1 (experimental)\n" +
-                "inspect INPUT [--face N]\nnames INPUT [--face N] [--show-raw]\n" +
+            Console.WriteLine("FontWeave (experimental)\n" +
+                "validate INPUT [--face N] [--table TAG]\n" +
+                "inspect INPUT [--face N] [--table TAG] [--show-raw]\n" +
+                "edit-rebuild INPUT --record N --text TEXT --output OUTPUT [--head-revision INT32] [--head-modified INT64]\n" +
+                "names INPUT [--face N] [--show-raw]\n" +
                 "name-replace INPUT --record N --text TEXT --encoding utf16be --output OUTPUT\n" +
                 "name-add INPUT --platform N --encoding-id N --language N --name-id N --text TEXT --encoding utf16be --output OUTPUT\n" +
                 "name-delete INPUT --record N --output OUTPUT\n" +
                 "copy-original INPUT --output OUTPUT (byte copy, no format validation)\n" +
                 "Edits also accept --face N, --drop-signature, --unknown-tables fail|drop|preserve.\n" +
-                "Use --hex HEX instead of --text/--encoding for explicit raw payloads.\n" +
+                "Legacy name-* commands accept --hex HEX instead of --text/--encoding.\n" +
+                "edit-rebuild uses strict UTF-16BE; head revision is raw signed 16.16, modified is OpenType seconds.\n" +
+                "TAG is four ASCII characters or 0xXXXXXXXX. Typed commands accept --max-temporary-bytes and --max-work-units.\n" +
+                "Selected raw inspection accepts --max-raw-bytes (default 8 MiB); oversized payloads are refused.\n" +
                 "All results are JSON. Output must be a new path; inputs are never overwritten.");
             return args.Length == 0 ? 2 : 0;
         }
@@ -31,7 +48,7 @@ internal static class Program
         {
             long allocated = GC.GetTotalAllocatedBytes(true);
             var watch = Stopwatch.StartNew();
-            Dictionary<string, object?> result = Execute(args);
+            Dictionary<string, object?> result = Execute(args, out int exitCode);
             result["metrics"] = new
             {
                 elapsedMilliseconds = watch.Elapsed.TotalMilliseconds,
@@ -40,7 +57,7 @@ internal static class Program
                 scope = "cold CLI operation before JSON serialization; includes file input and output, not a throughput benchmark"
             };
             Console.WriteLine(JsonSerializer.Serialize(result, Json));
-            return 0;
+            return exitCode;
         }
         catch (FontDataException error) { return Fail(error.Error.ToString(), error.Message, 3); }
         catch (CliException error) { return Fail(error.Code, error.Message, 2); }
@@ -51,13 +68,14 @@ internal static class Program
         catch (Exception error) { return Fail("InternalError", error.ToString(), 5); }
     }
 
-    private static Dictionary<string, object?> Execute(string[] args)
+    private static Dictionary<string, object?> Execute(string[] args, out int exitCode)
     {
+        exitCode = 0;
         if (args.Length < 2) throw new CliException("Usage", "A command and input path are required.");
         string command = args[0];
-        bool edit = command is "name-replace" or "name-add" or "name-delete";
+        bool edit = command is "name-replace" or "name-add" or "name-delete" or "edit-rebuild";
         bool copy = command == "copy-original";
-        if (!edit && !copy && command is not ("inspect" or "names"))
+        if (!edit && !copy && command is not ("inspect" or "names" or "validate"))
             throw new CliException("Usage", $"Unknown command '{command}'.");
         var options = ParseOptions(args.AsSpan(2));
         ValidateOptions(command, options);
@@ -71,6 +89,8 @@ internal static class Program
         string input = Path.GetFullPath(args[1]);
         string? output = edit || copy ? Path.GetFullPath(Required(options, "output")) : null;
         if (output is not null) CheckOutputPath(input, output);
+        if (command is "validate" or "edit-rebuild" || command == "inspect" && options.ContainsKey("table"))
+            return ExecuteTyped(command, input, output, faceIndex, options, limits, out exitCode);
         byte[] inputBytes = ReadInput(input, limits.MaxInputBytes);
         if (copy)
         {
@@ -148,6 +168,295 @@ internal static class Program
             ["diagnostics"] = plan.Diagnostics, ["preservedTables"] = plan.PreservedTables
         };
     }
+
+    private static Dictionary<string, object?> ExecuteTyped(string command, string input,
+        string? output, int faceIndex, Dictionary<string, string?> options, FontLimits fileLimits,
+        out int exitCode)
+    {
+        var limits = new BuildLimits
+        {
+            MaxInputBytes = fileLimits.MaxInputBytes,
+            MaxOutputBytes = fileLimits.MaxOutputBytes,
+            MaxTemporaryBytes = LongInteger(options, "max-temporary-bytes", 128L * 1024 * 1024),
+            MaxWorkUnits = LongInteger(options, "max-work-units", 512L * 1024 * 1024)
+        };
+        if (limits.MaxTemporaryBytes < 0 || limits.MaxWorkUnits < 0)
+            throw new CliException("Usage", "Build budgets must be nonnegative.");
+        int rawLimit = Integer(options, "max-raw-bytes", 8 * 1024 * 1024);
+        if (rawLimit < 0) throw new CliException("Usage", "--max-raw-bytes must be nonnegative.");
+        uint? requestedTag = options.ContainsKey("table") ? ParseTag(Required(options, "table")) : null;
+        var result = new Dictionary<string, object?>
+        {
+            ["operation"] = command, ["input"] = input, ["faceIndex"] = faceIndex,
+            ["sourceId"] = null, ["inputLength"] = null, ["requestedTag"] = requestedTag,
+            ["limits"] = LimitsReport(limits), ["report"] = null, ["raw"] = null
+        };
+        if (command == "edit-rebuild")
+        {
+            result["output"] = output;
+            result["outputLength"] = null;
+            result["written"] = 0;
+            result["outputWritten"] = false;
+            result["usage"] = null;
+            result["decisions"] = null;
+        }
+
+        ReadStatus status = TryReadTypedInput(input, limits.MaxInputBytes, out byte[]? inputBytes,
+            out FontDiagnostic diagnostic);
+        if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
+        result["inputLength"] = inputBytes!.Length;
+        status = FontSource.TryCopy(inputBytes, out FontSource? source, out diagnostic, limits.MaxInputBytes);
+        if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
+        FontSource actualSource = source!;
+        result["sourceId"] = actualSource.SourceId;
+        status = actualSource.TryGetFace(faceIndex, out FontFaceRef face, out diagnostic);
+        if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
+
+        if (command == "edit-rebuild")
+        {
+            int ordinal = Integer(options, "record");
+            string text = Required(options, "text");
+            var editOptions = new MetadataEditOptions
+            {
+                DropDigitalSignature = options.ContainsKey("drop-signature"),
+                UnknownTables = (options.GetValueOrDefault("unknown-tables") ?? "fail") switch
+                {
+                    "fail" => TypedUnknownTablePolicy.Reject,
+                    "drop" => TypedUnknownTablePolicy.Drop,
+                    "preserve" => TypedUnknownTablePolicy.Preserve,
+                    _ => throw new CliException("Usage", "--unknown-tables must be fail, drop or preserve.")
+                }
+            };
+            var replacements = new[] { new NameReplacement(ordinal, text) };
+            CompiledFont? compiled;
+            if (options.ContainsKey("head-revision") || options.ContainsKey("head-modified"))
+            {
+                status = ReadHeadEdit(face, options, limits, out HeadMetadataEdit headEdit, out diagnostic);
+                if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
+                status = MetadataEditOperation.TryPrepare(face, headEdit, replacements, out compiled,
+                    out diagnostic, editOptions, limits);
+            }
+            else
+            {
+                var plan = new NameEditPlan { Replacements = replacements };
+                status = MetadataEditOperation.TryPrepare(face, plan, out compiled,
+                    out diagnostic, editOptions, limits);
+            }
+            if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
+            CompiledFont prepared = compiled!;
+            byte[] bytes = GC.AllocateUninitializedArray<byte>(prepared.OutputLength);
+            status = prepared.TryCopyTo(bytes, out int written, out diagnostic);
+            if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
+            WriteNewFile(output!, bytes);
+            result["outputLength"] = prepared.OutputLength;
+            result["written"] = written;
+            result["outputWritten"] = true;
+            result["usage"] = UsageReport(prepared.Usage);
+            result["decisions"] = DecisionReport(prepared.Decisions);
+            result["recordOrdinal"] = ordinal;
+            result["textEncoding"] = "utf16be";
+            return SetOutcome(result, status, diagnostic, out exitCode);
+        }
+
+        FontInspectionReport? report;
+        status = FontInspection.TryValidate(face, out report, out diagnostic, requestedTag, limits);
+        if (report is not null) result["report"] = InspectionReport(report);
+        if (command == "inspect" && options.ContainsKey("show-raw") && report is not null)
+        {
+            ReadStatus rawStatus = ReadRawTable(face, requestedTag!.Value, rawLimit,
+                out object raw, out FontDiagnostic rawDiagnostic);
+            result["raw"] = raw;
+            if (status == ReadStatus.Done && rawStatus != ReadStatus.Done)
+            {
+                status = rawStatus;
+                diagnostic = rawDiagnostic;
+            }
+        }
+        return SetOutcome(result, status, diagnostic, out exitCode);
+    }
+
+    private static ReadStatus ReadHeadEdit(FontFaceRef face, Dictionary<string, string?> options,
+        BuildLimits limits, out HeadMetadataEdit edit, out FontDiagnostic diagnostic)
+    {
+        edit = default;
+        diagnostic = default;
+        int? revision = options.ContainsKey("head-revision") ? Integer(options, "head-revision") : null;
+        long? modified = options.ContainsKey("head-modified") ? LongInteger(options, "head-modified") : null;
+        if (revision.HasValue && modified.HasValue)
+        {
+            edit = new(revision.Value, modified.Value);
+            return ReadStatus.Done;
+        }
+        ReadStatus status = face.TryOpenDirectory(out var directory, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = directory.Validate(out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = directory.TryFindUniqueTable(0x68656164, out int ordinal, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = directory.TryGetTableBytes(ordinal, out var bytes, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = TypedHeadView.TryOpen(bytes, out var view, out diagnostic, directory.TableLocation(ordinal));
+        if (status != ReadStatus.Done) return status;
+        status = view.TryRead(out var model, out diagnostic, limits);
+        if (status != ReadStatus.Done) return status;
+        edit = new(revision ?? model!.Values.FontRevisionRaw, modified ?? model!.Values.ModifiedSeconds);
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus TryReadTypedInput(string input, int maximum, out byte[]? bytes,
+        out FontDiagnostic diagnostic)
+    {
+        bytes = null;
+        diagnostic = default;
+        using var stream = new FileStream(input, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (stream.Length > maximum)
+        {
+            diagnostic = new(DiagnosticCode.BudgetExceeded,
+                DataLocation.Anonymous().At(DataField.Length, 0) with { Basis = OffsetBasis.File },
+                (ulong)stream.Length, (ulong)maximum);
+            return ReadStatus.ResourceLimit;
+        }
+        bytes = GC.AllocateUninitializedArray<byte>((int)stream.Length);
+        stream.ReadExactly(bytes);
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus ReadRawTable(FontFaceRef face, uint tag, int maximum,
+        out object raw, out FontDiagnostic diagnostic)
+    {
+        int? ordinal = null;
+        uint? length = null;
+        DataLocation? location = null;
+        string? payloadHex = null;
+        ReadStatus status = face.TryOpenDirectory(out var directory, out diagnostic);
+        if (status == ReadStatus.Done)
+        {
+            status = directory.TryFindUniqueTable(tag, out int found, out diagnostic);
+            if (status == ReadStatus.Done)
+            {
+                ordinal = found;
+                status = directory.TryGetRecord(found, out var record, out diagnostic);
+                if (status == ReadStatus.Done)
+                {
+                    length = record.Length;
+                    location = directory.TableLocation(found);
+                    status = directory.TryGetTableBytes(found, out var bytes, out diagnostic);
+                    if (status == ReadStatus.Done && bytes.Length > maximum)
+                    {
+                        diagnostic = new(DiagnosticCode.BudgetExceeded,
+                            location.Value.At(DataField.Length, 0), (ulong)bytes.Length, (ulong)maximum);
+                        status = ReadStatus.ResourceLimit;
+                    }
+                    if (status == ReadStatus.Done) payloadHex = Convert.ToHexString(bytes);
+                }
+            }
+        }
+        raw = new
+        {
+            tag, tagText = TagText(tag), ordinal, length,
+            location = location.HasValue ? LocationReport(location.Value) : null,
+            status = (byte)status, statusName = status.ToString(),
+            diagnostic = DiagnosticReport(diagnostic), payloadHex, maxRawBytes = maximum
+        };
+        return status;
+    }
+
+    private static Dictionary<string, object?> SetOutcome(Dictionary<string, object?> result,
+        ReadStatus status, FontDiagnostic diagnostic, out int exitCode)
+    {
+        result["status"] = (byte)status;
+        result["statusName"] = status.ToString();
+        result["diagnostic"] = DiagnosticReport(diagnostic);
+        exitCode = status == ReadStatus.Done ? 0 : 1;
+        return result;
+    }
+
+    private static object DiagnosticReport(FontDiagnostic diagnostic) => new
+    {
+        code = (ushort)diagnostic.Code, codeName = diagnostic.Code.ToString(),
+        location = LocationReport(diagnostic.Location), detail = diagnostic.Detail, expected = diagnostic.Expected
+    };
+
+    private static object InspectionReport(FontInspectionReport report) => new
+    {
+        sourceId = report.SourceId, faceIndex = report.FaceIndex, isCollection = report.IsCollection,
+        containerVersion = report.ContainerVersion, declaredTableCount = report.DeclaredTableCount,
+        requestedTableTag = report.RequestedTableTag,
+        containerValidationStatus = (byte)report.ContainerValidationStatus,
+        containerValidationStatusName = report.ContainerValidationStatus.ToString(),
+        containerDiagnostic = DiagnosticReport(report.ContainerDiagnostic),
+        admissionUsage = UsageReport(report.AdmissionUsage), perTableLimits = LimitsReport(report.PerTableLimits),
+        tables = report.Tables.Select(table => new
+        {
+            ordinal = table.Ordinal, tag = table.Tag, tagText = table.Tag.HasValue ? TagText(table.Tag.Value) : null,
+            record = table.Record.HasValue ? new
+            {
+                ordinal = table.Record.Value.Ordinal, tag = table.Record.Value.Tag,
+                checksum = table.Record.Value.Checksum, fileOffset = table.Record.Value.FileOffset,
+                length = table.Record.Value.Length
+            } : null,
+            location = LocationReport(table.Location),
+            inspectionStatus = (byte)table.InspectionStatus, inspectionStatusName = table.InspectionStatus.ToString(),
+            inspectionDiagnostic = DiagnosticReport(table.InspectionDiagnostic),
+            validationStatus = table.ValidationStatus.HasValue ? (byte?)table.ValidationStatus.Value : null,
+            validationStatusName = table.ValidationStatus?.ToString(),
+            validationDiagnostic = table.ValidationDiagnostic.HasValue
+                ? DiagnosticReport(table.ValidationDiagnostic.Value) : null,
+            rawVersion = table.RawVersion, profile = table.Profile,
+            dependencies = table.Dependencies.Select(dependency => new
+            {
+                tag = dependency.Tag, tagText = TagText(dependency.Tag), required = dependency.Required,
+                status = (byte)dependency.Status, statusName = dependency.Status.ToString(),
+                location = LocationReport(dependency.Location), diagnostic = DiagnosticReport(dependency.Diagnostic)
+            }).ToArray(),
+            metadataOnlyLookupCount = table.MetadataOnlyLookupCount, validationScope = table.ValidationScope
+        }).ToArray()
+    };
+
+    private static object LocationReport(DataLocation location) => new
+    {
+        sourceId = location.SourceId, faceIndex = location.FaceIndex, tableTag = location.TableTag,
+        recordOrdinal = location.RecordOrdinal, field = (ushort)location.Field,
+        fieldName = location.Field.ToString(), basis = (byte)location.Basis,
+        basisName = location.Basis.ToString(), offset = location.Offset, tableOrdinal = location.TableOrdinal,
+        tableFileOffset = location.TableFileOffset, absoluteOffset = location.AbsoluteOffset
+    };
+
+    private static object LimitsReport(BuildLimits limits) => new
+    {
+        maxInputBytes = limits.MaxInputBytes, maxOutputBytes = limits.MaxOutputBytes,
+        maxTemporaryBytes = limits.MaxTemporaryBytes, maxWorkUnits = limits.MaxWorkUnits
+    };
+
+    private static object UsageReport(BuildUsage usage) => new
+    {
+        workUnits = usage.WorkUnits, temporaryBytes = usage.TemporaryBytes, inputBytes = usage.InputBytes,
+        copiedTableBytes = usage.CopiedTableBytes, tableCopyCount = usage.TableCopyCount,
+        compiledTableBytes = usage.CompiledTableBytes, compiledTableCount = usage.CompiledTableCount,
+        outputBytes = usage.OutputBytes
+    };
+
+    private static object[] DecisionReport(ReadOnlySpan<FontWeave.Operations.TableDecision> decisions)
+    {
+        var result = new object[decisions.Length];
+        for (int i = 0; i < decisions.Length; i++)
+            result[i] = new { tag = decisions[i].Tag, tagText = TagText(decisions[i].Tag),
+                action = (int)decisions[i].Action, actionName = decisions[i].Action.ToString() };
+        return result;
+    }
+
+    private static uint ParseTag(string value)
+    {
+        if (value.Length == 10 && value.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            uint.TryParse(value.AsSpan(2), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out uint tag))
+            return tag;
+        if (value.Length != 4 || value.Any(character => character > 0x7F))
+            throw new CliException("Usage", "--table must be four ASCII characters or 0xXXXXXXXX.");
+        return (uint)value[0] << 24 | (uint)value[1] << 16 | (uint)value[2] << 8 | value[3];
+    }
+
+    private static string TagText(uint tag) => new(new[] { (char)(tag >> 24), (char)((tag >> 16) & 0xFF),
+        (char)((tag >> 8) & 0xFF), (char)(tag & 0xFF) });
 
     private static Dictionary<string, object?> NameReport(NameTable table)
     {
@@ -311,6 +620,14 @@ internal static class Program
             allowed.Remove("face");
             allowed.Add("output");
         }
+        else if (command == "validate" || command == "inspect" && options.ContainsKey("table"))
+        {
+            allowed.UnionWith(["table", "max-temporary-bytes", "max-work-units"]);
+            if (command == "inspect") allowed.UnionWith(["show-raw", "max-raw-bytes"]);
+        }
+        else if (command == "edit-rebuild")
+            allowed.UnionWith(["output", "record", "text", "head-revision", "head-modified",
+                "drop-signature", "unknown-tables", "max-temporary-bytes", "max-work-units"]);
         else if (command is "inspect" or "names") allowed.Add("show-raw");
         else
         {
@@ -339,6 +656,13 @@ internal static class Program
         int value = Integer(options, key);
         return value >= 0 && value <= ushort.MaxValue ? (ushort)value
             : throw new CliException("Usage", $"--{key} must be 0..65535.");
+    }
+
+    private static long LongInteger(Dictionary<string, string?> options, string key, long? fallback = null)
+    {
+        if (!options.ContainsKey(key) && fallback is long value) return value;
+        return long.TryParse(Required(options, key), NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed)
+            ? parsed : throw new CliException("Usage", $"--{key} must be an Int64.");
     }
 
     private static int Fail(string error, string message, int code)
