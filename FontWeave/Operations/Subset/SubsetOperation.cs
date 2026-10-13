@@ -38,7 +38,7 @@ public static partial class SubsetOperation
             throw new ArgumentException("The subset request face is not bound to a source.",
                 nameof(request));
         var options = request.Options ?? new SubsetOptions();
-        var state = new PrepareState(request.Mode);
+        var state = new PrepareState(request.Mode, new BuildBudget(limits));
         var budget = state.Budget;
         DataLocation faceAt = request.Face.Location;
 
@@ -136,8 +136,23 @@ public static partial class SubsetOperation
                     out report, out diagnostic);
         }
 
-        // Step 5/6: the composite dependency closure lands with the closure commit; the
-        // derived counts below always run over the final retained set.
+        // Step 5: composite dependency closure over the TrueType profile (card §3). The
+        // typed read chain runs first, so graph violations surface with the reader's own
+        // diagnostics; the zero-rebuild profile has no composites and skips this stage.
+        LocaTable? loca = null;
+        GlyfTable? glyfModel = null;
+        List<ushort> closureAdded = [];
+        if (trueType)
+        {
+            status = CloseComposites(directory, profile, head!, maxp!, budget,
+                state.Retained, out loca, out glyfModel, out closureAdded, out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+            state.ClosureAdded = closureAdded;
+        }
+
+        // Step 6: derived counts over the final retained set.
         if (!budget.Work(numGlyphs, faceAt, out diagnostic))
             return Refuse(state, ReadStatus.ResourceLimit, diagnostic, out result,
                 out report, out diagnostic);
@@ -613,9 +628,13 @@ public static partial class SubsetOperation
     /// <summary>Mutable pipeline evidence; a refusal freezes whatever accumulated.</summary>
     private sealed class PrepareState
     {
-        internal PrepareState(SubsetMode? mode) => Mode = mode;
+        internal PrepareState(SubsetMode? mode, BuildBudget budget)
+        {
+            Mode = mode;
+            Budget = budget;
+        }
 
-        internal BuildBudget Budget { get; } = new();
+        internal BuildBudget Budget { get; }
         internal SubsetMode? Mode { get; }
         internal readonly List<SubsetTableDecision> Decisions = [];
         internal readonly List<SubsetOptionRecord> OptionRecords = [];
@@ -623,13 +642,16 @@ public static partial class SubsetOperation
         internal readonly List<FontDiagnostic> Diagnostics = [];
         internal FontDiagnostic Diagnostic;
         internal bool[] Retained = [];
+        internal List<ushort>? ClosureAdded;
         internal int UnselectedSlotCount;
 
         internal SubsetReport BuildReport()
         {
-            ushort[] closure = []; // The closure stage replaces this with its additions.
-            return new SubsetReport(Mode, [.. Decisions], UnselectedSlotCount, closure,
-                [.. Dropped], [.. OptionRecords], [.. Diagnostics]);
+            // ClosureAddedGids stays empty until the closure stage has run; a refusal
+            // before that point has no additions to report.
+            return new SubsetReport(Mode, [.. Decisions], UnselectedSlotCount,
+                ClosureAdded?.ToArray() ?? [], [.. Dropped], [.. OptionRecords],
+                [.. Diagnostics]);
         }
     }
 }
