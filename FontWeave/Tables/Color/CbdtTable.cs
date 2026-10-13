@@ -43,7 +43,9 @@ public readonly record struct CbdtGlyphImage(ushort ImageFormat, byte[]? Metrics
 /// container-level observation key only).</summary>
 public sealed class CbdtImage
 {
-    internal CbdtImage(ushort imageFormat, byte[]? metrics, byte[] payload)
+    /// <summary>Creates one owned image part (the factory/edit paths and the
+    /// public TryCreate surface share this shape - the SbixStrike line).</summary>
+    public CbdtImage(ushort imageFormat, byte[]? metrics, byte[] payload)
     {
         ImageFormat = imageFormat;
         Metrics = metrics;
@@ -98,6 +100,74 @@ public sealed class CbdtTable
                 Location.AtLocal(DataField.Count, 0, imageIndex), out diagnostic,
                 unchecked((ulong)(long)imageIndex), (ulong)_images.Length);
         image = _images[imageIndex];
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Atomically replaces one image's opaque payload whole (the
+    /// card §4.1 edit face): the data length re-derives from the replacement
+    /// and every cross-table fixup re-answers at the next compile - the
+    /// payload bytes travel verbatim, never decoded. The format and metrics
+    /// head ride unchanged; structural changes (image count changes, format
+    /// swaps, version writes) have no surface (OQ-T6-05-13's finite
+    /// refusals).</summary>
+    public ReadStatus TryWithImagePayload(int imageIndex, ReadOnlySpan<byte> payload,
+        out CbdtTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        ReadStatus status = RequireImageDomain(imageIndex, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var images = new CbdtImage[_images.Length];
+        Array.Copy(_images, images, _images.Length);
+        var source = _images[imageIndex];
+        images[imageIndex] = new CbdtImage(source.ImageFormat, source.Metrics,
+            payload.ToArray());
+        updated = new(MajorVersion, MinorVersion, images, Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Atomically rewrites one image's raw metrics head (the card
+    /// §4.1 edit face): 5 bytes on format 17, 8 on 18 - the values travel
+    /// raw (the application domain, never interpreted here); format 19 has
+    /// no head (the metrics live in the CBLC subtable) and refuses.</summary>
+    public ReadStatus TryWithGlyphMetrics(int imageIndex, ReadOnlySpan<byte> metrics,
+        out CbdtTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        ReadStatus status = RequireImageDomain(imageIndex, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var source = _images[imageIndex];
+        int expectedLength = source.ImageFormat switch
+        {
+            CblcLayout.ImageFormat17 => CbdtLayout.SmallGlyphMetricsLength,
+            CblcLayout.ImageFormat18 => CblcLayout.BigGlyphMetricsLength,
+            _ => -1,
+        };
+        if (expectedLength < 0)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat,
+                DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Payload, 0, imageIndex), out diagnostic,
+                source.ImageFormat, 0UL);
+        if (metrics.Length != expectedLength)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Length, 0, imageIndex), out diagnostic,
+                (ulong)metrics.Length, (ulong)expectedLength);
+        var images = new CbdtImage[_images.Length];
+        Array.Copy(_images, images, _images.Length);
+        images[imageIndex] = new CbdtImage(source.ImageFormat, metrics.ToArray(),
+            source.Payload);
+        updated = new(MajorVersion, MinorVersion, images, Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus RequireImageDomain(int imageIndex, out FontDiagnostic diagnostic)
+    {
+        if ((uint)imageIndex >= (uint)_images.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, 0, imageIndex), out diagnostic,
+                unchecked((ulong)(long)imageIndex), (ulong)_images.Length);
         diagnostic = default;
         return ReadStatus.Done;
     }

@@ -21,7 +21,7 @@ public readonly record struct CblcGlyphLocation(ushort ImageFormat,
 /// formats never reach it through this card's validate gate.</summary>
 public abstract class CblcIndexSubtable
 {
-    private protected CblcIndexSubtable(int ordinal, ushort indexFormat, ushort imageFormat,
+    protected CblcIndexSubtable(int ordinal, ushort indexFormat, ushort imageFormat,
         uint imageDataOffset, ushort firstGlyphIndex, ushort lastGlyphIndex)
     {
         Ordinal = ordinal;
@@ -50,7 +50,7 @@ public abstract class CblcIndexSubtable
 /// is the format's own face (1 vs 3), never re-narrowed.</summary>
 public sealed class CblcOffsetSubtable : CblcIndexSubtable
 {
-    internal CblcOffsetSubtable(int ordinal, ushort indexFormat, ushort imageFormat,
+    public CblcOffsetSubtable(int ordinal, ushort indexFormat, ushort imageFormat,
         uint imageDataOffset, ushort firstGlyphIndex, ushort lastGlyphIndex, uint[] sbitOffsets)
         : base(ordinal, indexFormat, imageFormat, imageDataOffset, firstGlyphIndex,
               lastGlyphIndex) => SbitOffsets = sbitOffsets;
@@ -66,7 +66,7 @@ public sealed class CblcOffsetSubtable : CblcIndexSubtable
 /// only defined image pairing is format 19, D L113's "metrics in CBLC table").</summary>
 public sealed class CblcImageSizeSubtable : CblcIndexSubtable
 {
-    internal CblcImageSizeSubtable(int ordinal, ushort imageFormat, uint imageDataOffset,
+    public CblcImageSizeSubtable(int ordinal, ushort imageFormat, uint imageDataOffset,
         ushort firstGlyphIndex, ushort lastGlyphIndex, uint imageSize, byte[] bigMetrics)
         : base(ordinal, CblcLayout.IndexFormat2, imageFormat, imageDataOffset,
               firstGlyphIndex, lastGlyphIndex)
@@ -88,7 +88,7 @@ public sealed class CblcImageSizeSubtable : CblcIndexSubtable
 /// n+1 pairs; the sentinel's offset sizes the final glyph.</summary>
 public sealed class CblcPairSubtable : CblcIndexSubtable
 {
-    internal CblcPairSubtable(int ordinal, ushort imageFormat, uint imageDataOffset,
+    public CblcPairSubtable(int ordinal, ushort imageFormat, uint imageDataOffset,
         ushort firstGlyphIndex, ushort lastGlyphIndex, ushort[] glyphIds, ushort[] sbitOffsets)
         : base(ordinal, CblcLayout.IndexFormat4, imageFormat, imageDataOffset,
               firstGlyphIndex, lastGlyphIndex)
@@ -111,7 +111,7 @@ public sealed class CblcPairSubtable : CblcIndexSubtable
 /// ID" is the read-side hard face).</summary>
 public sealed class CblcGlyphIdArraySubtable : CblcIndexSubtable
 {
-    internal CblcGlyphIdArraySubtable(int ordinal, ushort imageFormat, uint imageDataOffset,
+    public CblcGlyphIdArraySubtable(int ordinal, ushort imageFormat, uint imageDataOffset,
         ushort firstGlyphIndex, ushort lastGlyphIndex, uint imageSize, byte[] bigMetrics,
         ushort[] glyphIds)
         : base(ordinal, CblcLayout.IndexFormat5, imageFormat, imageDataOffset,
@@ -155,7 +155,7 @@ public sealed class CblcStrike
     public IReadOnlyList<CblcIndexSubtable> Subtables => Array.AsReadOnly(_subtables);
     private readonly CblcIndexSubtable[] _subtables;
 
-    internal CblcStrike(uint indexSubtableListOffset, uint indexSubtableListSize,
+    public CblcStrike(uint indexSubtableListOffset, uint indexSubtableListSize,
         uint colorRef, byte[] horiMetrics, byte[] vertMetrics, ushort startGlyphIndex,
         ushort endGlyphIndex, byte ppemX, byte ppemY, byte bitDepth, sbyte flags,
         CblcIndexSubtable[] subtables)
@@ -220,5 +220,78 @@ public sealed class CblcTable
         strike = _sizes[sizeIndex];
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    /// <summary>Atomically rewrites one strike's two raw SbitLineMetrics
+    /// blocks (the card §4.1 edit face): 12 bytes each, traveling raw - the
+    /// rasterizer never reads them here (E L96), so no value interpretation
+    /// re-answers. The strike's index layer rides unchanged; the compile
+    /// re-emits the rows with the fresh bytes.</summary>
+    public ReadStatus TryWithStrikeMetrics(int sizeIndex, ReadOnlySpan<byte> hori,
+        ReadOnlySpan<byte> vert, out CblcTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        if ((uint)sizeIndex >= (uint)_sizes.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, CblcLayout.BitmapSizeAt, sizeIndex),
+                out diagnostic, unchecked((ulong)(long)sizeIndex), (ulong)_sizes.Length);
+        if (hori.Length != CblcLayout.SbitLineMetricsLength ||
+            vert.Length != CblcLayout.SbitLineMetricsLength)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Length, 0, sizeIndex), out diagnostic,
+                (ulong)hori.Length, (ulong)CblcLayout.SbitLineMetricsLength);
+        var source = _sizes[sizeIndex];
+        var sizes = new CblcStrike[_sizes.Length];
+        Array.Copy(_sizes, sizes, _sizes.Length);
+        sizes[sizeIndex] = new CblcStrike(source.IndexSubtableListOffset,
+            source.IndexSubtableListSize, source.ColorRef, hori.ToArray(), vert.ToArray(),
+            source.StartGlyphIndex, source.EndGlyphIndex, source.PpemX, source.PpemY,
+            source.BitDepth, source.Flags, CloneSubtables(source));
+        updated = new(MajorVersion, MinorVersion, sizes, Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Atomically rewrites one strike's ppem pair, bit depth and
+    /// flags word (the card §4.1 edit face) with the value domains
+    /// re-answered: the bitDepth closed set and the flags reserved mask are
+    /// the read-side hard faces, so the edit refuses the same shapes. The
+    /// glyph range and colorRef ride unchanged; structural changes (strike
+    /// count changes, format swaps, version writes) have no surface
+    /// (OQ-T6-05-13's finite refusals).</summary>
+    public ReadStatus TryWithBitmapSize(int sizeIndex, byte ppemX, byte ppemY,
+        byte bitDepth, sbyte flags, out CblcTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        if ((uint)sizeIndex >= (uint)_sizes.Length)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.Count, CblcLayout.BitmapSizeAt, sizeIndex),
+                out diagnostic, unchecked((ulong)(long)sizeIndex), (ulong)_sizes.Length);
+        if (!CblcLayout.IsBitDepthDefined(bitDepth))
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Payload, 0, sizeIndex), out diagnostic,
+                bitDepth, 0UL);
+        if ((flags & CblcLayout.FlagsReservedMask) != 0)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Flags, 0, sizeIndex), out diagnostic,
+                (ulong)(flags & CblcLayout.FlagsReservedMask), 0UL);
+        var source = _sizes[sizeIndex];
+        var sizes = new CblcStrike[_sizes.Length];
+        Array.Copy(_sizes, sizes, _sizes.Length);
+        sizes[sizeIndex] = new CblcStrike(source.IndexSubtableListOffset,
+            source.IndexSubtableListSize, source.ColorRef, source.HoriMetrics,
+            source.VertMetrics, source.StartGlyphIndex, source.EndGlyphIndex,
+            ppemX, ppemY, bitDepth, flags, CloneSubtables(source));
+        updated = new(MajorVersion, MinorVersion, sizes, Location, ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static CblcIndexSubtable[] CloneSubtables(CblcStrike strike)
+    {
+        var copies = new CblcIndexSubtable[strike.Subtables.Count];
+        for (int r = 0; r < copies.Length; r++)
+            copies[r] = strike.Subtables[r];
+        return copies;
     }
 }
