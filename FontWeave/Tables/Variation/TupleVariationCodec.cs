@@ -487,7 +487,7 @@ internal static class TupleVariationStoreReader
         }
         // The model convention: null = flag clear, empty = all-points marker,
         // non-empty = explicit (an explicit decode is never empty).
-        sharedPointNumbers = sharedRaw;
+        sharedPointNumbers = sharedPointsFlag ? sharedRaw ?? [] : null;
         // One serialized run per header, contiguous in header order; each run is
         // consumed exactly inside its declared variationDataSize window (the
         // frozen corpus carries zero internal pad - card 0).
