@@ -48,23 +48,10 @@ public sealed class EbdtImage
     public EbdtComponent[] Components { get; }
     public byte CompositePad { get; }
 
-    internal static int MetricsLength(ushort imageFormat) => imageFormat switch
-    {
-        1 or 2 or 8 => EblcLayout.SmallGlyphMetricsLength,
-        6 or 7 or 9 => EblcLayout.BigGlyphMetricsLength,
-        5 => 0,
-        _ => -1,
-    };
-
-    internal static long DerivedDataLength(ushort imageFormat, ReadOnlySpan<byte> metrics,
-        byte bitDepth) => imageFormat is 1 or 6
-            ? metrics[0] * ((metrics[1] * bitDepth + 7L) / 8L)
-            : (metrics[0] * metrics[1] * bitDepth + 7L) / 8L;
-
     internal ReadStatus CheckShape(DataLocation location, int ordinal,
         out FontDiagnostic diagnostic)
     {
-        int metricsLength = MetricsLength(ImageFormat);
+        int metricsLength = BitmapImageCodec.LegacyMetricsLength(ImageFormat);
         if (metricsLength < 0)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 location.AtLocal(DataField.Payload, 0, ordinal), out diagnostic, ImageFormat, 0UL);
@@ -94,7 +81,7 @@ public sealed class EbdtImage
                     (ulong)Components.Length, 0UL);
             if (ImageFormat != 5)
             {
-                long expected = DerivedDataLength(ImageFormat, Metrics, BitDepth);
+                long expected = BitmapImageCodec.DerivedDataLength(ImageFormat, Metrics, BitDepth);
                 if (Data.LongLength != expected)
                     return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                         location.AtLocal(DataField.Length, 0, ordinal), out diagnostic,

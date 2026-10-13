@@ -11,7 +11,7 @@ public static class EbdtTableCompiler
     {
         8 => EbdtLayout.Format8HeadLength + 4L * image.Components.Length,
         9 => EbdtLayout.Format9HeadLength + 4L * image.Components.Length,
-        _ => EbdtImage.MetricsLength(image.ImageFormat) + image.Data.LongLength,
+        _ => BitmapImageCodec.LegacyMetricsLength(image.ImageFormat) + image.Data.LongLength,
     };
 
     internal static long PackedLength(EbdtTable model)
@@ -85,7 +85,7 @@ public static class EbdtTableCompiler
         int at = EbdtLayout.HeaderLength;
         foreach (var image in images)
         {
-            int metricsLength = EbdtImage.MetricsLength(image.ImageFormat);
+            int metricsLength = BitmapImageCodec.LegacyMetricsLength(image.ImageFormat);
             if (image.Metrics is { } metrics) metrics.AsSpan().CopyTo(output.AsSpan(at, metricsLength));
             if (image.ImageFormat is 8 or 9)
             {
@@ -96,9 +96,8 @@ public static class EbdtTableCompiler
                 int componentAt = at + headLength;
                 foreach (var component in image.Components)
                 {
-                    BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(componentAt, 2), component.GlyphId);
-                    output[componentAt + 2] = unchecked((byte)component.XOffset);
-                    output[componentAt + 3] = unchecked((byte)component.YOffset);
+                    BitmapImageCodec.WriteComponent(output.AsSpan(componentAt, EbdtLayout.EbdtComponentStride),
+                        component.GlyphId, component.XOffset, component.YOffset);
                     componentAt += EbdtLayout.EbdtComponentStride;
                 }
             }

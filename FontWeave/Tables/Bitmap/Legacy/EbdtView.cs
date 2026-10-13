@@ -277,18 +277,8 @@ public readonly ref partial struct EbdtView
         }
     }
 
-    private readonly ref struct FrameParts(ReadOnlySpan<byte> metrics, ReadOnlySpan<byte> data,
-        ReadOnlySpan<byte> components, byte pad, ulong length)
-    {
-        internal ReadOnlySpan<byte> Metrics { get; } = metrics;
-        internal ReadOnlySpan<byte> Data { get; } = data;
-        internal ReadOnlySpan<byte> Components { get; } = components;
-        internal byte Pad { get; } = pad;
-        internal ulong Length { get; } = length;
-    }
-
     private ReadStatus AnalyzeFrame(ushort format, ulong position, ulong slotLength,
-        byte bitDepth, int? numGlyphs, out FrameParts frame, out FontDiagnostic diagnostic,
+        byte bitDepth, int? numGlyphs, out BitmapImageCodec.FrameParts frame, out FontDiagnostic diagnostic,
         BuildBudget budget)
     {
         frame = default;
@@ -297,65 +287,11 @@ public readonly ref partial struct EbdtView
         if (!EblcLayout.IsBitDepthDefined(bitDepth))
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 Location.AtLocal(DataField.Payload, position), out diagnostic, bitDepth, 0UL);
-        int metricsLength = EbdtImage.MetricsLength(format);
-        if (metricsLength < 0)
-            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
-                Location.AtLocal(DataField.Payload, position), out diagnostic, format, 0UL);
-        int headLength = format switch
-        {
-            8 => EbdtLayout.Format8HeadLength,
-            9 => EbdtLayout.Format9HeadLength,
-            _ => metricsLength,
-        };
-        if (position > (ulong)_data.Length)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                Location.AtLocal(DataField.Offset, position), out diagnostic, position, (ulong)_data.Length);
-        ulong remaining = (ulong)_data.Length - position;
-        if ((ulong)headLength > remaining)
-            return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.AtLocal(DataField.Payload, position), out diagnostic, remaining, (ulong)headLength);
-        if ((ulong)headLength > slotLength)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                Location.AtLocal(DataField.Length, position), out diagnostic, (ulong)headLength, slotLength);
-        ReadOnlySpan<byte> metrics = _data.Slice((int)position, metricsLength);
-        int componentCount = format is 8 or 9
-            ? BinaryPrimitives.ReadUInt16BigEndian(_data.Slice((int)position + headLength - 2, 2))
-            : 0;
-        ulong dataLength = format switch
-        {
-            5 => slotLength,
-            8 or 9 => 0UL,
-            _ => (ulong)EbdtImage.DerivedDataLength(format, metrics, bitDepth),
-        };
-        ulong componentLength = (ulong)componentCount * EbdtLayout.EbdtComponentStride;
-        ulong frameLength = (ulong)headLength + dataLength + componentLength;
-        if (frameLength > slotLength)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                Location.AtLocal(DataField.Length, position), out diagnostic, frameLength, slotLength);
-        if (frameLength > remaining)
-            return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
-                Location.AtLocal(DataField.Payload, position + (ulong)headLength), out diagnostic,
-                remaining - (ulong)headLength, dataLength + componentLength);
-        if (!budget.Work(1L + componentCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        ReadOnlySpan<byte> components = _data.Slice((int)(position + (ulong)headLength), (int)componentLength);
-        if (numGlyphs is { } domain)
-        {
-            for (int c = 0; c < componentCount; c++)
-            {
-                ushort gid = BinaryPrimitives.ReadUInt16BigEndian(components.Slice(c * 4, 2));
-                if (gid >= domain)
-                    return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                        Location.AtLocal(DataField.GlyphId, position + (ulong)headLength + (ulong)c * 4UL, c),
-                        out diagnostic, gid, (uint)domain);
-            }
-        }
-        byte pad = format == 8 ? _data[(int)position + metricsLength] : (byte)0;
-        ReadOnlySpan<byte> data = _data.Slice((int)(position + (ulong)headLength), (int)dataLength);
-        frame = new(metrics, data, components, pad, frameLength);
-        return Done(out diagnostic);
+        return BitmapImageCodec.AnalyzeLegacyFrame(_data, Location, format, position, slotLength,
+            bitDepth, numGlyphs, out frame, out diagnostic, budget);
     }
 
-    private ReadStatus Materialize(FrameParts frame, ushort format, byte bitDepth, int ordinal,
+    private ReadStatus Materialize(BitmapImageCodec.FrameParts frame, ushort format, byte bitDepth, int ordinal,
         out EbdtImage image, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         image = null!;
