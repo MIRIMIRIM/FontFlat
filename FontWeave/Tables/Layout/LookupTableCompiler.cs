@@ -952,16 +952,18 @@ public static class LookupTableCompiler
         MultipleSlotPlan => 2,
         AlternateSlotPlan => 3,
         LigatureSlotPlan => 4,
-        ContextualSlotPlan => 5,
-        ChainingSlotPlan => 6,
+        ContextualSlotPlan => model.Kind == LayoutLookupKind.Gpos ? (ushort)7 : (ushort)5,
+        ChainingSlotPlan => model.Kind == LayoutLookupKind.Gpos ? (ushort)8 : (ushort)6,
         ReverseChainSlotPlan => 8,
         // The T4-06 GPOS wrap-all arms: the direct GPOS leaves keep their real
-        // lookup type as the declared wrapped type (the mark slot takes the
-        // model's own 4/5/6).
+        // lookup type as the declared wrapped type (the mark slot uses its
+        // child table's 4/5/6 kind).
         PositioningSlotPlan => 1,
         PairSlotPlan => 2,
         CursiveSlotPlan => 3,
-        MarkSlotPlan => model.LookupType,
+        MarkSlotPlan { Child: MarkBasePosTable } => 4,
+        MarkSlotPlan { Child: MarkLigPosTable } => 5,
+        MarkSlotPlan { Child: MarkMarkPosTable } => 6,
         _ => throw new InvalidOperationException("An extension slot cannot wrap another extension slot."),
     };
 
@@ -983,7 +985,7 @@ public static class LookupTableCompiler
             4 => model.Kind == LayoutLookupKind.Gpos ? model.MarkBases!.Count : model.Ligatures!.Count,
             5 => model.Kind == LayoutLookupKind.Gpos ? model.MarkLigs!.Count : model.Contextuals!.Count,
             6 => model.Kind == LayoutLookupKind.Gpos ? model.MarkMarks!.Count : model.Chainings!.Count,
-            7 => model.Kind == LayoutLookupKind.Gpos ? model.ExtensionPositions!.Count : model.Extensions!.Count,
+            7 => model.Kind == LayoutLookupKind.Gpos ? model.Contextuals!.Count : model.Extensions!.Count,
             8 => model.Kind == LayoutLookupKind.Gpos ? model.Chainings!.Count : model.ReverseChains!.Count,
             _ => model.Kind == LayoutLookupKind.Gpos ? model.ExtensionPositions!.Count : model.Extensions!.Count,
         };
