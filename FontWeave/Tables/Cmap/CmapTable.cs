@@ -559,7 +559,14 @@ public sealed class CmapTable
     {
         mappings = null;
         ArgumentNullException.ThrowIfNull(subtable);
-        var budget = new BuildBudget(limits);
+        return TryGetMappings(subtable, out mappings, out diagnostic, new BuildBudget(limits));
+    }
+
+    internal ReadStatus TryGetMappings(CmapSubtable subtable, out CmapMapping[]? mappings,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        mappings = null;
+        ArgumentNullException.ThrowIfNull(subtable);
         switch (subtable)
         {
             case CmapFormat0Subtable format0:

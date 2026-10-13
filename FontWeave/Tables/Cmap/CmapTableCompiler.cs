@@ -764,6 +764,40 @@ public static class CmapTableCompiler
         return runs;
     }
 
+    /// <summary>S1a subset rebuild factory (card §5): assembles the canonical encoding
+    /// pair {((3,1), format 4), ((3,10), format 12)} over pruned mappings. The format 4
+    /// subtable carries the BMP subset, the format 12 subtable the full set, both with
+    /// language 0. Mappings must be sorted ascending by code point without duplicates.
+    /// No second encoder exists here: both subtables come from the same canonical
+    /// builders the compiler writer uses, and TryCompile re-derives the identical
+    /// payloads from the returned models.</summary>
+    internal static ReadStatus TryBuildCanonicalPair(CmapTable source, CmapMapping[] mappings,
+        out CmapTable? rebuilt, out FontDiagnostic diagnostic)
+    {
+        rebuilt = null;
+        int bmpCount = 0;
+        foreach (var mapping in mappings)
+            if (mapping.CharacterCode <= 0xFFFF) bmpCount++;
+        var bmp = new CmapMapping[bmpCount];
+        int at = 0;
+        foreach (var mapping in mappings)
+            if (mapping.CharacterCode <= 0xFFFF) bmp[at++] = mapping;
+        ReadStatus status = BuildFormat4Canonical(bmp, source.Location,
+            out var segments, out var glyphArray, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var format4 = new CmapFormat4Subtable(0, segments, glyphArray, 0, source.Location);
+        var runs = BuildRuns(mappings);
+        var groups = new CmapFormat12Group[runs.Count];
+        for (int i = 0; i < runs.Count; i++)
+            groups[i] = new(runs[i].Start, runs[i].End, runs[i].Glyph);
+        var format12 = new CmapFormat12Subtable(groups, 0, source.Location);
+        var records = new CmapRecord[] { new(3, 1, 0, 0), new(3, 10, 0, 1) };
+        rebuilt = new CmapTable(records, [format4, format12], source.NumGlyphs,
+            source.Location, source.MaxpLocation);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
     private static ReadStatus EncodeAll(CmapTable model, BuildBudget budget,
         out byte[]?[] payloads, out long payloadBytes, out FontDiagnostic diagnostic)
     {

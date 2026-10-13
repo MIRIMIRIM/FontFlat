@@ -28,7 +28,7 @@ public sealed class SubsetClosureTests
             (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp((ushort)numGlyphs)),
             (SubsetFontFixture.GlyfTag, glyfBytes),
             (SubsetFontFixture.LocaTag, locaBytes),
-            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapShell(4)));
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41, 1))));
     }
 
     private static SubsetOptions NoLayoutOptions() => new() { NoLayout = true };
@@ -46,12 +46,9 @@ public sealed class SubsetClosureTests
     {
         var face = ChainFace();
         var status = SubsetOperation.TryPrepare(Request(face, [2]), out var result,
-            out var report, out var diagnostic);
-        // The rebuild stage is wired by a later commit; the closure report is retained
-        // by the finite refusal that ends the pipeline today.
-        Assert.Equal(ReadStatus.UnsupportedFormat, status);
-        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
-        Assert.Null(result);
+            out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
         Assert.NotNull(report);
         Assert.Equal([1], report!.ClosureAddedGids);
         Assert.Equal(1, report.UnselectedSlotCount);
@@ -63,7 +60,7 @@ public sealed class SubsetClosureTests
         var face = ChainFace();
         var status = SubsetOperation.TryPrepare(Request(face, [3]), out _,
             out var report, out _);
-        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Equal(ReadStatus.Done, status);
         Assert.Equal([1, 2], report!.ClosureAddedGids);
         Assert.Equal(0, report.UnselectedSlotCount);
     }
@@ -74,7 +71,7 @@ public sealed class SubsetClosureTests
         var face = ChainFace();
         var status = SubsetOperation.TryPrepare(Request(face, [1]), out _,
             out var report, out _);
-        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Equal(ReadStatus.Done, status);
         Assert.Empty(report!.ClosureAddedGids);
         Assert.Equal(2, report.UnselectedSlotCount);
     }
@@ -94,7 +91,7 @@ public sealed class SubsetClosureTests
             (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp((ushort)numGlyphs)),
             (SubsetFontFixture.GlyfTag, glyfBytes),
             (SubsetFontFixture.LocaTag, locaBytes),
-            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapShell(4)));
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41, 1))));
         var status = SubsetOperation.TryPrepare(Request(face, [0, 1]), out var result,
             out _, out var diagnostic);
         Assert.Equal(ReadStatus.InvalidFormat, status);
@@ -112,7 +109,7 @@ public sealed class SubsetClosureTests
             (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp((ushort)numGlyphs)),
             (SubsetFontFixture.GlyfTag, glyfBytes),
             (SubsetFontFixture.LocaTag, locaBytes),
-            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapShell(4)));
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41, 1))));
         var status = SubsetOperation.TryPrepare(Request(face, [0]), out var result,
             out _, out var diagnostic);
         Assert.Equal(ReadStatus.ResourceLimit, status);
@@ -130,16 +127,15 @@ public sealed class SubsetClosureTests
         var face = ChainFace();
         var request = Request(face, [3]);
 
-        // Find the smallest work budget (by bisection) that still reaches the pipeline's
-        // end: the rebuild stage's finite refusal.
+        // Find the smallest work budget (by bisection) that still admits the pipeline.
         long low = 1, high = 1L << 40;
-        Assert.Equal(ReadStatus.UnsupportedFormat,
+        Assert.Equal(ReadStatus.Done,
             PrepareStatus(request, new BuildLimits { MaxWorkUnits = high }));
         while (high - low > 1)
         {
             long mid = low + (high - low) / 2;
             if (PrepareStatus(request, new BuildLimits { MaxWorkUnits = mid }) ==
-                ReadStatus.UnsupportedFormat) high = mid;
+                ReadStatus.Done) high = mid;
             else low = mid;
         }
 

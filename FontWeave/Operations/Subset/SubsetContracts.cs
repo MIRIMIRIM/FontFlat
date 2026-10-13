@@ -113,6 +113,11 @@ public sealed record FrozenMapArtifact(long SourceId, int FaceIndex, int FontRev
 public readonly record struct FrozenMapEntry(ushort OutputGid, ushort InputGid,
     string StableIdentity);
 
+/// <summary>One cmap encoding record that was read as input but not carried into the
+/// canonical rebuild: non-Unicode-semantic records (e.g. (1,0) Mac Roman) are consumed
+/// for evidence and registered here instead of being refused or re-emitted (OQ-S1a-2).</summary>
+public readonly record struct CmapConsumedRecord(ushort PlatformId, ushort EncodingId);
+
 /// <summary>Per-table policy report (W1 §4.2 member set). Success and failure paths share
 /// this type: a failure retains every decision formed before the first refusing one plus
 /// the diagnostic itself, and no font bytes are published.</summary>
@@ -122,11 +127,13 @@ public sealed class SubsetReport
     private readonly ushort[] _closureAddedGids;
     private readonly uint[] _droppedTables;
     private readonly SubsetOptionRecord[] _optionRecords;
+    private readonly CmapConsumedRecord[] _cmapConsumedNotEmitted;
     private readonly FontDiagnostic[] _diagnostics;
 
     internal SubsetReport(SubsetMode? mode, SubsetTableDecision[] decisions,
         int unselectedSlotCount, ushort[] closureAddedGids, uint[] droppedTables,
-        SubsetOptionRecord[] optionRecords, FontDiagnostic[] diagnostics)
+        SubsetOptionRecord[] optionRecords, CmapConsumedRecord[] cmapConsumedNotEmitted,
+        FontDiagnostic[] diagnostics)
     {
         Mode = mode;
         _decisions = decisions;
@@ -134,6 +141,7 @@ public sealed class SubsetReport
         _closureAddedGids = closureAddedGids;
         _droppedTables = droppedTables;
         _optionRecords = optionRecords;
+        _cmapConsumedNotEmitted = cmapConsumedNotEmitted;
         _diagnostics = diagnostics;
     }
 
@@ -161,6 +169,11 @@ public sealed class SubsetReport
     /// <summary>Every effective option choice, including per-tag unknown-table
     /// declarations (W1 §2.5).</summary>
     public IReadOnlyList<SubsetOptionRecord> OptionRecords => Array.AsReadOnly(_optionRecords);
+
+    /// <summary>Cmap input records read but not re-emitted by the canonical rebuild,
+    /// in wire order (OQ-S1a-2).</summary>
+    public IReadOnlyList<CmapConsumedRecord> CmapConsumedNotEmitted =>
+        Array.AsReadOnly(_cmapConsumedNotEmitted);
 
     /// <summary>Compact-remap pins the map artifact sha256 here; Retain-GIDs leaves it
     /// null because no map artifact exists (W1 §1.4, §4.3).</summary>

@@ -184,9 +184,8 @@ public static partial class SubsetOperation
         }
 
         // Step 8/9: payload. Rebuild stages produce their bytes before the copy loop, so
-        // a rebuild failure still refuses with nothing published. The cmap rebuild is
-        // wired by the final commit of this slice.
-        byte[]? rebuiltGlyf = null, rebuiltLoca = null;
+        // a rebuild failure still refuses with nothing published.
+        byte[]? rebuiltGlyf = null, rebuiltLoca = null, rebuiltCmap = null;
         if (trueType)
         {
             status = RebuildGlyfAndLoca(state.Retained, loca!, glyfModel!,
@@ -195,6 +194,15 @@ public static partial class SubsetOperation
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
+        }
+        if (profile.HasCmap)
+        {
+            status = RebuildCmap(directory, profile.CmapOrdinal, maxp!, state.Retained,
+                budget, out rebuiltCmap, out var consumedNotEmitted, out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+            state.CmapConsumedNotEmitted = consumedNotEmitted;
         }
         var tables = new SortedDictionary<uint, byte[]>();
         for (int i = 0; i < directory.DeclaredCount; i++)
@@ -207,7 +215,8 @@ public static partial class SubsetOperation
                 {
                     Glyf => rebuiltGlyf,
                     Loca => rebuiltLoca,
-                    _ => null // cmap rebuild lands with the cmap commit.
+                    Cmap => rebuiltCmap,
+                    _ => null
                 };
                 if (rebuilt is null)
                 {
@@ -665,6 +674,7 @@ public static partial class SubsetOperation
         internal FontDiagnostic Diagnostic;
         internal bool[] Retained = [];
         internal List<ushort>? ClosureAdded;
+        internal List<CmapConsumedRecord> CmapConsumedNotEmitted = [];
         internal int UnselectedSlotCount;
 
         internal SubsetReport BuildReport()
@@ -673,7 +683,7 @@ public static partial class SubsetOperation
             // before that point has no additions to report.
             return new SubsetReport(Mode, [.. Decisions], UnselectedSlotCount,
                 ClosureAdded?.ToArray() ?? [], [.. Dropped], [.. OptionRecords],
-                [.. Diagnostics]);
+                [.. CmapConsumedNotEmitted], [.. Diagnostics]);
         }
     }
 }
