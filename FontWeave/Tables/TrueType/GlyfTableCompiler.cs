@@ -295,6 +295,139 @@ public static class GlyfTableCompiler
         return ReadStatus.Done;
     }
 
+    /// <summary>Retain-GIDs subset splice (S1a card §4). Retained slots copy their source
+    /// window byte-for-byte — instructions, composite structure and trailing padding
+    /// included — and unselected slots become empty glyphs without compressing or shifting
+    /// anything. Short-format images keep every offset even by padding a slot with at most
+    /// one zero tail byte when the running offset would turn odd (a source window can end
+    /// odd only after instruction stripping re-encodes it; long format needs no evenness).
+    /// With <paramref name="dropHinting"/> the retained simple and composite glyphs are
+    /// re-encoded without their instruction payloads while every other slot stays a byte
+    /// copy. The rebuilt image is graph-verified before it is published, and the returned
+    /// offsets feed loca's TryFromOffsets.</summary>
+    internal static ReadStatus TryRetainSubset(GlyfTable model, ReadOnlySpan<bool> retained,
+        bool shortFormat, bool dropHinting, BuildBudget budget, out byte[]? glyf,
+        out uint[]? locaOffsets, out FontDiagnostic diagnostic)
+    {
+        glyf = null;
+        locaOffsets = null;
+        if (retained.Length != model.NumGlyphs)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                model.Location.At(DataField.Count, 0), out diagnostic,
+                (ulong)retained.Length, (ulong)model.NumGlyphs);
+        // Encode every re-encoded glyph up front so a failure leaves no partial output;
+        // a plain copy needs nothing here.
+        var encoded = new Dictionary<int, byte[]>();
+        if (dropHinting)
+        {
+            if (!budget.Work(model.NumGlyphs, model.Location, out diagnostic))
+                return ReadStatus.ResourceLimit;
+            for (int gid = 0; gid < model.NumGlyphs; gid++)
+            {
+                if (!retained[gid]) continue;
+                _ = model.TryGetGlyph(gid, out var glyph, out diagnostic);
+                if (glyph is null || glyph.IsEmpty) continue;
+                byte[]? record;
+                if (glyph.Kind == GlyfGlyphKind.Simple)
+                {
+                    var plan = new GlyphEdit { GlyphId = gid, Instructions = [] };
+                    ReadStatus status = EncodeSimple(glyph, plan, out record, out diagnostic,
+                        budget, model.Location);
+                    if (status != ReadStatus.Done) return status;
+                }
+                else
+                {
+                    var plan = new GlyfCompositeEdit { GlyphId = gid, Instructions = [] };
+                    ReadStatus status = TryEditComposite(glyph, plan, model.NumGlyphs,
+                        out var edited, out diagnostic, budget, model.Location);
+                    if (status != ReadStatus.Done) return status;
+                    status = EncodeComposite(edited!, out record, out diagnostic, budget,
+                        model.Location);
+                    if (status != ReadStatus.Done) return status;
+                }
+                encoded[gid] = record!;
+            }
+        }
+        // Size the image: source window lengths for copies, encoded lengths for stripped
+        // glyphs, plus the single evenness pad per slot the short format may need.
+        if (!budget.Work(model.NumGlyphs, model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        long total = 0;
+        for (int gid = 0; gid < model.NumGlyphs; gid++)
+        {
+            if (!retained[gid]) continue;
+            long length = encoded.TryGetValue(gid, out var record) ? record.Length
+                : SlotLength(model, gid);
+            if (shortFormat) length = (length + 1) & ~1L;
+            total += length;
+        }
+        if (total > int.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                model.Location.At(DataField.Length, 0), out diagnostic,
+                (ulong)total, int.MaxValue);
+        if (!budget.Work(total + model.NumGlyphs, model.Location, out diagnostic) ||
+            !budget.Output(total, model.Location, out diagnostic) ||
+            !budget.Buffer(total + 4L * (model.NumGlyphs + 1), model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var image = new byte[(int)total];
+        var offsets = new uint[model.NumGlyphs + 1];
+        int position = 0;
+        for (int gid = 0; gid < model.NumGlyphs; gid++)
+        {
+            offsets[gid] = (uint)position;
+            if (!retained[gid]) continue;
+            if (encoded.TryGetValue(gid, out var record))
+            {
+                record.CopyTo(image.AsSpan(position));
+                position += record.Length;
+            }
+            else
+            {
+                _ = model.TryGetGlyph(gid, out var glyph, out _);
+                if (glyph is { } present && !present.IsEmpty)
+                {
+                    int length = (int)present.Length;
+                    model.OriginalBytes.Slice((int)present.Start, length)
+                        .CopyTo(image.AsSpan(position));
+                    position += length;
+                }
+            }
+            // Short format: keep the next offset even with at most one zero tail byte.
+            // The read side accepts all-zero trailing bytes, so the padded slot stays a
+            // legal record and the full-selection image stays byte-identical whenever
+            // every source window was already even.
+            if (shortFormat && (position & 1) != 0) image[position++] = 0;
+        }
+        offsets[model.NumGlyphs] = (uint)position;
+        // Re-verify the component graph on the rebuilt image: the selected subgraph is a
+        // subgraph of the verified input, so this is a cheap read-back safety net, not a
+        // new control rule (empty slots add no edges).
+        if (!budget.Work(model.NumGlyphs, model.Location, out diagnostic) ||
+            !budget.Buffer((long)IntPtr.Size * model.NumGlyphs, model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var glyphs = new GlyfGlyph?[model.NumGlyphs];
+        for (int gid = 0; gid < glyphs.Length; gid++)
+        {
+            _ = model.TryGetGlyph(gid, out var glyph, out _);
+            glyphs[gid] = retained[gid] ? glyph : null;
+        }
+        var candidate = new GlyfTable(glyphs, image, model.Location, model.LocaLocation);
+        ReadStatus graphStatus = new ComponentGraphBuilder(candidate)
+            .TryBuild(out _, out diagnostic, budget);
+        if (graphStatus != ReadStatus.Done) return graphStatus;
+        glyf = image;
+        locaOffsets = offsets;
+        budget.RecordCompiledTable(glyf.Length);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static long SlotLength(GlyfTable model, int gid)
+    {
+        _ = model.TryGetGlyph(gid, out var glyph, out _);
+        return glyph is { } present && !present.IsEmpty ? present.Length : 0;
+    }
+
     /// <summary>Re-encodes one simple glyph. Flag and coordinate encodings are chosen
     /// deterministically from the current values; the point count is invariant.</summary>
     internal static ReadStatus EncodeSimple(GlyfGlyph glyph, GlyphEdit plan, out byte[]? record,

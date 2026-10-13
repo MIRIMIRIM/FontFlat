@@ -141,4 +141,35 @@ internal static class SubsetFontFixture
     }
 
     internal static byte[] Dummy(int length = 16) => new byte[length];
+
+    /// <summary>A one-contour one-point simple glyph carrying one instruction byte and
+    /// short-coordinate deltas; 18 bytes on the wire.</summary>
+    internal static byte[] InstructedSimpleGlyph()
+    {
+        var body = new List<byte>();
+        WriteI16(body, 1);                    // numberOfContours
+        for (int i = 0; i < 4; i++) WriteI16(body, 0); // bounding box
+        WriteU16(body, 0);                    // endPtsOfContours[0]
+        WriteU16(body, 1);                    // instructionLength
+        body.Add(0x00);                       // one instruction byte
+        body.Add(0x37);                       // flag: on-curve, x-short, y-short
+        body.Add(5);                          // x delta
+        body.Add(7);                          // y delta
+        return [.. body];
+    }
+
+    internal static List<byte> WriteI16(List<byte> body, short value)
+    {
+        int raw = value & 0xFFFF;
+        body.Add((byte)(raw >> 8));
+        body.Add((byte)(raw & 0xFF));
+        return body;
+    }
+
+    internal static List<byte> WriteU16(List<byte> body, ushort value)
+    {
+        body.Add((byte)(value >> 8));
+        body.Add((byte)value);
+        return body;
+    }
 }

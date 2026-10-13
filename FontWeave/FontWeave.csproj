@@ -18,4 +18,9 @@
     <ProjectReference Include="../FontWeave.Generators/FontWeave.Generators.csproj"
                       OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The regression suite exercises compiler-level internals (subset splice, budget
+         accounting) directly while still feeding them wire-level fixtures. -->
+    <InternalsVisibleTo Include="FontWeave.Tests" />
+  </ItemGroup>
 </Project>

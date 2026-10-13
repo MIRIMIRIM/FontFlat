@@ -183,9 +183,19 @@ public static partial class SubsetOperation
             }
         }
 
-        // Step 8/9: payload. The rebuild stages (glyf/loca splice, cmap rebuild) are
-        // wired by later commits of this slice; a request that reaches this point while
-        // still owing a rebuild cannot be served yet, and the refusal stays finite.
+        // Step 8/9: payload. Rebuild stages produce their bytes before the copy loop, so
+        // a rebuild failure still refuses with nothing published. The cmap rebuild is
+        // wired by the final commit of this slice.
+        byte[]? rebuiltGlyf = null, rebuiltLoca = null;
+        if (trueType)
+        {
+            status = RebuildGlyfAndLoca(state.Retained, loca!, glyfModel!,
+                options.DropHinting, budget, out rebuiltGlyf, out rebuiltLoca,
+                out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+        }
         var tables = new SortedDictionary<uint, byte[]>();
         for (int i = 0; i < directory.DeclaredCount; i++)
         {
@@ -193,9 +203,21 @@ public static partial class SubsetOperation
             if (decision.Action == TableAction.Drop) continue;
             if (decision.Action == TableAction.Rebuild)
             {
-                diagnostic = new(DiagnosticCode.UnsupportedOperation, faceAt, decision.Tag);
-                return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic, out result,
-                    out report, out diagnostic);
+                byte[]? rebuilt = decision.Tag switch
+                {
+                    Glyf => rebuiltGlyf,
+                    Loca => rebuiltLoca,
+                    _ => null // cmap rebuild lands with the cmap commit.
+                };
+                if (rebuilt is null)
+                {
+                    diagnostic = new(DiagnosticCode.UnsupportedOperation, faceAt,
+                        decision.Tag);
+                    return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
+                        out result, out report, out diagnostic);
+                }
+                tables.Add(decision.Tag, rebuilt);
+                continue;
             }
             status = directory.TryGetTableBytes(i, out var bytes, out diagnostic);
             if (status != ReadStatus.Done)
