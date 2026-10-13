@@ -58,10 +58,15 @@ public static class CblcTableCompiler
         for (int i = 0; i < cbdt.ImageCount; i++)
         {
             var image = cbdt.Images[i];
+            if (!CblcLayout.IsImageFormatTyped(image.ImageFormat))
+                return ReadWire.Fail(ReadStatus.UnsupportedFormat,
+                    DiagnosticCode.UnsupportedOperation,
+                    location.AtLocal(DataField.Payload, 0, i), out diagnostic,
+                    image.ImageFormat, 0UL);
             long frame = CbdtTableCompiler.FrameLength(image);
             if (frame < 0)
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat,
-                    DiagnosticCode.UnsupportedVersion,
+                    DiagnosticCode.UnsupportedOperation,
                     location.AtLocal(DataField.Payload, 0, i), out diagnostic,
                     image.ImageFormat, 0UL);
             frames[i] = frame;
@@ -102,7 +107,7 @@ public static class CblcTableCompiler
                 // the pairing matrix.
                 if (!CblcLayout.IsImageFormatTyped(sourceSubtable.ImageFormat))
                     return ReadWire.Fail(ReadStatus.UnsupportedFormat,
-                        DiagnosticCode.UnsupportedVersion,
+                        DiagnosticCode.UnsupportedOperation,
                         location.AtLocal(DataField.Payload, 0, r), out diagnostic,
                         sourceSubtable.ImageFormat, 0UL);
                 if (!CblcLayout.IsPairingDefined(sourceSubtable.IndexFormat,
@@ -110,7 +115,7 @@ public static class CblcTableCompiler
                     return ReadWire.Fail(ReadStatus.InvalidFormat,
                         DiagnosticCode.InvalidValue,
                         location.AtLocal(DataField.Payload, 0, r), out diagnostic,
-                        sourceSubtable.ImageFormat, sourceSubtable.IndexFormat);
+                        sourceSubtable.ImageFormat, 0UL);
                 status = RewriteSubtable(sourceSubtable, frames, ref imageCursor,
                     ref poolCursor, packedLength, location, out var rewritten,
                     out diagnostic);
@@ -207,13 +212,18 @@ public static class CblcTableCompiler
             out _, model.Location));
         RequireWritten(CblcView.TryWriteNumSizes(output, (uint)model.SizeCount,
             out _, model.Location));
+        ulong listStart = CblcLayout.BitmapSizeAt + 48UL * (uint)model.SizeCount;
         for (int s = 0; s < model.SizeCount; s++)
         {
             var strike = model.Sizes[s];
+            ulong listLength = 8UL * (uint)strike.Subtables.Count;
+            foreach (var subtable in strike.Subtables)
+                listLength += Align4(SubtableLength(subtable));
             RequireWritten(CblcView.TryWriteBitmapSizeAt(output,
-                CblcLayout.BitmapSizeAt + (ulong)(48 * s), Row(s, strike),
+                CblcLayout.BitmapSizeAt + 48UL * (uint)s,
+                Row(s, strike, (uint)listStart, (uint)listLength),
                 out _, model.Location));
-            ulong at = strike.IndexSubtableListOffset;
+            ulong at = listStart;
             for (int r = 0; r < strike.Subtables.Count; r++)
             {
                 var subtable = strike.Subtables[r];
@@ -222,7 +232,7 @@ public static class CblcTableCompiler
                 W32(output, (int)at + 4, RecordOffset(strike.Subtables, r));
                 at += CblcLayout.IndexSubtableRecordStride;
             }
-            ulong body = strike.IndexSubtableListOffset +
+            ulong body = listStart +
                 (ulong)strike.Subtables.Count * CblcLayout.IndexSubtableRecordStride;
             for (int r = 0; r < strike.Subtables.Count; r++)
             {
@@ -230,6 +240,7 @@ public static class CblcTableCompiler
                 WriteSubtable(output, (int)body, strike.Subtables[r]);
                 body += SubtableLength(strike.Subtables[r]);
             }
+            listStart += listLength;
         }
         budget.RecordCompiledTable(output.Length);
         bytes = output;
@@ -423,12 +434,13 @@ public static class CblcTableCompiler
         return count;
     }
 
-    private static CblcView.BitmapSizeData Row(int ordinal, CblcStrike strike)
+    private static CblcView.BitmapSizeData Row(int ordinal, CblcStrike strike,
+        uint listOffset, uint listSize)
     {
         var hori = strike.HoriMetrics;
         var vert = strike.VertMetrics;
-        return new CblcView.BitmapSizeData(ordinal, strike.IndexSubtableListOffset,
-            strike.IndexSubtableListSize, (uint)strike.Subtables.Count, strike.ColorRef,
+        return new CblcView.BitmapSizeData(ordinal, listOffset,
+            listSize, (uint)strike.Subtables.Count, strike.ColorRef,
             unchecked((sbyte)hori[0]), unchecked((sbyte)hori[1]), hori[2],
             unchecked((sbyte)hori[3]), unchecked((sbyte)hori[4]), unchecked((sbyte)hori[5]),
             unchecked((sbyte)hori[6]), unchecked((sbyte)hori[7]), unchecked((sbyte)hori[8]),
@@ -450,7 +462,7 @@ public static class CblcTableCompiler
             at = Align4(at);
             at += SubtableLength(subtables[r]);
         }
-        return checked((uint)at);
+        return checked((uint)Align4(at));
     }
 
     /// <summary>One subtable's canonical body length including its format's
@@ -460,13 +472,13 @@ public static class CblcTableCompiler
     {
         CblcOffsetSubtable offsets when subtable.IndexFormat == CblcLayout.IndexFormat3 =>
             (ulong)CblcLayout.IndexSubHeaderLength +
-                (2UL + (ulong)(offsets.SbitOffsets.Length % 2)) *
-                (ulong)offsets.SbitOffsets.Length,
+                2UL * (ulong)offsets.SbitOffsets.Length +
+                2UL * (ulong)(offsets.SbitOffsets.Length % 2),
         CblcGlyphIdArraySubtable glyphIds =>
             (ulong)CblcLayout.IndexSubHeaderLength + 4UL +
                 (ulong)CblcLayout.BigGlyphMetricsLength + 4UL +
-                (2UL + (ulong)(glyphIds.GlyphIds.Length % 2)) *
-                (ulong)glyphIds.GlyphIds.Length,
+                2UL * (ulong)glyphIds.GlyphIds.Length +
+                2UL * (ulong)(glyphIds.GlyphIds.Length % 2),
         CblcOffsetSubtable offsets =>
             (ulong)CblcLayout.IndexSubHeaderLength +
                 4UL * (ulong)offsets.SbitOffsets.Length,

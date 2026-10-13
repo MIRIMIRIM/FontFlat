@@ -213,7 +213,7 @@ public sealed class CblcTable
         out FontDiagnostic diagnostic)
     {
         strike = null!;
-        if ((uint)sizeIndex >= (uint)_sizes.Length)
+        if (sizeIndex < 0 || (uint)sizeIndex >= (uint)_sizes.Length)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.Count, CblcLayout.BitmapSizeAt, sizeIndex),
                 out diagnostic, unchecked((ulong)(long)sizeIndex), (ulong)_sizes.Length);
@@ -231,7 +231,7 @@ public sealed class CblcTable
         ReadOnlySpan<byte> vert, out CblcTable? updated, out FontDiagnostic diagnostic)
     {
         updated = null;
-        if ((uint)sizeIndex >= (uint)_sizes.Length)
+        if (sizeIndex < 0 || (uint)sizeIndex >= (uint)_sizes.Length)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.Count, CblcLayout.BitmapSizeAt, sizeIndex),
                 out diagnostic, unchecked((ulong)(long)sizeIndex), (ulong)_sizes.Length);
@@ -263,7 +263,7 @@ public sealed class CblcTable
         byte bitDepth, sbyte flags, out CblcTable? updated, out FontDiagnostic diagnostic)
     {
         updated = null;
-        if ((uint)sizeIndex >= (uint)_sizes.Length)
+        if (sizeIndex < 0 || (uint)sizeIndex >= (uint)_sizes.Length)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.Count, CblcLayout.BitmapSizeAt, sizeIndex),
                 out diagnostic, unchecked((ulong)(long)sizeIndex), (ulong)_sizes.Length);

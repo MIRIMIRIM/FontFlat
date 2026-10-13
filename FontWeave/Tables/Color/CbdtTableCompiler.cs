@@ -19,14 +19,36 @@ public static class CbdtTableCompiler
 {
     /// <summary>One image's canonical frame length: the metrics head plus the
     /// counted length word plus the payload.</summary>
-    internal static long FrameLength(CbdtImage image) =>
-        (image.ImageFormat switch
+    private static int MetricsLength(ushort imageFormat) => imageFormat switch
         {
             CblcLayout.ImageFormat17 => CbdtLayout.SmallGlyphMetricsLength,
             CblcLayout.ImageFormat18 => CblcLayout.BigGlyphMetricsLength,
             CblcLayout.ImageFormat19 => 0,
             _ => -1,
-        }) + 4L + image.Payload.Length;
+        };
+
+    internal static long FrameLength(CbdtImage image)
+    {
+        int metricsLength = MetricsLength(image.ImageFormat);
+        return metricsLength < 0 ? -1 : metricsLength + 4L + image.Payload.LongLength;
+    }
+
+    private static ReadStatus CheckImage(CbdtImage image, DataLocation location,
+        int ordinal, out FontDiagnostic diagnostic)
+    {
+        int metricsLength = MetricsLength(image.ImageFormat);
+        if (metricsLength < 0)
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                location.AtLocal(DataField.Payload, 0, ordinal), out diagnostic,
+                image.ImageFormat, 0UL);
+        if ((image.Metrics?.Length ?? 0) != metricsLength ||
+            metricsLength == 0 && image.Metrics is not null)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Length, 0, ordinal), out diagnostic,
+                (ulong)(image.Metrics?.Length ?? 0), (ulong)metricsLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
 
     /// <summary>The canonical pool's total byte length: the 4-byte head plus
     /// every frame packed in order.</summary>
@@ -53,22 +75,27 @@ public static class CbdtTableCompiler
         ReadStatus status = RequireVersion(majorVersion, minorVersion, location,
             out diagnostic);
         if (status != ReadStatus.Done) return status;
-        var parts = new CbdtImage[images.Count];
+        int imageCount = images.Count;
+        if (!budget.Work(imageCount, location, out diagnostic) ||
+            !budget.Buffer(imageCount * (long)IntPtr.Size, location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var parts = new CbdtImage[imageCount];
         long buffer = 0L;
-        for (int i = 0; i < images.Count; i++)
+        for (int i = 0; i < imageCount; i++)
         {
             var image = images[i];
             ArgumentNullException.ThrowIfNull(image);
-            if (FrameLength(image) < 0)
-                return ReadWire.Fail(ReadStatus.UnsupportedFormat,
-                    DiagnosticCode.UnsupportedVersion,
-                    location.AtLocal(DataField.Payload, 0, i), out diagnostic,
-                    image.ImageFormat, 0UL);
+            status = CheckImage(image, location, i, out diagnostic);
+            if (status != ReadStatus.Done) return status;
             parts[i] = image;
             buffer += FrameLength(image);
         }
         if (!budget.Work(buffer, location, out diagnostic) ||
             !budget.Buffer(buffer, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        if (CbdtLayout.HeaderLength + buffer > int.MaxValue)
+            return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
+                location.AtLocal(DataField.OutputBytes, 0), out diagnostic,
+                (ulong)(CbdtLayout.HeaderLength + buffer), int.MaxValue);
         model = new(majorVersion, minorVersion, parts, location,
             (int)(CbdtLayout.HeaderLength + buffer));
         diagnostic = default;
@@ -105,19 +132,16 @@ public static class CbdtTableCompiler
         ReadStatus status = RequireVersion(model.MajorVersion, model.MinorVersion,
             model.Location, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        for (int i = 0; i < model.ImageCount; i++)
+        {
+            status = CheckImage(model.Images[i], model.Location, i, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
         long length = PackedLength(model);
         if (!budget.Work(length, model.Location, out diagnostic) ||
             !budget.Buffer(length, model.Location, out diagnostic) ||
             !budget.Output(length, model.Location, out diagnostic))
             return ReadStatus.ResourceLimit;
-        foreach (var image in model.Images)
-        {
-            if (FrameLength(image) < 0)
-                return ReadWire.Fail(ReadStatus.UnsupportedFormat,
-                    DiagnosticCode.UnsupportedVersion,
-                    model.Location.AtLocal(DataField.Payload, 0), out diagnostic,
-                    image.ImageFormat, 0UL);
-        }
         var output = new byte[length];
         RequireWritten(CbdtView.TryWriteMajorVersion(output, model.MajorVersion,
             out _, model.Location));

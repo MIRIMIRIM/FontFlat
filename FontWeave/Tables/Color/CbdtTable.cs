@@ -95,7 +95,7 @@ public sealed class CbdtTable
         out FontDiagnostic diagnostic)
     {
         image = null!;
-        if ((uint)imageIndex >= (uint)_images.Length)
+        if (imageIndex < 0 || (uint)imageIndex >= (uint)_images.Length)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.Count, 0, imageIndex), out diagnostic,
                 unchecked((ulong)(long)imageIndex), (ulong)_images.Length);
@@ -164,7 +164,7 @@ public sealed class CbdtTable
 
     private ReadStatus RequireImageDomain(int imageIndex, out FontDiagnostic diagnostic)
     {
-        if ((uint)imageIndex >= (uint)_images.Length)
+        if (imageIndex < 0 || (uint)imageIndex >= (uint)_images.Length)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.Count, 0, imageIndex), out diagnostic,
                 unchecked((ulong)(long)imageIndex), (ulong)_images.Length);

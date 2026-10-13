@@ -153,12 +153,11 @@ public readonly ref partial struct CbdtView
     {
         image = default;
         var budget = new BuildBudget(limits);
-        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        if (!cblc.IsBound)
-            return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
-                cblc.Location, out diagnostic);
-        ReadStatus status = cblc.TryGetGlyphLocation(sizeIndex, glyphId,
-            out CblcGlyphLocation location, out bool present, out diagnostic);
+        ReadStatus status = RequirePair(cblc, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        status = cblc.TryGetGlyphLocation(sizeIndex, glyphId,
+            out CblcGlyphLocation location, out bool present, out ushort indexFormat,
+            out ulong imageFormatPosition, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         if (!present)
         {
@@ -167,14 +166,29 @@ public readonly ref partial struct CbdtView
             image = new CbdtGlyphImage(0, null, []);
             return Done(out diagnostic);
         }
-        status = ValidateTable(out diagnostic, budget);
-        if (status != ReadStatus.Done) return status;
-        ReadStatus decode = ReadImageAt(location.ImageFormat, location.PositionInCbdt,
+        if (!CblcLayout.IsImageFormatTyped(location.ImageFormat))
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                cblc.Location.AtLocal(DataField.Payload, imageFormatPosition), out diagnostic,
+                location.ImageFormat, 0UL);
+        if (!CblcLayout.IsPairingDefined(indexFormat, location.ImageFormat))
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                cblc.Location.AtLocal(DataField.Payload, imageFormatPosition), out diagnostic,
+                location.ImageFormat, 0UL);
+        return ReadImageAt(location.ImageFormat, location.PositionInCbdt,
             location.ByteLength, out image, out diagnostic, budget);
-        if (decode != ReadStatus.Done) return decode;
-        if (!budget.Buffer(image.Payload.LongLength + (image.Metrics?.LongLength ?? 0L),
-                Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        return Done(out diagnostic);
+    }
+
+    private ReadStatus RequirePair(CblcView cblc, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        if (!IsBound || !cblc.IsBound)
+            return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
+                !IsBound ? Location : cblc.Location, out diagnostic);
+        if (Location.SourceId != cblc.Location.SourceId || Location.FaceIndex != cblc.Location.FaceIndex)
+            return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
+                cblc.Location, out diagnostic);
+        if (!budget.Input(_data.Length, Location, out diagnostic) ||
+            !budget.Input(cblc.RawBytes.Length, cblc.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        return ValidateTable(out diagnostic, budget);
     }
 
     /// <summary>One image's decode at an absolute pool position over a
@@ -193,7 +207,7 @@ public readonly ref partial struct CbdtView
             _ => -1,
         };
         if (frameHead < 0)
-            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 Location.AtLocal(DataField.Payload, position), out diagnostic,
                 imageFormat, 0UL);
         if (position > (ulong)_data.Length)
@@ -231,6 +245,9 @@ public readonly ref partial struct CbdtView
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
                 Location.AtLocal(DataField.Length, wordAt), out diagnostic,
                 frame, slotLength);
+        int metricsLength = frameHead - 4;
+        if (!budget.Buffer(metricsLength + (long)dataLength,
+                Location.AtLocal(DataField.Payload, position), out diagnostic)) return ReadStatus.ResourceLimit;
         byte[]? metrics = null;
         if (imageFormat == CblcLayout.ImageFormat17)
             metrics = _data.Slice((int)position, CbdtLayout.SmallGlyphMetricsLength).ToArray();
@@ -256,11 +273,7 @@ public readonly ref partial struct CbdtView
     {
         model = null;
         var budget = new BuildBudget(limits);
-        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        if (!cblc.IsBound)
-            return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
-                cblc.Location, out diagnostic);
-        ReadStatus status = ValidateTable(out diagnostic, budget);
+        ReadStatus status = RequirePair(cblc, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         status = TryGetMajorVersion(out ushort major, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -271,7 +284,6 @@ public readonly ref partial struct CbdtView
         if (status != ReadStatus.Done) return status;
         // The joint read chain walk: the same order the compiler emits.
         var images = new List<CbdtImage>();
-        long buffer = 0L;
         ulong consumed = CbdtLayout.HeaderLength;
         for (int i = 0; i < cblcTable!.SizeCount; i++)
         {
@@ -287,7 +299,7 @@ public readonly ref partial struct CbdtView
                                 (ulong)offsets.ImageDataOffset + offsets.SbitOffsets[g - offsets.FirstGlyphIndex],
                                 (ulong)(offsets.SbitOffsets[g - offsets.FirstGlyphIndex + 1] -
                                     offsets.SbitOffsets[g - offsets.FirstGlyphIndex]),
-                                images, budget, ref buffer, ref consumed, out diagnostic);
+                                images, budget, ref consumed, out diagnostic);
                             if (status != ReadStatus.Done) return status;
                         }
                         break;
@@ -297,7 +309,7 @@ public readonly ref partial struct CbdtView
                             status = ReadChainImage(imageSize.ImageFormat,
                                 (ulong)imageSize.ImageDataOffset +
                                     (ulong)(g - imageSize.FirstGlyphIndex) * imageSize.ImageSize,
-                                imageSize.ImageSize, images, budget, ref buffer, ref consumed,
+                                imageSize.ImageSize, images, budget, ref consumed,
                                 out diagnostic);
                             if (status != ReadStatus.Done) return status;
                         }
@@ -308,7 +320,7 @@ public readonly ref partial struct CbdtView
                             status = ReadChainImage(pairs.ImageFormat,
                                 (ulong)pairs.ImageDataOffset + pairs.SbitOffsets[k],
                                 (ulong)(pairs.SbitOffsets[k + 1] - pairs.SbitOffsets[k]),
-                                images, budget, ref buffer, ref consumed, out diagnostic);
+                                images, budget, ref consumed, out diagnostic);
                             if (status != ReadStatus.Done) return status;
                         }
                         break;
@@ -317,7 +329,7 @@ public readonly ref partial struct CbdtView
                         {
                             status = ReadChainImage(glyphIds.ImageFormat,
                                 (ulong)glyphIds.ImageDataOffset + (ulong)k * glyphIds.ImageSize,
-                                glyphIds.ImageSize, images, budget, ref buffer, ref consumed,
+                                glyphIds.ImageSize, images, budget, ref consumed,
                                 out diagnostic);
                             if (status != ReadStatus.Done) return status;
                         }
@@ -325,7 +337,7 @@ public readonly ref partial struct CbdtView
                 }
             }
         }
-        if (!budget.Buffer(buffer, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        if (!budget.Buffer(images.Count * (long)IntPtr.Size, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         model = new(major, minor, [.. images], Location, (int)consumed);
         diagnostic = default;
         return ReadStatus.Done;
@@ -335,7 +347,7 @@ public readonly ref partial struct CbdtView
     /// equal-consecutive pair's normalization), anything else decodes through
     /// the shared face.</summary>
     private ReadStatus ReadChainImage(ushort imageFormat, ulong position, ulong length,
-        List<CbdtImage> images, BuildBudget budget, ref long buffer, ref ulong consumed,
+        List<CbdtImage> images, BuildBudget budget, ref ulong consumed,
         out FontDiagnostic diagnostic)
     {
         diagnostic = default;
@@ -349,7 +361,6 @@ public readonly ref partial struct CbdtView
         if (status != ReadStatus.Done) return status;
         images.Add(new CbdtImage(glyphImage.ImageFormat, glyphImage.Metrics,
             glyphImage.Payload));
-        buffer += glyphImage.Payload.LongLength + (glyphImage.Metrics?.LongLength ?? 0L);
         consumed = Math.Max(consumed, position +
             (ulong)(glyphImage.Metrics?.Length ?? 0) + 4UL + (ulong)glyphImage.Payload.Length);
         diagnostic = default;

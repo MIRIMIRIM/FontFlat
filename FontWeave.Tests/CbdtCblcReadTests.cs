@@ -417,7 +417,7 @@ public sealed class CbdtCblcReadTests
         Assert.Equal(ReadStatus.Done, CblcView.TryOpen(cblc, out var cblcView, out _, CblcSource));
         Assert.Equal(ReadStatus.UnsupportedFormat,
             cblcView.ValidateTable(cbdt.Length, null, out var diagnostic));
-        Assert.Equal(DiagnosticCode.UnsupportedVersion, diagnostic.Code);
+        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
         Assert.Equal(imageFormat, (ushort)diagnostic.Detail);
     }
 
@@ -437,7 +437,7 @@ public sealed class CbdtCblcReadTests
             cblcView.ValidateTable(cbdt.Length, null, out var diagnostic));
         Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
         Assert.Equal(imageFormat, (ushort)diagnostic.Detail);
-        Assert.Equal(indexFormat, diagnostic.Expected);
+        Assert.Equal(0UL, diagnostic.Expected);
     }
 
     [Theory]

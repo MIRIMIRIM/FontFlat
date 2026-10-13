@@ -106,6 +106,10 @@ public readonly ref partial struct CblcView
         // subtable body, C L56-57). Outside the table is a range face at the
         // row's own offset slot; past the table end a truncation.
         ulong rowAt = CblcLayout.BitmapSizeAt + (ulong)row.Ordinal * CblcLayout.BitmapSizeStride;
+        if (numGlyphs is { } glyphDomain && row.EndGlyphIndex >= glyphDomain)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId, rowAt + 42, row.Ordinal), out diagnostic,
+                row.EndGlyphIndex, (uint)glyphDomain);
         ulong listStart = row.IndexSubtableListOffset;
         ulong listEnd = listStart + row.IndexSubtableListSize;
         if (listStart > (ulong)_data.Length)
@@ -128,10 +132,6 @@ public readonly ref partial struct CblcView
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 Location.AtLocal(DataField.GlyphId, rowAt + 42, row.Ordinal), out diagnostic,
                 row.StartGlyphIndex, row.EndGlyphIndex);
-        if (numGlyphs is { } glyphDomain && row.EndGlyphIndex >= glyphDomain)
-            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
-                Location.AtLocal(DataField.GlyphId, rowAt + 42, row.Ordinal), out diagnostic,
-                row.EndGlyphIndex, (uint)glyphDomain);
         if (row.ColorRef != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 Location.AtLocal(DataField.Payload, rowAt + 12, row.Ordinal), out diagnostic,
@@ -151,6 +151,10 @@ public readonly ref partial struct CblcView
         {
             ReadStatus status = ReadRecord(listStart, r, out var record, out diagnostic);
             if (status != ReadStatus.Done) return status;
+            if (numGlyphs is { } recordGlyphDomain && record.LastGlyphIndex >= recordGlyphDomain)
+                return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                    Location.AtLocal(DataField.GlyphId, listStart + 8UL * (uint)r + 2UL, r),
+                    out diagnostic, record.LastGlyphIndex, (uint)recordGlyphDomain);
             // E L183's "must be sorted by firstGlyphIndex" and the OQ-4 lean's
             // overlap refusal: an earlier first is the must face, a first at
             // or inside the previous range the overlap face. Cross-strike
@@ -173,7 +177,7 @@ public readonly ref partial struct CblcView
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
             status = ValidateSubtable(sizeIndex, r, subtable, cbdtDataLength, numGlyphs,
-                budget, out diagnostic);
+                listStart + record.IndexSubtableOffset, budget, out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
         diagnostic = default;
@@ -210,7 +214,7 @@ public readonly ref partial struct CblcView
     /// and skips the window walk (E L264); sbitOffset==0 is a populated first
     /// element (OQ-11), never a NULL mark.</summary>
     private ReadStatus ValidateSubtable(int sizeIndex, int recordOrdinal,
-        CblcIndexSubtable subtable, int cbdtDataLength, int? numGlyphs, BuildBudget budget,
+        CblcIndexSubtable subtable, int cbdtDataLength, int? numGlyphs, ulong headerAt, BuildBudget budget,
         out FontDiagnostic diagnostic)
     {
         diagnostic = default;
@@ -221,14 +225,14 @@ public readonly ref partial struct CblcView
             // diagnosis registers the deferral, never "unknown"), {3,4} are
             // never supported (EBDT obsolete 3 / Apple-only 4), the rest
             // unknown (OQ-8's lean).
-            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                Location.AtLocal(DataField.Payload, 0, recordOrdinal), out diagnostic,
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                Location.AtLocal(DataField.Payload, headerAt + 2UL, recordOrdinal), out diagnostic,
                 subtable.ImageFormat, 0UL);
         }
         if (!CblcLayout.IsPairingDefined(subtable.IndexFormat, subtable.ImageFormat))
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.AtLocal(DataField.Payload, 0, recordOrdinal), out diagnostic,
-                subtable.ImageFormat, subtable.IndexFormat);
+                Location.AtLocal(DataField.Payload, headerAt + 2UL, recordOrdinal), out diagnostic,
+                subtable.ImageFormat, 0UL);
         ulong poolEnd = (ulong)cbdtDataLength;
         switch (subtable)
         {
@@ -239,21 +243,23 @@ public readonly ref partial struct CblcView
                     return ReadStatus.ResourceLimit;
                 for (int k = 0; k < array.Length - 1; k++)
                 {
+                    ulong offsetAt = headerAt + 8UL + (ulong)k *
+                        (offsets.IndexFormat == CblcLayout.IndexFormat1 ? 4UL : 2UL);
+                    if (array[k] == array[k + 1]) continue;
+                    ulong position = (ulong)offsets.ImageDataOffset + array[k];
+                    ulong end = (ulong)offsets.ImageDataOffset + array[k + 1];
+                    if (position > poolEnd || end > poolEnd)
+                        return ReadWire.Fail(ReadStatus.InvalidOffset,
+                            DiagnosticCode.RangeOutsideSource,
+                            Location.AtLocal(DataField.Offset, offsetAt, k), out diagnostic,
+                            Math.Max(position, end), poolEnd);
                     // "image data must be stored contiguously and in glyph ID
                     // order" (E L262): the non-decreasing offsets are the size
                     // derivation's premise; equality is the absent form.
                     if (array[k] > array[k + 1])
                         return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                            Location.AtLocal(DataField.Offset, (ulong)k, k), out diagnostic,
+                            Location.AtLocal(DataField.Offset, offsetAt, k), out diagnostic,
                             array[k + 1], array[k]);
-                    if (array[k] == array[k + 1]) continue;
-                    ulong position = (ulong)offsets.ImageDataOffset + array[k];
-                    ulong length = array[k + 1] - array[k];
-                    if (position > poolEnd || length > poolEnd - position)
-                        return ReadWire.Fail(ReadStatus.InvalidOffset,
-                            DiagnosticCode.RangeOutsideSource,
-                            Location.AtLocal(DataField.Offset, (ulong)k, k), out diagnostic,
-                            position + length, poolEnd);
                 }
                 break;
             }
@@ -268,7 +274,7 @@ public readonly ref partial struct CblcView
                 if (total > poolEnd)
                     return ReadWire.Fail(ReadStatus.InvalidOffset,
                         DiagnosticCode.RangeOutsideSource,
-                        Location.AtLocal(DataField.Offset, 0, recordOrdinal), out diagnostic,
+                        Location.AtLocal(DataField.Offset, headerAt + 4UL, recordOrdinal), out diagnostic,
                         total, poolEnd);
                 break;
             }
@@ -280,32 +286,36 @@ public readonly ref partial struct CblcView
                     return ReadStatus.ResourceLimit;
                 for (int k = 0; k < gids.Length; k++)
                 {
+                    ulong glyphAt = headerAt + 12UL + 4UL * (uint)k;
                     // The pairs ascend strictly (the sentinel included) - the
                     // E L262 contiguous-order premise for the sparse form.
                     if (k > 0 && gids[k] <= gids[k - 1])
                         return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                            Location.AtLocal(DataField.GlyphId, (ulong)k, k), out diagnostic,
+                            Location.AtLocal(DataField.GlyphId, glyphAt, k), out diagnostic,
                             gids[k], gids[k - 1]);
-                    if (numGlyphs is { } glyphDomain && gids[k] >= glyphDomain)
+                    // The final pair closes the last image's offset range; it
+                    // does not address a glyph in the maxp domain.
+                    if (k < gids.Length - 1 && numGlyphs is { } glyphDomain && gids[k] >= glyphDomain)
                         return ReadWire.Fail(ReadStatus.InvalidIndex,
                             DiagnosticCode.IndexOutOfRange,
-                            Location.AtLocal(DataField.GlyphId, (ulong)k, k), out diagnostic,
+                            Location.AtLocal(DataField.GlyphId, glyphAt, k), out diagnostic,
                             gids[k], (uint)glyphDomain);
                 }
                 for (int k = 0; k < array.Length - 1; k++)
                 {
-                    if (array[k] > array[k + 1])
-                        return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                            Location.AtLocal(DataField.Offset, (ulong)k, k), out diagnostic,
-                            array[k + 1], array[k]);
+                    ulong offsetAt = headerAt + 14UL + 4UL * (uint)k;
                     if (array[k] == array[k + 1]) continue;
                     ulong position = (ulong)pairs.ImageDataOffset + array[k];
-                    ulong length = (ulong)(array[k + 1] - array[k]);
-                    if (position > poolEnd || length > poolEnd - position)
+                    ulong end = (ulong)pairs.ImageDataOffset + array[k + 1];
+                    if (position > poolEnd || end > poolEnd)
                         return ReadWire.Fail(ReadStatus.InvalidOffset,
                             DiagnosticCode.RangeOutsideSource,
-                            Location.AtLocal(DataField.Offset, (ulong)k, k), out diagnostic,
-                            position + length, poolEnd);
+                            Location.AtLocal(DataField.Offset, offsetAt, k), out diagnostic,
+                            Math.Max(position, end), poolEnd);
+                    if (array[k] > array[k + 1])
+                        return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                            Location.AtLocal(DataField.Offset, offsetAt, k), out diagnostic,
+                            array[k + 1], array[k]);
                 }
                 break;
             }
@@ -316,16 +326,17 @@ public readonly ref partial struct CblcView
                     return ReadStatus.ResourceLimit;
                 for (int k = 0; k < gids.Length; k++)
                 {
+                    ulong glyphAt = headerAt + 24UL + 2UL * (uint)k;
                     // "sorted by glyph ID" (E L258): strictly ascending, the
                     // sparse form's hard face.
                     if (k > 0 && gids[k] <= gids[k - 1])
                         return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                            Location.AtLocal(DataField.GlyphId, (ulong)k, k), out diagnostic,
+                            Location.AtLocal(DataField.GlyphId, glyphAt, k), out diagnostic,
                             gids[k], gids[k - 1]);
                     if (numGlyphs is { } glyphDomain && gids[k] >= glyphDomain)
                         return ReadWire.Fail(ReadStatus.InvalidIndex,
                             DiagnosticCode.IndexOutOfRange,
-                            Location.AtLocal(DataField.GlyphId, (ulong)k, k), out diagnostic,
+                            Location.AtLocal(DataField.GlyphId, glyphAt, k), out diagnostic,
                             gids[k], (uint)glyphDomain);
                 }
                 ulong total = (ulong)glyphIds.ImageDataOffset +
@@ -333,7 +344,7 @@ public readonly ref partial struct CblcView
                 if (total > poolEnd)
                     return ReadWire.Fail(ReadStatus.InvalidOffset,
                         DiagnosticCode.RangeOutsideSource,
-                        Location.AtLocal(DataField.Offset, 0, recordOrdinal), out diagnostic,
+                        Location.AtLocal(DataField.Offset, headerAt + 4UL, recordOrdinal), out diagnostic,
                         total, poolEnd);
                 break;
             }
@@ -448,7 +459,15 @@ public readonly ref partial struct CblcView
                 Location.AtLocal(DataField.Offset,
                     listStart + 8UL * (ulong)record.Ordinal + 4UL, record.Ordinal),
                 out diagnostic, headerAt + bodyLength, listEnd);
-        if (!budget.Work((long)bodyLength, Location, out diagnostic))
+        long ownedBytes = indexFormat switch
+        {
+            CblcLayout.IndexFormat1 or CblcLayout.IndexFormat3 => (long)(4UL * spanCount),
+            CblcLayout.IndexFormat2 => CblcLayout.BigGlyphMetricsLength,
+            CblcLayout.IndexFormat4 => (long)bodyLength - 12L,
+            _ => (long)bodyLength - 16L,
+        };
+        if (!budget.Work((long)bodyLength, Location, out diagnostic) ||
+            !budget.Buffer(ownedBytes, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
         return indexFormat switch
         {
@@ -579,7 +598,7 @@ public readonly ref partial struct CblcView
         ReadStatus status = RequireListWindow(sizeIndex, out _, out ulong listStart,
             out ulong listEnd, out uint numSubtables, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if ((uint)recordIndex >= numSubtables)
+        if (recordIndex < 0 || (uint)recordIndex >= numSubtables)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.Count, CblcLayout.BitmapSizeAt + 8UL +
                     48UL * (ulong)sizeIndex, recordIndex), out diagnostic,
@@ -611,7 +630,7 @@ public readonly ref partial struct CblcView
         ReadStatus status = RequireListWindow(sizeIndex, out _, out ulong listStart,
             out ulong listEnd, out uint numSubtables, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if ((uint)recordIndex >= numSubtables)
+        if (recordIndex < 0 || (uint)recordIndex >= numSubtables)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.Count, CblcLayout.BitmapSizeAt + 8UL +
                     48UL * (ulong)sizeIndex, recordIndex), out diagnostic,
@@ -631,13 +650,23 @@ public readonly ref partial struct CblcView
     /// present=false, never an error.</summary>
     public ReadStatus TryGetGlyphLocation(int sizeIndex, int glyphId,
         out CblcGlyphLocation location, out bool present, out FontDiagnostic diagnostic)
+        => TryGetGlyphLocation(sizeIndex, glyphId, out location, out present,
+            out _, out _, out diagnostic, new BuildBudget());
+
+    internal ReadStatus TryGetGlyphLocation(int sizeIndex, int glyphId,
+        out CblcGlyphLocation location, out bool present, out ushort indexFormat,
+        out ulong imageFormatPosition, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         location = default;
         present = false;
-        ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(glyphId, Location,
-            out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = RequireListWindow(sizeIndex, out _, out ulong listStart, out ulong listEnd,
+        indexFormat = 0;
+        imageFormatPosition = 0;
+        if (glyphId is < 0 or > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                Location.AtLocal(DataField.GlyphId, 0), out diagnostic,
+                unchecked((ulong)(long)glyphId), ushort.MaxValue);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ReadStatus status = RequireListWindow(sizeIndex, out _, out ulong listStart, out ulong listEnd,
             out uint numSubtables, out diagnostic);
         if (status != ReadStatus.Done) return status;
         // The record binary search: the ascending firstGlyphIndex order is the
@@ -646,6 +675,7 @@ public readonly ref partial struct CblcView
         int low = 0, high = (int)numSubtables - 1, found = -1;
         while (low <= high)
         {
+            if (!budget.Work(1, Location, out diagnostic)) return ReadStatus.ResourceLimit;
             int middle = (low + high) / 2;
             status = ReadRecord(listStart, middle, out var candidate, out diagnostic);
             if (status != ReadStatus.Done) return status;
@@ -660,15 +690,20 @@ public readonly ref partial struct CblcView
         }
         status = ReadRecord(listStart, found, out var record, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        var budget = new BuildBudget(null);
-        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         status = DeshapeSubtable(listStart, listEnd, record, budget, out var subtable,
             out diagnostic);
         if (status != ReadStatus.Done) return status;
-        return LocateGlyph(subtable, glyphId, out location, out present, out diagnostic);
+        ulong headerAt = listStart + record.IndexSubtableOffset;
+        status = LocateGlyph(subtable, glyphId, headerAt, out location, out present, out diagnostic);
+        if (status == ReadStatus.Done && present)
+        {
+            indexFormat = subtable.IndexFormat;
+            imageFormatPosition = headerAt + 2UL;
+        }
+        return status;
     }
 
-    private ReadStatus LocateGlyph(CblcIndexSubtable subtable, int glyphId,
+    private ReadStatus LocateGlyph(CblcIndexSubtable subtable, int glyphId, ulong headerAt,
         out CblcGlyphLocation location, out bool present, out FontDiagnostic diagnostic)
     {
         location = default;
@@ -680,6 +715,11 @@ public readonly ref partial struct CblcView
             {
                 int k = glyphId - offsets.FirstGlyphIndex;
                 uint anchor = offsets.SbitOffsets[k], next = offsets.SbitOffsets[k + 1];
+                if (next < anchor)
+                    return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                        Location.AtLocal(DataField.Offset, headerAt + 8UL +
+                            (subtable.IndexFormat == CblcLayout.IndexFormat1 ? 4UL : 2UL) * (ulong)(k + 1), k + 1),
+                        out diagnostic, next, anchor);
                 if (anchor == next) return Done(out diagnostic);
                 location = new CblcGlyphLocation(offsets.ImageFormat,
                     (ulong)offsets.ImageDataOffset + anchor, next - anchor);
@@ -691,7 +731,7 @@ public readonly ref partial struct CblcView
                 ulong slot = (ulong)(glyphId - imageSize.FirstGlyphIndex) * imageSize.ImageSize;
                 location = new CblcGlyphLocation(imageSize.ImageFormat,
                     (ulong)imageSize.ImageDataOffset + slot, imageSize.ImageSize);
-                present = true;
+                present = imageSize.ImageSize != 0;
                 return Done(out diagnostic);
             }
             case CblcPairSubtable pairs:
@@ -699,6 +739,10 @@ public readonly ref partial struct CblcView
                 int index = BinarySearch(pairs.GlyphIds, pairs.GlyphIds.Length - 1, glyphId);
                 if (index < 0) return Done(out diagnostic);
                 uint anchor = pairs.SbitOffsets[index], next = pairs.SbitOffsets[index + 1];
+                if (next < anchor)
+                    return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                        Location.AtLocal(DataField.Offset, headerAt + 14UL + 4UL * (ulong)(index + 1), index + 1),
+                        out diagnostic, next, anchor);
                 if (anchor == next) return Done(out diagnostic);
                 location = new CblcGlyphLocation(pairs.ImageFormat,
                     (ulong)pairs.ImageDataOffset + anchor, (ulong)(next - anchor));
@@ -712,7 +756,7 @@ public readonly ref partial struct CblcView
                 ulong slot = (ulong)index * glyphIds.ImageSize;
                 location = new CblcGlyphLocation(glyphIds.ImageFormat,
                     (ulong)glyphIds.ImageDataOffset + slot, glyphIds.ImageSize);
-                present = true;
+                present = glyphIds.ImageSize != 0;
                 return Done(out diagnostic);
             }
             default:
@@ -771,7 +815,7 @@ public readonly ref partial struct CblcView
         if (status != ReadStatus.Done) return status;
         status = TryGetNumSizes(out uint numSizes, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if ((uint)sizeIndex >= numSizes)
+        if (sizeIndex < 0 || (uint)sizeIndex >= numSizes)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.Count, CblcLayout.BitmapSizeAt, sizeIndex),
                 out diagnostic, unchecked((ulong)(long)sizeIndex), numSizes);
@@ -780,12 +824,20 @@ public readonly ref partial struct CblcView
         listStart = row.IndexSubtableListOffset;
         listEnd = listStart + row.IndexSubtableListSize;
         numSubtables = row.NumIndexSubtables;
+        if (listStart > (ulong)_data.Length)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                Location.AtLocal(DataField.Offset, CblcLayout.BitmapSizeAt + 48UL * (ulong)sizeIndex, sizeIndex),
+                out diagnostic, listStart, (ulong)_data.Length);
         if (listEnd > (ulong)_data.Length)
             return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
                 Location.AtLocal(DataField.Length,
                     CblcLayout.BitmapSizeAt + 48UL * (ulong)sizeIndex + 4, sizeIndex),
                 out diagnostic, (ulong)_data.Length - listStart,
                 (ulong)row.IndexSubtableListSize);
+        if (8UL * numSubtables > row.IndexSubtableListSize)
+            return ReadWire.Fail(ReadStatus.Truncated, DiagnosticCode.TruncatedData,
+                Location.AtLocal(DataField.Count, CblcLayout.BitmapSizeAt + 48UL * (ulong)sizeIndex + 8UL, sizeIndex),
+                out diagnostic, row.IndexSubtableListSize, 8UL * numSubtables);
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -816,6 +868,7 @@ public readonly ref partial struct CblcView
         status = TryGetNumSizes(out uint numSizes, out diagnostic);
         if (status != ReadStatus.Done) return status;
         long buffer = 48L * (long)numSizes;
+        if (!budget.Buffer(buffer, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         ulong consumed = CblcLayout.BitmapSizeAt + 48UL * numSizes;
         var sizes = new CblcStrike[numSizes];
         for (int i = 0; i < numSizes; i++)
@@ -825,6 +878,8 @@ public readonly ref partial struct CblcView
             ulong listStart = row.IndexSubtableListOffset;
             ulong listEnd = listStart + row.IndexSubtableListSize;
             consumed = Math.Max(consumed, listEnd);
+            if (!budget.Buffer(row.NumIndexSubtables * (long)IntPtr.Size, Location, out diagnostic))
+                return ReadStatus.ResourceLimit;
             var subtables = new CblcIndexSubtable[row.NumIndexSubtables];
             for (int r = 0; r < row.NumIndexSubtables; r++)
             {
@@ -834,15 +889,6 @@ public readonly ref partial struct CblcView
                     out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 subtables[r] = subtable;
-                buffer += subtable switch
-                {
-                    CblcOffsetSubtable offsets => 4L * offsets.SbitOffsets.Length,
-                    CblcImageSizeSubtable => CblcLayout.BigGlyphMetricsLength,
-                    CblcPairSubtable pairs => 4L * pairs.GlyphIds.Length,
-                    CblcGlyphIdArraySubtable glyphIdArray =>
-                        CblcLayout.BigGlyphMetricsLength + 2L * glyphIdArray.GlyphIds.Length,
-                    _ => 0,
-                };
             }
             var strike = new CblcStrike(row.IndexSubtableListOffset,
                 row.IndexSubtableListSize, row.ColorRef, MetricsBlock(row.HoriAscender,
@@ -857,7 +903,6 @@ public readonly ref partial struct CblcView
                 row.PpemX, row.PpemY, row.BitDepth, row.Flags, subtables);
             sizes[i] = strike;
         }
-        if (!budget.Buffer(buffer, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         model = new(major, minor, sizes, Location, (int)consumed);
         diagnostic = default;
         return ReadStatus.Done;

@@ -259,7 +259,7 @@ public sealed class CbdtCblcWriteTests
         Assert.Equal(ReadStatus.UnsupportedFormat,
             CblcTableCompiler.TryCreate(3, 0, [inherited], cbdtModel!,
                 out _, out diagnostic));
-        Assert.Equal(DiagnosticCode.UnsupportedVersion, diagnostic.Code);
+        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
         Assert.Equal((ulong)1, diagnostic.Detail);
     }
 
