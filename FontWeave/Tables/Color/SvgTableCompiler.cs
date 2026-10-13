@@ -95,7 +95,7 @@ public static class SvgTableCompiler
         if (status != ReadStatus.Done) return status;
         if (destination.Length < encoded!.Length)
             return ReadWire.Fail(ReadStatus.DestinationTooSmall, DiagnosticCode.DestinationTooSmall,
-                model.Location.At(DataField.OutputBytes, 0), out diagnostic,
+                model.Location.AtLocal(DataField.OutputBytes, 0), out diagnostic,
                 (ulong)destination.Length, (uint)encoded.Length);
         encoded.AsSpan().CopyTo(destination);
         diagnostic = default;
