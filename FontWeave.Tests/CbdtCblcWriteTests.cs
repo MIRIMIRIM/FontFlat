@@ -235,7 +235,7 @@ public sealed class CbdtCblcWriteTests
     }
 
     [Fact]
-    public void TryCreateRefusesVersionAndInheritedWrites()
+    public void TryCreateRefusesVersionAndMismatchedImageFormats()
     {
         var (cblc, cbdt) = BuildPair(0, 0, [26]);
         CblcView.TryOpen(cblc, out var cblcView, out _, CblcSource);
@@ -251,16 +251,17 @@ public sealed class CbdtCblcWriteTests
         Assert.Equal(DiagnosticCode.UnsupportedVersion, diagnostic.Code);
         Assert.Equal(ReadStatus.UnsupportedFormat,
             CbdtTableCompiler.TryCreate(2, 0, cbdtModel!.Images, out _, out _));
-        // The inherited image format write has no surface: the support face
-        // re-answers (T6-08's deferral stays).
+        // The locator declares inherited format 1 while the paired pool still
+        // contains PNG format 17. Activating format 1 does not make these match.
         var inherited = new CblcStrike(56, 28, 0, new byte[12], new byte[12], 0, 0,
             16, 16, 32, 1,
             [new CblcOffsetSubtable(0, 1, 1, 4, 0, 0, new uint[] { 0, 13 })]);
-        Assert.Equal(ReadStatus.UnsupportedFormat,
+        Assert.Equal(ReadStatus.InvalidSource,
             CblcTableCompiler.TryCreate(3, 0, [inherited], cbdtModel!,
                 out _, out diagnostic));
-        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
-        Assert.Equal((ulong)1, diagnostic.Detail);
+        Assert.Equal(DiagnosticCode.WrongSourceFace, diagnostic.Code);
+        Assert.Equal((ulong)17, diagnostic.Detail);
+        Assert.Equal((ulong)1, diagnostic.Expected);
     }
 
     [Fact]

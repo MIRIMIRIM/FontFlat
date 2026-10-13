@@ -651,22 +651,23 @@ public readonly ref partial struct CblcView
     public ReadStatus TryGetGlyphLocation(int sizeIndex, int glyphId,
         out CblcGlyphLocation location, out bool present, out FontDiagnostic diagnostic)
         => TryGetGlyphLocation(sizeIndex, glyphId, out location, out present,
-            out _, out _, out diagnostic, new BuildBudget());
+            out _, out _, out _, out diagnostic, new BuildBudget());
 
     internal ReadStatus TryGetGlyphLocation(int sizeIndex, int glyphId,
         out CblcGlyphLocation location, out bool present, out ushort indexFormat,
-        out ulong imageFormatPosition, out FontDiagnostic diagnostic, BuildBudget budget)
+        out ulong imageFormatPosition, out byte bitDepth, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         location = default;
         present = false;
         indexFormat = 0;
         imageFormatPosition = 0;
+        bitDepth = 0;
         if (glyphId is < 0 or > ushort.MaxValue)
             return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                 Location.AtLocal(DataField.GlyphId, 0), out diagnostic,
                 unchecked((ulong)(long)glyphId), ushort.MaxValue);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        ReadStatus status = RequireListWindow(sizeIndex, out _, out ulong listStart, out ulong listEnd,
+        ReadStatus status = RequireListWindow(sizeIndex, out var row, out ulong listStart, out ulong listEnd,
             out uint numSubtables, out diagnostic);
         if (status != ReadStatus.Done) return status;
         // The record binary search: the ascending firstGlyphIndex order is the
@@ -694,16 +695,17 @@ public readonly ref partial struct CblcView
             out diagnostic);
         if (status != ReadStatus.Done) return status;
         ulong headerAt = listStart + record.IndexSubtableOffset;
-        status = LocateGlyph(subtable, glyphId, headerAt, out location, out present, out diagnostic);
+        status = LocateGlyph(subtable, glyphId, headerAt, budget, out location, out present, out diagnostic);
         if (status == ReadStatus.Done && present)
         {
             indexFormat = subtable.IndexFormat;
             imageFormatPosition = headerAt + 2UL;
+            bitDepth = row.BitDepth;
         }
         return status;
     }
 
-    private ReadStatus LocateGlyph(CblcIndexSubtable subtable, int glyphId, ulong headerAt,
+    private ReadStatus LocateGlyph(CblcIndexSubtable subtable, int glyphId, ulong headerAt, BuildBudget budget,
         out CblcGlyphLocation location, out bool present, out FontDiagnostic diagnostic)
     {
         location = default;
@@ -736,7 +738,9 @@ public readonly ref partial struct CblcView
             }
             case CblcPairSubtable pairs:
             {
-                int index = BinarySearch(pairs.GlyphIds, pairs.GlyphIds.Length - 1, glyphId);
+                ReadStatus status = BinarySearch(pairs.GlyphIds, pairs.GlyphIds.Length - 1, glyphId,
+                    budget, Location, out int index, out diagnostic);
+                if (status != ReadStatus.Done) return status;
                 if (index < 0) return Done(out diagnostic);
                 uint anchor = pairs.SbitOffsets[index], next = pairs.SbitOffsets[index + 1];
                 if (next < anchor)
@@ -751,7 +755,9 @@ public readonly ref partial struct CblcView
             }
             case CblcGlyphIdArraySubtable glyphIds:
             {
-                int index = BinarySearch(glyphIds.GlyphIds, glyphIds.GlyphIds.Length, glyphId);
+                ReadStatus status = BinarySearch(glyphIds.GlyphIds, glyphIds.GlyphIds.Length, glyphId,
+                    budget, Location, out int index, out diagnostic);
+                if (status != ReadStatus.Done) return status;
                 if (index < 0) return Done(out diagnostic);
                 ulong slot = (ulong)index * glyphIds.ImageSize;
                 location = new CblcGlyphLocation(glyphIds.ImageFormat,
@@ -772,17 +778,20 @@ public readonly ref partial struct CblcView
 
     /// <summary>Ascending ushort search over the sparse arrays (F4's real-glyph
     /// prefix of length count-1, F5's whole array); -1 on a miss.</summary>
-    private static int BinarySearch(ushort[] values, int count, int target)
+    private static ReadStatus BinarySearch(ushort[] values, int count, int target,
+        BuildBudget budget, DataLocation location, out int index, out FontDiagnostic diagnostic)
     {
+        index = -1;
         int low = 0, high = count - 1;
         while (low <= high)
         {
+            if (!budget.Work(1, location, out diagnostic)) return ReadStatus.ResourceLimit;
             int middle = (low + high) / 2;
             if (target < values[middle]) high = middle - 1;
             else if (target > values[middle]) low = middle + 1;
-            else return middle;
+            else { index = middle; return Done(out diagnostic); }
         }
-        return -1;
+        return Done(out diagnostic);
     }
 
     /// <summary>The color-strike observation key (card §2): bitDepth 32 marks

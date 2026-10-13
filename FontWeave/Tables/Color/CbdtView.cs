@@ -148,6 +148,135 @@ public readonly ref partial struct CbdtView
     /// CBLC-derived slot (a length the index layer cannot carry refuses - the
     /// "metrics/PNG length 错" leg) and this pool's remaining bytes (the
     /// "index/data offset 越界" leg); the payload travels verbatim.</summary>
+    public ReadStatus TryGetImage1(ulong position, byte bitDepth,
+        out CbdtSmallGlyphMetrics metrics, out ReadOnlySpan<byte> data, out FontDiagnostic diagnostic)
+        => ReadSmallLegacy(position, bitDepth, 1, out metrics, out data, out diagnostic);
+
+    public ReadStatus TryGetImage2(ulong position, byte bitDepth,
+        out CbdtSmallGlyphMetrics metrics, out ReadOnlySpan<byte> data, out FontDiagnostic diagnostic)
+        => ReadSmallLegacy(position, bitDepth, 2, out metrics, out data, out diagnostic);
+
+    public ReadStatus TryGetImage6(ulong position, byte bitDepth,
+        out CbdtBigGlyphMetrics metrics, out ReadOnlySpan<byte> data, out FontDiagnostic diagnostic)
+        => ReadBigLegacy(position, bitDepth, 6, out metrics, out data, out diagnostic);
+
+    public ReadStatus TryGetImage7(ulong position, byte bitDepth,
+        out CbdtBigGlyphMetrics metrics, out ReadOnlySpan<byte> data, out FontDiagnostic diagnostic)
+        => ReadBigLegacy(position, bitDepth, 7, out metrics, out data, out diagnostic);
+
+    /// <summary>Format 5 takes its length from the index slot, never from dimensions.</summary>
+    public ReadStatus TryGetImage5(ulong position, ulong byteLength, byte bitDepth,
+        out ReadOnlySpan<byte> data, out FontDiagnostic diagnostic)
+    {
+        data = default;
+        ReadStatus status = AnalyzeLegacyFrame(5, position, byteLength, bitDepth, null,
+            out var frame, out diagnostic, new BuildBudget());
+        if (status != ReadStatus.Done) return status;
+        data = frame.Data;
+        return ReadStatus.Done;
+    }
+
+    public ReadStatus TryGetImage8(ulong position, byte bitDepth,
+        out CbdtSmallGlyphMetrics metrics, out byte pad, out CbdtComponent[] components,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        metrics = default;
+        pad = 0;
+        components = [];
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ReadStatus status = AnalyzeLegacyFrame(8, position, Remaining(position), bitDepth, null,
+            out var frame, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        if (!budget.Buffer(frame.Components.Length, Location.AtLocal(DataField.Payload, position), out diagnostic))
+            return ReadStatus.ResourceLimit;
+        metrics = SmallMetrics(frame.Metrics);
+        pad = frame.Pad;
+        components = MaterializeComponents(frame.Components);
+        return ReadStatus.Done;
+    }
+
+    public ReadStatus TryGetImage9(ulong position, byte bitDepth,
+        out CbdtBigGlyphMetrics metrics, out CbdtComponent[] components,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        metrics = default;
+        components = [];
+        var budget = new BuildBudget(limits);
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        ReadStatus status = AnalyzeLegacyFrame(9, position, Remaining(position), bitDepth, null,
+            out var frame, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        if (!budget.Buffer(frame.Components.Length, Location.AtLocal(DataField.Payload, position), out diagnostic))
+            return ReadStatus.ResourceLimit;
+        metrics = BigMetrics(frame.Metrics);
+        components = MaterializeComponents(frame.Components);
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus ReadSmallLegacy(ulong position, byte bitDepth, ushort format,
+        out CbdtSmallGlyphMetrics metrics, out ReadOnlySpan<byte> data, out FontDiagnostic diagnostic)
+    {
+        metrics = default;
+        data = default;
+        ReadStatus status = AnalyzeLegacyFrame(format, position, Remaining(position), bitDepth, null,
+            out var frame, out diagnostic, new BuildBudget());
+        if (status != ReadStatus.Done) return status;
+        metrics = SmallMetrics(frame.Metrics);
+        data = frame.Data;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus ReadBigLegacy(ulong position, byte bitDepth, ushort format,
+        out CbdtBigGlyphMetrics metrics, out ReadOnlySpan<byte> data, out FontDiagnostic diagnostic)
+    {
+        metrics = default;
+        data = default;
+        ReadStatus status = AnalyzeLegacyFrame(format, position, Remaining(position), bitDepth, null,
+            out var frame, out diagnostic, new BuildBudget());
+        if (status != ReadStatus.Done) return status;
+        metrics = BigMetrics(frame.Metrics);
+        data = frame.Data;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus AnalyzeLegacyFrame(ushort format, ulong position, ulong slotLength,
+        byte bitDepth, int? numGlyphs, out BitmapImageCodec.FrameParts frame,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        frame = default;
+        if (!IsBound)
+            return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, Location, out diagnostic);
+        if (!CblcLayout.IsBitDepthDefined(bitDepth))
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Payload, position), out diagnostic, bitDepth, 0UL);
+        return BitmapImageCodec.AnalyzeLegacyFrame(_data, Location, format, position, slotLength,
+            bitDepth, numGlyphs, out frame, out diagnostic, budget);
+    }
+
+    private static CbdtComponent[] MaterializeComponents(ReadOnlySpan<byte> bytes)
+    {
+        var components = new CbdtComponent[bytes.Length / 4];
+        for (int i = 0; i < components.Length; i++)
+        {
+            BitmapImageCodec.ReadComponent(bytes.Slice(i * 4, 4), out ushort glyphId,
+                out sbyte xOffset, out sbyte yOffset);
+            components[i] = new(glyphId, xOffset, yOffset);
+        }
+        return components;
+    }
+
+    private static CbdtSmallGlyphMetrics SmallMetrics(ReadOnlySpan<byte> metrics) =>
+        new(metrics[0], metrics[1], unchecked((sbyte)metrics[2]), unchecked((sbyte)metrics[3]), metrics[4]);
+
+    private static CbdtBigGlyphMetrics BigMetrics(ReadOnlySpan<byte> metrics) =>
+        new(metrics[0], metrics[1], unchecked((sbyte)metrics[2]), unchecked((sbyte)metrics[3]),
+            metrics[4], unchecked((sbyte)metrics[5]), unchecked((sbyte)metrics[6]), metrics[7]);
+
+    private ulong Remaining(ulong position) => position <= (ulong)_data.Length
+        ? (ulong)_data.Length - position : 0UL;
+
+
     public ReadStatus TryGetGlyphImage(CblcView cblc, int sizeIndex, int glyphId,
         out CbdtGlyphImage image, out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
@@ -157,7 +286,7 @@ public readonly ref partial struct CbdtView
         if (status != ReadStatus.Done) return status;
         status = cblc.TryGetGlyphLocation(sizeIndex, glyphId,
             out CblcGlyphLocation location, out bool present, out ushort indexFormat,
-            out ulong imageFormatPosition, out diagnostic, budget);
+            out ulong imageFormatPosition, out byte bitDepth, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         if (!present)
         {
@@ -174,9 +303,99 @@ public readonly ref partial struct CbdtView
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 cblc.Location.AtLocal(DataField.Payload, imageFormatPosition), out diagnostic,
                 location.ImageFormat, 0UL);
-        return ReadImageAt(location.ImageFormat, location.PositionInCbdt,
-            location.ByteLength, out image, out diagnostic, budget);
+        if (!CblcLayout.IsBitDepthDefined(bitDepth))
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                cblc.Location.AtLocal(DataField.Payload, CblcLayout.BitmapSizeAt +
+                    (ulong)sizeIndex * CblcLayout.BitmapSizeStride + 46UL, sizeIndex),
+                out diagnostic, bitDepth, 0UL);
+        status = ReadImageAt(location.ImageFormat, location.PositionInCbdt,
+            location.ByteLength, bitDepth, null, out var candidate, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        if (candidate.ImageFormat is 8 or 9)
+        {
+            status = CheckReachableCycles(cblc, sizeIndex, (ushort)glyphId,
+                Owned(candidate, location.PositionInCbdt), out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+        }
+        image = candidate;
+        return ReadStatus.Done;
     }
+
+    private static CbdtImage Owned(CbdtGlyphImage image, ulong position) =>
+        new(image.ImageFormat, image.Metrics, image.Payload, image.BitDepth, image.Components, image.CompositePad)
+        { SourcePosition = position };
+
+    private ReadStatus CheckReachableCycles(CblcView cblc, int sizeIndex, ushort glyphId,
+        CbdtImage rootImage, out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        const int domain = ushort.MaxValue + 1;
+        DataLocation at = Location.AtLocal(DataField.Payload, rootImage.SourcePosition ?? 0UL);
+        if (!budget.Buffer((7L + IntPtr.Size) * domain, at, out diagnostic)) return ReadStatus.ResourceLimit;
+        var states = new byte[domain];
+        var stack = new ushort[domain];
+        var nextEdges = new int[domain];
+        var cache = new CbdtImage?[domain];
+        cache[glyphId] = rootImage;
+        states[glyphId] = 1;
+        stack[0] = glyphId;
+        int top = 0;
+        while (top >= 0)
+        {
+            ushort node = stack[top];
+            var current = cache[node]!;
+            int edge = nextEdges[top];
+            if (edge == current.Components.Length)
+            {
+                states[node] = 2;
+                top--;
+                continue;
+            }
+            DataLocation componentAt = current.ComponentLocation(Location, edge);
+            if (!budget.Work(1, componentAt, out diagnostic)) return ReadStatus.ResourceLimit;
+            nextEdges[top]++;
+            ushort target = current.Components[edge].GlyphId;
+            if (states[target] == 1)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    componentAt, out diagnostic, target, 0UL);
+            if (states[target] == 2) continue;
+            ReadStatus status = cblc.TryGetGlyphLocation(sizeIndex, target,
+                out var location, out bool present, out ushort indexFormat,
+                out ulong imageFormatPosition, out byte bitDepth, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+            if (!present)
+            {
+                states[target] = 2;
+                continue;
+            }
+            if (!CblcLayout.IsImageFormatTyped(location.ImageFormat))
+                return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                    cblc.Location.AtLocal(DataField.Payload, imageFormatPosition), out diagnostic,
+                    location.ImageFormat, 0UL);
+            if (!CblcLayout.IsPairingDefined(indexFormat, location.ImageFormat))
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    cblc.Location.AtLocal(DataField.Payload, imageFormatPosition), out diagnostic,
+                    location.ImageFormat, 0UL);
+            if (!CblcLayout.IsBitDepthDefined(bitDepth))
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    cblc.Location.AtLocal(DataField.Payload, CblcLayout.BitmapSizeAt +
+                        (ulong)sizeIndex * CblcLayout.BitmapSizeStride + 46UL, sizeIndex),
+                    out diagnostic, bitDepth, 0UL);
+            status = ReadImageAt(location.ImageFormat, location.PositionInCbdt,
+                location.ByteLength, bitDepth, null, out var image, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+            if (image.ImageFormat is not (8 or 9))
+            {
+                states[target] = 2;
+                continue;
+            }
+            cache[target] = Owned(image, location.PositionInCbdt);
+            states[target] = 1;
+            stack[++top] = target;
+            nextEdges[top] = 0;
+        }
+        return Done(out diagnostic);
+    }
+
 
     private ReadStatus RequirePair(CblcView cblc, out FontDiagnostic diagnostic, BuildBudget budget)
     {
@@ -196,9 +415,22 @@ public readonly ref partial struct CbdtView
     /// after it and the payload to the frame's end, each face checked against
     /// both the slot and the pool.</summary>
     internal ReadStatus ReadImageAt(ushort imageFormat, ulong position, ulong slotLength,
-        out CbdtGlyphImage image, out FontDiagnostic diagnostic, BuildBudget budget)
+        byte bitDepth, int? numGlyphs, out CbdtGlyphImage image,
+        out FontDiagnostic diagnostic, BuildBudget budget)
     {
         image = default;
+        if (CblcLayout.IsImageFormatInherited(imageFormat))
+        {
+            ReadStatus status = AnalyzeLegacyFrame(imageFormat, position, slotLength, bitDepth, numGlyphs,
+                out var legacyFrame, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+            long charge = legacyFrame.Metrics.Length + (long)legacyFrame.Data.Length + legacyFrame.Components.Length;
+            if (!budget.Buffer(charge, Location.AtLocal(DataField.Payload, position), out diagnostic))
+                return ReadStatus.ResourceLimit;
+            image = new(imageFormat, legacyFrame.Metrics.IsEmpty ? null : legacyFrame.Metrics.ToArray(), legacyFrame.Data.ToArray())
+            { BitDepth = bitDepth, Components = MaterializeComponents(legacyFrame.Components), CompositePad = legacyFrame.Pad };
+            return ReadStatus.Done;
+        }
         int frameHead = imageFormat switch
         {
             CblcLayout.ImageFormat17 => CbdtLayout.Format17HeadLength,
@@ -256,7 +488,7 @@ public readonly ref partial struct CbdtView
         var payload = new byte[dataLength];
         _data.Slice((int)(position + (ulong)frameHead), (int)dataLength)
             .CopyTo(payload);
-        image = new CbdtGlyphImage(imageFormat, metrics, payload);
+        image = new CbdtGlyphImage(imageFormat, metrics, payload) { BitDepth = bitDepth };
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -268,6 +500,11 @@ public readonly ref partial struct CbdtView
     /// materializes every populated slot's image in first-appearance order.
     /// cbdtDataLength is this view's own length; the numGlyphs forward rides
     /// to the CBLC gate.</summary>
+    /// <summary>Validates every joint frame and each strike's resolved component graph.</summary>
+    public ReadStatus ValidateTable(CblcView cblc, int? numGlyphs,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+        => TryReadTable(cblc, numGlyphs, out _, out diagnostic, limits);
+
     public ReadStatus TryReadTable(CblcView cblc, int? numGlyphs, out CbdtTable? model,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
@@ -279,91 +516,108 @@ public readonly ref partial struct CbdtView
         if (status != ReadStatus.Done) return status;
         status = TryGetMinorVersion(out ushort minor, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = cblc.TryReadTable(_data.Length, numGlyphs, out var cblcTable,
-            out diagnostic, budget);
+        status = cblc.TryReadTable(_data.Length, numGlyphs, out var cblcTable, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
-        // The joint read chain walk: the same order the compiler emits.
-        var images = new List<CbdtImage>();
-        ulong consumed = CbdtLayout.HeaderLength;
-        for (int i = 0; i < cblcTable!.SizeCount; i++)
+        long count = 0;
+        var sizes = cblcTable!.Sizes;
+        foreach (var strike in sizes)
         {
-            var strike = cblcTable.Sizes[i];
-            foreach (var subtable in strike.Subtables)
+            foreach (var part in strike.Subtables)
             {
-                switch (subtable)
+                if (!budget.Work(CountEntries(part), Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                count += CblcTableCompiler.CountSlots(part);
+            }
+        }
+        if (count > int.MaxValue)
+            return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
+                Location.AtLocal(DataField.Count, 0), out diagnostic, (ulong)count, int.MaxValue);
+        if (!budget.Buffer(count * IntPtr.Size, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        var images = new CbdtImage[(int)count];
+        int imageCursor = 0;
+        ulong consumed = CbdtLayout.HeaderLength;
+        foreach (var strike in sizes)
+        {
+            int firstImage = imageCursor;
+            bool composite = false;
+            foreach (var part in strike.Subtables)
+            {
+                composite |= part.ImageFormat is 8 or 9;
+                switch (part)
                 {
                     case CblcOffsetSubtable offsets:
-                        for (int g = offsets.FirstGlyphIndex; g <= offsets.LastGlyphIndex; g++)
+                        for (int k = 0; k < offsets.SbitOffsets.Length - 1; k++)
                         {
-                            status = ReadChainImage(offsets.ImageFormat,
-                                (ulong)offsets.ImageDataOffset + offsets.SbitOffsets[g - offsets.FirstGlyphIndex],
-                                (ulong)(offsets.SbitOffsets[g - offsets.FirstGlyphIndex + 1] -
-                                    offsets.SbitOffsets[g - offsets.FirstGlyphIndex]),
-                                images, budget, ref consumed, out diagnostic);
+                            status = ReadChainImage(part.ImageFormat, (ulong)part.ImageDataOffset + offsets.SbitOffsets[k],
+                                (ulong)offsets.SbitOffsets[k + 1] - offsets.SbitOffsets[k], strike.BitDepth, numGlyphs,
+                                images, ref imageCursor, budget, ref consumed, out diagnostic);
                             if (status != ReadStatus.Done) return status;
                         }
                         break;
-                    case CblcImageSizeSubtable imageSize:
-                        for (int g = imageSize.FirstGlyphIndex; g <= imageSize.LastGlyphIndex; g++)
+                    case CblcImageSizeSubtable size:
+                        for (int g = size.FirstGlyphIndex; g <= size.LastGlyphIndex; g++)
                         {
-                            status = ReadChainImage(imageSize.ImageFormat,
-                                (ulong)imageSize.ImageDataOffset +
-                                    (ulong)(g - imageSize.FirstGlyphIndex) * imageSize.ImageSize,
-                                imageSize.ImageSize, images, budget, ref consumed,
-                                out diagnostic);
+                            status = ReadChainImage(part.ImageFormat,
+                                (ulong)part.ImageDataOffset + (ulong)(g - size.FirstGlyphIndex) * size.ImageSize,
+                                size.ImageSize, strike.BitDepth, numGlyphs, images, ref imageCursor,
+                                budget, ref consumed, out diagnostic);
                             if (status != ReadStatus.Done) return status;
                         }
                         break;
                     case CblcPairSubtable pairs:
                         for (int k = 0; k < pairs.GlyphIds.Length - 1; k++)
                         {
-                            status = ReadChainImage(pairs.ImageFormat,
-                                (ulong)pairs.ImageDataOffset + pairs.SbitOffsets[k],
-                                (ulong)(pairs.SbitOffsets[k + 1] - pairs.SbitOffsets[k]),
-                                images, budget, ref consumed, out diagnostic);
+                            status = ReadChainImage(part.ImageFormat, (ulong)part.ImageDataOffset + pairs.SbitOffsets[k],
+                                (ulong)pairs.SbitOffsets[k + 1] - pairs.SbitOffsets[k], strike.BitDepth, numGlyphs,
+                                images, ref imageCursor, budget, ref consumed, out diagnostic);
                             if (status != ReadStatus.Done) return status;
                         }
                         break;
-                    case CblcGlyphIdArraySubtable glyphIds:
-                        for (int k = 0; k < glyphIds.GlyphIds.Length; k++)
+                    case CblcGlyphIdArraySubtable ids:
+                        for (int k = 0; k < ids.GlyphIds.Length; k++)
                         {
-                            status = ReadChainImage(glyphIds.ImageFormat,
-                                (ulong)glyphIds.ImageDataOffset + (ulong)k * glyphIds.ImageSize,
-                                glyphIds.ImageSize, images, budget, ref consumed,
-                                out diagnostic);
+                            status = ReadChainImage(part.ImageFormat,
+                                (ulong)part.ImageDataOffset + (ulong)k * ids.ImageSize, ids.ImageSize,
+                                strike.BitDepth, numGlyphs, images, ref imageCursor,
+                                budget, ref consumed, out diagnostic);
                             if (status != ReadStatus.Done) return status;
                         }
                         break;
                 }
             }
+            int strikeImages = imageCursor - firstImage;
+            if (composite && strikeImages != 0)
+            {
+                if (!budget.Buffer(2L * strikeImages, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                var glyphIds = new ushort[strikeImages];
+                CblcTableCompiler.FillGlyphIds(strike.Subtables, glyphIds);
+                status = CbdtTableCompiler.CheckCycles(images, firstImage, glyphIds, Location, budget, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+            }
         }
-        if (!budget.Buffer(images.Count * (long)IntPtr.Size, Location, out diagnostic)) return ReadStatus.ResourceLimit;
-        model = new(major, minor, [.. images], Location, (int)consumed);
-        diagnostic = default;
-        return ReadStatus.Done;
+        model = new(major, minor, images, Location, (int)consumed);
+        return Done(out diagnostic);
     }
 
-    /// <summary>One chain slot's image: a zero length is the absent form (the
-    /// equal-consecutive pair's normalization), anything else decodes through
-    /// the shared face.</summary>
+    private static int CountEntries(CblcIndexSubtable part) => part switch
+    {
+        CblcOffsetSubtable offsets => offsets.SbitOffsets.Length,
+        CblcPairSubtable pairs => pairs.GlyphIds.Length,
+        CblcGlyphIdArraySubtable ids => ids.GlyphIds.Length,
+        _ => part.LastGlyphIndex - part.FirstGlyphIndex + 1,
+    };
+
     private ReadStatus ReadChainImage(ushort imageFormat, ulong position, ulong length,
-        List<CbdtImage> images, BuildBudget budget, ref ulong consumed,
-        out FontDiagnostic diagnostic)
+        byte bitDepth, int? numGlyphs, CbdtImage[] images, ref int imageCursor,
+        BuildBudget budget, ref ulong consumed, out FontDiagnostic diagnostic)
     {
         diagnostic = default;
-        if (length == 0)
-        {
-            diagnostic = default;
-            return ReadStatus.Done;
-        }
-        ReadStatus status = ReadImageAt(imageFormat, position, length,
+        if (length == 0) return ReadStatus.Done;
+        ReadStatus status = ReadImageAt(imageFormat, position, length, bitDepth, numGlyphs,
             out var glyphImage, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
-        images.Add(new CbdtImage(glyphImage.ImageFormat, glyphImage.Metrics,
-            glyphImage.Payload));
-        consumed = Math.Max(consumed, position +
-            (ulong)(glyphImage.Metrics?.Length ?? 0) + 4UL + (ulong)glyphImage.Payload.Length);
-        diagnostic = default;
+        var image = Owned(glyphImage, position);
+        images[imageCursor++] = image;
+        consumed = Math.Max(consumed, position + (ulong)CbdtTableCompiler.FrameLength(image));
         return ReadStatus.Done;
     }
 

@@ -43,7 +43,7 @@ internal static class CbdtLayout
 // whole generated face, and the unstructured pool behind it has zero declared
 // structure (D L50: the formats are indicated by the CBLC index, so pool bytes
 // are addressed only through the CBLC-derived windows; declaring any would
-// invent addressing the table does not carry). The formats 17/18/19 per-glyph
+// invent addressing the table does not carry). PNG and inherited per-glyph
 // reads are CbdtView partial methods, never a second type (the AGENTS
 // one-View-per-table-layout line; the joint glyph-image read holds both
 // bounded views explicitly, OQ-T6-05-12).

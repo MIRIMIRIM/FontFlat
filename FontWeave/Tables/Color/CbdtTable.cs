@@ -34,7 +34,14 @@ public readonly record struct CbdtBigGlyphMetrics(byte Height, byte Width,
 /// (5 bytes on 17, 8 bytes on 18, absent on 19 - the metrics live in the CBLC
 /// subtable there) and the opaque payload bytes.</summary>
 public readonly record struct CbdtGlyphImage(ushort ImageFormat, byte[]? Metrics,
-    byte[] Payload);
+    byte[] Payload)
+{
+    public byte BitDepth { get; init; }
+    public CbdtComponent[] Components { get; init; } = [];
+    public byte CompositePad { get; init; }
+}
+
+public readonly record struct CbdtComponent(ushort GlyphId, sbyte XOffset, sbyte YOffset);
 
 /// <summary>One owned CBDT image in joint-read-chain order (card T6-05 §2):
 /// the format, the raw metrics head and the verbatim payload. PNG data is
@@ -46,18 +53,37 @@ public sealed class CbdtImage
     /// <summary>Creates one owned image part (the factory/edit paths and the
     /// public TryCreate surface share this shape - the SbixStrike line).</summary>
     public CbdtImage(ushort imageFormat, byte[]? metrics, byte[] payload)
+        : this(imageFormat, metrics, payload, 1)
+    {
+    }
+
+    /// <summary>The depth receipt admits legacy pixels without converting them.
+    /// Components remain flat; format 8 preserves its pad byte.</summary>
+    public CbdtImage(ushort imageFormat, byte[]? metrics, byte[] payload, byte bitDepth,
+        CbdtComponent[]? components = null, byte compositePad = 0)
     {
         ImageFormat = imageFormat;
         Metrics = metrics;
         Payload = payload;
+        BitDepth = bitDepth;
+        Components = components ?? [];
+        CompositePad = compositePad;
     }
 
     public ushort ImageFormat { get; }
-    /// <summary>The raw metrics head: 5 bytes on format 17, 8 on 18, null on
-    /// 19 (the "metrics in CBLC table" pairing, D L113).</summary>
+    /// <summary>Raw per-image metrics, or null when metrics live in CBLC.</summary>
     public byte[]? Metrics { get; }
-    /// <summary>The dataLen-counted opaque payload bytes, byte-for-byte.</summary>
+    /// <summary>Opaque pixels or PNG bytes. Composite frames have an empty payload.</summary>
     public byte[] Payload { get; }
+    public byte BitDepth { get; }
+    public CbdtComponent[] Components { get; }
+    public byte CompositePad { get; }
+    internal ulong? SourcePosition { get; init; }
+
+    internal DataLocation ComponentLocation(DataLocation location, int componentIndex) =>
+        location.AtLocal(DataField.GlyphId, SourcePosition is { } position
+            ? position + (ulong)BitmapImageCodec.LegacyHeadLength(ImageFormat) + 4UL * (ulong)componentIndex
+            : 0UL, componentIndex);
 }
 
 /// <summary>Owned CBDT table (card T6-05 §2): the version receipts and the
@@ -117,13 +143,31 @@ public sealed class CbdtTable
         updated = null;
         ReadStatus status = RequireImageDomain(imageIndex, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        var images = new CbdtImage[_images.Length];
-        Array.Copy(_images, images, _images.Length);
+        return TryWithImagePayload(imageIndex, payload, _images[imageIndex].BitDepth,
+            out updated, out diagnostic);
+    }
+
+    /// <summary>Replaces payload and the explicit depth receipt together.
+    /// Legacy dimensions must match; format 5 preserves its slot length.
+    /// No implicit padding, pixel conversion or component edits occur.</summary>
+    public ReadStatus TryWithImagePayload(int imageIndex, ReadOnlySpan<byte> payload,
+        byte bitDepth, out CbdtTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        ReadStatus status = RequireImageDomain(imageIndex, out diagnostic);
+        if (status != ReadStatus.Done) return status;
         var source = _images[imageIndex];
-        images[imageIndex] = new CbdtImage(source.ImageFormat, source.Metrics,
-            payload.ToArray());
-        updated = new(MajorVersion, MinorVersion, images, Location, ConsumedLength);
-        diagnostic = default;
+        if (source.ImageFormat is 8 or 9)
+            return UnsupportedEdit(imageIndex, source.ImageFormat, out diagnostic);
+        if (source.ImageFormat == 5 && payload.Length != source.Payload.Length)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Length, 0, imageIndex), out diagnostic,
+                (ulong)payload.Length, (ulong)source.Payload.Length);
+        var replacement = new CbdtImage(source.ImageFormat, source.Metrics, payload.ToArray(),
+            bitDepth, source.Components, source.CompositePad) { SourcePosition = source.SourcePosition };
+        status = CbdtTableCompiler.CheckImage(replacement, Location, imageIndex, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        updated = Replace(imageIndex, replacement);
         return ReadStatus.Done;
     }
 
@@ -137,13 +181,22 @@ public sealed class CbdtTable
         updated = null;
         ReadStatus status = RequireImageDomain(imageIndex, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        return TryWithGlyphMetrics(imageIndex, metrics, _images[imageIndex].Payload,
+            out updated, out diagnostic);
+    }
+
+    /// <summary>Atomically replaces metrics and supplied pixels.
+    /// A metrics-only dimension edit refuses when the old legacy payload
+    /// no longer matches; components and PNG bytes remain verbatim.</summary>
+    public ReadStatus TryWithGlyphMetrics(int imageIndex, ReadOnlySpan<byte> metrics,
+        ReadOnlySpan<byte> payload, out CbdtTable? updated, out FontDiagnostic diagnostic)
+    {
+        updated = null;
+        ReadStatus status = RequireImageDomain(imageIndex, out diagnostic);
+        if (status != ReadStatus.Done) return status;
         var source = _images[imageIndex];
-        int expectedLength = source.ImageFormat switch
-        {
-            CblcLayout.ImageFormat17 => CbdtLayout.SmallGlyphMetricsLength,
-            CblcLayout.ImageFormat18 => CblcLayout.BigGlyphMetricsLength,
-            _ => -1,
-        };
+        int expectedLength = CbdtTableCompiler.MetricsLength(source.ImageFormat);
+        if (expectedLength == 0) expectedLength = -1;
         if (expectedLength < 0)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat,
                 DiagnosticCode.UnsupportedOperation,
@@ -153,14 +206,24 @@ public sealed class CbdtTable
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 Location.AtLocal(DataField.Length, 0, imageIndex), out diagnostic,
                 (ulong)metrics.Length, (ulong)expectedLength);
-        var images = new CbdtImage[_images.Length];
-        Array.Copy(_images, images, _images.Length);
-        images[imageIndex] = new CbdtImage(source.ImageFormat, metrics.ToArray(),
-            source.Payload);
-        updated = new(MajorVersion, MinorVersion, images, Location, ConsumedLength);
-        diagnostic = default;
+        var replacement = new CbdtImage(source.ImageFormat, metrics.ToArray(), payload.ToArray(),
+            source.BitDepth, source.Components, source.CompositePad) { SourcePosition = source.SourcePosition };
+        status = CbdtTableCompiler.CheckImage(replacement, Location, imageIndex, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        updated = Replace(imageIndex, replacement);
         return ReadStatus.Done;
     }
+
+    private CbdtTable Replace(int imageIndex, CbdtImage replacement)
+    {
+        var images = (CbdtImage[])_images.Clone();
+        images[imageIndex] = replacement;
+        return new(MajorVersion, MinorVersion, images, Location, ConsumedLength);
+    }
+
+    private ReadStatus UnsupportedEdit(int imageIndex, ushort format, out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+            Location.AtLocal(DataField.Payload, 0, imageIndex), out diagnostic, format, 0UL);
 
     private ReadStatus RequireImageDomain(int imageIndex, out FontDiagnostic diagnostic)
     {

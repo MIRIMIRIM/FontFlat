@@ -401,24 +401,32 @@ public sealed class CbdtCblcReadTests
     }
 
     [Theory]
-    [InlineData(1)] // inherited: T6-08's known formats
-    [InlineData(2)]
-    [InlineData(5)]
-    [InlineData(6)]
-    [InlineData(7)]
-    [InlineData(8)]
-    [InlineData(9)]
-    [InlineData(3)] // never supported (EBDT obsolete)
-    [InlineData(4)] // never supported (Apple-only)
-    [InlineData(42)] // unknown
-    public void NonTypedImageFormatsRefuseUnderTheSameFace(ushort imageFormat)
+    [InlineData(1, ReadStatus.Done)]
+    [InlineData(2, ReadStatus.Done)]
+    [InlineData(5, ReadStatus.InvalidFormat)] // format 5 requires index format 2 or 5
+    [InlineData(6, ReadStatus.Done)]
+    [InlineData(7, ReadStatus.Done)]
+    [InlineData(8, ReadStatus.Done)]
+    [InlineData(9, ReadStatus.Done)]
+    [InlineData(3, ReadStatus.UnsupportedFormat)] // EBDT obsolete
+    [InlineData(4, ReadStatus.UnsupportedFormat)] // Apple-only
+    [InlineData(42, ReadStatus.UnsupportedFormat)]
+    public void LegacyAndUnsupportedFormatsFollowTheIndex1PairingMatrix(
+        ushort imageFormat, ReadStatus expectedStatus)
     {
         var (cblc, cbdt) = BuildMatrixPair(1, imageFormat);
         Assert.Equal(ReadStatus.Done, CblcView.TryOpen(cblc, out var cblcView, out _, CblcSource));
-        Assert.Equal(ReadStatus.UnsupportedFormat,
+        Assert.Equal(expectedStatus,
             cblcView.ValidateTable(cbdt.Length, null, out var diagnostic));
-        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
-        Assert.Equal(imageFormat, (ushort)diagnostic.Detail);
+        if (expectedStatus == ReadStatus.Done)
+            Assert.Equal(default, diagnostic);
+        else
+        {
+            Assert.Equal(expectedStatus == ReadStatus.InvalidFormat
+                ? DiagnosticCode.InvalidValue : DiagnosticCode.UnsupportedOperation, diagnostic.Code);
+            Assert.Equal(imageFormat, (ushort)diagnostic.Detail);
+            Assert.Equal(0UL, diagnostic.Expected);
+        }
     }
 
     [Theory]

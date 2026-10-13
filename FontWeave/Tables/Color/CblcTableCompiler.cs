@@ -22,9 +22,10 @@ namespace FontWeave.Tables;
 /// addressing convention: the offsets address the whole table including the
 /// 4-byte head), each subtable's imageDataOffset lands on its first
 /// populated slot, and the sbitOffsets / pair offsets / glyph-array sizes
-/// derive from the paired frames' lengths. The count equality is the
-/// SameSource guard: a chain whose populated-slot count differs from the
-/// image count refuses as a wrong source face, never a silent rewrite. The
+/// derive from the paired frames' lengths. Explicit source/face bindings must
+/// agree when both inputs carry them; anonymous owned construction remains
+/// available. A chain whose populated-slot count differs from the image count
+/// is refused as a wrong source face. The
 /// root re-answers the version domain, every row value domain, the sparse
 /// orderings, the record ordering must + overlap refusal and the pairing
 /// matrix; structural changes (strike/subtable/slot count changes, format
@@ -39,124 +40,152 @@ public static class CblcTableCompiler
     /// re-root through the owned TryWith* faces and compile deterministically.</summary>
     public static ReadStatus TryCreate(ushort majorVersion, ushort minorVersion,
         IReadOnlyList<CblcStrike> sizes, CbdtTable cbdt, out CblcTable? model,
-        out FontDiagnostic diagnostic, BuildLimits? limits = null,
-        DataLocation location = default)
+        out FontDiagnostic diagnostic, BuildLimits? limits = null, DataLocation location = default)
+        => Create(majorVersion, minorVersion, sizes, cbdt, out model, out diagnostic,
+            new BuildBudget(limits), location);
+
+    private static ReadStatus Create(ushort majorVersion, ushort minorVersion,
+        IReadOnlyList<CblcStrike> sizes, CbdtTable cbdt, out CblcTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget, DataLocation location)
     {
         model = null;
         ArgumentNullException.ThrowIfNull(sizes);
         ArgumentNullException.ThrowIfNull(cbdt);
         location = location == default ? DataLocation.Anonymous(CblcLayout.Tag) : location;
-        var budget = new BuildBudget(limits);
-        ReadStatus status = RequireVersion(majorVersion, minorVersion, location,
-            out diagnostic);
+        ReadStatus status = RequireVersion(majorVersion, minorVersion, location, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (!budget.Work(sizes.Count * 48L + cbdt.ImageCount * 8L, location,
-                out diagnostic)) return ReadStatus.ResourceLimit;
-        // The frame sequence: one entry per image, the canonical packed length.
-        var frames = new long[cbdt.ImageCount];
-        long packedLength = CbdtLayout.HeaderLength;
-        for (int i = 0; i < cbdt.ImageCount; i++)
-        {
-            var image = cbdt.Images[i];
-            if (!CblcLayout.IsImageFormatTyped(image.ImageFormat))
-                return ReadWire.Fail(ReadStatus.UnsupportedFormat,
-                    DiagnosticCode.UnsupportedOperation,
-                    location.AtLocal(DataField.Payload, 0, i), out diagnostic,
-                    image.ImageFormat, 0UL);
-            long frame = CbdtTableCompiler.FrameLength(image);
-            if (frame < 0)
-                return ReadWire.Fail(ReadStatus.UnsupportedFormat,
-                    DiagnosticCode.UnsupportedOperation,
-                    location.AtLocal(DataField.Payload, 0, i), out diagnostic,
-                    image.ImageFormat, 0UL);
-            frames[i] = frame;
-            packedLength += frame;
-        }
-        // The SameSource guard first: the chain's populated-slot count must
-        // equal the image count - the two tables describe one pool or
-        // neither. The exact mismatch answers before any rewrite; the
-        // per-slot bounds stay the defensive walk face.
-        if (CountChainSlots(sizes) != cbdt.ImageCount)
+        if ((location.SourceId != 0 || location.FaceIndex != -1) &&
+            (cbdt.Location.SourceId != 0 || cbdt.Location.FaceIndex != -1) &&
+            (location.SourceId != cbdt.Location.SourceId || location.FaceIndex != cbdt.Location.FaceIndex))
             return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
-                location.AtLocal(DataField.Count, 0), out diagnostic,
-                (ulong)CountChainSlots(sizes), (ulong)cbdt.ImageCount);
-        // The canonical plan: rewrite every strike's index layer against the
-        // frame sequence, then re-answer the cross-record faces on the
-        // rewritten rows.
-        var canonical = new CblcStrike[sizes.Count];
-        long layoutCursor = CblcLayout.BitmapSizeAt + 48L * sizes.Count;
+                cbdt.Location, out diagnostic);
+        status = CbdtTableCompiler.RequireVersion(cbdt.MajorVersion, cbdt.MinorVersion, cbdt.Location, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var images = cbdt.Images;
+        int sizeCount = sizes.Count, imageCount = cbdt.ImageCount;
+        status = CbdtTableCompiler.CheckImages(images, cbdt.Location, budget, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (!budget.Work(sizeCount * 48L + imageCount * 8L, location, out diagnostic) ||
+            !budget.Buffer(imageCount * 8L + sizeCount * (long)IntPtr.Size, location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var frames = new long[imageCount];
+        var canonical = new CblcStrike[sizeCount];
+        long packedLength = CbdtLayout.HeaderLength;
+        for (int i = 0; i < imageCount; i++)
+        {
+            frames[i] = CbdtTableCompiler.FrameLength(images[i]);
+            packedLength += frames[i];
+        }
+        long chainCount = 0;
+        for (int s = 0; s < sizeCount; s++)
+        {
+            var strike = sizes[s];
+            status = RequireRowValues(strike, location, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            int recordCount = strike.Subtables.Count;
+            if (!budget.Work(recordCount, location, out diagnostic)) return ReadStatus.ResourceLimit;
+            ushort previousLast = 0;
+            for (int r = 0; r < recordCount; r++)
+            {
+                var part = strike.Subtables[r];
+                status = CheckSubtable(part, location, budget, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                if (r > 0 && part.FirstGlyphIndex <= previousLast)
+                    return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.OverlappingRange,
+                        location.AtLocal(DataField.GlyphId, 0, r), out diagnostic, part.FirstGlyphIndex, previousLast);
+                previousLast = part.LastGlyphIndex;
+                chainCount += CountSlots(part);
+            }
+        }
+        if (chainCount != imageCount)
+            return WrongSource(location, chainCount, imageCount, out diagnostic);
+        long layoutCursor = CblcLayout.BitmapSizeAt + 48L * sizeCount;
         long poolCursor = CbdtLayout.HeaderLength;
         int imageCursor = 0;
-        for (int s = 0; s < sizes.Count; s++)
+        for (int s = 0; s < sizeCount; s++)
         {
             var source = sizes[s];
-            ArgumentNullException.ThrowIfNull(source);
-            status = RequireRowValues(source, location, out diagnostic);
-            if (status != ReadStatus.Done) return status;
-            if (source.StartGlyphIndex > source.EndGlyphIndex)
-                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                    location.AtLocal(DataField.GlyphId, 0, s), out diagnostic,
-                    source.StartGlyphIndex, source.EndGlyphIndex);
-            var subtables = new CblcIndexSubtable[source.Subtables.Count];
-            ushort previousFirst = 0, previousLast = 0;
-            for (int r = 0; r < source.Subtables.Count; r++)
+            int recordCount = source.Subtables.Count;
+            if (!budget.Buffer(recordCount * (long)IntPtr.Size, location, out diagnostic))
+                return ReadStatus.ResourceLimit;
+            var subtables = new CblcIndexSubtable[recordCount];
+            int firstImage = imageCursor;
+            bool composite = false;
+            for (int r = 0; r < recordCount; r++)
             {
-                var sourceSubtable = source.Subtables[r];
-                // The image format support face re-answers on the owned parts
-                // (typed formats only - the inherited set stays T6-08's), then
-                // the pairing matrix.
-                if (!CblcLayout.IsImageFormatTyped(sourceSubtable.ImageFormat))
-                    return ReadWire.Fail(ReadStatus.UnsupportedFormat,
-                        DiagnosticCode.UnsupportedOperation,
-                        location.AtLocal(DataField.Payload, 0, r), out diagnostic,
-                        sourceSubtable.ImageFormat, 0UL);
-                if (!CblcLayout.IsPairingDefined(sourceSubtable.IndexFormat,
-                        sourceSubtable.ImageFormat))
-                    return ReadWire.Fail(ReadStatus.InvalidFormat,
-                        DiagnosticCode.InvalidValue,
-                        location.AtLocal(DataField.Payload, 0, r), out diagnostic,
-                        sourceSubtable.ImageFormat, 0UL);
-                status = RewriteSubtable(sourceSubtable, frames, ref imageCursor,
-                    ref poolCursor, packedLength, location, out var rewritten,
-                    out diagnostic);
+                var part = source.Subtables[r];
+                composite |= part.ImageFormat is 8 or 9;
+                status = RewriteSubtable(part, source.BitDepth, images, frames, ref imageCursor,
+                    ref poolCursor, packedLength, location, budget, out var rewritten, out diagnostic);
                 if (status != ReadStatus.Done) return status;
-                // The E L183 must face and the OQ-4 overlap refusal,
-                // re-answered over the rewritten records.
-                if (r > 0)
-                {
-                    if (rewritten.FirstGlyphIndex < previousFirst)
-                        return ReadWire.Fail(ReadStatus.InvalidFormat,
-                            DiagnosticCode.InvalidValue,
-                            location.AtLocal(DataField.GlyphId, 0, r), out diagnostic,
-                            rewritten.FirstGlyphIndex, previousFirst);
-                    if (rewritten.FirstGlyphIndex <= previousLast)
-                        return ReadWire.Fail(ReadStatus.InvalidFormat,
-                            DiagnosticCode.OverlappingRange,
-                            location.AtLocal(DataField.GlyphId, 0, r), out diagnostic,
-                            rewritten.FirstGlyphIndex, previousLast);
-                }
-                previousFirst = rewritten.FirstGlyphIndex;
-                previousLast = rewritten.LastGlyphIndex;
                 subtables[r] = rewritten;
             }
+            int strikeImages = imageCursor - firstImage;
+            if (composite && strikeImages != 0)
+            {
+                if (!budget.Buffer(2L * strikeImages, cbdt.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+                var glyphIds = new ushort[strikeImages];
+                FillGlyphIds(subtables, glyphIds);
+                status = CbdtTableCompiler.CheckCycles(images, firstImage, glyphIds, cbdt.Location, budget, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+            }
             long listStart = layoutCursor;
-            layoutCursor += 8L * source.Subtables.Count;
-            foreach (var subtable in subtables)
-                layoutCursor += (long)Align4(SubtableLength(subtable));
+            layoutCursor += 8L * recordCount;
+            foreach (var subtable in subtables) layoutCursor += (long)Align4(SubtableLength(subtable));
+            if (layoutCursor > int.MaxValue)
+                return ReadWire.Fail(ReadStatus.ResourceLimit, DiagnosticCode.BudgetExceeded,
+                    location.AtLocal(DataField.OutputBytes, 0), out diagnostic, (ulong)layoutCursor, int.MaxValue);
             canonical[s] = new CblcStrike((uint)listStart, (uint)(layoutCursor - listStart),
                 source.ColorRef, source.HoriMetrics, source.VertMetrics,
                 source.StartGlyphIndex, source.EndGlyphIndex, source.PpemX, source.PpemY,
                 source.BitDepth, source.Flags, subtables);
         }
-        // The walk's own count face (a hand-built part whose populated
-        // pattern drifted from its declared shape).
-        if (imageCursor != cbdt.ImageCount)
-            return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
-                location.AtLocal(DataField.Count, 0), out diagnostic,
-                (ulong)imageCursor, (ulong)cbdt.ImageCount);
-        if (!budget.Buffer(layoutCursor, location, out diagnostic))
-            return ReadStatus.ResourceLimit;
         model = new(majorVersion, minorVersion, canonical, location, (int)layoutCursor);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    public static ReadStatus TryCompilePair(CblcTable model, CbdtTable cbdt,
+        out byte[]? cblcBytes, out byte[]? cbdtBytes, out FontDiagnostic diagnostic,
+        BuildLimits? limits = null)
+    {
+        cblcBytes = null;
+        cbdtBytes = null;
+        ArgumentNullException.ThrowIfNull(model);
+        ArgumentNullException.ThrowIfNull(cbdt);
+        var budget = new BuildBudget(limits);
+        ReadStatus status = Create(model.MajorVersion, model.MinorVersion, model.Sizes, cbdt,
+            out var canonical, out diagnostic, budget, model.Location);
+        if (status != ReadStatus.Done) return status;
+        long total = canonical!.ConsumedLength + CbdtTableCompiler.PackedLength(cbdt);
+        if (!budget.Output(total, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        status = Compile(canonical, out var indexBytes, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        status = CbdtTableCompiler.Compile(cbdt, out var imageBytes, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        cblcBytes = indexBytes;
+        cbdtBytes = imageBytes;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    public static ReadStatus TryWritePair(CblcTable model, CbdtTable cbdt,
+        Span<byte> cblcDestination, Span<byte> cbdtDestination,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    {
+        ReadStatus status = TryCompilePair(model, cbdt, out var indexBytes, out var imageBytes,
+            out diagnostic, limits);
+        if (status != ReadStatus.Done) return status;
+        if (cblcDestination.Length < indexBytes!.Length)
+            return ReadWire.Fail(ReadStatus.DestinationTooSmall, DiagnosticCode.DestinationTooSmall,
+                model.Location.AtLocal(DataField.OutputBytes, 0), out diagnostic,
+                (ulong)cblcDestination.Length, (ulong)indexBytes.Length);
+        if (cbdtDestination.Length < imageBytes!.Length)
+            return ReadWire.Fail(ReadStatus.DestinationTooSmall, DiagnosticCode.DestinationTooSmall,
+                cbdt.Location.AtLocal(DataField.OutputBytes, 0), out diagnostic,
+                (ulong)cbdtDestination.Length, (ulong)imageBytes.Length);
+        indexBytes.AsSpan().CopyTo(cblcDestination);
+        imageBytes.AsSpan().CopyTo(cbdtDestination);
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -173,7 +202,7 @@ public static class CblcTableCompiler
         if (status != ReadStatus.Done) return status;
         if (destination.Length < encoded!.Length)
             return ReadWire.Fail(ReadStatus.DestinationTooSmall, DiagnosticCode.DestinationTooSmall,
-                model.Location.At(DataField.OutputBytes, 0), out diagnostic,
+                model.Location.AtLocal(DataField.OutputBytes, 0), out diagnostic,
                 (ulong)destination.Length, (uint)encoded.Length);
         encoded.AsSpan().CopyTo(destination);
         diagnostic = default;
@@ -182,10 +211,13 @@ public static class CblcTableCompiler
 
     public static ReadStatus TryCompile(CblcTable model, out byte[]? bytes,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
+        => Compile(model, out bytes, out diagnostic, new BuildBudget(limits));
+
+    private static ReadStatus Compile(CblcTable model, out byte[]? bytes,
+        out FontDiagnostic diagnostic, BuildBudget budget)
     {
         bytes = null;
         ArgumentNullException.ThrowIfNull(model);
-        var budget = new BuildBudget(limits);
         // The compile-time re-answers (a hand-built model cannot smuggle a
         // refused shape past the emission): the version domain and every row
         // value domain; the index layer's faces rode TryCreate's rewrite.
@@ -199,7 +231,11 @@ public static class CblcTableCompiler
             if (status != ReadStatus.Done) return status;
             length += 8L * strike.Subtables.Count;
             foreach (var subtable in strike.Subtables)
+            {
+                status = CheckSubtable(subtable, model.Location, budget, out diagnostic);
+                if (status != ReadStatus.Done) return status;
                 length += (long)Align4(SubtableLength(subtable));
+            }
         }
         if (!budget.Work(length, model.Location, out diagnostic) ||
             !budget.Buffer(length, model.Location, out diagnostic) ||
@@ -255,9 +291,10 @@ public static class CblcTableCompiler
     /// positions. The index format, the glyph ranges and the sparse glyph
     /// sets travel from the owned part (re-answered for order); the image
     /// positions never do.</summary>
-    private static ReadStatus RewriteSubtable(CblcIndexSubtable source, long[] frames,
+    private static ReadStatus RewriteSubtable(CblcIndexSubtable source, byte bitDepth,
+        IReadOnlyList<CbdtImage> images, long[] frames,
         ref int imageCursor, ref long poolCursor, long packedLength, DataLocation location,
-        out CblcIndexSubtable rewritten, out FontDiagnostic diagnostic)
+        BuildBudget budget, out CblcIndexSubtable rewritten, out FontDiagnostic diagnostic)
     {
         rewritten = null!;
         diagnostic = default;
@@ -270,6 +307,8 @@ public static class CblcTableCompiler
             case CblcOffsetSubtable offsets:
             {
                 int span = offsets.SbitOffsets.Length - 1;
+                if (!budget.Buffer(4L * offsets.SbitOffsets.Length, location, out diagnostic))
+                    return ReadStatus.ResourceLimit;
                 var fresh = new uint[offsets.SbitOffsets.Length];
                 uint run = 0;
                 long firstAt = -1;
@@ -280,18 +319,19 @@ public static class CblcTableCompiler
                     // with the next image; the absent form stays absent.
                     if (offsets.SbitOffsets[k] != offsets.SbitOffsets[k + 1])
                     {
-                        if (imageCursor >= frames.Length)
-                            return WrongSource(location, imageCursor, frames.Length,
-                                out diagnostic);
                         firstAt = firstAt < 0 ? poolCursor : firstAt;
-                        run = checked(run + (uint)frames[imageCursor]);
-                        poolCursor += frames[imageCursor];
-                        imageCursor++;
+                        ReadStatus status = NextFrame(source, bitDepth, images, frames,
+                            ref imageCursor, ref poolCursor, location, out long frame, out diagnostic);
+                        if (status != ReadStatus.Done) return status;
+                        ulong next = run + (ulong)frame;
+                        ulong limit = source.IndexFormat == CblcLayout.IndexFormat3 ? ushort.MaxValue : uint.MaxValue;
+                        if (next > limit) return OffsetOverflow(location, source.Ordinal, next, limit, out diagnostic);
+                        run = (uint)next;
                     }
                 }
                 fresh[span] = run;
                 rewritten = new CblcOffsetSubtable(source.Ordinal, source.IndexFormat,
-                    source.ImageFormat, (uint)firstAt, source.FirstGlyphIndex,
+                    source.ImageFormat, (uint)(firstAt < 0 ? poolCursor : firstAt), source.FirstGlyphIndex,
                     source.LastGlyphIndex, fresh);
                 diagnostic = default;
                 return ReadStatus.Done;
@@ -299,23 +339,30 @@ public static class CblcTableCompiler
             case CblcImageSizeSubtable imageSize:
             {
                 int span = source.LastGlyphIndex - source.FirstGlyphIndex + 1;
+                if (imageSize.ImageSize == 0)
+                {
+                    rewritten = new CblcImageSizeSubtable(source.Ordinal, source.ImageFormat,
+                        (uint)poolCursor, source.FirstGlyphIndex, source.LastGlyphIndex, 0, imageSize.BigMetrics);
+                    return Done(out diagnostic);
+                }
                 if (imageCursor + span > frames.Length)
                     return WrongSource(location, imageCursor, frames.Length,
                         out diagnostic);
                 long firstAt = poolCursor;
-                uint size = checked((uint)frames[imageCursor]);
+                uint size = (uint)frames[imageCursor];
                 for (int k = 0; k < span; k++)
                 {
                     // The constant-imageSize face: every slot's frame must
                     // carry the same length (a hand-built non-uniform part
                     // has no canonical emission).
-                    if (frames[imageCursor] != size)
+                    ReadStatus status = NextFrame(source, bitDepth, images, frames,
+                        ref imageCursor, ref poolCursor, location, out long frame, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    if (frame != size)
                         return ReadWire.Fail(ReadStatus.InvalidFormat,
                             DiagnosticCode.InvalidValue,
                             location.AtLocal(DataField.Length, 0, source.Ordinal),
-                            out diagnostic, (ulong)frames[imageCursor], size);
-                    poolCursor += frames[imageCursor];
-                    imageCursor++;
+                            out diagnostic, (ulong)frame, size);
                 }
                 rewritten = new CblcImageSizeSubtable(source.Ordinal, source.ImageFormat,
                     (uint)firstAt, source.FirstGlyphIndex, source.LastGlyphIndex, size,
@@ -326,6 +373,8 @@ public static class CblcTableCompiler
             case CblcPairSubtable pairs:
             {
                 int count = pairs.GlyphIds.Length - 1;
+                if (!budget.Buffer(2L * pairs.SbitOffsets.Length, location, out diagnostic))
+                    return ReadStatus.ResourceLimit;
                 var freshOffsets = new ushort[pairs.SbitOffsets.Length];
                 uint run = 0;
                 long firstAt = -1;
@@ -339,13 +388,14 @@ public static class CblcTableCompiler
                     freshOffsets[k] = (ushort)run;
                     if (pairs.SbitOffsets[k] != pairs.SbitOffsets[k + 1])
                     {
-                        if (imageCursor >= frames.Length)
-                            return WrongSource(location, imageCursor, frames.Length,
-                                out diagnostic);
                         firstAt = firstAt < 0 ? poolCursor : firstAt;
-                        run = checked(run + (uint)frames[imageCursor]);
-                        poolCursor += frames[imageCursor];
-                        imageCursor++;
+                        ReadStatus status = NextFrame(source, bitDepth, images, frames,
+                            ref imageCursor, ref poolCursor, location, out long frame, out diagnostic);
+                        if (status != ReadStatus.Done) return status;
+                        ulong next = run + (ulong)frame;
+                        if (next > ushort.MaxValue)
+                            return OffsetOverflow(location, source.Ordinal, next, ushort.MaxValue, out diagnostic);
+                        run = (uint)next;
                     }
                 }
                 if (count > 0 && pairs.GlyphIds[count] <= pairs.GlyphIds[count - 1])
@@ -355,7 +405,7 @@ public static class CblcTableCompiler
                         out diagnostic, pairs.GlyphIds[count], pairs.GlyphIds[count - 1]);
                 freshOffsets[count] = (ushort)run;
                 rewritten = new CblcPairSubtable(source.Ordinal, source.ImageFormat,
-                    (uint)firstAt, source.FirstGlyphIndex, source.LastGlyphIndex,
+                    (uint)(firstAt < 0 ? poolCursor : firstAt), source.FirstGlyphIndex, source.LastGlyphIndex,
                     pairs.GlyphIds, freshOffsets);
                 diagnostic = default;
                 return ReadStatus.Done;
@@ -363,6 +413,13 @@ public static class CblcTableCompiler
             case CblcGlyphIdArraySubtable glyphIds:
             {
                 int count = glyphIds.GlyphIds.Length;
+                if (glyphIds.ImageSize == 0 || count == 0)
+                {
+                    rewritten = new CblcGlyphIdArraySubtable(source.Ordinal, source.ImageFormat,
+                        (uint)poolCursor, source.FirstGlyphIndex, source.LastGlyphIndex, 0,
+                        glyphIds.BigMetrics, glyphIds.GlyphIds);
+                    return Done(out diagnostic);
+                }
                 if (imageCursor + count > frames.Length)
                     return WrongSource(location, imageCursor, frames.Length,
                         out diagnostic);
@@ -376,16 +433,17 @@ public static class CblcTableCompiler
                             glyphIds.GlyphIds[k - 1]);
                 }
                 long firstAt = poolCursor;
-                uint size = checked((uint)frames[imageCursor]);
+                uint size = (uint)frames[imageCursor];
                 for (int k = 0; k < count; k++)
                 {
-                    if (frames[imageCursor] != size)
+                    ReadStatus status = NextFrame(source, bitDepth, images, frames,
+                        ref imageCursor, ref poolCursor, location, out long frame, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    if (frame != size)
                         return ReadWire.Fail(ReadStatus.InvalidFormat,
                             DiagnosticCode.InvalidValue,
                             location.AtLocal(DataField.Length, 0, source.Ordinal),
-                            out diagnostic, (ulong)frames[imageCursor], size);
-                    poolCursor += frames[imageCursor];
-                    imageCursor++;
+                            out diagnostic, (ulong)frame, size);
                 }
                 rewritten = new CblcGlyphIdArraySubtable(source.Ordinal,
                     source.ImageFormat, (uint)firstAt, source.FirstGlyphIndex,
@@ -405,25 +463,147 @@ public static class CblcTableCompiler
     /// non-equal offset pairs (formats 1/3), the full contiguous spans
     /// (format 2), the non-equal pair prefixes (format 4) and the whole
     /// glyph arrays (format 5).</summary>
-    private static int CountChainSlots(IReadOnlyList<CblcStrike> sizes)
+    internal static int CountSlots(CblcIndexSubtable subtable) => subtable switch
     {
-        int count = 0;
-        foreach (var strike in sizes)
+        CblcOffsetSubtable offsets => CountPopulated(offsets.SbitOffsets),
+        CblcImageSizeSubtable imageSize => imageSize.ImageSize == 0 ? 0 :
+            imageSize.LastGlyphIndex - imageSize.FirstGlyphIndex + 1,
+        CblcPairSubtable pairs => CountPopulated(pairs.SbitOffsets),
+        CblcGlyphIdArraySubtable glyphIds => glyphIds.ImageSize == 0 ? 0 : glyphIds.GlyphIds.Length,
+        _ => 0,
+    };
+
+    internal static void FillGlyphIds(IReadOnlyList<CblcIndexSubtable> subtables, Span<ushort> glyphIds)
+    {
+        int at = 0;
+        foreach (var part in subtables)
         {
-            foreach (var subtable in strike.Subtables)
+            switch (part)
             {
-                count += subtable switch
-                {
-                    CblcOffsetSubtable offsets => CountPopulated(offsets.SbitOffsets),
-                    CblcImageSizeSubtable imageSize =>
-                        imageSize.LastGlyphIndex - imageSize.FirstGlyphIndex + 1,
-                    CblcPairSubtable pairs => CountPopulated(pairs.SbitOffsets),
-                    CblcGlyphIdArraySubtable glyphIds => glyphIds.GlyphIds.Length,
-                    _ => 0,
-                };
+                case CblcOffsetSubtable offsets:
+                    for (int k = 0; k < offsets.SbitOffsets.Length - 1; k++)
+                        if (offsets.SbitOffsets[k] != offsets.SbitOffsets[k + 1])
+                            glyphIds[at++] = (ushort)(offsets.FirstGlyphIndex + k);
+                    break;
+                case CblcImageSizeSubtable size when size.ImageSize != 0:
+                    for (int g = size.FirstGlyphIndex; g <= size.LastGlyphIndex; g++) glyphIds[at++] = (ushort)g;
+                    break;
+                case CblcPairSubtable pairs:
+                    for (int k = 0; k < pairs.GlyphIds.Length - 1; k++)
+                        if (pairs.SbitOffsets[k] != pairs.SbitOffsets[k + 1]) glyphIds[at++] = pairs.GlyphIds[k];
+                    break;
+                case CblcGlyphIdArraySubtable ids when ids.ImageSize != 0:
+                    ids.GlyphIds.AsSpan().CopyTo(glyphIds.Slice(at));
+                    at += ids.GlyphIds.Length;
+                    break;
             }
         }
-        return count;
+    }
+
+    private static ReadStatus NextFrame(CblcIndexSubtable source, byte bitDepth,
+        IReadOnlyList<CbdtImage> images, long[] frames, ref int imageCursor, ref long poolCursor,
+        DataLocation location, out long frame, out FontDiagnostic diagnostic)
+    {
+        frame = 0;
+        if (imageCursor >= frames.Length) return WrongSource(location, imageCursor, frames.Length, out diagnostic);
+        var image = images[imageCursor];
+        if (image.ImageFormat != source.ImageFormat)
+            return ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
+                location.AtLocal(DataField.Payload, 0, source.Ordinal), out diagnostic,
+                image.ImageFormat, source.ImageFormat);
+        if (CblcLayout.IsImageFormatInherited(image.ImageFormat) && image.BitDepth != bitDepth)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Payload, 0, source.Ordinal), out diagnostic, image.BitDepth, bitDepth);
+        frame = frames[imageCursor];
+        if (frame == 0)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Length, 0, source.Ordinal), out diagnostic, 0UL, 1UL);
+        if ((ulong)poolCursor + (ulong)frame > uint.MaxValue)
+            return OffsetOverflow(location, source.Ordinal, (ulong)poolCursor + (ulong)frame, uint.MaxValue, out diagnostic);
+        poolCursor += frame;
+        imageCursor++;
+        return Done(out diagnostic);
+    }
+
+    private static ReadStatus OffsetOverflow(DataLocation location, int ordinal, ulong actual,
+        ulong expected, out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+            location.AtLocal(DataField.Offset, 0, ordinal), out diagnostic, actual, expected);
+
+    private static ReadStatus CheckSubtable(CblcIndexSubtable part, DataLocation location,
+        BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        if (!CblcLayout.IsIndexFormatDefined(part.IndexFormat) || !CblcLayout.IsImageFormatTyped(part.ImageFormat))
+            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                location.AtLocal(DataField.Payload, 0, part.Ordinal), out diagnostic,
+                !CblcLayout.IsIndexFormatDefined(part.IndexFormat) ? part.IndexFormat : part.ImageFormat, 0UL);
+        if (!CblcLayout.IsPairingDefined(part.IndexFormat, part.ImageFormat))
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Payload, 0, part.Ordinal), out diagnostic, part.ImageFormat, 0UL);
+        if (part.FirstGlyphIndex > part.LastGlyphIndex)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.GlyphId, 0, part.Ordinal), out diagnostic,
+                part.FirstGlyphIndex, part.LastGlyphIndex);
+        int span = part.LastGlyphIndex - part.FirstGlyphIndex + 1;
+        switch (part)
+        {
+            case CblcOffsetSubtable offsets:
+                if (offsets.IndexFormat is not (1 or 3) || offsets.SbitOffsets.Length != span + 1)
+                    return InvalidLength(location, part.Ordinal, offsets.SbitOffsets.Length, span + 1, out diagnostic);
+                if (!budget.Work(offsets.SbitOffsets.Length, location, out diagnostic)) return ReadStatus.ResourceLimit;
+                for (int k = 1; k < offsets.SbitOffsets.Length; k++)
+                {
+                    uint current = offsets.SbitOffsets[k], previous = offsets.SbitOffsets[k - 1];
+                    if (current < previous || offsets.IndexFormat == 3 && current > ushort.MaxValue)
+                        return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                            location.AtLocal(DataField.Offset, 0, k), out diagnostic, current,
+                            current < previous ? previous : ushort.MaxValue);
+                }
+                break;
+            case CblcImageSizeSubtable size:
+                if (size.BigMetrics.Length != 8) return InvalidLength(location, part.Ordinal, size.BigMetrics.Length, 8, out diagnostic);
+                break;
+            case CblcPairSubtable pairs:
+                if (pairs.GlyphIds.Length == 0 || pairs.SbitOffsets.Length != pairs.GlyphIds.Length)
+                    return InvalidLength(location, part.Ordinal, pairs.SbitOffsets.Length, Math.Max(1, pairs.GlyphIds.Length), out diagnostic);
+                if (!budget.Work(pairs.GlyphIds.Length, location, out diagnostic)) return ReadStatus.ResourceLimit;
+                for (int k = 0; k < pairs.GlyphIds.Length; k++)
+                {
+                    if (k > 0 && (pairs.GlyphIds[k] <= pairs.GlyphIds[k - 1] || pairs.SbitOffsets[k] < pairs.SbitOffsets[k - 1]))
+                        return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                            location.AtLocal(DataField.GlyphId, 0, k), out diagnostic, pairs.GlyphIds[k], pairs.GlyphIds[k - 1]);
+                    if (k < pairs.GlyphIds.Length - 1 && (pairs.GlyphIds[k] < part.FirstGlyphIndex || pairs.GlyphIds[k] > part.LastGlyphIndex))
+                        return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                            location.AtLocal(DataField.GlyphId, 0, k), out diagnostic, pairs.GlyphIds[k], part.LastGlyphIndex);
+                }
+                break;
+            case CblcGlyphIdArraySubtable ids:
+                if (ids.BigMetrics.Length != 8) return InvalidLength(location, part.Ordinal, ids.BigMetrics.Length, 8, out diagnostic);
+                if (!budget.Work(ids.GlyphIds.Length, location, out diagnostic)) return ReadStatus.ResourceLimit;
+                for (int k = 0; k < ids.GlyphIds.Length; k++)
+                {
+                    if (ids.GlyphIds[k] < part.FirstGlyphIndex || ids.GlyphIds[k] > part.LastGlyphIndex ||
+                        k > 0 && ids.GlyphIds[k] <= ids.GlyphIds[k - 1])
+                        return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                            location.AtLocal(DataField.GlyphId, 0, k), out diagnostic, ids.GlyphIds[k], part.LastGlyphIndex);
+                }
+                break;
+            default:
+                return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+                    location.AtLocal(DataField.Payload, 0, part.Ordinal), out diagnostic, part.IndexFormat, 0UL);
+        }
+        return Done(out diagnostic);
+    }
+
+    private static ReadStatus InvalidLength(DataLocation location, int ordinal, int actual,
+        int expected, out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+            location.AtLocal(DataField.Length, 0, ordinal), out diagnostic, (ulong)actual, (ulong)expected);
+
+    private static ReadStatus Done(out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        return ReadStatus.Done;
     }
 
     private static int CountPopulated<T>(T[] offsets) where T : IEquatable<T>
@@ -535,7 +715,7 @@ public static class CblcTableCompiler
         }
     }
 
-    private static ReadStatus WrongSource(DataLocation location, int actual, int expected,
+    private static ReadStatus WrongSource(DataLocation location, long actual, int expected,
         out FontDiagnostic diagnostic) =>
         ReadWire.Fail(ReadStatus.InvalidSource, DiagnosticCode.WrongSourceFace,
             location.AtLocal(DataField.Count, 0), out diagnostic,
@@ -558,6 +738,8 @@ public static class CblcTableCompiler
     private static ReadStatus RequireRowValues(CblcStrike strike, DataLocation location,
         out FontDiagnostic diagnostic)
     {
+        if (strike.HoriMetrics.Length != 12) return InvalidLength(location, 0, strike.HoriMetrics.Length, 12, out diagnostic);
+        if (strike.VertMetrics.Length != 12) return InvalidLength(location, 0, strike.VertMetrics.Length, 12, out diagnostic);
         if (strike.StartGlyphIndex > strike.EndGlyphIndex)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 location.AtLocal(DataField.GlyphId, 0), out diagnostic,
@@ -587,7 +769,7 @@ public static class CblcTableCompiler
     private static void W32(byte[] output, int at, uint value)
     {
         W16(output, at, (ushort)(value >> 16));
-        W16(output, at + 2, (ushort)value);
+        W16(output, at + 2, unchecked((ushort)value));
     }
 
     private static void RequireWritten(ReadStatus status)

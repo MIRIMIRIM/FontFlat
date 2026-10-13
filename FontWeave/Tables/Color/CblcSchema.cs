@@ -42,11 +42,8 @@ internal static class CblcLayout
     // constant imageSize formats, 4 the sparse glyphID/offset pair array.
     internal const ushort IndexFormat1 = 1, IndexFormat2 = 2, IndexFormat3 = 3,
         IndexFormat4 = 4, IndexFormat5 = 5;
-    // The image format faces (card §3, OQ-T6-05-8): 17/18/19 are this card's
-    // typed CBDT formats (D L93-120); {1,2,5,6,7,8,9} are the known EBDT
-    // inherited formats whose acceptance is T6-08's (UnsupportedFormat carries
-    // the diagnosis, never "unknown"); {3,4} are never supported (EBDT
-    // obsolete 3, Apple-only 4, the T0 slice line).
+    // CBDT 3.0 carries PNG 17/18/19 and legacy 1/2/5/6/7/8/9.
+    // Obsolete format 3 and Apple-only format 4 remain unsupported.
     internal const ushort ImageFormat17 = 17, ImageFormat18 = 18, ImageFormat19 = 19;
     internal const ushort ImageFormatInheritedMin = 1, ImageFormatInheritedMax = 9;
     internal const ushort ImageFormatNeverMin = 3, ImageFormatNeverMax = 4;
@@ -72,27 +69,23 @@ internal static class CblcLayout
     internal static bool IsIndexFormatDefined(ushort indexFormat) =>
         indexFormat is IndexFormat1 or IndexFormat2 or IndexFormat3
             or IndexFormat4 or IndexFormat5;
-    /// <summary>The image format's three-way face (OQ-T6-05-8): true for the
-    /// typed 17/18/19; the inherited {1,2,5,6,7,8,9} and the never-supported
-    /// {3,4} answer false here and are distinguished by the diagnostic callers.</summary>
+    /// <summary>CBDT 3.0 supports PNG and the OpenType legacy bitmap formats.
+    /// Obsolete format 3, Apple-only format 4 and unknown formats refuse.</summary>
     internal static bool IsImageFormatTyped(ushort imageFormat) =>
+        IsImageFormatPng(imageFormat) || IsImageFormatInherited(imageFormat);
+    internal static bool IsImageFormatPng(ushort imageFormat) =>
         imageFormat is ImageFormat17 or ImageFormat18 or ImageFormat19;
     internal static bool IsImageFormatInherited(ushort imageFormat) =>
         imageFormat >= ImageFormatInheritedMin && imageFormat <= ImageFormatInheritedMax
             && imageFormat is not (ImageFormatNeverMin or ImageFormatNeverMax);
     internal static bool IsImageFormatNeverSupported(ushort imageFormat) =>
         imageFormat is ImageFormatNeverMin or ImageFormatNeverMax;
-    /// <summary>The (indexFormat, imageFormat) pairing matrix (card §3,
-    /// OQ-T6-05-9): {1,3,4}×{17,18} (the variable-metrics index formats carry
-    /// their own per-image metrics head) ∪ {2,5}×{19} (the constant-imageSize
-    /// formats carry the big metrics in the CBLC subtable - D L113's "metrics
-    /// in CBLC table" line). Every other pairing refuses as InvalidFormat:
-    /// 19 over a variable format leaves the metrics unreadable, 17/18 over a
-    /// constant format double-declares them.</summary>
+    /// <summary>Variable index formats 1/3/4 pair with image 1/2/6/7/8/9/17/18;
+    /// constant formats 2/5 pair with image 5/19. The remaining cells refuse.</summary>
     internal static bool IsPairingDefined(ushort indexFormat, ushort imageFormat) =>
-        imageFormat is ImageFormat17 or ImageFormat18
+        imageFormat is 1 or 2 or 6 or 7 or 8 or 9 or ImageFormat17 or ImageFormat18
             ? indexFormat is IndexFormat1 or IndexFormat3 or IndexFormat4
-            : imageFormat == ImageFormat19
+            : imageFormat is 5 or ImageFormat19
                 ? indexFormat is IndexFormat2 or IndexFormat5
                 : false;
     /// <summary>One subtable's declared length in bytes over its glyph-domain

@@ -30,6 +30,21 @@ internal static class BitmapImageCodec
             ? metrics[0] * ((metrics[1] * bitDepth + 7L) / 8L)
             : (metrics[0] * metrics[1] * bitDepth + 7L) / 8L;
 
+    internal static int LegacyHeadLength(ushort imageFormat) => imageFormat switch
+    {
+        8 => EbdtLayout.Format8HeadLength,
+        9 => EbdtLayout.Format9HeadLength,
+        _ => LegacyMetricsLength(imageFormat),
+    };
+
+    internal static void ReadComponent(ReadOnlySpan<byte> source, out ushort glyphId,
+        out sbyte xOffset, out sbyte yOffset)
+    {
+        glyphId = BinaryPrimitives.ReadUInt16BigEndian(source.Slice(0, 2));
+        xOffset = unchecked((sbyte)source[2]);
+        yOffset = unchecked((sbyte)source[3]);
+    }
+
     internal static ReadStatus AnalyzeLegacyFrame(ReadOnlySpan<byte> source, DataLocation location,
         ushort format, ulong position, ulong slotLength, byte bitDepth, int? numGlyphs,
         out FrameParts frame, out FontDiagnostic diagnostic, BuildBudget budget)
