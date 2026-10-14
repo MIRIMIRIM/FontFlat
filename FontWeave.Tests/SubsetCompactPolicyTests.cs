@@ -226,35 +226,61 @@ public sealed class SubsetCompactPolicyTests
         Assert.Null(compactResult);
     }
 
-    // RC3: MERG is DEFERRED_TO_S1 in the primary column; compact refuses.
+    // SE migration (2026-10-15, SE card §3/§7 finding 2; supersedes the SC-slice
+    // CompactMergRefuses witness): MERG's primaryPolicy column now reads
+    // REBUILD_TYPED for compact, so the decide loop records the Rebuild decision
+    // and the read chain (not a mode gate) owns the byte-level refusal face. The
+    // unknown-version payload refuses in every stage that consumes it, so the
+    // decision set asserted here is the final fact; retain keeps the row raw.
     [Fact]
-    public void CompactMergRefuses()
+    public void CompactMergRowFollowsPrimaryPolicy()
     {
-        var face = MatrixFace();
-        var withMerg = SubsetFontFixture.Face(
+        var merg = new byte[16];
+        BinaryPrimitives.WriteUInt32BigEndian(merg.AsSpan(0), 0x00090000); // unknown version
+        var (loca, glyf, _) = GlyfImages.Assemble([GlyfImages.NoContourGlyphRecord()]);
+        var tables = new List<(uint, byte[])>
+        {
             (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
-            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(4)),
-            (SubsetFontFixture.GlyfTag, GlyfImages.Assemble([GlyfImages.NoContourGlyphRecord()]).Glyf),
-            (SubsetFontFixture.LocaTag, GlyfImages.Assemble([GlyfImages.NoContourGlyphRecord()]).Loca),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(1)),
+            (SubsetFontFixture.GlyfTag, glyf),
+            (SubsetFontFixture.LocaTag, loca),
             (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41u, 0))),
-            (MergTag, SubsetFontFixture.Dummy()));
-        var status = SubsetOperation.TryPrepare(
-            Request(withMerg, [0], SubsetMode.CompactRemap), out var result, out _,
-            out var diagnostic);
-        Assert.Equal(ReadStatus.UnsupportedFormat, status);
-        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
-        Assert.Equal(MergTag, diagnostic.Location.TableTag);
+            (MergTag, merg),
+        };
+        var face = SubsetFontFixture.Face([.. tables]);
+        SubsetOperation.TryPrepare(
+            Request(face, [0], SubsetMode.CompactRemap), out var result, out var report,
+            out _);
         Assert.Null(result);
+        Assert.NotNull(report);
+        Assert.Equal((TableAction.Rebuild, SubsetPolicy.RebuildTyped),
+            DecisionMap(report!)[MergTag]);
+
+        var retain = SubsetOperation.TryPrepare(
+            Request(face, [0], SubsetMode.RetainGids), out var retainResult,
+            out var retainReport, out _);
+        Assert.Equal(ReadStatus.Done, retain);
+        Assert.NotNull(retainResult);
+        Assert.Equal((TableAction.Preserve, SubsetPolicy.RetainRaw),
+            DecisionMap(retainReport!)[MergTag]);
     }
 
-    // RC4: each color/bitmap deferral row refuses a compact request by tag.
+    // SE migration (2026-10-15, SE card §3/§7 finding 2; supersedes the SC-slice
+    // CompactDeferredBitmapColorRowsRefuse witness): the color/bitmap deferral rows
+    // execute under compact now — the decide loop records Rebuild and the per-table
+    // read chains own the refusal face. CBDT alone refuses earlier: the RE1 pairing
+    // gate (SE card §3) fires at admission, before any decision forms — the refusal
+    // shape asserted there is final.
     [Theory]
     [InlineData(ColrTag)]
     [InlineData(SbixTag)]
     [InlineData(CbdtTag)]
     [InlineData(EbscTag)]
-    public void CompactDeferredBitmapColorRowsRefuse(uint tag)
+    public void CompactDeferredBitmapColorRowsFollowPrimaryPolicy(uint tag)
     {
+        var payload = new byte[16];
+        if (tag == ColrTag)
+            BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(0), 0x00090000);
         var (loca, glyf, _) = GlyfImages.Assemble([GlyfImages.NoContourGlyphRecord()]);
         var face = SubsetFontFixture.Face(
             (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
@@ -262,14 +288,31 @@ public sealed class SubsetCompactPolicyTests
             (SubsetFontFixture.GlyfTag, glyf),
             (SubsetFontFixture.LocaTag, loca),
             (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41u, 0))),
-            (tag, SubsetFontFixture.Dummy()));
-        var status = SubsetOperation.TryPrepare(
-            Request(face, [0], SubsetMode.CompactRemap), out var result, out _,
+            (tag, payload));
+        SubsetOperation.TryPrepare(
+            Request(face, [0], SubsetMode.CompactRemap), out var result, out var report,
             out var diagnostic);
-        Assert.Equal(ReadStatus.UnsupportedFormat, status);
-        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
-        Assert.Equal(tag, diagnostic.Location.TableTag);
         Assert.Null(result);
+        if (tag == CbdtTag)
+        {
+            // RE1 fires at admission, before the decide loop: no decision set exists.
+            Assert.Equal(DiagnosticCode.OutlineProfileUnsupported, diagnostic.Code);
+            Assert.Equal(CbdtTag, diagnostic.Location.TableTag);
+        }
+        else
+        {
+            Assert.NotNull(report);
+            Assert.Equal((TableAction.Rebuild, SubsetPolicy.RebuildTyped),
+                DecisionMap(report)[tag]);
+        }
+
+        var retain = SubsetOperation.TryPrepare(
+            Request(face, [0], SubsetMode.RetainGids), out var retainResult,
+            out var retainReport, out _);
+        Assert.Equal(ReadStatus.Done, retain);
+        Assert.NotNull(retainResult);
+        Assert.Equal((TableAction.Preserve, SubsetPolicy.RetainRaw),
+            DecisionMap(retainReport!)[tag]);
     }
 
     // RC5: the compact metrics rebuild obligation has no execution path without the

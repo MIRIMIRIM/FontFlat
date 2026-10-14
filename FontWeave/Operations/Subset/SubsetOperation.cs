@@ -13,9 +13,11 @@ namespace FontWeave.Operations.Subset;
 /// input domain is maxp.numGlyphs, orthogonal to the outline format, with the
 /// CFF/VORG bytes RETAIN_RAW and their staleness facts registered in the report
 /// (S1b card §2/§3); compact-remap rebuilds the primaryPolicy column's executable
-/// set (glyf, loca, cmap, maxp, hhea, hmtx, vhea, vmtx, post@2.0, hdmx, LTSH, VDMX)
-/// over one frozen glyph map on a TrueType face and refuses CFF1 faces at admission
-/// (SC card §1). Every other present table follows the frozen policy matrix's
+/// set (glyf, loca, cmap, maxp, hhea, hmtx, vhea, vmtx, post@2.0, hdmx, LTSH, VDMX,
+/// and the SE color/bitmap/MERG nine: COLR, SVG␠, sbix, CBDT/CBLC, EBDT/EBLC, EBSC,
+/// MERG) over one frozen glyph map on a TrueType face and refuses CFF1 faces at
+/// admission (SC card §1; SE card §1). Every other present table follows the frozen
+/// policy matrix's
 /// column for the requested mode; the caller can only steer the four explicit
 /// option families. The whole operation is decided before any payload is compiled
 /// or copied, and any refusal is finite: result is null, no sfnt bytes exist, and
@@ -220,6 +222,9 @@ public static partial class SubsetOperation
             rebuiltVhea = null, rebuiltVmtx = null;
         byte[]? rebuiltPost = null, rebuiltHdmx = null, rebuiltLtsh = null,
             rebuiltVdmx = null;
+        byte[]? rebuiltColr = null, rebuiltSvg = null, rebuiltSbix = null,
+            rebuiltCbdt = null, rebuiltCblc = null, rebuiltEbdt = null,
+            rebuiltEblc = null, rebuiltEbsc = null, rebuiltMerg = null;
         var rebuildTags = new HashSet<uint>(
             state.Decisions.Where(d => d.Action == TableAction.Rebuild).Select(d => d.Tag));
         if (trueType)
@@ -332,8 +337,26 @@ public static partial class SubsetOperation
                     Hdmx => rebuiltHdmx,
                     Ltsh => rebuiltLtsh,
                     Vdmx => rebuiltVdmx,
+                    Colr => rebuiltColr,
+                    Svg => rebuiltSvg,
+                    Sbix => rebuiltSbix,
+                    Cbdt => rebuiltCbdt,
+                    Cblc => rebuiltCblc,
+                    Ebdt => rebuiltEbdt,
+                    Eblc => rebuiltEblc,
+                    Ebsc => rebuiltEbsc,
+                    Merg => rebuiltMerg,
                     _ => null
                 };
+                if (rebuilt is null && state.PayloadDropped.Contains(decision.Tag))
+                {
+                    // SE (OQ-SE-5): the rebuild produced an empty body — every slot/row
+                    // pruned — so the table drops with the payload-time decision revision
+                    // feeding DroppedTables and the report's decision set (a success path
+                    // refinement, formed before any output byte exists).
+                    state.ReviseDecision(decision.Tag, TableAction.Drop, SubsetPolicy.Delete);
+                    continue;
+                }
                 if (rebuilt is null)
                 {
                     diagnostic = new(DiagnosticCode.UnsupportedOperation, faceAt,
@@ -502,9 +525,11 @@ public static partial class SubsetOperation
     {
         internal bool HasGlyf, HasLoca, HasCff, HasCff2, HasFvar, HasCmap;
         internal bool HasHhea, HasHmtx, HasVhea, HasVmtx;
+        internal bool HasCbdt, HasCblc, HasEbdt, HasEblc;
         internal int GlyfOrdinal = -1, LocaOrdinal = -1, CffOrdinal = -1, CmapOrdinal = -1;
         internal DataLocation GlyfLocation, LocaLocation, CffLocation, Cff2Location,
-            FvarLocation, HheaLocation, HmtxLocation, VheaLocation, VmtxLocation;
+            FvarLocation, HheaLocation, HmtxLocation, VheaLocation, VmtxLocation,
+            CbdtLocation, CblcLocation, EbdtLocation, EblcLocation;
     }
 
     private static ProfileScan ScanProfile(SfntDirectoryView directory)
@@ -551,6 +576,18 @@ public static partial class SubsetOperation
                 case Vmtx when !scan.HasVmtx:
                     scan.HasVmtx = true; scan.VmtxLocation = directory.TableLocation(i);
                     break;
+                case Cbdt when !scan.HasCbdt:
+                    scan.HasCbdt = true; scan.CbdtLocation = directory.TableLocation(i);
+                    break;
+                case Cblc when !scan.HasCblc:
+                    scan.HasCblc = true; scan.CblcLocation = directory.TableLocation(i);
+                    break;
+                case Ebdt when !scan.HasEbdt:
+                    scan.HasEbdt = true; scan.EbdtLocation = directory.TableLocation(i);
+                    break;
+                case Eblc when !scan.HasEblc:
+                    scan.HasEblc = true; scan.EblcLocation = directory.TableLocation(i);
+                    break;
             }
         }
         return scan;
@@ -574,6 +611,19 @@ public static partial class SubsetOperation
             DataLocation orphan = profile.HasHhea != profile.HasHmtx
                 ? (profile.HasHhea ? profile.HheaLocation : profile.HmtxLocation)
                 : (profile.HasVhea ? profile.VheaLocation : profile.VmtxLocation);
+            return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported, orphan,
+                out diagnostic, orphan.TableTag);
+        }
+        if (state.Mode == SubsetMode.CompactRemap &&
+            (profile.HasCbdt != profile.HasCblc || profile.HasEbdt != profile.HasEblc))
+        {
+            // RE1 (SE card §3): the compact rebuild obligation for the bitmap pool+index
+            // pairs has no execution path without the pairing partner — the joint read
+            // chain is defined over both tables only (RC5 metrics-pairing shape, the
+            // same diagnostic code; the refusal names the orphan tag).
+            DataLocation orphan = profile.HasCbdt != profile.HasCblc
+                ? (profile.HasCbdt ? profile.CbdtLocation : profile.CblcLocation)
+                : (profile.HasEbdt ? profile.EbdtLocation : profile.EblcLocation);
             return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported, orphan,
                 out diagnostic, orphan.TableTag);
         }
@@ -800,16 +850,26 @@ public static partial class SubsetOperation
         }
         else if (compact && IsCompactDeferredRow(tag))
         {
-            // RC2-RC4 (SC card §3): the primaryPolicy column defers these rows to a
-            // later slice (VORG rebuilds only with CFF; MERG and the color/bitmap
-            // families are DEFERRED_TO_S1), so a compact request — which always changes
-            // the GID domain — refuses instead of leaving per-GID data on stale GIDs.
-            // Keyword contracts: "VORG"/"compact"/"rebuild", "MERG"/"compact",
+            // RC2 (SC card §3, narrowed by SE): the primaryPolicy column still defers
+            // these rows to a later slice (VORG rebuilds only with CFF; the variation
+            // metrics families share that deferral), so a compact request — which
+            // always changes the GID domain — refuses instead of leaving per-GID data
+            // on stale GIDs. Keyword contracts: "VORG"/"compact"/"rebuild",
             // "<tag>"/"compact"; diagnostic code UnsupportedOperation (=17).
             state.Diagnostic = new(DiagnosticCode.UnsupportedOperation,
                 directory.TableLocation(ordinal), tag);
             diagnostic = state.Diagnostic;
             return false;
+        }
+        else if (compact && tag is Merg or Colr or Svg or Sbix or Cbdt or Cblc
+            or Ebdt or Eblc or Ebsc)
+        {
+            // SE (SE card §1): the color/bitmap/MERG rows' primaryPolicy column now
+            // reads REBUILD_TYPED for compact — the GID domain changes, so these
+            // per-GID tables rebuild over the frozen map (retain keeps raw; the
+            // pairing gate and the per-table read chains carry the refusal faces).
+            decision = new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                SubsetDecisionOrigin.MatrixRow);
         }
         else if (compact && tag is Hhea or Hmtx or Vhea or Vmtx or Vdmx or Hdmx)
         {
@@ -847,13 +907,13 @@ public static partial class SubsetOperation
         return true;
     }
 
-    /// <summary>Rows the primaryPolicy column sends to a slice without a compact
-    /// execution path (SC card §3 RC2-RC4): VORG rides the CFF rebuild, MERG and the
-    /// color/bitmap families are DEFERRED_TO_S1, and the variation metrics families
-    /// share that deferral. Retain-GIDs keeps all of them raw.</summary>
+    /// <summary>Rows the primaryPolicy column still sends to a slice without a
+    /// compact execution path (SC card §3 RC2 narrowed by SE; SE card §4 commit ①):
+    /// VORG rides the CFF rebuild and the variation metrics families share that
+    /// deferral — MERG and the color/bitmap families now execute (SE). Retain-GIDs
+    /// keeps all of them raw.</summary>
     private static bool IsCompactDeferredRow(uint tag) =>
-        tag is Vorg or Merg or Colr or Svg or Sbix or Cbdt or Cblc or Ebdt or Eblc
-            or Ebsc or Gvar or Cvar or Hvar or Vvar or Mvar;
+        tag is Vorg or Gvar or Cvar or Hvar or Vvar or Mvar;
 
     /// <summary>The 50-tag directory catalogue: the 47 opaque-relocatable tags the
     /// metadata operation already knows plus head, name and DSIG. The authoritative
@@ -901,6 +961,22 @@ public static partial class SubsetOperation
             internal string? MapArtifactSha256;
             internal CffStaleness? CffStaleness;
             internal VorgStaleness? VorgStaleness;
+
+            /// <summary>Tags a SE rebuild stage found empty after pruning (OQ-SE-5):
+            /// the payload-time drop revises the decide-stage Rebuild before any byte
+            /// exists, so DroppedTables and the decision set stay consistent.</summary>
+            internal readonly HashSet<uint> PayloadDropped = [];
+
+            internal void ReviseDecision(uint tag, TableAction action, SubsetPolicy policy)
+            {
+                for (int i = 0; i < Decisions.Count; i++)
+                {
+                    if (Decisions[i].Tag != tag) continue;
+                    Decisions[i] = new(tag, action, policy, Decisions[i].Origin);
+                    if (action == TableAction.Drop) Dropped.Add(tag);
+                    return;
+                }
+            }
 
             internal SubsetReport BuildReport()
             {
