@@ -6,21 +6,27 @@ namespace FontWeave.Operations.Subset;
 
 /// <summary>Retain-GIDs and compact-remap subsetting of one source face (S1a/SC slices).
 ///
-/// The rebuild face follows the mode's policy column: retain-GIDs rebuilds exactly
-/// {glyf, loca, cmap}; compact-remap rebuilds the primaryPolicy column's executable set
-/// (glyf, loca, cmap, maxp, hhea, hmtx, vhea, vmtx, post@2.0, hdmx, LTSH, VDMX) over one
-/// frozen glyph map. Every other present table follows the frozen policy matrix's column
-/// for the requested mode; the caller can only steer the four explicit option families.
-/// The whole operation is decided before any payload is compiled or copied, and any
-/// refusal is finite: result is null, no sfnt bytes exist, and the report keeps the
-/// decisions formed so far plus the first failure diagnostic (W1 §4.4/§4.5).</summary>
+/// The rebuild face follows both the mode and the admitted profile: retain-GIDs
+/// rebuilds exactly {glyf, loca, cmap} on a TrueType face - glyf/loca re-spliced
+/// around the retained slots - while a static CFF1 face (S1b) rebuilds exactly
+/// {cmap}, reusing the same prune-and-canonicalize pipeline unchanged because its
+/// input domain is maxp.numGlyphs, orthogonal to the outline format, with the
+/// CFF/VORG bytes RETAIN_RAW and their staleness facts registered in the report
+/// (S1b card §2/§3); compact-remap rebuilds the primaryPolicy column's executable
+/// set (glyf, loca, cmap, maxp, hhea, hmtx, vhea, vmtx, post@2.0, hdmx, LTSH, VDMX)
+/// over one frozen glyph map on a TrueType face and refuses CFF1 faces at admission
+/// (SC card §1). Every other present table follows the frozen policy matrix's
+/// column for the requested mode; the caller can only steer the four explicit
+/// option families. The whole operation is decided before any payload is compiled
+/// or copied, and any refusal is finite: result is null, no sfnt bytes exist, and
+/// the report keeps the decisions formed so far plus the first failure diagnostic
+/// (W1 §4.4/§4.5).</summary>
 public static partial class SubsetOperation
 {
     private const uint Head = 0x68656164, Maxp = 0x6D617870, Name = 0x6E616D65,
         Dsig = 0x44534947;
     private const uint Glyf = 0x676C7966, Loca = 0x6C6F6361, Cmap = 0x636D6170;
-    private const uint Cff = 0x43464620, Cff2 = 0x43464632, Fvar = 0x66766172,
-        Vorg = 0x564F5247;
+    private const uint Cff = 0x43464620, Cff2 = 0x43464632, Fvar = 0x66766172;
     private const uint Post = 0x706F7374;
     private const uint Cvt = 0x63767420, Fpgm = 0x6670676D, Prep = 0x70726570,
         Ltsh = 0x4C545348;
