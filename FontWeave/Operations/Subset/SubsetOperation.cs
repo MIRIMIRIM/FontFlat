@@ -41,7 +41,7 @@ public static partial class SubsetOperation
     private const uint Merg = 0x4D455247, Colr = 0x434F4C52, Svg = 0x53564720,
         Sbix = 0x73626978, Cbdt = 0x43424454, Cblc = 0x43424C43, Ebdt = 0x45424454,
         Eblc = 0x45424C43, Ebsc = 0x45425343, Gvar = 0x67766172, Cvar = 0x63766172,
-        Hvar = 0x48564152, Vvar = 0x56564152, Mvar = 0x4D564152;
+        Hvar = 0x48564152, Vvar = 0x56564152, Mvar = 0x4D564152, Cpal = 0x4350414C;
 
     public static ReadStatus TryPrepare(SubsetRequest request, out SubsetResult? result,
         out SubsetReport? report, out FontDiagnostic diagnostic, BuildLimits? limits = null)
@@ -314,6 +314,17 @@ public static partial class SubsetOperation
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result, out report,
                         out diagnostic);
+            }
+            if (rebuildTags.Contains(Colr))
+            {
+                // SE (card §2.1): the COLR rebuild prunes and remaps on the typed
+                // model; CPAL stays raw and supplies the palette-entry authority.
+                status = RebuildColr(directory, maxp!, map!, budget, out rebuiltColr,
+                    out bool colrDropped, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+                if (colrDropped) state.PayloadDropped.Add(Colr);
             }
         }
         var tables = new SortedDictionary<uint, byte[]>();
