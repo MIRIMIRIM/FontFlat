@@ -140,7 +140,8 @@ public sealed class SubsetReport
     internal SubsetReport(SubsetMode? mode, SubsetTableDecision[] decisions,
         int unselectedSlotCount, ushort[] closureAddedGids, uint[] droppedTables,
         SubsetOptionRecord[] optionRecords, CmapConsumedRecord[] cmapConsumedNotEmitted,
-        FontDiagnostic[] diagnostics, string? mapArtifactSha256 = null)
+        FontDiagnostic[] diagnostics, string? mapArtifactSha256 = null,
+        CffStaleness? cffStaleness = null, VorgStaleness? vorgStaleness = null)
     {
         Mode = mode;
         _decisions = decisions;
@@ -151,6 +152,8 @@ public sealed class SubsetReport
         _cmapConsumedNotEmitted = cmapConsumedNotEmitted;
         _diagnostics = diagnostics;
         _mapArtifactSha256 = mapArtifactSha256;
+        Cff = cffStaleness;
+        Vorg = vorgStaleness;
     }
 
     /// <summary>The declared mode; null when the request was refused before a mode could
@@ -192,6 +195,15 @@ public sealed class SubsetReport
 
     /// <summary>The first failure diagnostic; empty on success (W1 §4.5).</summary>
     public IReadOnlyList<FontDiagnostic> Diagnostics => Array.AsReadOnly(_diagnostics);
+
+    /// <summary>RETAIN_RAW registration facts for the CFF table of an admitted static
+    /// CFF1 face; null on every other profile (TrueType faces and the zero-rebuild
+    /// profile carry no CFF staleness — S1b card §3).</summary>
+    public CffStaleness? Cff { get; }
+
+    /// <summary>RETAIN_RAW registration facts for a VORG table on an admitted static
+    /// CFF1 face; null when the face has no VORG table or is not a CFF face (S1b §3).</summary>
+    public VorgStaleness? Vorg { get; }
 
     /// <summary>The maxp 1.0 maxima are not recomputed: retain-GIDs preserves maxp raw,
     /// and compact rebuilds maxp with only numGlyphs changed over the map output domain

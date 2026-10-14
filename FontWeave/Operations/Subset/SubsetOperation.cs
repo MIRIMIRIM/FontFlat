@@ -19,7 +19,8 @@ public static partial class SubsetOperation
     private const uint Head = 0x68656164, Maxp = 0x6D617870, Name = 0x6E616D65,
         Dsig = 0x44534947;
     private const uint Glyf = 0x676C7966, Loca = 0x6C6F6361, Cmap = 0x636D6170;
-    private const uint Cff = 0x43464620, Cff2 = 0x43464632, Fvar = 0x66766172;
+    private const uint Cff = 0x43464620, Cff2 = 0x43464632, Fvar = 0x66766172,
+        Vorg = 0x564F5247;
     private const uint Post = 0x706F7374;
     private const uint Cvt = 0x63767420, Fpgm = 0x6670676D, Prep = 0x70726570,
         Ltsh = 0x4C545348;
@@ -116,8 +117,9 @@ public static partial class SubsetOperation
         // Step 3: face profile gate (card §1.2). One pass collects presence and the
         // first location per category; the gate then refuses in a fixed order.
         var profile = ScanProfile(directory);
-        if (!TryAdmitProfile(directory, profile, maxp!, state, out diagnostic))
-            return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic, out result,
+        if (!TryAdmitProfile(directory, profile, maxp!, state, out var refusalStatus,
+                out diagnostic))
+            return Refuse(state, refusalStatus, diagnostic, out result,
                 out report, out diagnostic);
         bool trueType = profile.HasGlyf && profile.HasLoca;
         if (profile.HasCmap &&
@@ -494,9 +496,9 @@ public static partial class SubsetOperation
     {
         internal bool HasGlyf, HasLoca, HasCff, HasCff2, HasFvar, HasCmap;
         internal bool HasHhea, HasHmtx, HasVhea, HasVmtx;
-        internal int GlyfOrdinal = -1, LocaOrdinal = -1, CmapOrdinal = -1;
-        internal DataLocation GlyfLocation, LocaLocation, CffLocation, FvarLocation,
-            HheaLocation, HmtxLocation, VheaLocation, VmtxLocation;
+        internal int GlyfOrdinal = -1, LocaOrdinal = -1, CffOrdinal = -1, CmapOrdinal = -1;
+        internal DataLocation GlyfLocation, LocaLocation, CffLocation, Cff2Location,
+            FvarLocation, HheaLocation, HmtxLocation, VheaLocation, VmtxLocation;
     }
 
     private static ProfileScan ScanProfile(SfntDirectoryView directory)
@@ -516,10 +518,14 @@ public static partial class SubsetOperation
                     scan.LocaLocation = directory.TableLocation(i);
                     break;
                 case Cff when !scan.HasCff:
-                    scan.HasCff = true; scan.CffLocation = directory.TableLocation(i);
+                    scan.HasCff = true; scan.CffOrdinal = i;
+                    scan.CffLocation = directory.TableLocation(i);
                     break;
                 case Cff2 when !scan.HasCff2:
-                    scan.HasCff2 = true; scan.CffLocation = directory.TableLocation(i);
+                    // The two outline tags locate separately: a face may carry both, and
+                    // the refusal must point at the tag its profile rule is about (card
+                    // §9 note 3 — the shared field was correct only while both refused).
+                    scan.HasCff2 = true; scan.Cff2Location = directory.TableLocation(i);
                     break;
                 case Fvar when !scan.HasFvar:
                     scan.HasFvar = true; scan.FvarLocation = directory.TableLocation(i);
@@ -545,8 +551,10 @@ public static partial class SubsetOperation
     }
 
     private static bool TryAdmitProfile(SfntDirectoryView directory, ProfileScan profile,
-        MaxpTable maxp, PrepareState state, out FontDiagnostic diagnostic)
+        MaxpTable maxp, PrepareState state, out ReadStatus refusalStatus,
+        out FontDiagnostic diagnostic)
     {
+        refusalStatus = ReadStatus.UnsupportedFormat;
         // glyf/loca must pair or both be absent; a lone outline spine is a broken face.
         if (profile.HasGlyf != profile.HasLoca)
             return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported,
@@ -563,12 +571,37 @@ public static partial class SubsetOperation
             return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported, orphan,
                 out diagnostic, orphan.TableTag);
         }
-        if (profile.HasCff || profile.HasCff2)
+        if (profile.HasCff2)
         {
-            // CFF outline faces are the next slice's input; refused as out-of-slice,
-            // not as a data error (card §1.2).
+            // CFF2 outlines are the variable-font gate's input and stay out of slice
+            // (OQ-S0-7); the refusal names the CFF2 tag itself (card §1.2, N1).
+            return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported,
+                profile.Cff2Location, out diagnostic);
+        }
+        if (profile.HasCff && state.Mode == SubsetMode.CompactRemap)
+        {
+            // Compact-remap on a static CFF1 face has no rebuild path in slice: the
+            // primaryPolicy column's CFF rebuild belongs to the CFF compact slice
+            // (SC card §1 profile gate); the refusal names the CFF tag itself.
             return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported,
                 profile.CffLocation, out diagnostic);
+        }
+        if (profile.HasCff)
+        {
+            // Static CFF1 admission (card §1.2): a CFF table may not share the face with
+            // a TrueType outline spine, a CFF face expects maxp 0.5 symmetrically to the
+            // TrueType face's maxp 1.0 requirement, and the table itself must pass the
+            // typed read chain before any policy decision consumes it (N2/N3/N4).
+            if (profile.HasGlyf || profile.HasLoca)
+                return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported,
+                    profile.CffLocation, out diagnostic);
+            if (maxp is not Maxp05Table)
+                return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported,
+                    maxp.Location.At(DataField.Version, MaxpLayout.VersionAt),
+                    out diagnostic, maxp.VersionRaw);
+            if (!TryAdmitCffFace(directory, profile, maxp, state,
+                    out refusalStatus, out diagnostic))
+                return false;
         }
         if (profile.HasFvar)
         {
@@ -860,15 +893,19 @@ public static partial class SubsetOperation
             internal GlyphRemap? Map;
             internal FrozenMapArtifact? FrozenMapArtifact;
             internal string? MapArtifactSha256;
+            internal CffStaleness? CffStaleness;
+            internal VorgStaleness? VorgStaleness;
 
             internal SubsetReport BuildReport()
             {
                 // ClosureAddedGids stays empty until the closure stage has run; a refusal
                 // before that point has no additions to report. The map artifact sha
-                // appears once the artifact has serialized (SC card §1.3).
+                // appears once the artifact has serialized (SC card §1.3); the staleness
+                // members stay null unless the static CFF1 profile admission filled them.
                 return new SubsetReport(Mode, [.. Decisions], UnselectedSlotCount,
                     ClosureAdded?.ToArray() ?? [], [.. Dropped], [.. OptionRecords],
-                    [.. CmapConsumedNotEmitted], [.. Diagnostics], MapArtifactSha256);
+                    [.. CmapConsumedNotEmitted], [.. Diagnostics], MapArtifactSha256,
+                    CffStaleness, VorgStaleness);
             }
         }
 }
