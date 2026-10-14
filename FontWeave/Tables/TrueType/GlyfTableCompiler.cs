@@ -428,6 +428,195 @@ public static class GlyfTableCompiler
         return glyph is { } present && !present.IsEmpty ? present.Length : 0;
     }
 
+    /// <summary>Compact-remap splice (SC card §2): output slot o copies the source
+    /// window of input slot <c>outputToInput[o]</c> byte-for-byte — instructions,
+    /// trailing padding included — and every slot is selected, so the output domain is
+    /// exactly [0, N) with no empty slots. The one byte-level rewrite is the composite
+    /// component glyphIndex words, patched in place to their output ordinals via the
+    /// decoded component offsets; a component outside the map is a pipeline bug and
+    /// refuses. Under dropHinting the retained glyphs re-encode without instructions
+    /// through the same encode helpers the retain splice uses. Short-format images pad
+    /// at most one zero byte per slot to keep offsets even, and the rebuilt image is
+    /// graph-verified over the output domain before it is published.</summary>
+    internal static ReadStatus TryCompactSubset(GlyfTable model,
+        ReadOnlySpan<ushort> outputToInput, GlyphRemap map, bool shortFormat,
+        bool dropHinting, BuildBudget budget, out byte[]? glyf, out uint[]? locaOffsets,
+        out FontDiagnostic diagnostic)
+    {
+        glyf = null;
+        locaOffsets = null;
+        int outputCount = outputToInput.Length;
+        if (outputCount < 1 || outputCount > model.NumGlyphs)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                model.Location.At(DataField.Count, 0), out diagnostic,
+                (ulong)outputCount, (ulong)model.NumGlyphs);
+        var inputGlyphs = new GlyfGlyph?[outputCount];
+        for (int o = 0; o < outputCount; o++)
+        {
+            _ = model.TryGetGlyph(outputToInput[o], out var glyph, out _);
+            inputGlyphs[o] = glyph;
+        }
+        // Encode every re-encoded glyph up front so a failure leaves no partial output;
+        // the encode helpers are the retain splice's own, keyed by input slot.
+        var encoded = new Dictionary<int, byte[]>();
+        if (dropHinting)
+        {
+            if (!budget.Work(model.NumGlyphs, model.Location, out diagnostic))
+                return ReadStatus.ResourceLimit;
+            foreach (var glyph in inputGlyphs)
+            {
+                if (glyph is null || glyph.IsEmpty) continue;
+                byte[]? record;
+                if (glyph.Kind == GlyfGlyphKind.Simple)
+                {
+                    var plan = new GlyphEdit { GlyphId = glyph.GlyphId, Instructions = [] };
+                    ReadStatus status = EncodeSimple(glyph, plan, out record, out diagnostic,
+                        budget, model.Location);
+                    if (status != ReadStatus.Done) return status;
+                }
+                else
+                {
+                    var plan = new GlyfCompositeEdit { GlyphId = glyph.GlyphId, Instructions = [] };
+                    ReadStatus status = TryEditComposite(glyph, plan, model.NumGlyphs,
+                        out var edited, out diagnostic, budget, model.Location);
+                    if (status != ReadStatus.Done) return status;
+                    status = EncodeComposite(edited!, out record, out diagnostic, budget,
+                        model.Location);
+                    if (status != ReadStatus.Done) return status;
+                }
+                encoded[glyph.GlyphId] = record!;
+            }
+        }
+        // Size the image over the output slots: source window lengths for copies,
+        // encoded lengths for stripped glyphs, plus the short format's evenness pad.
+        if (!budget.Work(outputCount, model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        long total = 0;
+        foreach (var glyph in inputGlyphs)
+        {
+            long length = 0;
+            if (glyph is { } present && !present.IsEmpty)
+                length = encoded.TryGetValue(present.GlyphId, out var record)
+                    ? record.Length : present.Length;
+            if (shortFormat) length = (length + 1) & ~1L;
+            total += length;
+        }
+        if (total > int.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                model.Location.At(DataField.Length, 0), out diagnostic,
+                (ulong)total, int.MaxValue);
+        if (!budget.Work(total + outputCount, model.Location, out diagnostic) ||
+            !budget.Output(total, model.Location, out diagnostic) ||
+            !budget.Buffer(total + 4L * (outputCount + 1), model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var image = new byte[(int)total];
+        var offsets = new uint[outputCount + 1];
+        int position = 0;
+        for (int o = 0; o < outputCount; o++)
+        {
+            offsets[o] = (uint)position;
+            var glyph = inputGlyphs[o];
+            if (glyph is not { } present || present.IsEmpty) continue;
+            if (encoded.TryGetValue(present.GlyphId, out var record))
+            {
+                record.CopyTo(image.AsSpan(position));
+                position += record.Length;
+            }
+            else
+            {
+                int length = (int)present.Length;
+                model.OriginalBytes.Slice((int)present.Start, length)
+                    .CopyTo(image.AsSpan(position));
+                if (present.Composite is { } composite && !PatchComponentIndices(
+                        image.AsSpan(position, length), composite, map, model.Location,
+                        out diagnostic))
+                    return ReadStatus.InvalidFormat;
+                position += length;
+            }
+            // Short format: keep the next offset even with at most one zero tail byte,
+            // the same relation the retain splice maintains.
+            if (shortFormat && (position & 1) != 0) image[position++] = 0;
+        }
+        offsets[outputCount] = (uint)position;
+        // Graph-verify the rebuilt image over the output domain: glyphs re-keyed to
+        // their output ordinals with remapped component references, so the verified
+        // graph is exactly the image's own (a subgraph of the verified input's).
+        if (!budget.Work(outputCount, model.Location, out diagnostic) ||
+            !budget.Buffer((long)IntPtr.Size * outputCount, model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var outputGlyphs = new GlyfGlyph?[outputCount];
+        for (int o = 0; o < outputCount; o++)
+        {
+            var glyph = inputGlyphs[o];
+            if (glyph is null || glyph.IsEmpty)
+            {
+                outputGlyphs[o] = glyph;
+                continue;
+            }
+            var present = glyph;
+            if (present.Composite is { } composite)
+            {
+                var components = new GlyfComponent[composite.ComponentCount];
+                for (int i = 0; i < components.Length; i++)
+                {
+                    var component = composite[i];
+                    int output = map.OutputOf(component.GlyphIndex);
+                    if (output < 0)
+                        return ReadWire.Fail(ReadStatus.InvalidFormat,
+                            DiagnosticCode.InvalidValue,
+                            model.Location.At(DataField.GlyphId, 0, component.GlyphIndex),
+                            out diagnostic, (ulong)component.GlyphIndex,
+                            (ulong)model.NumGlyphs);
+                    components[i] = new(component.Ordinal, component.Flags,
+                        checked((ushort)output), component.Arg1, component.Arg2,
+                        component.Transform);
+                }
+                var remapped = new GlyfCompositeGlyph(o, present.Header, components,
+                    composite.Instructions.ToArray(), composite.ConsumedLength, 0);
+                outputGlyphs[o] = new(o, present.Header, GlyfGlyphKind.Composite, 0,
+                    (uint)present.Length, null, remapped);
+            }
+            else
+            {
+                outputGlyphs[o] = new(o, present.Header, present.Kind, 0,
+                    (uint)present.Length, present.Simple);
+            }
+        }
+        var candidate = new GlyfTable(outputGlyphs, image, model.Location, model.LocaLocation);
+        ReadStatus graphStatus = new ComponentGraphBuilder(candidate)
+            .TryBuild(out _, out diagnostic, budget);
+        if (graphStatus != ReadStatus.Done) return graphStatus;
+        glyf = image;
+        locaOffsets = offsets;
+        budget.RecordCompiledTable(glyf.Length);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Rewrites the composite's component glyphIndex words in place: the splice
+    /// is otherwise a byte copy, so only these two-byte fields carry the remap.</summary>
+    private static bool PatchComponentIndices(Span<byte> window, GlyfCompositeGlyph composite,
+        GlyphRemap map, DataLocation location, out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        var offsets = composite.ComponentIndexOffsets;
+        for (int i = 0; i < composite.ComponentCount; i++)
+        {
+            int input = composite[i].GlyphIndex;
+            int output = map.OutputOf(input);
+            if (output is < 0 or > ushort.MaxValue)
+            {
+                diagnostic = new(DiagnosticCode.InvalidValue,
+                    location.At(DataField.GlyphId, 0, input), (ulong)input, (ulong)output);
+                return false;
+            }
+            int at = offsets[i];
+            window[at] = (byte)(output >> 8);
+            window[at + 1] = (byte)output;
+        }
+        return true;
+    }
+
     /// <summary>Re-encodes one simple glyph. Flag and coordinate encodings are chosen
     /// deterministically from the current values; the point count is invariant.</summary>
     internal static ReadStatus EncodeSimple(GlyfGlyph glyph, GlyphEdit plan, out byte[]? record,

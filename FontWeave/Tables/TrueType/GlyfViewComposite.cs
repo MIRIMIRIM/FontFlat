@@ -42,6 +42,7 @@ public readonly ref partial struct GlyfView
                 unchecked((ulong)header.NumberOfContours), 0);
         int at = GlyfLayout.HeaderLength;
         var components = new List<GlyfComponent>();
+        var indexOffsets = new List<int>();
         bool lastHadInstructions = false;
         bool sawNonLastInstructions = false;
         while (true)
@@ -54,6 +55,7 @@ public readonly ref partial struct GlyfView
             if (at + 4 > record.Length)
                 return TruncatedComposite(range, at, at + 4, out diagnostic);
             ushort flags = (ushort)((record[at] << 8) | record[at + 1]);
+            indexOffsets.Add(at + 2); // the glyphIndex word, patched in place by the splice
             ushort glyphIndex = (ushort)((record[at + 2] << 8) | record[at + 3]);
             at += 4;
             int ordinal = components.Count;
@@ -167,7 +169,8 @@ public readonly ref partial struct GlyfView
                     DiagnosticCode.UnexpectedTrailingData,
                     Location.At(DataField.Payload, range.Start + (ulong)i, range.GlyphId),
                     out diagnostic, record[i], 0);
-        glyph = new(range.GlyphId, header, [.. components], instructions, at, range.Start);
+        glyph = new(range.GlyphId, header, [.. components], instructions, at, range.Start,
+            [.. indexOffsets]);
         diagnostic = default;
         return ReadStatus.Done;
     }

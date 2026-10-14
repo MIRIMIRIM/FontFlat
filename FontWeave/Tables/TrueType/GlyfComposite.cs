@@ -118,14 +118,16 @@ public sealed class GlyfCompositeGlyph
 {
     private readonly GlyfComponent[] _components;
     private readonly byte[] _instructions;
+    private readonly int[] _indexOffsets;
 
     internal GlyfCompositeGlyph(int glyphId, GlyfHeader header, GlyfComponent[] components,
-        byte[] instructions, int consumedLength, uint start)
+        byte[] instructions, int consumedLength, uint start, int[]? indexOffsets = null)
     {
         GlyphId = glyphId;
         Header = header;
         _components = components;
         _instructions = instructions;
+        _indexOffsets = indexOffsets ?? new int[components.Length];
         ConsumedLength = consumedLength;
         Start = start;
     }
@@ -142,6 +144,12 @@ public sealed class GlyfCompositeGlyph
     public ReadOnlySpan<byte> Instructions => _instructions;
 
     public bool HasInstructions => _instructions.Length > 0;
+
+    /// <summary>Byte offset of each component's glyphIndex field inside the glyph
+    /// record, in component order. A caller that relocates glyphs without re-encoding
+    /// them (the byte-faithful compact splice) patches these two-byte fields in place
+    /// instead of re-deriving the composite walk.</summary>
+    internal ReadOnlySpan<int> ComponentIndexOffsets => _indexOffsets;
 
     public GlyfComponent this[int ordinal] => _components[ordinal];
 }

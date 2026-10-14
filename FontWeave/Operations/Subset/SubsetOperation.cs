@@ -208,23 +208,66 @@ public static partial class SubsetOperation
         // Step 8/9: payload. Rebuild stages produce their bytes before the copy loop, so
         // a rebuild failure still refuses with nothing published.
         byte[]? rebuiltGlyf = null, rebuiltLoca = null, rebuiltCmap = null;
+        byte[]? rebuiltMaxp = null, rebuiltHhea = null, rebuiltHmtx = null,
+            rebuiltVhea = null, rebuiltVmtx = null;
         if (trueType)
         {
-            status = RebuildGlyfAndLoca(state.Retained, loca!, glyfModel!,
-                options.DropHinting, budget, out rebuiltGlyf, out rebuiltLoca,
-                out diagnostic);
-            if (status != ReadStatus.Done)
-                return Refuse(state, status, diagnostic, out result, out report,
+            if (compact)
+            {
+                status = RebuildCompactGlyfAndLoca(glyfModel!, loca!, map!,
+                    options.DropHinting, budget, out rebuiltGlyf, out rebuiltLoca,
                     out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
+            else
+            {
+                status = RebuildGlyfAndLoca(state.Retained, loca!, glyfModel!,
+                    options.DropHinting, budget, out rebuiltGlyf, out rebuiltLoca,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
         }
         if (profile.HasCmap)
         {
             status = RebuildCmap(directory, profile.CmapOrdinal, maxp!, state.Retained,
-                budget, out rebuiltCmap, out var consumedNotEmitted, out diagnostic);
+                budget, out rebuiltCmap, out var consumedNotEmitted, out diagnostic,
+                compact ? map : null);
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
             state.CmapConsumedNotEmitted = consumedNotEmitted;
+        }
+        if (compact)
+        {
+            // Commit ③ rebuild face (SC card §2): the identity spine's companions —
+            // maxp over the output domain and the metrics pairs at their minimal
+            // boundary. The RC5 gate guarantees pairing; commit ④ adds post/hdmx/LTSH/
+            // VDMX, so those rows still refuse at the rebuild switch below.
+            status = RebuildMaxp(maxp!, map!.OutputGlyphCount, budget, out rebuiltMaxp,
+                out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+            if (profile.HasHhea)
+            {
+                status = RebuildHorizontalMetrics(directory, maxp!, map!, budget,
+                    out rebuiltHhea, out rebuiltHmtx, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
+            if (profile.HasVhea)
+            {
+                status = RebuildVerticalMetrics(directory, maxp!, map!, budget,
+                    out rebuiltVhea, out rebuiltVmtx, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
         }
         var tables = new SortedDictionary<uint, byte[]>();
         for (int i = 0; i < directory.DeclaredCount; i++)
@@ -238,6 +281,11 @@ public static partial class SubsetOperation
                     Glyf => rebuiltGlyf,
                     Loca => rebuiltLoca,
                     Cmap => rebuiltCmap,
+                    Maxp => rebuiltMaxp,
+                    Hhea => rebuiltHhea,
+                    Hmtx => rebuiltHmtx,
+                    Vhea => rebuiltVhea,
+                    Vmtx => rebuiltVmtx,
                     _ => null
                 };
                 if (rebuilt is null)
@@ -268,7 +316,7 @@ public static partial class SubsetOperation
             return Refuse(state, status, diagnostic, out result, out report, out diagnostic);
         report = state.BuildReport();
         result = new SubsetResult(new CompiledFont(output!, budget.Usage,
-            PlainDecisions(state.Decisions)), null, report);
+            PlainDecisions(state.Decisions)), state.FrozenMapArtifact, report);
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -772,6 +820,7 @@ public static partial class SubsetOperation
             internal List<CmapConsumedRecord> CmapConsumedNotEmitted = [];
             internal int UnselectedSlotCount;
             internal GlyphRemap? Map;
+            internal FrozenMapArtifact? FrozenMapArtifact;
             internal string? MapArtifactSha256;
 
             internal SubsetReport BuildReport()

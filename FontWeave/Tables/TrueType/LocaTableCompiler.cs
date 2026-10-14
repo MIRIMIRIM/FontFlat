@@ -138,31 +138,38 @@ public static class LocaTableCompiler
     /// is responsible for the offsets describing the same glyph count as this format's
     /// context; unrunnable content is rejected rather than accepted silently.</summary>
     public static ReadStatus TryFromOffsets(LocaTable shape, ReadOnlySpan<uint> offsets,
+        out LocaTable? model, out FontDiagnostic diagnostic) =>
+        TryFromOffsets(shape.LongFormat, shape.Location, shape.HeadLocation,
+            shape.MaxpLocation, offsets, out model, out diagnostic);
+
+    /// <summary>Format-based overload for rebuilds whose glyph count differs from the
+    /// source table's — the compact-remap splice produces output-domain offsets that a
+    /// new numGlyphs backs. Provenance locations carry over from the source face.</summary>
+    public static ReadStatus TryFromOffsets(bool longFormat, DataLocation location,
+        DataLocation headLocation, DataLocation maxpLocation, ReadOnlySpan<uint> offsets,
         out LocaTable? model, out FontDiagnostic diagnostic)
     {
-        ArgumentNullException.ThrowIfNull(shape);
         model = null;
-        if (offsets.Length != shape.Offsets.Length)
+        if (offsets.Length < 2)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                shape.Location.At(DataField.Count, 0), out diagnostic,
-                (ulong)offsets.Length, (ulong)shape.Offsets.Length);
+                location.At(DataField.Count, 0), out diagnostic,
+                (ulong)offsets.Length, 2UL);
         for (int i = 0; i < offsets.Length; i++)
         {
             if (i > 0 && offsets[i] < offsets[i - 1])
                 return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.InvalidValue,
-                    shape.Location.At(DataField.Offset, 0, i), out diagnostic,
+                    location.At(DataField.Offset, 0, i), out diagnostic,
                     offsets[i], offsets[i - 1]);
-            if (!shape.LongFormat && (offsets[i] & 1) != 0)
+            if (!longFormat && (offsets[i] & 1) != 0)
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.InvalidValue,
-                    shape.Location.At(DataField.Offset, 0, i), out diagnostic,
+                    location.At(DataField.Offset, 0, i), out diagnostic,
                     offsets[i], 0);
         }
-        if (!CanEncode(offsets, shape.LongFormat))
+        if (!CanEncode(offsets, longFormat))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.InvalidValue,
-                shape.Location.At(DataField.Offset, 0), out diagnostic,
+                location.At(DataField.Offset, 0), out diagnostic,
                 FirstUnencodable(offsets), ushort.MaxValue * (uint)LocaLayout.ShortScale);
-        model = new(offsets.ToArray(), shape.LongFormat, shape.Location, shape.HeadLocation,
-            shape.MaxpLocation);
+        model = new(offsets.ToArray(), longFormat, location, headLocation, maxpLocation);
         diagnostic = default;
         return ReadStatus.Done;
     }

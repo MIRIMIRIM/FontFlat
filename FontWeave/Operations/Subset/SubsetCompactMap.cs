@@ -56,6 +56,7 @@ public static partial class SubsetOperation
             InputFaceSha256 = Convert.ToHexString(
                 SHA256.HashData(face.Source!.Bytes)).ToLowerInvariant(),
         };
+        state.FrozenMapArtifact = artifact;
         status = FrozenMapArtifactCodec.TrySerialize(artifact, out byte[]? payload,
             out diagnostic);
         if (status != ReadStatus.Done) return status;

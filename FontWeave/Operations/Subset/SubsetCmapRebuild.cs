@@ -17,7 +17,8 @@ public static partial class SubsetOperation
 {
     private static ReadStatus RebuildCmap(SfntDirectoryView directory, int cmapOrdinal,
         MaxpTable maxp, bool[] retained, BuildBudget budget, out byte[]? cmapBytes,
-        out List<CmapConsumedRecord> consumedNotEmitted, out FontDiagnostic diagnostic)
+        out List<CmapConsumedRecord> consumedNotEmitted, out FontDiagnostic diagnostic,
+        GlyphRemap? map = null)
     {
         cmapBytes = null;
         consumedNotEmitted = [];
@@ -33,7 +34,9 @@ public static partial class SubsetOperation
         if (status != ReadStatus.Done) return status;
 
         // One union keyed by code point; the first record in wire order supplies the
-        // value for a duplicate, and only mappings into the retained set survive.
+        // value for a duplicate, and only mappings into the retained set survive. The
+        // compact map transforms each surviving value to its output ordinal, so the
+        // rebuilt mapping set is the input mapping set composed with the map.
         if (!budget.Work(model!.Records.Length, cmapAt, out diagnostic))
             return ReadStatus.ResourceLimit;
         var union = new SortedDictionary<uint, ushort>();
@@ -52,7 +55,9 @@ public static partial class SubsetOperation
             foreach (var mapping in mappings!)
             {
                 if (!retained[mapping.GlyphId]) continue;
-                union.TryAdd(mapping.CharacterCode, mapping.GlyphId);
+                union.TryAdd(mapping.CharacterCode, map is { } remap
+                    ? checked((ushort)remap.OutputOf(mapping.GlyphId))
+                    : mapping.GlyphId);
             }
         }
         var pruned = new CmapMapping[union.Count];
