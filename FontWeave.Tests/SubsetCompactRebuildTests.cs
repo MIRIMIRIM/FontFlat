@@ -135,6 +135,9 @@ public sealed class SubsetCompactRebuildTests
         // cmap: 0x41 mapped to input 2, whose output ordinal is 1
         byte[] cmap = Table(font, spans, SubsetFontFixture.CmapTag);
         Assert.Equal(1, ReadCanonicalCmapGid(cmap, 0x41));
+        // maxp: numGlyphs moves to the map output domain (3), not the input's 4
+        byte[] maxp = Table(font, spans, SubsetFontFixture.MaxpTag);
+        Assert.Equal(3, BinaryPrimitives.ReadUInt16BigEndian(maxp.AsSpan(4)));
         // metrics in output order: advances of inputs {0,2,3} = 908, 539, 496
         byte[] hmtx = Table(font, spans, SubsetCompactPolicyTests.HmtxTag);
         Assert.Equal(908, BinaryPrimitives.ReadUInt16BigEndian(hmtx));

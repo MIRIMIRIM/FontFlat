@@ -33,10 +33,12 @@ public readonly ref partial struct VdmxView
     public ReadStatus Validate(out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
         Analyze(out _, out _, out diagnostic, new BuildBudget(limits));
 
-    public ReadStatus TryRead(out VdmxTable? model, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+    public ReadStatus TryRead(out VdmxTable? model, out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        TryRead(out model, out diagnostic, new BuildBudget(limits));
+
+    internal ReadStatus TryRead(out VdmxTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         model = null;
-        var budget = new BuildBudget(limits);
         ReadStatus status = Analyze(out var descriptors, out var links, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         if (!budget.Work(_data.Length, Location, out diagnostic) ||

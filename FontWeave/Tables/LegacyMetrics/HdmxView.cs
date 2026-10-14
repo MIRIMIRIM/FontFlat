@@ -43,10 +43,13 @@ public readonly ref partial struct HdmxView
 
     /// <summary>Accepts nonzero, semantically unused record padding; compilation writes zero padding.</summary>
     public ReadStatus TryRead(LegacyMetricsContext context, out HdmxTable? model,
-        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+        out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        TryRead(context, out model, out diagnostic, new BuildBudget(limits));
+
+    internal ReadStatus TryRead(LegacyMetricsContext context, out HdmxTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
     {
         model = null;
-        var budget = new BuildBudget(limits);
         ReadStatus status = CheckLayout(context, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (!budget.Input(_data.Length, Location, out diagnostic) ||

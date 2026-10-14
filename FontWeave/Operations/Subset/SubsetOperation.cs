@@ -210,6 +210,10 @@ public static partial class SubsetOperation
         byte[]? rebuiltGlyf = null, rebuiltLoca = null, rebuiltCmap = null;
         byte[]? rebuiltMaxp = null, rebuiltHhea = null, rebuiltHmtx = null,
             rebuiltVhea = null, rebuiltVmtx = null;
+        byte[]? rebuiltPost = null, rebuiltHdmx = null, rebuiltLtsh = null,
+            rebuiltVdmx = null;
+        var rebuildTags = new HashSet<uint>(
+            state.Decisions.Where(d => d.Action == TableAction.Rebuild).Select(d => d.Tag));
         if (trueType)
         {
             if (compact)
@@ -243,16 +247,15 @@ public static partial class SubsetOperation
         }
         if (compact)
         {
-            // Commit ③ rebuild face (SC card §2): the identity spine's companions —
-            // maxp over the output domain and the metrics pairs at their minimal
-            // boundary. The RC5 gate guarantees pairing; commit ④ adds post/hdmx/LTSH/
-            // VDMX, so those rows still refuse at the rebuild switch below.
+            // Commit ③/④ rebuild face (SC card §2): the decide list drives which
+            // producers must exist, so a rebuild decision without a producer below
+            // still refuses at the switch instead of passing silently.
             status = RebuildMaxp(maxp!, map!.OutputGlyphCount, budget, out rebuiltMaxp,
                 out diagnostic);
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
-            if (profile.HasHhea)
+            if (rebuildTags.Contains(Hhea))
             {
                 status = RebuildHorizontalMetrics(directory, maxp!, map!, budget,
                     out rebuiltHhea, out rebuiltHmtx, out diagnostic);
@@ -260,10 +263,41 @@ public static partial class SubsetOperation
                     return Refuse(state, status, diagnostic, out result, out report,
                         out diagnostic);
             }
-            if (profile.HasVhea)
+            if (rebuildTags.Contains(Vhea))
             {
                 status = RebuildVerticalMetrics(directory, maxp!, map!, budget,
                     out rebuiltVhea, out rebuiltVmtx, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
+            if (rebuildTags.Contains(Post))
+            {
+                status = RebuildPost20(directory, maxp!, map!, budget, out rebuiltPost,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
+            if (rebuildTags.Contains(Hdmx))
+            {
+                status = RebuildHdmx(directory, maxp!, map!, budget, out rebuiltHdmx,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
+            if (rebuildTags.Contains(Ltsh))
+            {
+                status = RebuildLtsh(directory, maxp!, map!, budget, out rebuiltLtsh,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
+            if (rebuildTags.Contains(Vdmx))
+            {
+                status = RebuildVdmx(directory, budget, out rebuiltVdmx, out diagnostic);
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result, out report,
                         out diagnostic);
@@ -286,6 +320,10 @@ public static partial class SubsetOperation
                     Hmtx => rebuiltHmtx,
                     Vhea => rebuiltVhea,
                     Vmtx => rebuiltVmtx,
+                    Post => rebuiltPost,
+                    Hdmx => rebuiltHdmx,
+                    Ltsh => rebuiltLtsh,
+                    Vdmx => rebuiltVdmx,
                     _ => null
                 };
                 if (rebuilt is null)

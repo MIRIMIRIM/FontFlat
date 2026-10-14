@@ -5,11 +5,14 @@ namespace FontWeave.Tables;
 public static class VdmxTableCompiler
 {
     public static ReadStatus TryCompile(VdmxTable model, out byte[]? output,
-        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+        out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        TryCompile(model, out output, out diagnostic, new BuildBudget(limits));
+
+    internal static ReadStatus TryCompile(VdmxTable model, out byte[]? output,
+        out FontDiagnostic diagnostic, BuildBudget budget)
     {
         ArgumentNullException.ThrowIfNull(model);
         output = null;
-        var budget = new BuildBudget(limits);
         if (!budget.Work((long)model.NumGroups + model.NumRatios, model.Location, out diagnostic))
             return ReadStatus.ResourceLimit;
         ReadStatus status = GetLength(model, out int length, out long entries, out diagnostic);

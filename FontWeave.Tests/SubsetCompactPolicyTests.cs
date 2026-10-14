@@ -62,7 +62,7 @@ public sealed class SubsetCompactPolicyTests
     {
         var bytes = new byte[36];
         BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0), 0x00010000);
-        BinaryPrimitives.WriteInt16BigEndian(bytes.AsSpan(8), (short)advanceWidthMax);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(10), advanceWidthMax);
         BinaryPrimitives.WriteInt16BigEndian(bytes.AsSpan(18), 1); // caretSlopeRise
         BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(34), numberOfHMetrics);
         return bytes;

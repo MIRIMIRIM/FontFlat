@@ -5,11 +5,14 @@ namespace FontWeave.Tables;
 public static class HdmxTableCompiler
 {
     public static ReadStatus TryCompile(HdmxTable model, out byte[]? output,
-        out FontDiagnostic diagnostic, BuildLimits? limits = null)
+        out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        TryCompile(model, out output, out diagnostic, new BuildBudget(limits));
+
+    internal static ReadStatus TryCompile(HdmxTable model, out byte[]? output,
+        out FontDiagnostic diagnostic, BuildBudget budget)
     {
         ArgumentNullException.ThrowIfNull(model);
         output = null;
-        var budget = new BuildBudget(limits);
         int length = Length(model);
         if (!budget.Work(length, model.Location, out diagnostic) ||
             !budget.Output(length, model.Location, out diagnostic) ||

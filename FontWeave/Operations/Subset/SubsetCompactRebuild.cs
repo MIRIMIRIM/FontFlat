@@ -43,18 +43,30 @@ public static partial class SubsetOperation
         maxpBytes = null;
         // The 1.0 maxima keep their original values: the output glyph set is a subset of
         // the input set, so they stay upper bounds, and the report carries the explicit
-        // not-recomputed fact (OQ-SC-1).
-        ReadStatus status = maxp switch
+        // not-recomputed fact (OQ-SC-1). Only numGlyphs moves to the map output domain —
+        // and the REBUILT model is what compiles, not the input one.
+        MaxpTable rebuilt;
+        ReadStatus status;
+        switch (maxp)
         {
-            Maxp10Table v10 => v10.TryWith(v10.Values with {
-                NumGlyphs = checked((ushort)outputGlyphCount) }, out _, out diagnostic),
-            Maxp05Table v05 => v05.TryWith(checked((ushort)outputGlyphCount), out _,
-                out diagnostic),
-            _ => throw new InvalidOperationException(
-                "The admitted subset profile binds maxp 0.5 or 1.0 only."),
-        };
+            case Maxp10Table v10:
+                status = v10.TryWith(v10.Values with {
+                    NumGlyphs = checked((ushort)outputGlyphCount) }, out var r10,
+                    out diagnostic);
+                rebuilt = r10!;
+                break;
+            case Maxp05Table v05:
+                status = v05.TryWith(checked((ushort)outputGlyphCount), out var r05,
+                    out diagnostic);
+                rebuilt = r05!;
+                break;
+            default:
+                throw new InvalidOperationException(
+                    "The admitted subset profile binds maxp 0.5 or 1.0 only.");
+        }
         if (status != ReadStatus.Done) return status;
-        return MaxpTableCompiler.TryCompile(maxp, out maxpBytes, out diagnostic, budget);
+        return MaxpTableCompiler.TryCompile(rebuilt, out maxpBytes, out diagnostic,
+            budget);
     }
 
     private static ReadStatus RebuildHorizontalMetrics(SfntDirectoryView directory,
@@ -207,6 +219,164 @@ public static partial class SubsetOperation
             metrics[boundary - 2].AdvanceHeight)
             boundary--;
         return boundary;
+    }
+
+
+    private static ReadStatus RebuildPost20(SfntDirectoryView directory, MaxpTable maxp,
+        GlyphRemap map, BuildBudget budget, out byte[]? postBytes, out FontDiagnostic diagnostic)
+    {
+        postBytes = null;
+        ReadStatus status = ReadTableBytes(directory, Post, out var postAt,
+            out var postSource, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = PostView.TryOpen(postSource, out var postView, out diagnostic, postAt);
+        if (status != ReadStatus.Done) return status;
+        status = postView.TryRead(out PostTable? post, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        // The rebuild indexes glyphNameIndex over the whole input domain, so the post
+        // count must cover it exactly (the maxp-bound read the metrics contexts do).
+        if (post!.NumGlyphs!.Value != maxp.NumGlyphs)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                postAt.At(DataField.Count, 32), out diagnostic,
+                (ulong)post.NumGlyphs.Value, (ulong)maxp.NumGlyphs);
+        // glyphNameIndex remaps through the frozen map; custom names prune to the
+        // referenced set, renumbered 258+i in their original relative order (OQ-SC-2),
+        // so every output glyph resolves to exactly the name its input glyph had.
+        var inputOrder = map.OutputToInput;
+        int outputCount = map.OutputGlyphCount;
+        if (!budget.Work(outputCount, postAt, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var oldIndices = post!.GlyphNameIndices;
+        var referenced = new List<string>();
+        var renamed = new Dictionary<int, ushort>();
+        for (int o = 0; o < outputCount; o++)
+        {
+            int old = oldIndices[inputOrder[o]];
+            if (old >= 258 && !renamed.ContainsKey(old))
+            {
+                if (renamed.Count > ushort.MaxValue - 258)
+                    return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                        postAt.At(DataField.Count, 34), out diagnostic,
+                        (ulong)renamed.Count, ushort.MaxValue);
+                renamed[old] = (ushort)(258 + referenced.Count);
+                referenced.Add(post.CustomNames[old - 258]);
+            }
+        }
+        // One rewrite per output slot against the completed rename table: renamed values
+        // share the >=258 domain with original indices, so an incremental pass could
+        // rename an already-renamed slot again.
+        var newIndices = new ushort[outputCount];
+        for (int o = 0; o < outputCount; o++)
+        {
+            int old = oldIndices[inputOrder[o]];
+            newIndices[o] = old >= 258 && renamed.TryGetValue(old, out ushort newName)
+                ? newName
+                : (ushort)old;
+        }
+        var rebuilt = new PostTable(post.Version, post.Header, newIndices, [],
+            referenced.ToArray(), postAt);
+        return PostTableCompiler.TryCompile(rebuilt, out postBytes, out diagnostic, budget);
+    }
+
+    private static ReadStatus RebuildHdmx(SfntDirectoryView directory, MaxpTable maxp,
+        GlyphRemap map, BuildBudget budget, out byte[]? hdmxBytes,
+        out FontDiagnostic diagnostic)
+    {
+        hdmxBytes = null;
+        ReadStatus status = ReadTableBytes(directory, Hdmx, out var hdmxAt,
+            out var hdmxSource, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = LegacyMetricsContext.TryCreate(maxp, hdmxAt, out var context,
+            out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = HdmxView.TryOpen(hdmxSource, out var hdmxView, out diagnostic, hdmxAt);
+        if (status != ReadStatus.Done) return status;
+        status = hdmxView.TryRead(context!, out HdmxTable? hdmx, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        // Each record's widths array reorders through the frozen map; the PixelSize set
+        // and record order stay untouched, and compilation recomputes MaxWidth and the
+        // canonical stride over the output domain.
+        var inputOrder = map.OutputToInput;
+        int outputCount = map.OutputGlyphCount;
+        if (!budget.Work((long)hdmx!.NumRecords * outputCount, hdmxAt, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var records = new HdmxDeviceRecord[hdmx.NumRecords];
+        for (int r = 0; r < records.Length; r++)
+        {
+            var source = hdmx.Records[r];
+            var widths = new byte[outputCount];
+            for (int o = 0; o < outputCount; o++)
+                widths[o] = source.Widths[inputOrder[o]];
+            records[r] = new(source.PixelSize, MaximumWidth(widths), widths);
+        }
+        var rebuilt = new HdmxTable(checked((ushort)outputCount),
+            hdmx.SourceSizeDeviceRecord, records, hdmxAt, maxp.Location);
+        return HdmxTableCompiler.TryCompile(rebuilt, out hdmxBytes, out diagnostic, budget);
+    }
+
+    private static ReadStatus RebuildLtsh(SfntDirectoryView directory, MaxpTable maxp,
+        GlyphRemap map, BuildBudget budget, out byte[]? ltshBytes,
+        out FontDiagnostic diagnostic)
+    {
+        ltshBytes = null;
+        ReadStatus status = ReadTableBytes(directory, Ltsh, out var ltshAt,
+            out var ltshSource, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = LegacyMetricsContext.TryCreate(maxp, ltshAt, out var context,
+            out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = LtshView.TryOpen(ltshSource, out var ltshView, out diagnostic, ltshAt);
+        if (status != ReadStatus.Done) return status;
+        status = ltshView.TryRead(context!, out LtshTable? ltsh, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        var inputOrder = map.OutputToInput;
+        int outputCount = map.OutputGlyphCount;
+        if (!budget.Work(outputCount, ltshAt, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var thresholds = new byte[outputCount];
+        for (int o = 0; o < outputCount; o++)
+            thresholds[o] = ltsh!.YPixels[inputOrder[o]];
+        var rebuilt = new LtshTable(thresholds, ltshAt, maxp.Location);
+        return LtshTableCompiler.TryCompile(rebuilt, out ltshBytes, out diagnostic, budget);
+    }
+
+    /// <summary>VDMX carries no GID domain — its groups key on ratio/ppem and its
+    /// entries on pixel height (SC card §2, wire fact). The rebuild is a typed
+    /// re-emission: the model reads back verbatim and compilation re-pins the group
+    /// offsets to the canonical layout, so the decoded ratio/group/entry sets stay
+    /// semantically identical to the input.</summary>
+    private static ReadStatus RebuildVdmx(SfntDirectoryView directory,
+        BuildBudget budget, out byte[]? vdmxBytes, out FontDiagnostic diagnostic)
+    {
+        vdmxBytes = null;
+        ReadStatus status = ReadTableBytes(directory, Vdmx, out var vdmxAt,
+            out var vdmxSource, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = VdmxView.TryOpen(vdmxSource, out var vdmxView, out diagnostic, vdmxAt);
+        if (status != ReadStatus.Done) return status;
+        status = vdmxView.TryRead(out VdmxTable? vdmx, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        if (!budget.Work(vdmx!.NumRatios + vdmx.NumGroups, vdmxAt, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var groups = new VdmxGroup[vdmx.NumGroups];
+        ulong offset = (ulong)VdmxLayout.DirectoryEnd(vdmx.NumRatios);
+        for (int g = 0; g < groups.Length; g++)
+        {
+            var source = vdmx.Groups[g];
+            groups[g] = new(offset, source.StartSize, source.EndSize,
+                source.Entries.ToArray());
+            offset += (ulong)VdmxLayout.GroupLength(source.Entries.Length);
+        }
+        var rebuilt = new VdmxTable(vdmx.Version, vdmx.Ratios.ToArray(), groups, vdmxAt);
+        return VdmxTableCompiler.TryCompile(rebuilt, out vdmxBytes, out diagnostic, budget);
+    }
+
+    private static byte MaximumWidth(ReadOnlySpan<byte> widths)
+    {
+        byte maximum = 0;
+        foreach (byte width in widths)
+            if (width > maximum) maximum = width;
+        return maximum;
     }
 
     private static ReadStatus ReadTableBytes(SfntDirectoryView directory, uint tag,

@@ -611,8 +611,10 @@ public static class GlyfTableCompiler
                 return false;
             }
             int at = offsets[i];
-            window[at] = (byte)(output >> 8);
-            window[at + 1] = (byte)output;
+            // Byte splitting a GID is reinterpretation, not arithmetic: unchecked keeps
+            // the checked-arithmetic build from refusing outputs >= 256.
+            window[at] = unchecked((byte)(output >> 8));
+            window[at + 1] = unchecked((byte)output);
         }
         return true;
     }
