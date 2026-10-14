@@ -4,12 +4,13 @@ using FontWeave.Tables;
 
 namespace FontWeave.Operations.Subset;
 
-/// <summary>Retain-GIDs subsetting of one source face (S1a first slice).
+/// <summary>Retain-GIDs and compact-remap subsetting of one source face (S1a/SC slices).
 ///
-/// The rebuild face is exactly {glyf, loca, cmap}: glyf/loca are re-spliced around the
-/// retained slots and cmap is rebuilt canonically as {((3,1), format 4), ((3,10),
-/// format 12)}. Every other present table follows the frozen policy matrix's
-/// retainGidsPolicy column; the caller can only steer the four explicit option families.
+/// The rebuild face follows the mode's policy column: retain-GIDs rebuilds exactly
+/// {glyf, loca, cmap}; compact-remap rebuilds the primaryPolicy column's executable set
+/// (glyf, loca, cmap, maxp, hhea, hmtx, vhea, vmtx, post@2.0, hdmx, LTSH, VDMX) over one
+/// frozen glyph map. Every other present table follows the frozen policy matrix's column
+/// for the requested mode; the caller can only steer the four explicit option families.
 /// The whole operation is decided before any payload is compiled or copied, and any
 /// refusal is finite: result is null, no sfnt bytes exist, and the report keeps the
 /// decisions formed so far plus the first failure diagnostic (W1 §4.4/§4.5).</summary>
@@ -24,6 +25,14 @@ public static partial class SubsetOperation
         Ltsh = 0x4C545348;
     private const uint Kern = 0x6B65726E, Gsub = 0x47535542, Gpos = 0x47504F53,
         Gdef = 0x47444546, Base = 0x42415345, Jstf = 0x4A535446, Math = 0x4D415448;
+    private const uint Hhea = 0x68686561, Hmtx = 0x686D7478, Vhea = 0x76686561,
+        Vmtx = 0x766D7478, Vorg = 0x564F5247, Vdmx = 0x56444D58, Hdmx = 0x68646D78;
+    // Compact-side deferral rows (SC card §3 RC2-RC4): the primaryPolicy column defers
+    // them to a later slice, so a compact request refuses while retain keeps raw copies.
+    private const uint Merg = 0x4D455247, Colr = 0x434F4C52, Svg = 0x53564720,
+        Sbix = 0x73626978, Cbdt = 0x43424454, Cblc = 0x43424C43, Ebdt = 0x45424454,
+        Eblc = 0x45424C43, Ebsc = 0x45425343, Gvar = 0x67766172, Cvar = 0x63766172,
+        Hvar = 0x48564152, Vvar = 0x56564152, Mvar = 0x4D564152;
 
     public static ReadStatus TryPrepare(SubsetRequest request, out SubsetResult? result,
         out SubsetReport? report, out FontDiagnostic diagnostic, BuildLimits? limits = null)
@@ -300,11 +309,11 @@ public static partial class SubsetOperation
             diagnostic = new(DiagnosticCode.SubsetModeRequired, request.Face.Location);
             return false;
         }
-        if (!Enum.IsDefined(mode) || mode == SubsetMode.CompactRemap)
+        if (!Enum.IsDefined(mode))
         {
-            // Out-of-domain values and CompactRemap both refuse here: the latter is a
-            // registered new category (no frozen case) because compact execution belongs
-            // to a later slice (card §1.1, OQ-S1a-8).
+            // Out-of-domain values refuse as before (S0-RF-006-MODE). CompactRemap itself
+            // now executes in this operation: the R6 finite refusal of the retain-only
+            // slice was replaced by execution (SC card §3, S1A-RF-COMPACT-MODE migration).
             diagnostic = new(DiagnosticCode.SubsetModeRequired, request.Face.Location,
                 (ushort)mode);
             return false;
@@ -385,8 +394,10 @@ public static partial class SubsetOperation
     private sealed class ProfileScan
     {
         internal bool HasGlyf, HasLoca, HasCff, HasCff2, HasFvar, HasCmap;
+        internal bool HasHhea, HasHmtx, HasVhea, HasVmtx;
         internal int GlyfOrdinal = -1, LocaOrdinal = -1, CmapOrdinal = -1;
-        internal DataLocation GlyfLocation, LocaLocation, CffLocation, FvarLocation;
+        internal DataLocation GlyfLocation, LocaLocation, CffLocation, FvarLocation,
+            HheaLocation, HmtxLocation, VheaLocation, VmtxLocation;
     }
 
     private static ProfileScan ScanProfile(SfntDirectoryView directory)
@@ -417,6 +428,18 @@ public static partial class SubsetOperation
                 case Cmap when !scan.HasCmap:
                     scan.HasCmap = true; scan.CmapOrdinal = i;
                     break;
+                case Hhea when !scan.HasHhea:
+                    scan.HasHhea = true; scan.HheaLocation = directory.TableLocation(i);
+                    break;
+                case Hmtx when !scan.HasHmtx:
+                    scan.HasHmtx = true; scan.HmtxLocation = directory.TableLocation(i);
+                    break;
+                case Vhea when !scan.HasVhea:
+                    scan.HasVhea = true; scan.VheaLocation = directory.TableLocation(i);
+                    break;
+                case Vmtx when !scan.HasVmtx:
+                    scan.HasVmtx = true; scan.VmtxLocation = directory.TableLocation(i);
+                    break;
             }
         }
         return scan;
@@ -430,6 +453,17 @@ public static partial class SubsetOperation
             return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported,
                 profile.HasGlyf ? profile.GlyfLocation : profile.LocaLocation,
                 out diagnostic);
+        if (state.Mode == SubsetMode.CompactRemap &&
+            (profile.HasHhea != profile.HasHmtx || profile.HasVhea != profile.HasVmtx))
+        {
+            // RC5 (SC card §3): the compact rebuild obligation for the metrics families
+            // has no execution path without the pairing partner (glyf/loca precedent).
+            DataLocation orphan = profile.HasHhea != profile.HasHmtx
+                ? (profile.HasHhea ? profile.HheaLocation : profile.HmtxLocation)
+                : (profile.HasVhea ? profile.VheaLocation : profile.VmtxLocation);
+            return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported, orphan,
+                out diagnostic, orphan.TableTag);
+        }
         if (profile.HasCff || profile.HasCff2)
         {
             // CFF outline faces are the next slice's input; refused as out-of-slice,
@@ -516,6 +550,10 @@ public static partial class SubsetOperation
         SubsetOptions options, PrepareState state, out FontDiagnostic diagnostic)
     {
         diagnostic = default;
+        // The two matrix columns meet here: retain-GIDs follows the retainGidsPolicy
+        // column, compact-remap the primaryPolicy column (SC card §4 commit ①; the only
+        // authority for both is validation/FontWeave.S0/policy-matrix.json).
+        bool compact = state.Mode == SubsetMode.CompactRemap;
         SubsetTableDecision decision;
         if (tag is Glyf or Loca or Cmap)
         {
@@ -524,10 +562,15 @@ public static partial class SubsetOperation
         }
         else if (tag == Maxp)
         {
-            // RETAIN_RAW with numGlyphs unchanged; the 1.0 maxima are explicitly not
-            // recomputed (OQ-S1a-10) and stay upper bounds of the output domain.
-            decision = new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
-                SubsetDecisionOrigin.MatrixRow);
+            // Retain keeps numGlyphs unchanged with the 1.0 maxima explicitly not
+            // recomputed (OQ-S1a-10). Compact rebuilds maxp over the map output domain;
+            // the maxima keep their original values and stay reported as not recomputed
+            // (OQ-SC-1, the same shape), so they remain upper bounds of the subset set.
+            decision = compact
+                ? new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                    SubsetDecisionOrigin.MatrixRow)
+                : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
+                    SubsetDecisionOrigin.MatrixRow);
         }
         else if (tag == Head)
         {
@@ -552,8 +595,13 @@ public static partial class SubsetOperation
                 diagnostic = state.Diagnostic;
                 return false;
             }
-            decision = new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
-                SubsetDecisionOrigin.MatrixRow);
+            // post 2.0 carries a per-GID glyphNameIndex, so compact rebuilds it;
+            // 1.0/3.0 have no per-GID data and stay raw in both modes (SC card §2).
+            decision = compact && postView.Version == PostLayout.Version20
+                ? new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                    SubsetDecisionOrigin.MatrixRow)
+                : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
+                    SubsetDecisionOrigin.MatrixRow);
         }
         else if (tag is Kern or Gsub or Gpos or Gdef or Base or Jstf or Math)
         {
@@ -573,12 +621,17 @@ public static partial class SubsetOperation
         else if (tag is Cvt or Fpgm or Prep or Ltsh)
         {
             // Hinting family: RETAIN_RAW by default, DELETE under the explicit
-            // drop-hinting option; gasp is preserved regardless (W1 §2.3).
+            // drop-hinting option; gasp is preserved regardless (W1 §2.3). LTSH's
+            // per-GID threshold domain instead rebuilds under compact, where the GID
+            // domain changes (SC card §2).
             decision = options.DropHinting
                 ? new(tag, TableAction.Drop, SubsetPolicy.Delete,
                     SubsetDecisionOrigin.RequestOption)
-                : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
-                    SubsetDecisionOrigin.MatrixRow);
+                : compact && tag == Ltsh
+                    ? new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                        SubsetDecisionOrigin.MatrixRow)
+                    : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
+                        SubsetDecisionOrigin.MatrixRow);
             if (options.DropHinting) state.Dropped.Add(tag);
         }
         else if (tag == Dsig)
@@ -607,6 +660,27 @@ public static partial class SubsetOperation
                     SubsetDecisionOrigin.MatrixRow);
             if (options.DropDigitalSignature) state.Dropped.Add(tag);
         }
+        else if (compact && IsCompactDeferredRow(tag))
+        {
+            // RC2-RC4 (SC card §3): the primaryPolicy column defers these rows to a
+            // later slice (VORG rebuilds only with CFF; MERG and the color/bitmap
+            // families are DEFERRED_TO_S1), so a compact request — which always changes
+            // the GID domain — refuses instead of leaving per-GID data on stale GIDs.
+            // Keyword contracts: "VORG"/"compact"/"rebuild", "MERG"/"compact",
+            // "<tag>"/"compact"; diagnostic code UnsupportedOperation (=17).
+            state.Diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                directory.TableLocation(ordinal), tag);
+            diagnostic = state.Diagnostic;
+            return false;
+        }
+        else if (compact && tag is Hhea or Hmtx or Vhea or Vmtx or Vdmx or Hdmx)
+        {
+            // primaryPolicy REBUILD_TYPED rows with a per-GID storage layout (metrics
+            // pairs, device/threshold tables): compact rebuilds, retain keeps raw
+            // (matrix primaryPolicy column).
+            decision = new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                SubsetDecisionOrigin.MatrixRow);
+        }
         else if (IsKnownSubsetTable(tag))
         {
             decision = new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
@@ -634,6 +708,14 @@ public static partial class SubsetOperation
         state.Decisions.Add(decision);
         return true;
     }
+
+    /// <summary>Rows the primaryPolicy column sends to a slice without a compact
+    /// execution path (SC card §3 RC2-RC4): VORG rides the CFF rebuild, MERG and the
+    /// color/bitmap families are DEFERRED_TO_S1, and the variation metrics families
+    /// share that deferral. Retain-GIDs keeps all of them raw.</summary>
+    private static bool IsCompactDeferredRow(uint tag) =>
+        tag is Vorg or Merg or Colr or Svg or Sbix or Cbdt or Cblc or Ebdt or Eblc
+            or Ebsc or Gvar or Cvar or Hvar or Vvar or Mvar;
 
     /// <summary>The 50-tag directory catalogue: the 47 opaque-relocatable tags the
     /// metadata operation already knows plus head, name and DSIG. The authoritative

@@ -182,19 +182,20 @@ public sealed class SubsetRefusalTests
         Assert.Null(result);
     }
 
-    // S0-RF-006-MODE: undeclared, out-of-domain and compact-remap modes all refuse.
+    // S0-RF-006-MODE: undeclared and out-of-domain modes refuse. The former
+    // compact-remap case of this theory is the S1A-RF-COMPACT-MODE migration (SC card
+    // §3 R6): CompactRemap now executes instead of refusing; its new expectations live
+    // in SubsetCompactPolicyTests.
     [Theory]
     [InlineData((int)ModeCase.Undeclared)]
     [InlineData((int)ModeCase.UndefinedValue)]
-    [InlineData((int)ModeCase.CompactRemap)]
     public void ModeRefusals(ModeCase testCase)
     {
         var face = TrueTypeFace();
         SubsetMode? mode = testCase switch
         {
             ModeCase.Undeclared => null,
-            ModeCase.UndefinedValue => (SubsetMode)99,
-            _ => SubsetMode.CompactRemap
+            _ => (SubsetMode)99
         };
         var options = new SubsetOptions { NoLayout = true };
         var status = SubsetOperation.TryPrepare(Request(face, [0, 1], mode, options),
@@ -206,7 +207,7 @@ public sealed class SubsetRefusalTests
 
     public enum ModeCase : int
     {
-        Undeclared = 0, UndefinedValue = 1, CompactRemap = 2
+        Undeclared = 0, UndefinedValue = 1
     }
 
     // S0-RF-007..010: each unsupported cmap format refuses with the pinned code.
