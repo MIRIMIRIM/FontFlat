@@ -47,6 +47,7 @@ public static partial class SubsetOperation
             throw new ArgumentException("The subset request face is not bound to a source.",
                 nameof(request));
         var options = request.Options ?? new SubsetOptions();
+        bool compact = request.Mode == SubsetMode.CompactRemap;
         var state = new PrepareState(request.Mode, new BuildBudget(limits));
         var budget = state.Budget;
         DataLocation faceAt = request.Face.Location;
@@ -159,6 +160,18 @@ public static partial class SubsetOperation
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
             state.ClosureAdded = closureAdded;
+        }
+
+        // Step 5.5 (compact only, SC card §1.1): freeze the one GlyphRemap over the
+        // final retained set and serialize the map artifact before any payload stage.
+        GlyphRemap? map = null;
+        if (compact)
+        {
+            status = FreezeCompactMap(request.Face, head!, state.Retained, state,
+                budget, out map, out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
         }
 
         // Step 6: derived counts over the final retained set.
@@ -738,34 +751,37 @@ public static partial class SubsetOperation
         return status;
     }
 
-    /// <summary>Mutable pipeline evidence; a refusal freezes whatever accumulated.</summary>
-    private sealed class PrepareState
-    {
-        internal PrepareState(SubsetMode? mode, BuildBudget budget)
+        /// <summary>Mutable pipeline evidence; a refusal freezes whatever accumulated.</summary>
+        private sealed class PrepareState
         {
-            Mode = mode;
-            Budget = budget;
-        }
+            internal PrepareState(SubsetMode? mode, BuildBudget budget)
+            {
+                Mode = mode;
+                Budget = budget;
+            }
 
-        internal BuildBudget Budget { get; }
-        internal SubsetMode? Mode { get; }
-        internal readonly List<SubsetTableDecision> Decisions = [];
-        internal readonly List<SubsetOptionRecord> OptionRecords = [];
-        internal readonly List<uint> Dropped = [];
-        internal readonly List<FontDiagnostic> Diagnostics = [];
-        internal FontDiagnostic Diagnostic;
-        internal bool[] Retained = [];
-        internal List<ushort>? ClosureAdded;
-        internal List<CmapConsumedRecord> CmapConsumedNotEmitted = [];
-        internal int UnselectedSlotCount;
+            internal BuildBudget Budget { get; }
+            internal SubsetMode? Mode { get; }
+            internal readonly List<SubsetTableDecision> Decisions = [];
+            internal readonly List<SubsetOptionRecord> OptionRecords = [];
+            internal readonly List<uint> Dropped = [];
+            internal readonly List<FontDiagnostic> Diagnostics = [];
+            internal FontDiagnostic Diagnostic;
+            internal bool[] Retained = [];
+            internal List<ushort>? ClosureAdded;
+            internal List<CmapConsumedRecord> CmapConsumedNotEmitted = [];
+            internal int UnselectedSlotCount;
+            internal GlyphRemap? Map;
+            internal string? MapArtifactSha256;
 
-        internal SubsetReport BuildReport()
-        {
-            // ClosureAddedGids stays empty until the closure stage has run; a refusal
-            // before that point has no additions to report.
-            return new SubsetReport(Mode, [.. Decisions], UnselectedSlotCount,
-                ClosureAdded?.ToArray() ?? [], [.. Dropped], [.. OptionRecords],
-                [.. CmapConsumedNotEmitted], [.. Diagnostics]);
+            internal SubsetReport BuildReport()
+            {
+                // ClosureAddedGids stays empty until the closure stage has run; a refusal
+                // before that point has no additions to report. The map artifact sha
+                // appears once the artifact has serialized (SC card §1.3).
+                return new SubsetReport(Mode, [.. Decisions], UnselectedSlotCount,
+                    ClosureAdded?.ToArray() ?? [], [.. Dropped], [.. OptionRecords],
+                    [.. CmapConsumedNotEmitted], [.. Diagnostics], MapArtifactSha256);
+            }
         }
-    }
 }

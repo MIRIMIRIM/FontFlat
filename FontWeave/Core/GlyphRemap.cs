@@ -83,4 +83,13 @@ public sealed class GlyphRemap
         inputGlyph = new(_outputToInput[outputGlyph.Value]);
         return ReadStatus.Done;
     }
+
+    /// <summary>Same-assembly rebuild stages read the reverse order directly: the caller
+    /// has already validated the input GID against the map's own domain, so a per-call
+    /// status protocol would restate the TryCreate invariants without adding a check.</summary>
+    internal int OutputOf(int inputGlyphId) => _inputToOutput[inputGlyphId];
+
+    /// <summary>The frozen output-to-input order itself; read-only by construction and
+    /// never resized after TryCreate (W1 §3.3: a different order is a new operation).</summary>
+    internal ReadOnlySpan<ushort> OutputToInput => _outputToInput;
 }

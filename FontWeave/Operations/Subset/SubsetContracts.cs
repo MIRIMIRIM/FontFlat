@@ -104,9 +104,15 @@ public readonly record struct SubsetOptionRecord(SubsetOptionId Id, uint Tag, st
 
 /// <summary>Compact-remap map artifact (W1 §4.3 content columns). Retain-GIDs never
 /// constructs one and SubsetResult.Map is null there; the producing slice owns the
-/// deterministic serialization whose sha256 is pinned into SubsetReport.</summary>
+/// deterministic serialization whose sha256 is pinned into SubsetReport. The input face
+/// sha256 travels with the process-local identity so an artifact stays traceable across
+/// processes (W1 §7 finding 4); it must be present when the artifact serializes.</summary>
 public sealed record FrozenMapArtifact(long SourceId, int FaceIndex, int FontRevisionRaw,
-    int InputGlyphCount, int OutputGlyphCount, IReadOnlyList<FrozenMapEntry> Entries);
+    int InputGlyphCount, int OutputGlyphCount, IReadOnlyList<FrozenMapEntry> Entries)
+{
+    /// <summary>The source face's full input bytes sha256 (64 hex characters).</summary>
+    public string? InputFaceSha256 { get; init; }
+}
 
 /// <summary>One map artifact row: output ordinal, source ordinal and the stable identity
 /// column's serialized form (W1 §3.4).</summary>
@@ -129,11 +135,12 @@ public sealed class SubsetReport
     private readonly SubsetOptionRecord[] _optionRecords;
     private readonly CmapConsumedRecord[] _cmapConsumedNotEmitted;
     private readonly FontDiagnostic[] _diagnostics;
+    private readonly string? _mapArtifactSha256;
 
     internal SubsetReport(SubsetMode? mode, SubsetTableDecision[] decisions,
         int unselectedSlotCount, ushort[] closureAddedGids, uint[] droppedTables,
         SubsetOptionRecord[] optionRecords, CmapConsumedRecord[] cmapConsumedNotEmitted,
-        FontDiagnostic[] diagnostics)
+        FontDiagnostic[] diagnostics, string? mapArtifactSha256 = null)
     {
         Mode = mode;
         _decisions = decisions;
@@ -143,6 +150,7 @@ public sealed class SubsetReport
         _optionRecords = optionRecords;
         _cmapConsumedNotEmitted = cmapConsumedNotEmitted;
         _diagnostics = diagnostics;
+        _mapArtifactSha256 = mapArtifactSha256;
     }
 
     /// <summary>The declared mode; null when the request was refused before a mode could
@@ -175,17 +183,21 @@ public sealed class SubsetReport
     public IReadOnlyList<CmapConsumedRecord> CmapConsumedNotEmitted =>
         Array.AsReadOnly(_cmapConsumedNotEmitted);
 
-    /// <summary>Compact-remap pins the map artifact sha256 here; Retain-GIDs leaves it
-    /// null because no map artifact exists (W1 §1.4, §4.3).</summary>
-    public string? MapArtifactSha256 => null;
+    /// <summary>Compact-remap pins the canonical map artifact serialization's sha256
+    /// here at the moment the artifact serializes — before any payload work, so a later
+    /// refusal still evidences the frozen map it had frozen (W1 §4.3). A budget failure
+    /// during the serialization itself leaves it null: no artifact exists. Retain-GIDs
+    /// keeps it null because no map artifact exists (W1 §1.4, §4.3).</summary>
+    public string? MapArtifactSha256 => _mapArtifactSha256;
 
     /// <summary>The first failure diagnostic; empty on success (W1 §4.5).</summary>
     public IReadOnlyList<FontDiagnostic> Diagnostics => Array.AsReadOnly(_diagnostics);
 
-    /// <summary>maxp is preserved raw, so its maxp 1.0 maxima are not recomputed. This is
-    /// an explicit fact, not an oversight: retained slots keep their bytes and unselected
-    /// slots become empty, so the original maxima remain upper bounds of the output
-    /// domain (OQ-S1a-10).</summary>
+    /// <summary>The maxp 1.0 maxima are not recomputed: retain-GIDs preserves maxp raw,
+    /// and compact rebuilds maxp with only numGlyphs changed over the map output domain
+    /// (OQ-SC-1, the same shape as OQ-S1a-10). This is an explicit fact, not an
+    /// oversight: the output glyph set is a subset of the input set, so the original
+    /// maxima remain upper bounds of the output domain.</summary>
     public bool MaxpMaximaNotRecomputed => true;
 }
 
