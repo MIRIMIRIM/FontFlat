@@ -233,6 +233,8 @@ public static partial class SubsetOperation
         byte[]? rebuiltPost = null, rebuiltHdmx = null, rebuiltLtsh = null,
             rebuiltVdmx = null;
         byte[]? rebuiltCff = null, rebuiltVorg = null;
+        byte[]? rebuiltGvar = null, rebuiltHvar = null, rebuiltVvar = null,
+            rebuiltCff2 = null;
         byte[]? rebuiltColr = null, rebuiltSvg = null, rebuiltSbix = null,
             rebuiltCbdt = null, rebuiltCblc = null, rebuiltEbdt = null,
             rebuiltEblc = null, rebuiltEbsc = null, rebuiltMerg = null;
@@ -350,6 +352,24 @@ public static partial class SubsetOperation
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result, out report,
                         out diagnostic);
+            }
+            if (rebuildTags.Contains(Gvar))
+            {
+                // SV (card §2.1): the per-glyph tuple blocks re-slot over the
+                // frozen map byte-for-byte; the admission chain's parked model
+                // feeds the rebuild without a second read.
+                if (state.Gvar is not { } gvarModel)
+                {
+                    diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                        faceAt with { TableTag = Gvar }, Gvar);
+                    return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
+                        out result, out report, out diagnostic);
+                }
+                status = RebuildGvar(gvarModel, map!, budget, out rebuiltGvar,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result,
+                        out report, out diagnostic);
             }
             if (rebuildTags.Contains(Colr))
             {
@@ -473,6 +493,10 @@ public static partial class SubsetOperation
                     Merg => rebuiltMerg,
                     Cff => rebuiltCff,
                     Vorg => rebuiltVorg,
+                    Gvar => rebuiltGvar,
+                    Hvar => rebuiltHvar,
+                    Vvar => rebuiltVvar,
+                    Cff2 => rebuiltCff2,
                     _ => null
                 };
                 if (rebuilt is null && state.PayloadDropped.Contains(decision.Tag))
