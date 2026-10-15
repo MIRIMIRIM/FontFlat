@@ -32,8 +32,10 @@ public sealed record SubsetGlyphRoot
 /// declaration is reported (W1 §2.1, OQ-S0-1).</summary>
 public enum SubsetUnknownTableChoice : byte { Drop = 1, Preserve = 2 }
 
-/// <summary>The four explicit caller option families. Everything else is decided by the
-/// frozen policy matrix and cannot be negotiated by a request (W1 §2).</summary>
+/// <summary>The five explicit caller option families (the S2a slice added
+/// PreserveLayout as the fifth member; the original four keep their frozen
+/// semantics byte for byte). Everything else is decided by the frozen policy
+/// matrix and cannot be negotiated by a request (W1 §2).</summary>
 public sealed record SubsetOptions
 {
     /// <summary>Per-tag declarations for out-of-catalogue tags only; a known tag here is
@@ -44,6 +46,15 @@ public sealed record SubsetOptions
     /// JSTF/MATH); false (default) with any of them present refuses the whole operation
     /// and points to S2 (W1 §2.2).</summary>
     public bool NoLayout { get; init; }
+
+    /// <summary>true retains every present layout-family tag raw (S2a card §1.1): the
+    /// operation admits each present layout table through its whole-table typed read
+    /// chain and extends the retained set with the layout reference union before the
+    /// composite closure. Legal only in retain-GIDs mode and only together with
+    /// NoLayout=false — the double-true request refuses outright (S2a RF-D), and a
+    /// compact-remap request keeps the layout-family refusal unchanged (layout
+    /// rewrite is S2b's execution face).</summary>
+    public bool PreserveLayout { get; init; }
 
     /// <summary>true drops fpgm/prep/cvt/LTSH and strips glyf instructions during the
     /// rebuild; gasp is preserved regardless (W1 §2.3, OQ-S0-4).</summary>
@@ -95,7 +106,7 @@ public readonly record struct SubsetTableDecision(uint Tag, TableAction Action,
 public enum SubsetOptionId : byte
 {
     Mode = 1, NoLayout = 2, DropHinting = 3, DropDigitalSignature = 4, ExcludeNotdef = 5,
-    UnknownTable = 6
+    UnknownTable = 6, PreserveLayout = 7
 }
 
 /// <summary>Machine-readable record of one effective option choice, so an auditor can

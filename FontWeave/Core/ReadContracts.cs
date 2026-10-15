@@ -28,7 +28,10 @@ public enum DiagnosticCode : ushort
                                      // (the subset trigger retired by the SV slice; the
                                      // code and its HorizontalMetricsReencodeOperation
                                      // exclusion form remain registered)
-    LayoutFamilyUnsupported = 23,    // S0-RF-004-LAYOUT: "layout", "NoLayout", "S2"
+    LayoutFamilyUnsupported = 23,    // S0-RF-004-LAYOUT: "layout", "NoLayout", "S2";
+                                     // S2a RF-D mutual exclusion: "PreserveLayout";
+                                     // S2a RF-B/RF-C non-enumerable forms carry
+                                     // "metadata-only", "kern", "format <n>", "raw"
     NotdefExcluded = 24,             // S0-RF-005-NOTDEF: ".notdef", "GID 0", "exclude"
     SubsetModeRequired = 25,         // S0-RF-006-MODE: "mode", "SubsetMode"
     CmapFormatUnsupported = 26,      // S0-RF-007..010: "cmap", "format <n>", "unsupported"

@@ -175,6 +175,29 @@ public sealed class SubsetRefusalTests
         Assert.Contains<uint>(SubsetFontFixture.GsubTag, report!.DroppedTables);
     }
 
+    // S2a RF-D (card §1.1): NoLayout and PreserveLayout are mutually exclusive —
+    // the double-true request refuses at step 1 with the code-23 contract, before
+    // any profile or directory work, regardless of the requested mode.
+    [Theory]
+    [InlineData((int)SubsetMode.RetainGids)]
+    [InlineData((int)SubsetMode.CompactRemap)]
+    public void PreserveLayoutMutuallyExclusiveWithNoLayout(SubsetMode mode)
+    {
+        var face = TrueTypeFace();
+        var options = new SubsetOptions { NoLayout = true, PreserveLayout = true };
+        var status = SubsetOperation.TryPrepare(Request(face, [0], mode: mode,
+            options: options), out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Equal(DiagnosticCode.LayoutFamilyUnsupported, diagnostic.Code);
+        Assert.Null(result);
+        Assert.NotNull(report);
+        FontDiagnostic retained = Assert.Single(report!.Diagnostics);
+        Assert.Equal(DiagnosticCode.LayoutFamilyUnsupported, retained.Code);
+        // Step-1 refusal: the option records only form after every request guard
+        // passes, so this refusal carries the diagnostic alone (W1 §2.5 ordering).
+        Assert.Empty(report.OptionRecords);
+    }
+
     // S0-RF-005-NOTDEF: an explicit exclusion expression refuses outright.
     [Fact]
     public void NotdefExclusionRefuses()

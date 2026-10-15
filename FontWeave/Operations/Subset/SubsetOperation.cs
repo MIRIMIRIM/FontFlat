@@ -661,6 +661,16 @@ public static partial class SubsetOperation
             diagnostic = new(DiagnosticCode.NotdefExcluded, request.Face.Location);
             return false;
         }
+        if (options.NoLayout && options.PreserveLayout)
+        {
+            // S2a RF-D (card §1.1): the two layout options are mutually exclusive —
+            // "drop the layout family" and "retain the layout family" have no common
+            // meaning. Same guard shape as the ExcludeNotdef expression above; the
+            // code stays 23 (the zero-new-codes discipline, OQ-S2a-5) and the
+            // registered keyword contract carries both option names.
+            diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported, request.Face.Location);
+            return false;
+        }
         if (options.UnknownTables is { } declared)
         {
             foreach ((uint tag, _) in declared)
@@ -681,6 +691,8 @@ public static partial class SubsetOperation
         // "Selection into the report" (W1 §2.5): every effective option value is recorded.
         state.OptionRecords.Add(new(SubsetOptionId.Mode, 0, mode.ToString()));
         state.OptionRecords.Add(new(SubsetOptionId.NoLayout, 0, options.NoLayout.ToString()));
+        state.OptionRecords.Add(new(SubsetOptionId.PreserveLayout, 0,
+            options.PreserveLayout.ToString()));
         state.OptionRecords.Add(new(SubsetOptionId.DropHinting, 0,
             options.DropHinting.ToString()));
         state.OptionRecords.Add(new(SubsetOptionId.DropDigitalSignature, 0,
@@ -1058,18 +1070,36 @@ public static partial class SubsetOperation
         }
         else if (tag is Kern or Gsub or Gpos or Gdef or Base or Jstf or Math)
         {
-            if (!options.NoLayout)
+            if (options.PreserveLayout && !compact)
+            {
+                // S2a (card §1.1 third state, OQ-S2a-1 lean): the caller's explicit
+                // PreserveLayout selection flips the retain-GIDs column's executed
+                // policy to RETAIN_RAW with the layout-closure obligation — the
+                // admission segment (step 3.5) typed-reads every present layout
+                // table and the closure stage (step 4.5) merges the layout
+                // reference union before the composite closure. The matrix row's
+                // origin stays MatrixRow: the request only pulls the row's third
+                // alternate trigger, it never renegotiates the policy.
+                decision = new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
+                    SubsetDecisionOrigin.MatrixRow);
+            }
+            else if (!options.NoLayout)
             {
                 // Layout retention has no S1 execution path: the request refuses and
-                // points at S2 (W1 §2.2; S0-RF-004-LAYOUT).
+                // points at S2 (W1 §2.2; S0-RF-004-LAYOUT). Compact keeps this shape
+                // under every option combination — the compact layout rewrite is
+                // S2b's execution face and PreserveLayout does not reach it.
                 state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
                     directory.TableLocation(ordinal), tag);
                 diagnostic = state.Diagnostic;
                 return false;
             }
-            decision = new(tag, TableAction.Drop, SubsetPolicy.Delete,
-                SubsetDecisionOrigin.RequestOption);
-            state.Dropped.Add(tag);
+            else
+            {
+                decision = new(tag, TableAction.Drop, SubsetPolicy.Delete,
+                    SubsetDecisionOrigin.RequestOption);
+                state.Dropped.Add(tag);
+            }
         }
         else if (tag is Cvt or Fpgm or Prep or Ltsh)
         {
