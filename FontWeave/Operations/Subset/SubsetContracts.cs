@@ -135,6 +135,11 @@ public readonly record struct FrozenMapEntry(ushort OutputGid, ushort InputGid,
 /// for evidence and registered here instead of being refused or re-emitted (OQ-S1a-2).</summary>
 public readonly record struct CmapConsumedRecord(ushort PlatformId, ushort EncodingId);
 
+/// <summary>Per-table reference census of one retained layout table (OQ-S2a-4): the
+/// number of distinct GIDs the table's reference union enumerated (count level only —
+/// never a per-GID listing). A zero row is the legal no-reference form (BASE).</summary>
+public readonly record struct LayoutTableCensus(uint Tag, int ReferencedGidCount);
+
 /// <summary>Per-table policy report (W1 §4.2 member set). Success and failure paths share
 /// this type: a failure retains every decision formed before the first refusing one plus
 /// the diagnostic itself, and no font bytes are published.</summary>
@@ -147,12 +152,16 @@ public sealed class SubsetReport
     private readonly CmapConsumedRecord[] _cmapConsumedNotEmitted;
     private readonly FontDiagnostic[] _diagnostics;
     private readonly string? _mapArtifactSha256;
+    private readonly ushort[] _layoutClosureAddedGids;
+    private readonly LayoutTableCensus[] _layoutReferenceCensus;
 
     internal SubsetReport(SubsetMode? mode, SubsetTableDecision[] decisions,
         int unselectedSlotCount, ushort[] closureAddedGids, uint[] droppedTables,
         SubsetOptionRecord[] optionRecords, CmapConsumedRecord[] cmapConsumedNotEmitted,
         FontDiagnostic[] diagnostics, string? mapArtifactSha256 = null,
-        CffStaleness? cffStaleness = null, VorgStaleness? vorgStaleness = null)
+        CffStaleness? cffStaleness = null, VorgStaleness? vorgStaleness = null,
+        ushort[]? layoutClosureAddedGids = null,
+        LayoutTableCensus[]? layoutReferenceCensus = null)
     {
         Mode = mode;
         _decisions = decisions;
@@ -165,6 +174,8 @@ public sealed class SubsetReport
         _mapArtifactSha256 = mapArtifactSha256;
         Cff = cffStaleness;
         Vorg = vorgStaleness;
+        _layoutClosureAddedGids = layoutClosureAddedGids ?? [];
+        _layoutReferenceCensus = layoutReferenceCensus ?? [];
     }
 
     /// <summary>The declared mode; null when the request was refused before a mode could
@@ -184,6 +195,20 @@ public sealed class SubsetReport
     /// <summary>GIDs the composite dependency closure pulled into the retained set,
     /// ascending, excluding the root and the implicit GID 0 (card §3).</summary>
     public IReadOnlyList<ushort> ClosureAddedGids => Array.AsReadOnly(_closureAddedGids);
+
+    /// <summary>GIDs the S2a layout reference union pulled into the retained set —
+    /// L \ (seed ∪ {0}) at the moment the merge ran, ascending, before the composite
+    /// closure (S2a card §2.6). Empty on every request without PreserveLayout. The
+    /// implementation invariant keeps this list disjoint from
+    /// <see cref="ClosureAddedGids"/>: the layout merge runs first, and the composite
+    /// closure only ever adds glyphs still unretained.</summary>
+    public IReadOnlyList<ushort> LayoutClosureAddedGids =>
+        Array.AsReadOnly(_layoutClosureAddedGids);
+
+    /// <summary>The per-table reference census of every retained layout table, in the
+    /// admission order (S2a card §2.6): count level only. Empty without PreserveLayout.</summary>
+    public IReadOnlyList<LayoutTableCensus> LayoutReferenceCensus =>
+        Array.AsReadOnly(_layoutReferenceCensus);
 
     /// <summary>Tags whose action is Drop; consistent with Decisions (W1 §4.2).</summary>
     public IReadOnlyList<uint> DroppedTables => Array.AsReadOnly(_droppedTables);

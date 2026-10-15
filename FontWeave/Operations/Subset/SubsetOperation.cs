@@ -1,6 +1,7 @@
 using FontWeave.Containers;
 using FontWeave.Core;
 using FontWeave.Tables;
+using FontWeave.Tables.Layout;
 using FontWeave.Tables.Variation;
 
 namespace FontWeave.Operations.Subset;
@@ -141,6 +142,20 @@ public static partial class SubsetOperation
             return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic, out result,
                 out report, out diagnostic);
 
+        // Step 3.5 (S2a card §2.1): the PreserveLayout admission segment. Only the
+        // retain-GIDs mode's explicit selection reaches here; every present layout
+        // table walks its whole-table typed read chain in the fixed dependency order
+        // and parks its one model on the state. A read-chain failure propagates its
+        // own diagnostic (RF-A); a metadata-only lookup refuses (RF-B).
+        bool preserveLayout = !compact && options.PreserveLayout;
+        if (preserveLayout)
+        {
+            status = AdmitLayoutFamily(directory, profile, maxp!, state, out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+        }
+
         // Step 4: per-record policy decision. The array is reserved up front and the
         // whole loop completes before any payload work (decide-whole-before-compile,
         // MetadataEditOperation.cs:67-94).
@@ -161,6 +176,18 @@ public static partial class SubsetOperation
                     profile.HasCff || profile.HasCff2, out diagnostic))
                 return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic, out result,
                     out report, out diagnostic);
+        }
+
+        // Step 4.5 (S2a card §2.2): the layout reference union merges into the
+        // retained set before the composite closure, so the existing CloseComposites
+        // worklist consumes the extended set unchanged and the two addition lists
+        // stay disjoint.
+        if (preserveLayout)
+        {
+            status = CloseLayoutReferences(state, out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
         }
 
         // Step 5: composite dependency closure over the TrueType profile (card §3). The
@@ -740,25 +767,32 @@ public static partial class SubsetOperation
 
     // ---- face profile (card §1.2) ----
 
-    private sealed class ProfileScan
-    {
-        internal bool HasGlyf, HasLoca, HasCff, HasCff2, HasFvar, HasCmap;
-        internal bool HasHhea, HasHmtx, HasVhea, HasVmtx;
-        internal bool HasCbdt, HasCblc, HasEbdt, HasEblc;
-        // The variable-family presence set (SV card §1): the admission chain walks
-        // every present row against the fvar axis authority.
-        internal bool HasAvar, HasStat, HasGvar, HasCvar, HasHvar, HasVvar, HasMvar,
-            HasCvt;
-        internal int GlyfOrdinal = -1, LocaOrdinal = -1, CffOrdinal = -1, CmapOrdinal = -1;
-        internal int FvarOrdinal = -1, Cff2Ordinal = -1, AvarOrdinal = -1,
-            StatOrdinal = -1, GvarOrdinal = -1, CvarOrdinal = -1, HvarOrdinal = -1,
-            VvarOrdinal = -1, MvarOrdinal = -1, CvtOrdinal = -1;
-        internal DataLocation GlyfLocation, LocaLocation, CffLocation, Cff2Location,
-            FvarLocation, HheaLocation, HmtxLocation, VheaLocation, VmtxLocation,
-            CbdtLocation, CblcLocation, EbdtLocation, EblcLocation;
-        internal DataLocation AvarLocation, StatLocation, GvarLocation, CvarLocation,
-            HvarLocation, VvarLocation, MvarLocation, CvtLocation;
-    }
+        private sealed class ProfileScan
+        {
+            internal bool HasGlyf, HasLoca, HasCff, HasCff2, HasFvar, HasCmap;
+            internal bool HasHhea, HasHmtx, HasVhea, HasVmtx;
+            internal bool HasCbdt, HasCblc, HasEbdt, HasEblc;
+            // The layout-family presence set (S2a card §2.1): the PreserveLayout
+            // admission segment walks them in the fixed dependency order.
+            internal bool HasGdef, HasGsub, HasGpos, HasBase, HasJstf, HasMath, HasKern;
+            // The variable-family presence set (SV card §1): the admission chain walks
+            // every present row against the fvar axis authority.
+            internal bool HasAvar, HasStat, HasGvar, HasCvar, HasHvar, HasVvar, HasMvar,
+                HasCvt;
+            internal int GlyfOrdinal = -1, LocaOrdinal = -1, CffOrdinal = -1, CmapOrdinal = -1;
+            internal int FvarOrdinal = -1, Cff2Ordinal = -1, AvarOrdinal = -1,
+                StatOrdinal = -1, GvarOrdinal = -1, CvarOrdinal = -1, HvarOrdinal = -1,
+                VvarOrdinal = -1, MvarOrdinal = -1, CvtOrdinal = -1;
+            internal int GdefOrdinal = -1, GsubOrdinal = -1, GposOrdinal = -1,
+                BaseOrdinal = -1, JstfOrdinal = -1, MathOrdinal = -1, KernOrdinal = -1;
+            internal DataLocation GlyfLocation, LocaLocation, CffLocation, Cff2Location,
+                FvarLocation, HheaLocation, HmtxLocation, VheaLocation, VmtxLocation,
+                CbdtLocation, CblcLocation, EbdtLocation, EblcLocation;
+            internal DataLocation AvarLocation, StatLocation, GvarLocation, CvarLocation,
+                HvarLocation, VvarLocation, MvarLocation, CvtLocation;
+            internal DataLocation GdefLocation, GsubLocation, GposLocation, BaseLocation,
+                JstfLocation, MathLocation, KernLocation;
+        }
 
     private static ProfileScan ScanProfile(SfntDirectoryView directory)
     {
@@ -825,6 +859,34 @@ public static partial class SubsetOperation
                     break;
                 case Cmap when !scan.HasCmap:
                     scan.HasCmap = true; scan.CmapOrdinal = i;
+                    break;
+                case Gdef when !scan.HasGdef:
+                    scan.HasGdef = true; scan.GdefOrdinal = i;
+                    scan.GdefLocation = directory.TableLocation(i);
+                    break;
+                case Gsub when !scan.HasGsub:
+                    scan.HasGsub = true; scan.GsubOrdinal = i;
+                    scan.GsubLocation = directory.TableLocation(i);
+                    break;
+                case Gpos when !scan.HasGpos:
+                    scan.HasGpos = true; scan.GposOrdinal = i;
+                    scan.GposLocation = directory.TableLocation(i);
+                    break;
+                case Base when !scan.HasBase:
+                    scan.HasBase = true; scan.BaseOrdinal = i;
+                    scan.BaseLocation = directory.TableLocation(i);
+                    break;
+                case Jstf when !scan.HasJstf:
+                    scan.HasJstf = true; scan.JstfOrdinal = i;
+                    scan.JstfLocation = directory.TableLocation(i);
+                    break;
+                case Math when !scan.HasMath:
+                    scan.HasMath = true; scan.MathOrdinal = i;
+                    scan.MathLocation = directory.TableLocation(i);
+                    break;
+                case Kern when !scan.HasKern:
+                    scan.HasKern = true; scan.KernOrdinal = i;
+                    scan.KernLocation = directory.TableLocation(i);
                     break;
                 case Hhea when !scan.HasHhea:
                     scan.HasHhea = true; scan.HheaLocation = directory.TableLocation(i);
@@ -1305,6 +1367,18 @@ public static partial class SubsetOperation
             internal HvarTable? Hvar;
             internal VvarTable? Vvar;
             internal Cff2Table? Cff2;
+            // The S2a PreserveLayout admission segment's materialized layout models
+            // (card §2.1): one whole-table model per present layout table, parked once
+            // and consumed by the closure and its verification without a second read.
+            internal GdefTable? Gdef;
+            internal GdefLookupContext? GdefContext;
+            internal LayoutListsTable? Gsub;
+            internal LayoutListsTable? Gpos;
+            // The layout union's additions (L \ (seed ∪ {0}), ascending — the merge
+            // happened before the composite closure, so the two addition lists stay
+            // disjoint by construction) and the per-table reference census (OQ-S2a-4).
+            internal List<ushort>? LayoutClosureAdded;
+            internal List<LayoutTableCensus>? LayoutReferenceCensus;
 
             /// <summary>Tags a SE rebuild stage found empty after pruning (OQ-SE-5):
             /// the payload-time drop revises the decide-stage Rebuild before any byte
@@ -1331,7 +1405,9 @@ public static partial class SubsetOperation
                 return new SubsetReport(Mode, [.. Decisions], UnselectedSlotCount,
                     ClosureAdded?.ToArray() ?? [], [.. Dropped], [.. OptionRecords],
                     [.. CmapConsumedNotEmitted], [.. Diagnostics], MapArtifactSha256,
-                    CffStaleness, VorgStaleness);
+                    CffStaleness, VorgStaleness,
+                    LayoutClosureAdded?.ToArray() ?? [],
+                    LayoutReferenceCensus?.ToArray() ?? []);
             }
         }
 }
