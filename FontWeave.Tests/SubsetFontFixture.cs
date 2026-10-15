@@ -19,7 +19,8 @@ internal static class SubsetFontFixture
     // fixtures, per the shared-fixture convention (never edit an existing member).
     internal const uint Cff2Tag = 0x43464632, GvarTag = 0x67766172, HvarTag = 0x48564152,
         VvarTag = 0x56564152, CvarTag = 0x63766172, MvarTag = 0x4D564152,
-        AvarTag = 0x61766172, StatTag = 0x53544154, CvtTag = 0x63767420;
+        AvarTag = 0x61766172, StatTag = 0x53544154, CvtTag = 0x63767420,
+        VorgTag = 0x564F5247;
 
     /// <summary>Assembles a standalone sfnt 1.0 directory over the given tables, records
     /// sorted by tag and payloads 4-byte aligned, mirroring the container's own layout.

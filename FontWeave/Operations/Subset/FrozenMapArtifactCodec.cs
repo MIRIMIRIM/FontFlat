@@ -28,12 +28,22 @@ public static class FrozenMapArtifactCodec
     /// <summary>The CFF1 CID-keyed kind (S1c card §4): the input charset CID, decimal.</summary>
     public static string Cff1CidStableIdentity(int inputCid) => $"cff1-cid:{inputCid}";
 
+    /// <summary>The CFF2 kind (SV card §3, OQ-SV-4 lean): the input GID itself,
+    /// decimal. CFF2's TopDICT carries no charset/encoding/String INDEX (the
+    /// five-operator whitelist), so the CharStrings INDEX order — the input GID —
+    /// is the only glyph identity source; FDSelect's FD numbers are explicit wire
+    /// attribute fields and stay out of the identity (the W1 §3.4 "+FDSelect"
+    /// reading corrected to an attribute domain carried by the rebuild).</summary>
+    public static string Cff2IdxStableIdentity(ushort inputGid) => $"cff2-idx:{inputGid}";
+
     /// <summary>The kind prefixes of the additive stable-identity grammar (S1c card
-    /// §1.3): one glyph row carries exactly one, and one artifact carries exactly one
-    /// kind across all rows. The schema literal stays fontweave.frozen-map/1 — W1 §3.4
-    /// never closed the Kind set, and the extension leaves every glyf row's serialized
-    /// bytes bit-identical (OQ-S1c-5 lean).</summary>
-    private static readonly string[] IdentityKinds = ["glyf:", "cff1-sid:", "cff1-cid:"];
+    /// §1.3; the CFF2 kind appended by the SV slice): one glyph row carries exactly
+    /// one, and one artifact carries exactly one kind across all rows. The schema
+    /// literal stays fontweave.frozen-map/1 — W1 §3.4 never closed the Kind set,
+    /// and the extension leaves every glyf/cff1 row's serialized bytes
+    /// bit-identical (OQ-S1c-5 lean carried forward).</summary>
+    private static readonly string[] IdentityKinds =
+        ["glyf:", "cff1-sid:", "cff1-cid:", "cff2-idx:"];
 
     private static string? KindOf(string identity)
     {

@@ -217,4 +217,43 @@ public static partial class SubsetOperation
         return VvarTableCompiler.TryCompile(rebuilt!, out vvarBytes,
             out diagnostic, budget);
     }
+
+    // ---- CFF2 (SV card §2.5) ------------------------------------------------------
+
+    /// <summary>Re-slots the parked CFF2 model over the frozen map (OQ-SV-4
+    ///attached lean): output item o of the CharString INDEX is the input item
+    /// <c>outputToInput[o]</c> as a byte[] reference move (zero copies, zero
+    /// charstring semantics — the blend/vsindex operand domains are never
+    /// touched), the per-glyph FD index re-slots the same way (FD numbers are
+    /// explicit wire attribute fields whose value domain never renumbers), and
+    /// every other member — TopDICT, GlobalSubrs, FDArray with its Private
+    /// DICTs and LocalSubrs, the FDSelect wire format, the variation store —
+    /// carries over verbatim on the derived model, whose compile re-runs the
+    /// layout fixpoint over the subset sizes and re-answers the FDSelect runs
+    /// in the source's format family. The re-slot deliberately bypasses the
+    /// TryCreate factory: the read model is already fully guarded, and staying
+    /// on it keeps the "zero charstring semantics" boundary literal.</summary>
+    private static ReadStatus RebuildCff2(Tables.Cff2Table model, GlyphRemap map,
+        BuildBudget budget, out byte[]? cff2Bytes, out FontDiagnostic diagnostic)
+    {
+        cff2Bytes = null;
+        var inputOrder = map.OutputToInput;
+        int outputCount = map.OutputGlyphCount;
+        if (!budget.Work(outputCount, model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var charStrings = new byte[outputCount][];
+        var fdIndex = new int[outputCount];
+        for (int o = 0; o < outputCount; o++)
+        {
+            int input = inputOrder[o];
+            charStrings[o] = model.CharStrings[input];
+            fdIndex[o] = model.FdIndex[input];
+        }
+        var rebuilt = new Tables.Cff2Table(model.MinorVersion, model.HeaderSize,
+            model.TopDictInternal, model.HasVariationStore, model.GlobalSubrsInternal,
+            charStrings, model.FontDictsInternal, model.FdSelectFormat, fdIndex,
+            model.Store, model.CharstringStats, model.Location, model.ConsumedLength);
+        return Tables.Cff2TableCompiler.TryCompile(rebuilt, out cff2Bytes,
+            out diagnostic, budget);
+    }
 }

@@ -228,7 +228,18 @@ public static class Cff2TableCompiler
         var limits = outputBudget is int budget
             ? new BuildLimits { MaxOutputBytes = budget }
             : new BuildLimits();
-        return Compile(model, out bytes, out diagnostic, new BuildBudget(limits));
+        return TryCompile(model, out bytes, out diagnostic, new BuildBudget(limits));
+    }
+
+    // The budget-bearing form for the same-assembly pipeline producers (SV card
+    // §2.5's engineering note): an additive internal overload over the shared
+    // planned emission, the public int?-budget contract unchanged.
+    internal static ReadStatus TryCompile(Cff2Table model, out byte[]? bytes,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        bytes = null;
+        ArgumentNullException.ThrowIfNull(model);
+        return Compile(model, out bytes, out diagnostic, budget);
     }
 
     /// <summary>Deterministic write through the same planned emission; every plan

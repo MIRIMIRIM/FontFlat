@@ -22,8 +22,9 @@ namespace FontWeave.Operations.Subset;
 public static partial class SubsetOperation
 {
     private static ReadStatus FreezeCompactMap(FontFaceRef face, HeadTable head,
-        bool[] retained, SfntDirectoryView directory, int cffOrdinal, PrepareState state,
-        BuildBudget budget, out GlyphRemap? map, out FontDiagnostic diagnostic)
+        bool[] retained, SfntDirectoryView directory, int cffOrdinal, bool cff2Face,
+        PrepareState state, BuildBudget budget, out GlyphRemap? map,
+        out FontDiagnostic diagnostic)
     {
         map = null;
         // One walk over the final retained set lays the output order; the work unit
@@ -78,7 +79,12 @@ public static partial class SubsetOperation
         }
         else
         {
-            // glyf kind: the ascending input GID is the ascending stable identity.
+            // glyf kind and the CFF2 kind (SV card §3, OQ-SV-4): both faces'
+            // ascending stable identity is the ascending input GID itself — a
+            // CFF2 TopDICT carries no charset, so the CharStrings INDEX order IS
+            // the GID order — and the ordering below stays the shared glyf
+            // branch; only the artifact's kind label differs (the entry loop
+            // picks cff2-idx:).
             identities = ReadOnlySpan<int>.Empty;
         }
 
@@ -120,7 +126,9 @@ public static partial class SubsetOperation
         {
             int input = outputToInput[o];
             entries[o] = new((ushort)o, (ushort)input, cffOrdinal < 0
-                ? FrozenMapArtifactCodec.GlyfStableIdentity((ushort)input)
+                ? (cff2Face
+                    ? FrozenMapArtifactCodec.Cff2IdxStableIdentity((ushort)input)
+                    : FrozenMapArtifactCodec.GlyfStableIdentity((ushort)input))
                 : state.CffCidKeyed is not null
                     ? FrozenMapArtifactCodec.Cff1CidStableIdentity(
                         state.CffCidKeyed.CharsetCids[input])

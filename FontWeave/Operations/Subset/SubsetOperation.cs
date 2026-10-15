@@ -188,7 +188,8 @@ public static partial class SubsetOperation
         if (compact)
         {
             status = FreezeCompactMap(request.Face, head!, state.Retained, directory,
-                profile.CffOrdinal, state, budget, out map, out diagnostic);
+                profile.CffOrdinal, profile.HasCff2, state, budget, out map,
+                out diagnostic);
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
@@ -402,6 +403,25 @@ public static partial class SubsetOperation
                         out result, out report, out diagnostic);
                 }
                 status = RebuildVvar(vvarModel, map!, budget, out rebuiltVvar,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result,
+                        out report, out diagnostic);
+            }
+            if (rebuildTags.Contains(Cff2))
+            {
+                // SV (card §2.5): the CharStrings INDEX items and the per-glyph
+                // FD index re-slot over the frozen map as reference moves; the
+                // admission chain's parked model feeds the rebuild without a
+                // second read.
+                if (state.Cff2 is not { } cff2Model)
+                {
+                    diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                        faceAt with { TableTag = Cff2 }, Cff2);
+                    return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
+                        out result, out report, out diagnostic);
+                }
+                status = RebuildCff2(cff2Model, map!, budget, out rebuiltCff2,
                     out diagnostic);
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result,
@@ -893,12 +913,19 @@ public static partial class SubsetOperation
                     out refusalStatus, out diagnostic))
                 return false;
         }
-        if (profile.HasFvar || profile.HasCff2)
+        if (profile.HasFvar || profile.HasCff2 || profile.HasGvar ||
+            profile.HasCvar || profile.HasHvar || profile.HasVvar ||
+            profile.HasMvar)
         {
             // The variable-font profile (SV card §1): fvar promotes from refusal
             // trigger to profile discriminating input, and both modes walk the one
             // admission chain — A1/A3/A5's combination guards, the fvar axis
-            // authority, the family consistency walk and the CFF2 typed read.
+            // authority, the family consistency walk and the CFF2 typed read. The
+            // GID/store-coupled rows (gvar/cvar/HVAR/VVAR/MVAR) also trigger the
+            // chain without fvar: their T5-02 explicit contracts re-answer against
+            // the zero axis count and refuse through the read chains' own
+            // diagnostics (the gvar-actual-fvar-dependency-missing witness), so a
+            // broken face never rides a raw copy over its stale GID domain.
             if (!TryAdmitVariableFace(directory, profile, maxp, state,
                     out refusalStatus, out diagnostic))
                 return false;
