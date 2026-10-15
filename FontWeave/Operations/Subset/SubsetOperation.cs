@@ -326,6 +326,72 @@ public static partial class SubsetOperation
                         out diagnostic);
                 if (colrDropped) state.PayloadDropped.Add(Colr);
             }
+            HashSet<int> survivingStrikes = [];
+            if (rebuildTags.Contains(Cbdt))
+            {
+                // SE (card §2.4): the bitmap pool+index pair rebuilds jointly over
+                // the frozen map (the RE1 pairing gate already ran at admission).
+                status = RebuildCbdtCblc(directory, maxp!, map!, budget,
+                    out rebuiltCbdt, out rebuiltCblc, out bool cbdtDropped,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+                if (cbdtDropped)
+                {
+                    state.PayloadDropped.Add(Cbdt);
+                    state.PayloadDropped.Add(Cblc);
+                }
+            }
+            if (rebuildTags.Contains(Ebdt))
+            {
+                // SE (card §2.5): the EBDT/EBLC pair mirrors the CBDT/CBLC walk;
+                // the surviving strike ppem pairs feed the EBSC record filter.
+                status = RebuildEbdtEblc(directory, maxp!, map!, budget,
+                    out rebuiltEbdt, out rebuiltEblc, out survivingStrikes,
+                    out bool ebdtDropped, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+                if (ebdtDropped)
+                {
+                    state.PayloadDropped.Add(Ebdt);
+                    state.PayloadDropped.Add(Eblc);
+                }
+            }
+            if (rebuildTags.Contains(Ebsc))
+            {
+                // SE (card §2.5): EBSC rides the rebuilt strike set; a missing EBLC
+                // partner propagates the paired read chain's own refusal (RE2).
+                status = RebuildEbsc(directory, maxp!, survivingStrikes, budget,
+                    out rebuiltEbsc, out bool ebscDropped, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+                if (ebscDropped) state.PayloadDropped.Add(Ebsc);
+            }
+            if (rebuildTags.Contains(Sbix))
+            {
+                // SE (card §2.3): strike slots re-slot over the output domain with
+                // the dupe targets remapped (RE3 on a dangling one).
+                status = RebuildSbix(directory, maxp!, map!, budget, out rebuiltSbix,
+                    out bool sbixDropped, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+                if (sbixDropped) state.PayloadDropped.Add(Sbix);
+            }
+            if (rebuildTags.Contains(Svg))
+            {
+                // SE (card §2.2): document records re-span over the surviving
+                // spans; unreferenced documents drop, bytes stay verbatim.
+                status = RebuildSvg(directory, map!, budget, out rebuiltSvg,
+                    out bool svgDropped, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+                if (svgDropped) state.PayloadDropped.Add(Svg);
+            }
         }
         var tables = new SortedDictionary<uint, byte[]>();
         for (int i = 0; i < directory.DeclaredCount; i++)
