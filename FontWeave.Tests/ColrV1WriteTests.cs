@@ -362,6 +362,44 @@ public sealed class ColrV1WriteTests
     }
 
     [Fact]
+    public void FactoryRefusesThePaintGlyphOutputDomainKeyByKey()
+    {
+        // The PaintGlyph output glyph domain (spec L1019): the factory's
+        // OwnedWalk re-answers it before the child edge - the read side's
+        // VisitPaintGlyph face in its order, the six keys pinned key by key.
+        var solid = new ColrPaintSolid(1, 3, 0x4000);
+        var overDomain = new ColrPaintGlyph(0, 1, 9);
+        ReadStatus status = ColrTableCompiler.TryCreate(
+            [new ColrBaseGlyphPaint(3, 0)], [], [], [overDomain, solid], 4, 4,
+            out var model, out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidIndex, status);
+        Assert.Equal(DiagnosticCode.IndexOutOfRange, diagnostic.Code);
+        Assert.Equal(DataField.GlyphId, diagnostic.Location.Field);
+        Assert.Equal(0uL, diagnostic.Location.Offset);
+        Assert.Equal(0, diagnostic.Location.RecordOrdinal);
+        Assert.Equal(9uL, diagnostic.Detail);
+        Assert.Equal(4uL, diagnostic.Expected);
+        Assert.Null(model); // the refusal predates the model (the atomicity face)
+
+        // The symmetric wing: the same graph inside the domain goes Done, and
+        // TryCompileV1's emission holds its write-read-write fixed point - the
+        // compile path stays untouched by the factory's new domain.
+        var insideDomain = new ColrPaintGlyph(0, 1, 3);
+        status = ColrTableCompiler.TryCreate(
+            [new ColrBaseGlyphPaint(3, 0)], [], [], [insideDomain, solid], 4, 4,
+            out model, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(model);
+        Assert.Equal(ReadStatus.Done,
+            ColrTableCompiler.TryCompileV1(model!, out var bytes, out _));
+        Assert.NotNull(bytes);
+        ColrTable reRead = Read(bytes!);
+        Assert.Equal(ReadStatus.Done,
+            ColrTableCompiler.TryCompileV1(reRead, out var again, out _));
+        Assert.Equal(bytes, again);
+    }
+
+    [Fact]
     public void VarSlotsEmitZeroAndShortDestinationLeavesTheSpanUntouched()
     {
         // The no-variation host: both header slots read 0 and a model without
