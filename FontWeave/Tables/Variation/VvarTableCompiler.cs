@@ -22,11 +22,20 @@ public static class VvarTableCompiler
     public static ReadStatus TryCreate(VariationStoreTable store, DeltaSetIndexMapTable? advanceMap,
         DeltaSetIndexMapTable? tsbMap, DeltaSetIndexMapTable? bsbMap, DeltaSetIndexMapTable? vOrgMap,
         int axisCount, int numGlyphs, out VvarTable? model, out FontDiagnostic diagnostic,
-        BuildLimits? limits = null, DataLocation location = default)
+        BuildLimits? limits = null, DataLocation location = default) =>
+        TryCreate(store, advanceMap, tsbMap, bsbMap, vOrgMap, axisCount, numGlyphs,
+            out model, out diagnostic, new BuildBudget(limits), location);
+
+    // The budget-bearing form for the same-assembly pipeline producers (SV card
+    // §2.3): an additive internal overload, the public contract unchanged.
+    internal static ReadStatus TryCreate(VariationStoreTable store,
+        DeltaSetIndexMapTable? advanceMap, DeltaSetIndexMapTable? tsbMap,
+        DeltaSetIndexMapTable? bsbMap, DeltaSetIndexMapTable? vOrgMap, int axisCount,
+        int numGlyphs, out VvarTable? model, out FontDiagnostic diagnostic,
+        BuildBudget budget, DataLocation location = default)
     {
         model = null;
         ArgumentNullException.ThrowIfNull(store);
-        var budget = new BuildBudget(limits);
         ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, location, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (store.AxisCount != axisCount)

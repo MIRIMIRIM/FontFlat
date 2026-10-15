@@ -22,11 +22,20 @@ public static class HvarTableCompiler
     public static ReadStatus TryCreate(VariationStoreTable store, DeltaSetIndexMapTable? advanceMap,
         DeltaSetIndexMapTable? lsbMap, DeltaSetIndexMapTable? rsbMap, int axisCount, int numGlyphs,
         out HvarTable? model, out FontDiagnostic diagnostic, BuildLimits? limits = null,
+        DataLocation location = default) =>
+        TryCreate(store, advanceMap, lsbMap, rsbMap, axisCount, numGlyphs, out model,
+            out diagnostic, new BuildBudget(limits), location);
+
+    // The budget-bearing form for the same-assembly pipeline producers (SV card
+    // §2.3): an additive internal overload, the public contract unchanged.
+    internal static ReadStatus TryCreate(VariationStoreTable store,
+        DeltaSetIndexMapTable? advanceMap, DeltaSetIndexMapTable? lsbMap,
+        DeltaSetIndexMapTable? rsbMap, int axisCount, int numGlyphs,
+        out HvarTable? model, out FontDiagnostic diagnostic, BuildBudget budget,
         DataLocation location = default)
     {
         model = null;
         ArgumentNullException.ThrowIfNull(store);
-        var budget = new BuildBudget(limits);
         ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, location, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (store.AxisCount != axisCount)

@@ -158,7 +158,7 @@ public static partial class SubsetOperation
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
             if (!TryDecideTable(directory, i, record.Tag, options, state,
-                    profile.HasCff, out diagnostic))
+                    profile.HasCff || profile.HasCff2, out diagnostic))
                 return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic, out result,
                     out report, out diagnostic);
         }
@@ -366,6 +366,42 @@ public static partial class SubsetOperation
                         out result, out report, out diagnostic);
                 }
                 status = RebuildGvar(gvarModel, map!, budget, out rebuiltGvar,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result,
+                        out report, out diagnostic);
+            }
+            if (rebuildTags.Contains(Hvar))
+            {
+                // SV (card §2.3): the store re-emits byte-identical; the advance
+                // map re-roots over the frozen map (explicit entries resolve in
+                // the input domain, a NULL advance map materializes, OQ-SV-6).
+                if (state.Hvar is not { } hvarModel)
+                {
+                    diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                        faceAt with { TableTag = Hvar }, Hvar);
+                    return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
+                        out result, out report, out diagnostic);
+                }
+                status = RebuildHvar(hvarModel, map!, budget, out rebuiltHvar,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result,
+                        out report, out diagnostic);
+            }
+            if (rebuildTags.Contains(Vvar))
+            {
+                // SV (card §2.3): the VVAR twin — advanceHeight rides the HVAR
+                // map semantics, tsb/bsb/vOrg keep their NULL no-variation slots
+                // (OQ-T5-04-4; materializing them would invent data).
+                if (state.Vvar is not { } vvarModel)
+                {
+                    diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                        faceAt with { TableTag = Vvar }, Vvar);
+                    return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
+                        out result, out report, out diagnostic);
+                }
+                status = RebuildVvar(vvarModel, map!, budget, out rebuiltVvar,
                     out diagnostic);
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result,
@@ -936,7 +972,7 @@ public static partial class SubsetOperation
     // ---- per-table policy decision (card §2 step 4; matrix retainGidsPolicy column) ----
 
     private static bool TryDecideTable(SfntDirectoryView directory, int ordinal, uint tag,
-        SubsetOptions options, PrepareState state, bool cffFace,
+        SubsetOptions options, PrepareState state, bool cffOrCff2Face,
         out FontDiagnostic diagnostic)
     {
         diagnostic = default;
@@ -1063,13 +1099,16 @@ public static partial class SubsetOperation
         }
         else if (compact && tag == Vorg)
         {
-            if (!cffFace)
+            if (!cffOrCff2Face)
             {
-                // RC2 (SC card §3): on a face whose outline spine the CFF rebuild does
-                // not serve, the VORG compact rebuild has no execution path, so the
-                // request refuses instead of leaving per-GID records on stale GIDs.
-                // Keyword contract: "VORG"/"compact"/"rebuild"; code UnsupportedOperation
-                // (=17), unchanged since SC.
+                // RC2 (SC card §3, widened by the SV slice's OQ-SV-7 lean): on a
+                // face whose outline spine no CFF rebuild serves, the VORG compact
+                // rebuild has no execution path, so the request refuses instead of
+                // leaving per-GID records on stale GIDs. VORG is a CFF-domain
+                // per-GID table and a CFF2 face legally carries it, so the CFF2
+                // face now rides the same remap as the CFF1 face (SV card §2.7).
+                // Keyword contract: "VORG"/"compact"/"rebuild"; code
+                // UnsupportedOperation (=17), unchanged since SC.
                 state.Diagnostic = new(DiagnosticCode.UnsupportedOperation,
                     directory.TableLocation(ordinal), tag);
                 diagnostic = state.Diagnostic;
