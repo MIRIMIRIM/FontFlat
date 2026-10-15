@@ -30,7 +30,12 @@ public sealed class SubsetRefusalTests
         (SubsetFontFixture.LocaTag, GlyfImages.LongLoca([0, 12])),
         (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapShell(4)));
 
-    // S0-RF-001-VF: the vf gate is the unique remaining trigger (fvar present).
+    // S0-RF-001-VF, migrated (SV card §4 M1): the former vf-input-gate refusal
+    // (StaticProfileRequired at the frozen freeze) executes since the SV slice —
+    // the retained execution expectation is carried by
+    // SubsetVfProfileTests.VariableTrueTypeFaceRetainExecutesWithRawVariableFamily
+    // and the SV gate. This face shape (fvar present, no variable outline spine)
+    // keeps a finite refusal under the profile code: A1 names fvar (SV card §4).
     [Fact]
     public void VariableFontRefuses()
     {
@@ -41,11 +46,12 @@ public sealed class SubsetRefusalTests
         var status = SubsetOperation.TryPrepare(Request(face, [0, 1]), out var result,
             out var report, out var diagnostic);
         Assert.Equal(ReadStatus.UnsupportedFormat, status);
-        Assert.Equal(DiagnosticCode.StaticProfileRequired, diagnostic.Code);
+        Assert.Equal(DiagnosticCode.OutlineProfileUnsupported, diagnostic.Code);
+        Assert.Equal(SubsetFontFixture.FvarTag, diagnostic.Location.TableTag);
         Assert.Null(result);
         Assert.NotNull(report);
         FontDiagnostic retained = Assert.Single(report!.Diagnostics);
-        Assert.Equal(DiagnosticCode.StaticProfileRequired, retained.Code);
+        Assert.Equal(DiagnosticCode.OutlineProfileUnsupported, retained.Code);
     }
 
     // S0-RF-002-UNKNOWN: an undeclared out-of-catalogue tag refuses with the pinned code.

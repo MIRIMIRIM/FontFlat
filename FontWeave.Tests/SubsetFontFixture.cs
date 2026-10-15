@@ -15,6 +15,11 @@ internal static class SubsetFontFixture
         LocaTag = 0x6C6F6361, CmapTag = 0x636D6170, NameTag = 0x6E616D65,
         GsubTag = 0x47535542, DsigTag = 0x44534947, PostTag = 0x706F7374,
         FvarTag = 0x66766172, CffTag = 0x43464620, ZzZzTag = 0x5A7A5A7A;
+    // The variable-family tags (SV slice): append-only additions for the VF profile
+    // fixtures, per the shared-fixture convention (never edit an existing member).
+    internal const uint Cff2Tag = 0x43464632, GvarTag = 0x67766172, HvarTag = 0x48564152,
+        VvarTag = 0x56564152, CvarTag = 0x63766172, MvarTag = 0x4D564152,
+        AvarTag = 0x61766172, StatTag = 0x53544154, CvtTag = 0x63767420;
 
     /// <summary>Assembles a standalone sfnt 1.0 directory over the given tables, records
     /// sorted by tag and payloads 4-byte aligned, mirroring the container's own layout.
@@ -305,6 +310,97 @@ internal static class SubsetFontFixture
     }
 
     internal static byte[] Dummy(int length = 16) => new byte[length];
+
+    // ---- variable-family fixtures (SV slice; append-only) ------------------------
+
+    /// <summary>A valid maxp 0.5 (the CFF/CFF2 face's version): version word plus
+    /// numGlyphs, nothing else.</summary>
+    internal static byte[] Maxp05(ushort numGlyphs)
+    {
+        var bytes = new byte[6];
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0), 0x00005000);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), numGlyphs);
+        return bytes;
+    }
+
+    /// <summary>A valid fvar 1.0 carrying <paramref name="axisCount"/> 'wght'-tagged
+    /// axes in [0, 1, 1] and zero instances (the axes' name ID 256 is the hard
+    /// domain's floor). The subset operation reads this table as the axis authority;
+    /// the wire layout is test-side independent encoding.</summary>
+    internal static byte[] Fvar(ushort axisCount = 1)
+    {
+        var bytes = new byte[16 + 20 * axisCount];
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0), 0x00010000);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), 16);  // axesArrayOffset
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6), 2);   // reserved
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(8), axisCount);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(10), 20); // axisSize
+        // instanceCount/instanceSize stay zero
+        for (int i = 0; i < axisCount; i++)
+        {
+            int at = 16 + 20 * i;
+            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(at), 0x77676874); // 'wght'
+            BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(at + 4), 0);        // min 0.0 (Fixed)
+            BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(at + 8), 0x00010000);  // default 1.0
+            BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(at + 12), 0x00010000); // max 1.0
+            // flags 0; axisNameID 256 (the hard floor)
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 18), 256);
+        }
+        return bytes;
+    }
+
+    /// <summary>A valid gvar 1.0 whose every glyph carries the absent-block form
+    /// (the offsets array is all zeros, short form): header plus offsets only.
+    /// The compact rebuild re-splices the per-GID blocks; the retain path copies
+    /// this table raw.</summary>
+    internal static byte[] Gvar(ushort axisCount, ushort numGlyphs)
+    {
+        int sharedTuplesOffset = 20 + (numGlyphs + 1) * 2;
+        var bytes = new byte[sharedTuplesOffset];
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0), 0x00010000);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), axisCount);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6), 0);   // sharedTupleCount
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(8), (uint)sharedTuplesOffset);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(12), numGlyphs);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(14), 0);  // flags: short form
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16), (uint)sharedTuplesOffset);
+        // the numGlyphs+1 short offsets stay zero: every block absent
+        return bytes;
+    }
+
+    /// <summary>A valid HVAR 1.0 over one region axis and one VarData subtable whose
+    /// item count covers the glyph domain (the NULL advance map's implicit domain),
+    /// all three maps NULL. Region coordinates are all zero (a degenerate but legal
+    /// region); the delta rows are zero bytes.</summary>
+    internal static byte[] Hvar(ushort axisCount, ushort numGlyphs)
+    {
+        int ivsAt = 20;
+        int regionListAt = ivsAt + 12;                         // IVS header 8 + one data offset 4
+        int varDataAt = regionListAt + 4 + 6 * axisCount;      // region list: two counts + axes
+        int varDataLength = 6 + 2 + numGlyphs;                 // header + one region index + rows
+        var bytes = new byte[varDataAt + varDataLength];
+        // HVAR header: version 1.0, store at 20, the three maps NULL.
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0), 0x00010000);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(4), (uint)ivsAt);
+        // IVS: format 1, region list, one VarData.
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(ivsAt), 1);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(ivsAt + 2), (uint)(regionListAt - ivsAt));
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(ivsAt + 6), 1);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(ivsAt + 8), (uint)(varDataAt - ivsAt));
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(regionListAt), axisCount);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(regionListAt + 2), 1); // regionCount
+        // the axis triples stay zero (start = peak = end = 0)
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(varDataAt), numGlyphs);   // itemCount
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(varDataAt + 2), 0);       // wordDeltaCount
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(varDataAt + 4), 1);       // regionIndexCount
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(varDataAt + 6), 0);       // regionIndexes[0]
+        // the delta rows stay zero bytes
+        return bytes;
+    }
+
+    /// <summary>A cvt table with <paramref name="valueCount"/> zero entries (the
+    /// cvar pairing partner's value-count authority).</summary>
+    internal static byte[] Cvt(ushort valueCount) => new byte[2 * valueCount];
 
     /// <summary>A one-contour one-point simple glyph carrying one instruction byte and
     /// short-coordinate deltas; 18 bytes on the wire.</summary>

@@ -1,6 +1,7 @@
 using FontWeave.Containers;
 using FontWeave.Core;
 using FontWeave.Tables;
+using FontWeave.Tables.Variation;
 
 namespace FontWeave.Operations.Subset;
 
@@ -44,6 +45,9 @@ public static partial class SubsetOperation
         Sbix = 0x73626978, Cbdt = 0x43424454, Cblc = 0x43424C43, Ebdt = 0x45424454,
         Eblc = 0x45424C43, Ebsc = 0x45425343, Gvar = 0x67766172, Cvar = 0x63766172,
         Hvar = 0x48564152, Vvar = 0x56564152, Mvar = 0x4D564152, Cpal = 0x4350414C;
+    // The remaining variable-family tags (SV card §1): the admission chain walks
+    // them against the fvar axis authority.
+    private const uint Avar = 0x61766172, Stat = 0x53544154;
 
     public static ReadStatus TryPrepare(SubsetRequest request, out SubsetResult? result,
         out SubsetReport? report, out FontDiagnostic diagnostic, BuildLimits? limits = null)
@@ -649,10 +653,19 @@ public static partial class SubsetOperation
         internal bool HasGlyf, HasLoca, HasCff, HasCff2, HasFvar, HasCmap;
         internal bool HasHhea, HasHmtx, HasVhea, HasVmtx;
         internal bool HasCbdt, HasCblc, HasEbdt, HasEblc;
+        // The variable-family presence set (SV card §1): the admission chain walks
+        // every present row against the fvar axis authority.
+        internal bool HasAvar, HasStat, HasGvar, HasCvar, HasHvar, HasVvar, HasMvar,
+            HasCvt;
         internal int GlyfOrdinal = -1, LocaOrdinal = -1, CffOrdinal = -1, CmapOrdinal = -1;
+        internal int FvarOrdinal = -1, Cff2Ordinal = -1, AvarOrdinal = -1,
+            StatOrdinal = -1, GvarOrdinal = -1, CvarOrdinal = -1, HvarOrdinal = -1,
+            VvarOrdinal = -1, MvarOrdinal = -1, CvtOrdinal = -1;
         internal DataLocation GlyfLocation, LocaLocation, CffLocation, Cff2Location,
             FvarLocation, HheaLocation, HmtxLocation, VheaLocation, VmtxLocation,
             CbdtLocation, CblcLocation, EbdtLocation, EblcLocation;
+        internal DataLocation AvarLocation, StatLocation, GvarLocation, CvarLocation,
+            HvarLocation, VvarLocation, MvarLocation, CvtLocation;
     }
 
     private static ProfileScan ScanProfile(SfntDirectoryView directory)
@@ -679,10 +692,44 @@ public static partial class SubsetOperation
                     // The two outline tags locate separately: a face may carry both, and
                     // the refusal must point at the tag its profile rule is about (card
                     // §9 note 3 — the shared field was correct only while both refused).
-                    scan.HasCff2 = true; scan.Cff2Location = directory.TableLocation(i);
+                    scan.HasCff2 = true; scan.Cff2Ordinal = i;
+                    scan.Cff2Location = directory.TableLocation(i);
                     break;
                 case Fvar when !scan.HasFvar:
-                    scan.HasFvar = true; scan.FvarLocation = directory.TableLocation(i);
+                    scan.HasFvar = true; scan.FvarOrdinal = i;
+                    scan.FvarLocation = directory.TableLocation(i);
+                    break;
+                case Cvt when !scan.HasCvt:
+                    scan.HasCvt = true; scan.CvtOrdinal = i;
+                    scan.CvtLocation = directory.TableLocation(i);
+                    break;
+                case Avar when !scan.HasAvar:
+                    scan.HasAvar = true; scan.AvarOrdinal = i;
+                    scan.AvarLocation = directory.TableLocation(i);
+                    break;
+                case Stat when !scan.HasStat:
+                    scan.HasStat = true; scan.StatOrdinal = i;
+                    scan.StatLocation = directory.TableLocation(i);
+                    break;
+                case Gvar when !scan.HasGvar:
+                    scan.HasGvar = true; scan.GvarOrdinal = i;
+                    scan.GvarLocation = directory.TableLocation(i);
+                    break;
+                case Cvar when !scan.HasCvar:
+                    scan.HasCvar = true; scan.CvarOrdinal = i;
+                    scan.CvarLocation = directory.TableLocation(i);
+                    break;
+                case Hvar when !scan.HasHvar:
+                    scan.HasHvar = true; scan.HvarOrdinal = i;
+                    scan.HvarLocation = directory.TableLocation(i);
+                    break;
+                case Vvar when !scan.HasVvar:
+                    scan.HasVvar = true; scan.VvarOrdinal = i;
+                    scan.VvarLocation = directory.TableLocation(i);
+                    break;
+                case Mvar when !scan.HasMvar:
+                    scan.HasMvar = true; scan.MvarOrdinal = i;
+                    scan.MvarLocation = directory.TableLocation(i);
                     break;
                 case Cmap when !scan.HasCmap:
                     scan.HasCmap = true; scan.CmapOrdinal = i;
@@ -752,10 +799,20 @@ public static partial class SubsetOperation
         }
         if (profile.HasCff2)
         {
-            // CFF2 outlines are the variable-font gate's input and stay out of slice
-            // (OQ-S0-7); the refusal names the CFF2 tag itself (card §1.2, N1).
-            return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported,
-                profile.Cff2Location, out diagnostic);
+            // CFF2 admission (SV card §1): the outright refusal of the static-first
+            // slices is replaced by the CFF branch's shape. The structural guards run
+            // here — A2 (two outline spines share the face; the CFF1+glyf form at the
+            // former gate's position, now naming the CFF2 tag) and A4 (a CFF2 face
+            // expects maxp 0.5, spec L1574, the CFF form above) — and the typed read
+            // chain runs inside the variable admission below, where the fvar axis
+            // authority for the store signature coupling is materialized.
+            if (profile.HasGlyf || profile.HasLoca || profile.HasCff)
+                return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported,
+                    profile.Cff2Location, out diagnostic);
+            if (maxp is not Maxp05Table)
+                return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported,
+                    maxp.Location.At(DataField.Version, MaxpLayout.VersionAt),
+                    out diagnostic, maxp.VersionRaw);
         }
         if (profile.HasCff)
         {
@@ -776,12 +833,15 @@ public static partial class SubsetOperation
                     out refusalStatus, out diagnostic))
                 return false;
         }
-        if (profile.HasFvar)
+        if (profile.HasFvar || profile.HasCff2)
         {
-            // Variable faces are outside the static profile this slice serves (OQ-S0-7
-            // lean; HorizontalMetricsReencodeOperation.cs:156-162 precedent).
-            return RejectProfile(state, DiagnosticCode.StaticProfileRequired,
-                profile.FvarLocation, out diagnostic);
+            // The variable-font profile (SV card §1): fvar promotes from refusal
+            // trigger to profile discriminating input, and both modes walk the one
+            // admission chain — A1/A3/A5's combination guards, the fvar axis
+            // authority, the family consistency walk and the CFF2 typed read.
+            if (!TryAdmitVariableFace(directory, profile, maxp, state,
+                    out refusalStatus, out diagnostic))
+                return false;
         }
         if (profile.HasGlyf && maxp is not Maxp10Table)
         {
@@ -997,17 +1057,27 @@ public static partial class SubsetOperation
             decision = new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
                 SubsetDecisionOrigin.MatrixRow);
         }
-        else if (compact && IsCompactDeferredRow(tag))
+        else if (compact && tag == Cff2)
         {
-            // RC4 (SC card §3, narrowed by SE and S1c): the primaryPolicy column still
-            // defers these rows — the variation metrics families share the SE slices'
-            // deferral — so a compact request — which always changes the GID domain —
-            // refuses instead of leaving per-GID data on stale GIDs. Keyword contract:
-            // "<tag>"/"compact"; diagnostic code UnsupportedOperation (=17).
-            state.Diagnostic = new(DiagnosticCode.UnsupportedOperation,
-                directory.TableLocation(ordinal), tag);
-            diagnostic = state.Diagnostic;
-            return false;
+            // primaryPolicy REBUILD_TYPED (policy-matrix CFF2 row, executed since the
+            // SV slice): the compact rebuild re-slots CharStrings/FDSelect over the
+            // frozen map's cff2-idx stable identity (SV card §2.5/§3). The payload
+            // producer follows in the SV slice; until it exists the copy loop's
+            // switch refuses with the decision's own tag, never passing a raw CFF2
+            // table over a changed GID domain.
+            decision = new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                SubsetDecisionOrigin.MatrixRow);
+        }
+        else if (compact && tag is Gvar or Hvar or Vvar)
+        {
+            // primaryPolicy REBUILD_TYPED (policy-matrix rows, revised by the SV
+            // slice's OQ-SV-3 adjudication): gvar re-splices its per-GID tuple blocks
+            // and HVAR/VVAR re-map their DeltaSetIndexMap domains over the frozen
+            // map (SV card §2.1/§2.3). The payload producers follow in the SV slice;
+            // until they exist the copy loop's switch refuses with the decision's
+            // own tag.
+            decision = new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                SubsetDecisionOrigin.MatrixRow);
         }
         else if (compact && tag is Merg or Colr or Svg or Sbix or Cbdt or Cblc
             or Ebdt or Eblc or Ebsc)
@@ -1054,14 +1124,6 @@ public static partial class SubsetOperation
         state.Decisions.Add(decision);
         return true;
     }
-
-    /// <summary>Rows the primaryPolicy column still sends to a slice without a
-    /// compact execution path (SC card §3 RC4, narrowed by SE and S1c): the variation
-    /// metrics families share the deferral — MERG and the color/bitmap families now
-    /// execute (SE) and VORG left when the CFF compact slice took over its rebuild
-    /// (S1c card §3). Retain-GIDs keeps every row here raw.</summary>
-    private static bool IsCompactDeferredRow(uint tag) =>
-        tag is Gvar or Cvar or Hvar or Vvar or Mvar;
 
     /// <summary>The 50-tag directory catalogue: the 47 opaque-relocatable tags the
     /// metadata operation already knows plus head, name and DSIG. The authoritative
@@ -1114,6 +1176,15 @@ public static partial class SubsetOperation
             // the flavor, and the payload rebuilds consume it without a second read.
             internal Cff1Table? CffNameKeyed;
             internal CidCff1Table? CffCidKeyed;
+            // The variable-profile admission chain's materialized models (SV card
+            // §1): every present GID-domain row parks here once — cvar/MVAR stay
+            // validation-only (RETAIN_RAW has no payload consumer) — and the compact
+            // rebuilds consume them without a second read.
+            internal FvarTable? Fvar;
+            internal GvarTable? Gvar;
+            internal HvarTable? Hvar;
+            internal VvarTable? Vvar;
+            internal Cff2Table? Cff2;
 
             /// <summary>Tags a SE rebuild stage found empty after pruning (OQ-SE-5):
             /// the payload-time drop revises the decide-stage Rebuild before any byte

@@ -25,12 +25,18 @@ public enum DiagnosticCode : ushort
     // one frozen refusal category; the category's diagnosticKeywordContract words are
     // registered here so validation gates can key text on the numeric wire contract.
     StaticProfileRequired = 22,      // S0-RF-001-VF: "fvar", "variable", "static profile"
+                                     // (the subset trigger retired by the SV slice; the
+                                     // code and its HorizontalMetricsReencodeOperation
+                                     // exclusion form remain registered)
     LayoutFamilyUnsupported = 23,    // S0-RF-004-LAYOUT: "layout", "NoLayout", "S2"
     NotdefExcluded = 24,             // S0-RF-005-NOTDEF: ".notdef", "GID 0", "exclude"
     SubsetModeRequired = 25,         // S0-RF-006-MODE: "mode", "SubsetMode"
     CmapFormatUnsupported = 26,      // S0-RF-007..010: "cmap", "format <n>", "unsupported"
     PostVersionDeprecated = 27,      // S0-RF-011-POST25: "post", "2.5", "deprecated"
-    OutlineProfileUnsupported = 28   // S1a admission: "profile", "glyf", "loca", "CFF"
+    OutlineProfileUnsupported = 28   // S1a admission: "profile", "glyf", "loca", "CFF";
+                                     // SV A1-A5 combination faces: "fvar", "variable",
+                                     // "outline", "maxp", "0.5", "cvar", "cvt",
+                                     // "pairing", "CFF2", "gvar"
 }
 
 public enum DataField : ushort

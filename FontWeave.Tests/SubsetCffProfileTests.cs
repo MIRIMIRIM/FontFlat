@@ -199,8 +199,11 @@ public sealed class SubsetCffProfileTests
         Assert.Equal(2, vorg.NumVertOriginYMetrics);
     }
 
-    // ---- refusal face N1: CFF2 stays out of slice ----
-
+    // ---- refusal face N1, migrated (SV card §4 M2): the CFF2 profile gate is gone.
+    // A CFF2 face now walks the CFF branch's shape: the structural guards (A2/A4)
+    // pass on this face and the table itself meets the typed read chain, which
+    // refuses the shell payload with its own version diagnostic — the chain's
+    // diagnostics propagate as-is, the same finite shape this face always had.
     [Fact]
     public void Cff2FaceRefusesAtItsOwnTag()
     {
@@ -211,7 +214,7 @@ public sealed class SubsetCffProfileTests
         var status = SubsetOperation.TryPrepare(Request(face, [0]), out var result,
             out _, out var diagnostic);
         Assert.Equal(ReadStatus.UnsupportedFormat, status);
-        Assert.Equal(DiagnosticCode.OutlineProfileUnsupported, diagnostic.Code);
+        Assert.Equal(DiagnosticCode.UnsupportedVersion, diagnostic.Code);
         Assert.Equal(Cff2Tag, diagnostic.Location.TableTag);
         Assert.Null(result);
     }
@@ -250,8 +253,11 @@ public sealed class SubsetCffProfileTests
         Assert.Null(result);
     }
 
+    // A1 (SV card §4): the CFF1 face + fvar form keeps its refusal — CFF1 is not a
+    // variable outline spine — migrated from the retired static-profile code to the
+    // profile code at the same refusal position (SV card §4 M1's companion move).
     [Fact]
-    public void CffFaceWithFvarRefusesAsStaticProfileRequired()
+    public void CffFaceWithFvarRefusesAsOutlineProfileUnsupported()
     {
         var face = Face(
             (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
@@ -261,7 +267,7 @@ public sealed class SubsetCffProfileTests
         var status = SubsetOperation.TryPrepare(Request(face, [0]), out var result,
             out _, out var diagnostic);
         Assert.Equal(ReadStatus.UnsupportedFormat, status);
-        Assert.Equal(DiagnosticCode.StaticProfileRequired, diagnostic.Code);
+        Assert.Equal(DiagnosticCode.OutlineProfileUnsupported, diagnostic.Code);
         Assert.Equal(FvarTag, diagnostic.Location.TableTag);
         Assert.Null(result);
     }
