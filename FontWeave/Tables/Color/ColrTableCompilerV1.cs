@@ -26,7 +26,8 @@ public static partial class ColrTableCompiler
     /// the root re-answers every §3 invariant over the owned graph - the BGL
     /// ascent and glyph domains, the clip relations and domains, the slice
     /// bounds, the cross-table palette entries with the 0xFFFF sentinel through,
-    /// the PaintColrGlyph record presence, the graph's acyclicity, the direct
+    /// the PaintGlyph and PaintColrGlyph glyph domains (the latter's record
+    /// presence too), the graph's acyclicity, the direct
     /// edges' L476 forward face (a child must sit at a later ordinal than its
     /// referencing node - the canonical emission order demands it) and the
     /// depth/node budgets - through a walk over the owned node set (BGL roots
@@ -694,7 +695,7 @@ public static partial class ColrTableCompiler
             ReadStatus status = Paints[nodeId] switch
             {
                 ColrPaintLayers layers => VisitLayers(layers, depth, budget, out diagnostic),
-                ColrPaintGlyph glyph => VisitChild(nodeId, glyph.PaintNodeId, depth, budget,
+                ColrPaintGlyph glyph => VisitPaintGlyph(glyph, depth, budget,
                     out diagnostic),
                 ColrPaintColrGlyph colrGlyph => VisitColrGlyph(colrGlyph, depth, budget,
                     out diagnostic),
@@ -790,6 +791,18 @@ public static partial class ColrTableCompiler
                     Location.AtLocal(DataField.Offset, 1, parentOrdinal), out diagnostic,
                     (uint)nodeId, (uint)parentOrdinal);
             return Visit(nodeId, depth + 1, budget, out diagnostic);
+        }
+
+        private ReadStatus VisitPaintGlyph(ColrPaintGlyph glyph, int depth,
+            BuildBudget budget, out FontDiagnostic diagnostic)
+        {
+            // The output glyph domain (spec L1019) re-answered before the
+            // child edge - the read side's VisitPaintGlyph face in its order.
+            if (glyph.GlyphId >= (ushort)NumGlyphs)
+                return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                    Location.AtLocal(DataField.GlyphId, 0, glyph.Id), out diagnostic,
+                    glyph.GlyphId, (ulong)NumGlyphs);
+            return VisitChild(glyph.Id, glyph.PaintNodeId, depth, budget, out diagnostic);
         }
 
         private ReadStatus VisitColrGlyph(ColrPaintColrGlyph colrGlyph, int depth,
