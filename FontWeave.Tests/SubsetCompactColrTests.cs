@@ -32,6 +32,11 @@ public sealed class SubsetCompactColrTests
         return Spine(8, (ColrTag, ColrV0()), (CpalTag, cpal));
     }
 
+    internal static byte[] ColrV1WireForProbe() => ColrV1();
+
+    internal static FontFaceRef SpineForProbe(ushort numGlyphs,
+        params (uint Tag, byte[] Bytes)[] extra) => Spine(numGlyphs, extra);
+
     private static FontFaceRef Spine(ushort numGlyphs, params (uint Tag, byte[] Bytes)[] extra)
     {
         var records = new List<byte[]>();
@@ -226,9 +231,13 @@ public sealed class SubsetCompactColrTests
         Assert.Null(result);
     }
 
-    // v1 identity: the request over the whole domain maps every reference to itself,
-    // and the already-canonical input re-emits byte-identically (the SE-ID tier's
-    // COLR half at unit scale).
+    // v1 identity: the request over the whole domain maps every reference to itself
+    // (the SE-ID tier's COLR half at unit scale). The rebuilt graph is the factory's
+    // canonical emission of the reachable subgraph - the read model's Kahn order
+    // (depth, first visit), not the input's wire order - so byte identity holds only
+    // when the input already sits at that fixed point; this fixture does not, so the
+    // tier asserts the fixed point itself: a second full-selection rebuild of the
+    // output re-emits byte-for-byte, and every reference lands on itself.
     [Fact]
     public void CompactColrV1IdentityRecompilesByteIdentical()
     {
@@ -239,7 +248,38 @@ public sealed class SubsetCompactColrTests
             SubsetMode.CompactRemap), out var result, out _, out var diagnostic);
         Assert.Equal(ReadStatus.Done, status);
         Assert.NotNull(result);
-        Assert.Equal(ColrV1(), FontTable(result!, ColrTag));
+        // The semantic tier: every reference survives onto itself (BGL roots, the
+        // layer slice's glyph and colrGlyph, both clip rows' spans).
+        ColrTable model = ReadColr(FontTable(result!, ColrTag), 52, 4);
+        Assert.Equal(2, model.BaseGlyphPaintCount);
+        Assert.Equal((ushort)5, model.BaseGlyphPaints[0].GlyphId);
+        Assert.Equal((ushort)6, model.BaseGlyphPaints[1].GlyphId);
+        var rootLayers = Assert.IsType<ColrPaintLayers>(
+            model.Paints[model.BaseGlyphPaints[0].PaintNodeId]);
+        Assert.Equal(3, rootLayers.LayerNodeIds.Count);
+        var glyph = Assert.IsType<ColrPaintGlyph>(
+            model.Paints[rootLayers.LayerNodeIds[0]]);
+        Assert.Equal((ushort)51, glyph.GlyphId);
+        var colrGlyph = Assert.IsType<ColrPaintColrGlyph>(
+            model.Paints[rootLayers.LayerNodeIds[1]]);
+        Assert.Equal((ushort)6, colrGlyph.GlyphId);
+        Assert.Equal(model.BaseGlyphPaints[1].PaintNodeId, colrGlyph.TargetNodeId);
+        Assert.Equal(2, model.ClipCount);
+        Assert.Equal(((ushort)5, (ushort)6),
+            (model.Clips[0].StartGlyphId, model.Clips[0].EndGlyphId));
+        Assert.Equal(((ushort)10, (ushort)20),
+            (model.Clips[1].StartGlyphId, model.Clips[1].EndGlyphId));
+        // The fixed-point tier: the output's own full-selection rebuild is
+        // byte-identical (the input's wire order is not the canonical emission's
+        // Kahn order, so the first pass may differ from the input - the identity
+        // contract is against the fixed point, not the wire).
+        byte[] first = FontTable(result!, ColrTag);
+        var again = SubsetOperation.TryPrepare(Request(
+            Spine(52, (ColrTag, first)), all, SubsetMode.CompactRemap),
+            out var result2, out _, out _);
+        Assert.Equal(ReadStatus.Done, again);
+        Assert.NotNull(result2);
+        Assert.Equal(first, FontTable(result2!, ColrTag));
     }
 
     // v1 pruning: root 5 survives, its graph renumbers through the reachable set,

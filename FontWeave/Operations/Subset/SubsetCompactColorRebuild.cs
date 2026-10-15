@@ -201,11 +201,21 @@ public static partial class SubsetOperation
             diagnostic = default;
             return ReadStatus.Done;
         }
+        // The new ordinals follow the read model's own canonical order restricted
+        // to the visited set: the read numbers its nodes topologically (parents
+        // first, the L476 re-use line), so every model edge - direct and
+        // indirect - points from a lower to a higher ordinal, and subsetting
+        // with renumbering preserves that. The factory's direct-edge forward
+        // face re-answers on these ordinals by construction, while a DFS
+        // preorder would let a shared subgraph's early visit invert a later
+        // direct edge.
+        var newOrder = Enumerable.Range(0, model.PaintCount)
+            .Where(visited.Contains).ToList();
         var newId = new int[model.PaintCount];
-        var paints = new ColrPaint[visitedOrder.Count];
-        for (int i = 0; i < visitedOrder.Count; i++)
+        var paints = new ColrPaint[newOrder.Count];
+        for (int i = 0; i < newOrder.Count; i++)
         {
-            int old = visitedOrder[i];
+            int old = newOrder[i];
             newId[old] = i;
             var node = model.Paints[old];
             node.Id = i;
@@ -352,6 +362,16 @@ public static partial class SubsetOperation
                     map, visited, visitedOrder, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 break;
+            case ColrPaintComposite composite:
+                // Both children are direct edges the read validated; they must join
+                // the visited set or their renumbering collapses onto ordinal 0.
+                status = VisitColrSubgraph(model, composite.SourceNodeId, depth + 1,
+                    map, visited, visitedOrder, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = VisitColrSubgraph(model, composite.BackdropNodeId, depth + 1,
+                    map, visited, visitedOrder, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                break;
             default:
                 if (HasColrChild(model.Paints[nodeId]))
                 {
@@ -376,6 +396,7 @@ public static partial class SubsetOperation
             oldGlyphId, 0UL);
 
     private static bool HasColrChild(ColrPaint node) => node is
+        ColrPaintTransform or ColrPaintVarTransform or
         ColrPaintTranslate or ColrPaintScale or ColrPaintScaleAroundCenter
         or ColrPaintScaleUniform or ColrPaintScaleUniformAroundCenter
         or ColrPaintRotate or ColrPaintRotateAroundCenter or ColrPaintSkew
@@ -387,6 +408,8 @@ public static partial class SubsetOperation
 
     private static int ChildOf(ColrPaint node) => node switch
     {
+        ColrPaintTransform n => n.PaintNodeId,
+        ColrPaintVarTransform n => n.PaintNodeId,
         ColrPaintTranslate n => n.PaintNodeId,
         ColrPaintScale n => n.PaintNodeId,
         ColrPaintScaleAroundCenter n => n.PaintNodeId,

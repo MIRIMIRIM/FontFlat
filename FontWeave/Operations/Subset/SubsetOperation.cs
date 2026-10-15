@@ -392,6 +392,18 @@ public static partial class SubsetOperation
                         out diagnostic);
                 if (svgDropped) state.PayloadDropped.Add(Svg);
             }
+            if (rebuildTags.Contains(Merg))
+            {
+                // SE (card §2.6): every distinct ClassDef body re-answers over the
+                // output domain in its own format; the class-keyed matrix travels
+                // byte-verbatim (OQ-SE-4) and MERG never drops (its zero form is a
+                // legal emission).
+                status = RebuildMerg(directory, maxp!, map!, budget,
+                    out rebuiltMerg, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
         }
         var tables = new SortedDictionary<uint, byte[]>();
         for (int i = 0; i < directory.DeclaredCount; i++)
