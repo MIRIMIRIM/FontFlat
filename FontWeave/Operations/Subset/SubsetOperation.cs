@@ -15,9 +15,11 @@ namespace FontWeave.Operations.Subset;
 /// (S1b card §2/§3); compact-remap rebuilds the primaryPolicy column's executable
 /// set (glyf, loca, cmap, maxp, hhea, hmtx, vhea, vmtx, post@2.0, hdmx, LTSH, VDMX,
 /// and the SE color/bitmap/MERG nine: COLR, SVG␠, sbix, CBDT/CBLC, EBDT/EBLC, EBSC,
-/// MERG) over one frozen glyph map on a TrueType face and refuses CFF1 faces at
-/// admission (SC card §1; SE card §1). Every other present table follows the frozen
-/// policy matrix's
+/// MERG) over one frozen glyph map on a TrueType face and, since the CFF compact
+/// slice (S1c card §1), also serves static CFF1 faces: charset/encoding/CharStrings
+/// and FDSelect rebuild over the frozen map's ascending stable identity (name-keyed =
+/// charset SID, CID-keyed = charset CID) with VORG riding the same remap (SC card §1;
+/// SE card §1). Every other present table follows the frozen policy matrix's
 /// column for the requested mode; the caller can only steer the four explicit
 /// option families. The whole operation is decided before any payload is compiled
 /// or copied, and any refusal is finite: result is null, no sfnt bytes exist, and
@@ -151,7 +153,8 @@ public static partial class SubsetOperation
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
-            if (!TryDecideTable(directory, i, record.Tag, options, state, out diagnostic))
+            if (!TryDecideTable(directory, i, record.Tag, options, state,
+                    profile.HasCff, out diagnostic))
                 return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic, out result,
                     out report, out diagnostic);
         }
@@ -174,11 +177,14 @@ public static partial class SubsetOperation
 
         // Step 5.5 (compact only, SC card §1.1): freeze the one GlyphRemap over the
         // final retained set and serialize the map artifact before any payload stage.
+        // On a static CFF1 face the output order is the ascending stable identity of
+        // the charset (SID/CID), so the freeze materializes the CFF table once and
+        // parks the model on the state for the payload rebuilds (S1c card §1.2).
         GlyphRemap? map = null;
         if (compact)
         {
-            status = FreezeCompactMap(request.Face, head!, state.Retained, state,
-                budget, out map, out diagnostic);
+            status = FreezeCompactMap(request.Face, head!, state.Retained, directory,
+                profile.CffOrdinal, state, budget, out map, out diagnostic);
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
@@ -222,6 +228,7 @@ public static partial class SubsetOperation
             rebuiltVhea = null, rebuiltVmtx = null;
         byte[]? rebuiltPost = null, rebuiltHdmx = null, rebuiltLtsh = null,
             rebuiltVdmx = null;
+        byte[]? rebuiltCff = null, rebuiltVorg = null;
         byte[]? rebuiltColr = null, rebuiltSvg = null, rebuiltSbix = null,
             rebuiltCbdt = null, rebuiltCblc = null, rebuiltEbdt = null,
             rebuiltEblc = null, rebuiltEbsc = null, rebuiltMerg = null;
@@ -311,6 +318,31 @@ public static partial class SubsetOperation
             if (rebuildTags.Contains(Vdmx))
             {
                 status = RebuildVdmx(directory, budget, out rebuiltVdmx, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
+            if (rebuildTags.Contains(Cff))
+            {
+                // The map freeze parked the one materialized CFF1 model; the payload
+                // consumes it without a second read (S1c card §1.2). The flavor picks
+                // the producer: name-keyed through Cff1TableCompiler, CID-keyed through
+                // the derived-model entry of CidCff1TableCompiler (S1c card §2.5).
+                status = state.CffCidKeyed is not null
+                    ? RebuildCidCff1(state.CffCidKeyed, map!, budget, out rebuiltCff,
+                        out diagnostic)
+                    : RebuildCff1NameKeyed(state.CffNameKeyed!, map!, budget,
+                        out rebuiltCff, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
+            if (rebuildTags.Contains(Vorg))
+            {
+                // VORG rides the same remap as the CFF rebuild (S1c card §3): surviving
+                // records re-map to their output GIDs, dropped glyphs' records go.
+                status = RebuildVorg(directory, maxp!, map!, budget, out rebuiltVorg,
+                    out diagnostic);
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result, out report,
                         out diagnostic);
@@ -435,6 +467,8 @@ public static partial class SubsetOperation
                     Eblc => rebuiltEblc,
                     Ebsc => rebuiltEbsc,
                     Merg => rebuiltMerg,
+                    Cff => rebuiltCff,
+                    Vorg => rebuiltVorg,
                     _ => null
                 };
                 if (rebuilt is null && state.PayloadDropped.Contains(decision.Tag))
@@ -723,20 +757,14 @@ public static partial class SubsetOperation
             return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported,
                 profile.Cff2Location, out diagnostic);
         }
-        if (profile.HasCff && state.Mode == SubsetMode.CompactRemap)
-        {
-            // Compact-remap on a static CFF1 face has no rebuild path in slice: the
-            // primaryPolicy column's CFF rebuild belongs to the CFF compact slice
-            // (SC card §1 profile gate); the refusal names the CFF tag itself.
-            return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported,
-                profile.CffLocation, out diagnostic);
-        }
         if (profile.HasCff)
         {
             // Static CFF1 admission (card §1.2): a CFF table may not share the face with
             // a TrueType outline spine, a CFF face expects maxp 0.5 symmetrically to the
             // TrueType face's maxp 1.0 requirement, and the table itself must pass the
-            // typed read chain before any policy decision consumes it (N2/N3/N4).
+            // typed read chain before any policy decision consumes it (N2/N3/N4). Both
+            // modes walk this chain; the compact mode's extra identity guard runs at the
+            // map freeze where the charset column is materialized (S1c card §1.1).
             if (profile.HasGlyf || profile.HasLoca)
                 return RejectProfile(state, DiagnosticCode.OutlineProfileUnsupported,
                     profile.CffLocation, out diagnostic);
@@ -824,7 +852,8 @@ public static partial class SubsetOperation
     // ---- per-table policy decision (card §2 step 4; matrix retainGidsPolicy column) ----
 
     private static bool TryDecideTable(SfntDirectoryView directory, int ordinal, uint tag,
-        SubsetOptions options, PrepareState state, out FontDiagnostic diagnostic)
+        SubsetOptions options, PrepareState state, bool cffFace,
+        out FontDiagnostic diagnostic)
     {
         diagnostic = default;
         // The two matrix columns meet here: retain-GIDs follows the retainGidsPolicy
@@ -937,13 +966,43 @@ public static partial class SubsetOperation
                     SubsetDecisionOrigin.MatrixRow);
             if (options.DropDigitalSignature) state.Dropped.Add(tag);
         }
+        else if (compact && tag == Cff)
+        {
+            // primaryPolicy REBUILD_TYPED (policy-matrix CFF row): the compact rebuild
+            // re-splices charset/encoding/CharStrings (and, CID-keyed, FDSelect) around
+            // the frozen map's ascending stable identity (S1c card §2). The payload
+            // producer for this decision is the CFF1 compact rebuild; until a producer
+            // exists the copy loop's switch refuses with the decision's own tag, never
+            // passing a raw CFF table over a changed GID domain.
+            decision = new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                SubsetDecisionOrigin.MatrixRow);
+        }
+        else if (compact && tag == Vorg)
+        {
+            if (!cffFace)
+            {
+                // RC2 (SC card §3): on a face whose outline spine the CFF rebuild does
+                // not serve, the VORG compact rebuild has no execution path, so the
+                // request refuses instead of leaving per-GID records on stale GIDs.
+                // Keyword contract: "VORG"/"compact"/"rebuild"; code UnsupportedOperation
+                // (=17), unchanged since SC.
+                state.Diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                    directory.TableLocation(ordinal), tag);
+                diagnostic = state.Diagnostic;
+                return false;
+            }
+            // CFF face: VORG's per-GID records ride the same remap as the CFF rebuild
+            // (matrix "随 CFF 重建联动" coupling, S1c card §3). The payload producer is
+            // the VORG remap; the copy loop's switch refuses until it exists.
+            decision = new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                SubsetDecisionOrigin.MatrixRow);
+        }
         else if (compact && IsCompactDeferredRow(tag))
         {
-            // RC2 (SC card §3, narrowed by SE): the primaryPolicy column still defers
-            // these rows to a later slice (VORG rebuilds only with CFF; the variation
-            // metrics families share that deferral), so a compact request — which
-            // always changes the GID domain — refuses instead of leaving per-GID data
-            // on stale GIDs. Keyword contracts: "VORG"/"compact"/"rebuild",
+            // RC4 (SC card §3, narrowed by SE and S1c): the primaryPolicy column still
+            // defers these rows — the variation metrics families share the SE slices'
+            // deferral — so a compact request — which always changes the GID domain —
+            // refuses instead of leaving per-GID data on stale GIDs. Keyword contract:
             // "<tag>"/"compact"; diagnostic code UnsupportedOperation (=17).
             state.Diagnostic = new(DiagnosticCode.UnsupportedOperation,
                 directory.TableLocation(ordinal), tag);
@@ -997,12 +1056,12 @@ public static partial class SubsetOperation
     }
 
     /// <summary>Rows the primaryPolicy column still sends to a slice without a
-    /// compact execution path (SC card §3 RC2 narrowed by SE; SE card §4 commit ①):
-    /// VORG rides the CFF rebuild and the variation metrics families share that
-    /// deferral — MERG and the color/bitmap families now execute (SE). Retain-GIDs
-    /// keeps all of them raw.</summary>
+    /// compact execution path (SC card §3 RC4, narrowed by SE and S1c): the variation
+    /// metrics families share the deferral — MERG and the color/bitmap families now
+    /// execute (SE) and VORG left when the CFF compact slice took over its rebuild
+    /// (S1c card §3). Retain-GIDs keeps every row here raw.</summary>
     private static bool IsCompactDeferredRow(uint tag) =>
-        tag is Vorg or Gvar or Cvar or Hvar or Vvar or Mvar;
+        tag is Gvar or Cvar or Hvar or Vvar or Mvar;
 
     /// <summary>The 50-tag directory catalogue: the 47 opaque-relocatable tags the
     /// metadata operation already knows plus head, name and DSIG. The authoritative
@@ -1050,6 +1109,11 @@ public static partial class SubsetOperation
             internal string? MapArtifactSha256;
             internal CffStaleness? CffStaleness;
             internal VorgStaleness? VorgStaleness;
+            // The one materialized CFF1 model of a compact CFF face, parked by the map
+            // freeze (S1c card §1.2): exactly one of the two forms is non-null, matching
+            // the flavor, and the payload rebuilds consume it without a second read.
+            internal Cff1Table? CffNameKeyed;
+            internal CidCff1Table? CffCidKeyed;
 
             /// <summary>Tags a SE rebuild stage found empty after pruning (OQ-SE-5):
             /// the payload-time drop revises the decide-stage Rebuild before any byte

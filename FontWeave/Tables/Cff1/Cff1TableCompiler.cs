@@ -49,6 +49,17 @@ public static class Cff1TableCompiler
         return Compile(model, out bytes, out diagnostic, budget);
     }
 
+    /// <summary>Same-assembly pipeline entry: the caller's running budget carries the
+    /// compile's Work/Buffer/Output charges (the MaxpTableCompiler/VorgTableCompiler
+    /// internal-overload shape). The emit contract is the public one, unchanged.</summary>
+    internal static ReadStatus TryCompile(Cff1Table model, out byte[]? bytes,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        bytes = null;
+        ArgumentNullException.ThrowIfNull(model);
+        return Compile(model, out bytes, out diagnostic, budget);
+    }
+
     public static ReadStatus TryWrite(Cff1Table model, Span<byte> destination, out FontDiagnostic diagnostic)
     {
         ArgumentNullException.ThrowIfNull(model);

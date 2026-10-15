@@ -148,21 +148,30 @@ public static partial class SubsetOperation
             return false;
         }
 
-        status = ReadCffStaleness(view, state, out diagnostic);
-        if (status != ReadStatus.Done)
+        // Staleness is a RETAIN_RAW registration fact: "the raw CFF/VORG bytes still in
+        // the output reference the full GID domain" (S1b card §3). Under compact-remap
+        // those tables are rebuilt, the fact does not hold, and the UnselectedSlot
+        // wording would be false — so the compact path skips both reads and its report
+        // carries only the decisions plus the map artifact (S1c card §1.1). The retain
+        // path is unchanged byte-for-byte and diagnostic-for-diagnostic.
+        if (state.Mode != SubsetMode.CompactRemap)
         {
-            refusalStatus = status;
-            return false;
-        }
-        if (directory.TryFindUniqueTable(Vorg, out int vorgOrdinal, out _) ==
-            ReadStatus.Done)
-        {
-            status = ReadVorgStaleness(directory, vorgOrdinal, maxp, state,
-                out diagnostic);
+            status = ReadCffStaleness(view, state, out diagnostic);
             if (status != ReadStatus.Done)
             {
                 refusalStatus = status;
                 return false;
+            }
+            if (directory.TryFindUniqueTable(Vorg, out int vorgOrdinal, out _) ==
+                ReadStatus.Done)
+            {
+                status = ReadVorgStaleness(directory, vorgOrdinal, maxp, state,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                {
+                    refusalStatus = status;
+                    return false;
+                }
             }
         }
         diagnostic = default;

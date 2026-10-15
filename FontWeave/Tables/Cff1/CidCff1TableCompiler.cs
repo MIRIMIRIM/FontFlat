@@ -52,10 +52,17 @@ public static class CidCff1TableCompiler
         TryCompile(model, new CidEditPlan(), out bytes, out diagnostic, limits);
 
     public static ReadStatus TryCompile(CidCff1Table model, CidEditPlan plan,
-        out byte[]? bytes, out FontDiagnostic diagnostic, BuildLimits? limits = null)
+        out byte[]? bytes, out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
+        TryCompile(model, plan, out bytes, out diagnostic, new BuildBudget(limits));
+
+    /// <summary>Same-assembly pipeline entry: the caller's running budget carries the
+    /// compile's Work/Buffer/Output charges (the other T3 compilers'
+    /// internal-overload shape). The layout and emit contract is the public one,
+    /// unchanged.</summary>
+    internal static ReadStatus TryCompile(CidCff1Table model, CidEditPlan plan,
+        out byte[]? bytes, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         bytes = null;
-        var budget = new BuildBudget(limits);
         if (!budget.Work(1L + model.NumGlyphs + model.FdCount, model.Location, out diagnostic))
             return ReadStatus.ResourceLimit;
         // Prepare materializes working copies of the charset, FDSelect, CharStrings, FDArray,

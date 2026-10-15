@@ -20,6 +20,28 @@ public static class FrozenMapArtifactCodec
     /// input GID itself, decimal.</summary>
     public static string GlyfStableIdentity(ushort inputGid) => $"glyf:{inputGid}";
 
+    /// <summary>The CFF1 name-keyed kind (S1c card §4): the input charset SID, decimal.
+    /// The SID is the glyph's name identity; the charstring INDEX dimension rides the
+    /// row's inputGid anchor, so no separate token exists.</summary>
+    public static string Cff1SidStableIdentity(int inputSid) => $"cff1-sid:{inputSid}";
+
+    /// <summary>The CFF1 CID-keyed kind (S1c card §4): the input charset CID, decimal.</summary>
+    public static string Cff1CidStableIdentity(int inputCid) => $"cff1-cid:{inputCid}";
+
+    /// <summary>The kind prefixes of the additive stable-identity grammar (S1c card
+    /// §1.3): one glyph row carries exactly one, and one artifact carries exactly one
+    /// kind across all rows. The schema literal stays fontweave.frozen-map/1 — W1 §3.4
+    /// never closed the Kind set, and the extension leaves every glyf row's serialized
+    /// bytes bit-identical (OQ-S1c-5 lean).</summary>
+    private static readonly string[] IdentityKinds = ["glyf:", "cff1-sid:", "cff1-cid:"];
+
+    private static string? KindOf(string identity)
+    {
+        foreach (string kind in IdentityKinds)
+            if (identity.StartsWith(kind, StringComparison.Ordinal)) return kind;
+        return null;
+    }
+
     public static ReadStatus TrySerialize(FrozenMapArtifact artifact, out byte[]? utf8,
         out FontDiagnostic diagnostic)
     {
@@ -37,8 +59,11 @@ public static class FrozenMapArtifactCodec
 
     /// <summary>The artifact contract both directions share: counts inside the maxp
     /// domain, entries exactly the injective ascending [0, outputGlyphCount) with
-    /// 0 → 0, the glyf-kind identity column, a non-negative revision raw and the
-    /// 64-hex input face sha (W1 §3.3/§3.4, §7 finding 4).</summary>
+    /// 0 → 0, one stable-identity kind per artifact with per-row grammar (glyf rows
+    /// pin the identity to the input GID; CFF1 rows pin it to a well-formed decimal
+    /// SID/CID whose face semantics the freeze path constructed and the gates verify
+    /// independently), a non-negative revision raw and the 64-hex input face sha
+    /// (W1 §3.3/§3.4, §7 finding 4; S1c card §1.3).</summary>
     private static ReadStatus ValidateShape(FrozenMapArtifact artifact,
         out FontDiagnostic diagnostic)
     {
@@ -52,11 +77,21 @@ public static class FrozenMapArtifactCodec
             return Fail(at,
                 artifact.Entries.Count == 0 ? 0UL : artifact.Entries[0].OutputGid,
                 0UL, out diagnostic);
+        string? kind = KindOf(artifact.Entries[0].StableIdentity);
+        if (kind is null)
+            return Fail(at, 0, artifact.Entries[0].InputGid, out diagnostic);
         for (int i = 0; i < artifact.Entries.Count; i++)
         {
             FrozenMapEntry entry = artifact.Entries[i];
             if (entry.OutputGid != (ushort)i || entry.InputGid >= artifact.InputGlyphCount ||
-                entry.StableIdentity != GlyfStableIdentity(entry.InputGid))
+                KindOf(entry.StableIdentity) != kind)
+                return Fail(at, entry.OutputGid, (ulong)i, out diagnostic);
+            if (kind == IdentityKinds[0])
+            {
+                if (entry.StableIdentity != GlyfStableIdentity(entry.InputGid))
+                    return Fail(at, entry.OutputGid, (ulong)i, out diagnostic);
+            }
+            else if (!WellFormedIdentityValue(entry.StableIdentity.AsSpan(kind.Length)))
                 return Fail(at, entry.OutputGid, (ulong)i, out diagnostic);
         }
         if (artifact.FontRevisionRaw < 0)
@@ -65,6 +100,22 @@ public static class FrozenMapArtifactCodec
             return Fail(at, 0, 0, out diagnostic);
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    /// <summary>A CFF1 identity value: decimal digits, no leading zeros, inside the
+    /// 16-bit SID/CID wire domain. The wire charset carries SID/CID as u16, so a value
+    /// outside [0, 65535] cannot name an input glyph.</summary>
+    private static bool WellFormedIdentityValue(ReadOnlySpan<char> digits)
+    {
+        if (digits.IsEmpty || digits.Length > 5) return false;
+        if (digits.Length > 1 && digits[0] == '0') return false;
+        int value = 0;
+        foreach (char c in digits)
+        {
+            if (!char.IsAsciiDigit(c)) return false;
+            value = value * 10 + (c - '0');
+        }
+        return value <= 0xFFFF;
     }
 
     /// <summary>sha256 over the canonical serialization; the exact value pinned into
@@ -140,7 +191,8 @@ public static class FrozenMapArtifactCodec
     private static int SerializedLength(FrozenMapArtifact artifact)
     {
         // Header and footer are fixed; each entry row is the fixed frame plus the decimal
-        // digits of the output GID once and the input GID twice (value and identity).
+        // digits of the output GID once, the input GID once and the identity string as
+        // validated (a glyf row's identity is "glyf:" plus the input GID's digits).
         // "{\n" opens the document; the footer is "  ]\n}\n".
         int length = 2
             + ("  \"schema\": \"" + SchemaLiteral + "\",").Length + 1
@@ -155,14 +207,14 @@ public static class FrozenMapArtifactCodec
             + "  \"entries\": [".Length + 1;
         foreach (FrozenMapEntry entry in artifact.Entries)
             length += 4 + EntryFrame + DecimalLength(entry.OutputGid)
-                + DecimalLength(entry.InputGid) + DecimalLength(entry.InputGid) + 1;
+                + DecimalLength(entry.InputGid) + entry.StableIdentity.Length + 1;
         length += artifact.Entries.Count - 1; // the separating commas between rows
         length += "  ]".Length + 1 + "}".Length + 1;
         return length;
     }
 
     private static readonly int EntryFrame =
-        "{ \"outputGid\": , \"inputGid\": , \"stableIdentity\": \"glyf:\" }".Length;
+        "{ \"outputGid\": , \"inputGid\": , \"stableIdentity\": \"\" }".Length;
 
     private static void Write(FrozenMapArtifact artifact, byte[] target)
     {
@@ -192,7 +244,7 @@ public static class FrozenMapArtifactCodec
             FrozenMapEntry entry = artifact.Entries[i];
             string row = "    { \"outputGid\": " + DecimalString(entry.OutputGid)
                 + ", \"inputGid\": " + DecimalString(entry.InputGid)
-                + ", \"stableIdentity\": \"" + GlyfStableIdentity(entry.InputGid) + "\" }";
+                + ", \"stableIdentity\": \"" + entry.StableIdentity + "\" }";
             if (i + 1 < artifact.Entries.Count) Line(row + ",");
             else Line(row);
         }
