@@ -1467,4 +1467,224 @@ out var rewrittenLeaf, out diagnostic);
         diagnostic = default;
         return ReadStatus.Done;
     }
+
+    // ---------------------------------------------------------------------
+    // kern (S2b-2 card §2.3, merged commit a3bccb6): the v0 pair/class rewrite
+    // over the same frozen map and RF-S2b-2 refusal contract as the layout lists
+    // above; its defensive refusals carry the input GID in Detail
+    // ("layout / rewrite / kern glyph <id>"), keyed by the kern family's own
+    // RewriteInvariantRefusal — the layout lists keep their coverage-keyed
+    // RewriteMiss. The MATH/JSTF producers join in their commits.
+    // ---------------------------------------------------------------------
+    /// <summary>Compact kern rewrite (S2b card §2.3): the v0 dialect's format-0 pair
+    /// graphs and format-2 class matrices re-emit over the map's output domain. The
+    /// Apple dialect never reaches here — the decide stage refuses it (RF-S2b-3) —
+    /// and raw subtables never reach admission (RF-C), so every subtable below is a
+    /// typed v0 body. Subtable order (the declaration order) and pair/class semantics
+    /// are identity: the factories' canonical forms absorb the renumbering (format 0
+    /// re-sorts into the strict pair order; format 2 re-premultiplies its class words
+    /// for the canonical layout), so an identity map re-emits a canonical source
+    /// byte-identically and a remapped one wire-equivalently.</summary>
+    private static ReadStatus RebuildKern(KernTable kern, GlyphRemap map,
+        BuildBudget budget, out byte[]? kernBytes, out FontDiagnostic diagnostic)
+    {
+        kernBytes = null;
+        int outputGlyphs = map.OutputGlyphCount;
+        var subtables = new KernSubtable[kern.SubtableCount];
+        for (int i = 0; i < kern.SubtableCount; i++)
+        {
+            KernSubtable subtable = kern.Subtables[i];
+            ReadStatus status;
+            KernSubtable? rebuilt;
+            switch (subtable.Body)
+            {
+                case KernFormat0Body format0:
+                    status = RebuildKernFormat0(kern.Location, subtable, format0,
+                        map, outputGlyphs, out rebuilt, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    subtables[i] = rebuilt!;
+                    break;
+                case KernFormat2Body format2:
+                    status = RebuildKernFormat2(kern.Location, subtable, format2,
+                        map, outputGlyphs, out rebuilt, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    subtables[i] = rebuilt!;
+                    break;
+                default:
+                    // Unreachable: admission refused raw bodies (RF-C) and decide
+                    // refused the Apple dialect (RF-S2b-3); the switch stays total
+                    // so an orchestration drift cannot pass a raw body silently.
+                    return RewriteInvariantRefusal(
+                        kern.Location.At(DataField.GlyphId, (ulong)i, i),
+                        (ulong)subtable.Format, out diagnostic);
+            }
+        }
+        // The root factory re-answers the pair GID domain against THIS root's
+        // explicit output numGlyphs (the read face's hard half, re-answered) and
+        // SameSource over every subtable; the count-identity invariant (zero rule
+        // loss, S2b card §3) is checked on the rebuilt model below.
+        ReadStatus rootStatus = KernTableCompiler.TryCreate(KernDialect.Version0,
+            outputGlyphs, subtables, out KernTable? model, out diagnostic,
+            location: kern.Location);
+        if (rootStatus != ReadStatus.Done) return rootStatus;
+        if (model!.SubtableCount != kern.SubtableCount)
+            return RewriteInvariantRefusal(
+                kern.Location.At(DataField.Count, (ulong)kern.SubtableCount),
+                (ulong)model.SubtableCount, out diagnostic);
+        rootStatus = KernTableCompiler.TryCompile(model, out var bytes,
+            out diagnostic);
+        if (rootStatus != ReadStatus.Done) return rootStatus;
+        return ChargeCompiled(budget, kern.Location, bytes!, out kernBytes,
+            out diagnostic);
+    }
+
+    private static ReadStatus RebuildKernFormat0(DataLocation at, KernSubtable subtable,
+        KernFormat0Body format0, GlyphRemap map, int outputGlyphs,
+        out KernSubtable? rebuilt, out FontDiagnostic diagnostic)
+    {
+        rebuilt = null;
+        var pairs = new KernPair[format0.PairCount];
+        for (int p = 0; p < format0.PairCount; p++)
+        {
+            KernPair pair = format0.Pairs[p];
+            ReadStatus status = RemapGlyphId(at, pair.Left, map, out ushort left,
+                out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = RemapGlyphId(at, pair.Right, map, out ushort right,
+                out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            pairs[p] = new(left, right, pair.Value);
+        }
+        // The factory sorts into the canonical strict order (duplicates refuse —
+        // unreachable under the injective map) and re-answers both GID domains
+        // against the output context; the flags byte rides verbatim (the read face
+        // already refused the reserved bits).
+        ReadStatus create = KernSubtableCompiler.TryCreateFormat0(outputGlyphs,
+            pairs, KernFlagsByte(subtable), out rebuilt, out diagnostic,
+            location: at);
+        if (create != ReadStatus.Done) return create;
+        if (((KernFormat0Body)rebuilt!.Body).PairCount != format0.PairCount)
+            return RewriteInvariantRefusal(
+                at.At(DataField.Count, (ulong)format0.PairCount),
+                (ulong)((KernFormat0Body)rebuilt.Body).PairCount, out diagnostic);
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus RebuildKernFormat2(DataLocation at, KernSubtable subtable,
+        KernFormat2Body format2, GlyphRemap map, int outputGlyphs,
+        out KernSubtable? rebuilt, out FontDiagnostic diagnostic)
+    {
+        rebuilt = null;
+        // A class matrix whose words do not follow the premultiplication convention
+        // has no decodable matrix — the write face refuses it, and this rewrite
+        // refuses it first under the same code-23 contract (the matrix is not
+        // expressible for re-emission; retain keeps such bodies raw).
+        if (!format2.Canonicalizable || format2.LeftIndices is null ||
+            format2.RightIndices is null)
+            return RewriteInvariantRefusal(
+                at.AtLocal(DataField.Offset,
+                    (ulong)KernSubtable2Layout.LeftClassOffsetAt),
+                (ulong)subtable.Format, out diagnostic);
+        // The domain-continuity invariant (S2b card §2.3): the closure merged the
+        // whole covered range [First, First+GlyphCount) on both axes
+        // (AddClassRange), and the frozen map is monotone over the retained set, so
+        // the image is the contiguous range [First', First'+GlyphCount) — verified
+        // here cell by cell, never assumed (a broken domain cannot be stated by a
+        // class matrix).
+        ReadStatus status = RemapContiguousClassDomain(at,
+            format2.LeftClassTable, map, out int leftFirst, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = RemapContiguousClassDomain(at, format2.RightClassTable, map,
+            out int rightFirst, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int leftCount = format2.LeftClassTable.GlyphCount;
+        int rightCount = format2.RightClassTable.GlyphCount;
+        // The decoded matrix travels verbatim: the premultiplied class words decode
+        // to per-glyph class indices (the read face's own decode) and the cells to
+        // a row-major value matrix; only the two firstGlyph words remap.
+        var values = new short[leftCount * rightCount];
+        for (int i = 0; i < leftCount; i++)
+            for (int j = 0; j < rightCount; j++)
+                values[i * rightCount + j] = format2.ValueAt(i, j);
+        status = KernSubtableCompiler.TryCreateFormat2(outputGlyphs,
+            (ushort)leftFirst, format2.LeftIndices, (ushort)rightFirst,
+            format2.RightIndices, values, KernFlagsByte(subtable), out rebuilt,
+            out diagnostic, location: at);
+        if (status != ReadStatus.Done) return status;
+        var body = (KernFormat2Body)rebuilt!.Body;
+        if (body.LeftClassTable.GlyphCount != leftCount ||
+            body.RightClassTable.GlyphCount != rightCount)
+            return RewriteInvariantRefusal(
+                at.At(DataField.Count, (ulong)leftCount),
+                (ulong)((body.LeftClassTable.GlyphCount << 16) |
+                        body.RightClassTable.GlyphCount), out diagnostic);
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The subtable's v0 flags byte: the coverage word's low half (the
+    /// format rides the high byte), masked to the read face's legal flag set —
+    /// the narrowing must never pass the format bits.</summary>
+    private static byte KernFlagsByte(KernSubtable subtable) =>
+        (byte)(subtable.Coverage & KernLayout.Flags0LegalMask);
+
+    /// <summary>One covered kern class range maps to a contiguous output range: the
+    /// first glyph names the image start and every ordinal must follow +1 (the
+    /// monotone frozen map over the closure-merged range). A miss or a gap is the
+    /// domain-broken refusal (RF-S2b-2).</summary>
+    private static ReadStatus RemapContiguousClassDomain(DataLocation at,
+        KernClassTable classTable, GlyphRemap map, out int remappedFirst,
+        out FontDiagnostic diagnostic)
+    {
+        remappedFirst = 0;
+        int first = classTable.FirstGlyph;
+        ReadStatus status = RemapGlyphId(at, (ushort)first, map, out ushort firstOut,
+            out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        remappedFirst = firstOut;
+        for (int k = 1; k < classTable.GlyphCount; k++)
+        {
+            int mapped = map.OutputOf(first + k);
+            if (mapped != firstOut + k)
+                return RewriteInvariantRefusal(
+                    at.At(DataField.GlyphId, (ulong)(first + k)), (ulong)mapped,
+                    out diagnostic);
+        }
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Same-assembly remap read: the caller's GID comes from a model read
+    /// under the same face's numGlyphs domain, so the array access is in-bounds by
+    /// construction and only the membership half can fail (the closure keeps every
+    /// retained reference mapped; a miss is the RF-S2b-2 refusal).</summary>
+    private static ReadStatus RemapGlyphId(DataLocation at, int inputGlyph,
+        GlyphRemap map, out ushort outputGlyph, out FontDiagnostic diagnostic)
+    {
+        outputGlyph = 0;
+        int mapped = map.OutputOf(inputGlyph);
+        if (mapped < 0)
+            return RewriteInvariantRefusal(at.At(DataField.GlyphId,
+                (ulong)inputGlyph), (ulong)inputGlyph, out diagnostic);
+        outputGlyph = (ushort)mapped;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The defensive-invariant refusal (RF-S2b-2, S2b card §5): the
+    /// code-23 contract with the input GID (or the drifted count) in Detail —
+    /// "layout / rewrite / kern glyph <id>".</summary>
+    private static ReadStatus RewriteInvariantRefusal(DataLocation at,
+        ulong detail, out FontDiagnostic diagnostic)
+    {
+        diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported, at, detail);
+        return ReadStatus.UnsupportedFormat;
+    }
+
+    /// <summary>Test bridge for the kern rewrite (the remap-miss invariant's
+    /// non-vacuity proof: the closure keeps the invariant unreachable through the
+    /// pipeline, so the unit test drives the producer directly — the S2a card §3
+    /// layer-1 registration shape).</summary>
+    internal static ReadStatus RebuildKernForTests(KernTable kern, GlyphRemap map,
+        out byte[]? kernBytes, out FontDiagnostic diagnostic) =>
+        RebuildKern(kern, map, new BuildBudget(new BuildLimits()), out kernBytes,
+            out diagnostic);
 }

@@ -101,17 +101,15 @@ public static partial class SubsetOperation
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
-        // The rewrite prefix ends here under compact+PreserveLayout (S2b card §1,
-        // OQ-S2b-2): JSTF/kern/MATH/BASE stay decide-stage refusals until their S2b-2
-        // producers exist, so their first diagnostic remains the code-23 face byte for
-        // byte — admitting them here would let a read-chain diagnostic (RF-A/RF-C)
-        // displace it and drift the unrewritten tables' refusal contract.
-        if (layoutRewritePrefixOnly)
-        {
-            diagnostic = default;
-            return ReadStatus.Done;
-        }
-        if (profile.HasJstf)
+        // The rewrite prefix discipline (S2b card §1, OQ-S2b-2): under
+        // compact+PreserveLayout the admission runs only the segments whose decide
+        // rows are migrated to the compact rewrite — GDEF/GSUB/GPOS (S2b-1) and
+        // kern (S2b-2 card §2.3) in this slice state — so an un-migrated table's
+        // first diagnostic stays the decide-stage code-23 refusal rather than its
+        // read chain (RF-A would otherwise displace the frozen first diagnostic).
+        // The retain-GIDs path (layoutRewritePrefixOnly false) keeps the full
+        // dependency order.
+        if (profile.HasJstf && !layoutRewritePrefixOnly)
         {
             // JSTF's cross-table lookup-index domains are the neighbor lists' counts
             // (the JstfView signature authority); its JstfMax inline lookups consume
@@ -155,7 +153,7 @@ public static partial class SubsetOperation
             }
             state.Kern = kern;
         }
-        if (profile.HasMath)
+        if (profile.HasMath && !layoutRewritePrefixOnly)
         {
             ReadStatus status = directory.TryGetTableBytes(profile.MathOrdinal,
                 out var mathBytes, out diagnostic);
@@ -168,7 +166,7 @@ public static partial class SubsetOperation
             if (status != ReadStatus.Done) return status;
             state.Math = math;
         }
-        if (profile.HasBase)
+        if (profile.HasBase && !layoutRewritePrefixOnly)
         {
             // BASE carries no GID reference anywhere in its structure (S2a card
             // §2.4): validation-only admission, no model, zero closure obligation.

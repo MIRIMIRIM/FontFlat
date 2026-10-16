@@ -147,10 +147,11 @@ public static partial class SubsetOperation
         // whole-table typed read chain in the fixed dependency order and parks its one
         // model on the state. A read-chain failure propagates its own diagnostic (RF-A);
         // a metadata-only lookup refuses (RF-B). The prefix is mode-dependent: retain
-        // admits the whole family (S2a), compact admits only GDEF→GSUB→GPOS — the
-        // S2b-1 rewrite prefix — because an unrewritten table's first diagnostic must
-        // stay the decide-stage code-23 refusal, not a read-chain diagnostic (the
-        // admit-before-decide ordering makes the prefix the drift guard, S2b card §1).
+        // admits the whole family (S2a), compact admits only the migrated rewrite
+        // prefix — GDEF→GSUB→GPOS (S2b-1) and kern (S2b-2, card §2.3) — because an
+        // unrewritten table's first diagnostic must stay the decide-stage code-23
+        // refusal, not a read-chain diagnostic (the admit-before-decide ordering
+        // makes the prefix the drift guard, S2b card §1).
         bool preserveLayout = options.PreserveLayout;
         if (preserveLayout)
         {
@@ -273,6 +274,7 @@ public static partial class SubsetOperation
             rebuiltEblc = null, rebuiltEbsc = null, rebuiltMerg = null;
         byte[]? rebuiltGdefLayout = null, rebuiltGsubLayout = null,
             rebuiltGposLayout = null;
+        byte[]? rebuiltKern = null;
         var rebuildTags = new HashSet<uint>(
             state.Decisions.Where(d => d.Action == TableAction.Rebuild).Select(d => d.Tag));
         if (trueType)
@@ -566,6 +568,25 @@ public static partial class SubsetOperation
                     return Refuse(state, status, diagnostic, out result, out report,
                         out diagnostic);
             }
+            if (rebuildTags.Contains(Kern))
+            {
+                // S2b-2 (card §2.3): the compact+PreserveLayout kern rewrite — the
+                // parked admission model feeds the v0 re-emission without a second
+                // read; the Apple dialect and raw bodies refused earlier (decide /
+                // admission), so only typed v0 bodies reach the producer.
+                if (state.Kern is not { } kernModel)
+                {
+                    diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                        faceAt with { TableTag = Kern }, Kern);
+                    return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
+                        out result, out report, out diagnostic);
+                }
+                status = RebuildKern(kernModel, map!, budget, out rebuiltKern,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result,
+                        out report, out diagnostic);
+            }
         }
         var tables = new SortedDictionary<uint, byte[]>();
         for (int i = 0; i < directory.DeclaredCount; i++)
@@ -606,6 +627,7 @@ public static partial class SubsetOperation
                     Gdef => rebuiltGdefLayout,
                     Gsub => rebuiltGsubLayout,
                     Gpos => rebuiltGposLayout,
+                    Kern => rebuiltKern,
                     _ => null
                 };
                 if (rebuilt is null && state.PayloadDropped.Contains(decision.Tag))
@@ -1156,6 +1178,26 @@ public static partial class SubsetOperation
                 : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
                     SubsetDecisionOrigin.MatrixRow);
         }
+        else if (compact && options.PreserveLayout && tag == Kern)
+        {
+            // S2b-2 (card §2.3, OQ-S2b-5): the compact rewrite re-emits the v0
+            // dialect only — the producer's factories refuse Apple-dialect roots
+            // (the read-side-only boundary), so the request refuses here instead of
+            // passing an unrewritable kern over the changed GID domain. An
+            // Apple-to-GPOS conversion would be new semantic invention and stays
+            // registered not-taken. RF-S2b-3's keyword contract: "kern" / "Apple" /
+            // "dialect"; the raw version word rides in Detail.
+            if (state.Kern!.Dialect != KernDialect.Version0)
+            {
+                state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
+                    directory.TableLocation(ordinal).At(DataField.Version, 0),
+                    state.Kern.Version);
+                diagnostic = state.Diagnostic;
+                return false;
+            }
+            decision = new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                SubsetDecisionOrigin.MatrixRow);
+        }
         else if (tag is Kern or Gsub or Gpos or Gdef or Base or Jstf or Math)
         {
             // S2b-1 (OQ-S2b-2, decide per-tag three-state): the rewritten prefix
@@ -1163,9 +1205,11 @@ public static partial class SubsetOperation
             // modes — retain keeps the S2a RETAIN_RAW form, compact flips to the
             // primaryPolicy column's executed REBUILD_TYPED (MatrixRow origin: the
             // request only pulls the row's fourth alternate trigger, it never
-            // renegotiates the policy). The four unrewritten family rows keep their
-            // byte-identical pre-S2b shape: RETAIN_RAW under retain-GIDs only, the
-            // code-23 refusal under compact — their producers arrive with S2b-2.
+            // renegotiates the policy). The remaining unrewritten family rows
+            // (JSTF/MATH/BASE; kern joined the compact rewrite with S2b-2) keep
+            // their byte-identical pre-S2b shape: RETAIN_RAW under retain-GIDs
+            // only, the code-23 refusal under compact — their producers arrive
+            // with S2b-2.
             bool rewrittenPrefix = tag is Gsub or Gpos or Gdef;
             if (options.PreserveLayout && (!compact || rewrittenPrefix))
             {
@@ -1179,8 +1223,9 @@ public static partial class SubsetOperation
             {
                 // Layout retention has no S1 execution path: the request refuses and
                 // points at S2 (W1 §2.2; S0-RF-004-LAYOUT). Compact keeps this shape
-                // under every option combination except the S2b-1 rewritten prefix —
-                // an unrewritten family table refuses here as its first diagnostic.
+                // under every option combination except the migrated rewrite rows
+                // above — an unrewritten family table refuses here as its first
+                // diagnostic (the merged tree retires this face row by row).
                 state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
                     directory.TableLocation(ordinal), tag);
                 diagnostic = state.Diagnostic;
