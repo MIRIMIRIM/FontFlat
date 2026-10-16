@@ -41,7 +41,7 @@ public static partial class SubsetOperation
 
     private static ReadStatus AdmitLayoutFamily(SfntDirectoryView directory,
         ProfileScan profile, MaxpTable maxp, PrepareState state,
-        out FontDiagnostic diagnostic)
+        bool layoutRewritePrefixOnly, out FontDiagnostic diagnostic)
     {
         diagnostic = default;
         var budget = state.Budget;
@@ -100,6 +100,16 @@ public static partial class SubsetOperation
                 maxp.NumGlyphs, LayoutLookupKind.Gpos, state.GdefContext, state, budget,
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
+        }
+        // The rewrite prefix ends here under compact+PreserveLayout (S2b card §1,
+        // OQ-S2b-2): JSTF/kern/MATH/BASE stay decide-stage refusals until their S2b-2
+        // producers exist, so their first diagnostic remains the code-23 face byte for
+        // byte — admitting them here would let a read-chain diagnostic (RF-A/RF-C)
+        // displace it and drift the unrewritten tables' refusal contract.
+        if (layoutRewritePrefixOnly)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
         }
         if (profile.HasJstf)
         {

@@ -142,15 +142,20 @@ public static partial class SubsetOperation
             return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic, out result,
                 out report, out diagnostic);
 
-        // Step 3.5 (S2a card §2.1): the PreserveLayout admission segment. Only the
-        // retain-GIDs mode's explicit selection reaches here; every present layout
-        // table walks its whole-table typed read chain in the fixed dependency order
-        // and parks its one model on the state. A read-chain failure propagates its
-        // own diagnostic (RF-A); a metadata-only lookup refuses (RF-B).
-        bool preserveLayout = !compact && options.PreserveLayout;
+        // Step 3.5 (S2a card §2.1; dual-mode since S2b-1, OQ-S2b-2): the PreserveLayout
+        // admission segment. Every present layout table in the admitted prefix walks its
+        // whole-table typed read chain in the fixed dependency order and parks its one
+        // model on the state. A read-chain failure propagates its own diagnostic (RF-A);
+        // a metadata-only lookup refuses (RF-B). The prefix is mode-dependent: retain
+        // admits the whole family (S2a), compact admits only GDEF→GSUB→GPOS — the
+        // S2b-1 rewrite prefix — because an unrewritten table's first diagnostic must
+        // stay the decide-stage code-23 refusal, not a read-chain diagnostic (the
+        // admit-before-decide ordering makes the prefix the drift guard, S2b card §1).
+        bool preserveLayout = options.PreserveLayout;
         if (preserveLayout)
         {
-            status = AdmitLayoutFamily(directory, profile, maxp!, state, out diagnostic);
+            status = AdmitLayoutFamily(directory, profile, maxp!, state,
+                layoutRewritePrefixOnly: compact, out diagnostic);
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
@@ -1132,25 +1137,29 @@ public static partial class SubsetOperation
         }
         else if (tag is Kern or Gsub or Gpos or Gdef or Base or Jstf or Math)
         {
-            if (options.PreserveLayout && !compact)
+            // S2b-1 (OQ-S2b-2, decide per-tag three-state): the rewritten prefix
+            // (GSUB/GPOS/GDEF) answers the caller's PreserveLayout selection in both
+            // modes — retain keeps the S2a RETAIN_RAW form, compact flips to the
+            // primaryPolicy column's executed REBUILD_TYPED (MatrixRow origin: the
+            // request only pulls the row's fourth alternate trigger, it never
+            // renegotiates the policy). The four unrewritten family rows keep their
+            // byte-identical pre-S2b shape: RETAIN_RAW under retain-GIDs only, the
+            // code-23 refusal under compact — their producers arrive with S2b-2.
+            bool rewrittenPrefix = tag is Gsub or Gpos or Gdef;
+            if (options.PreserveLayout && (!compact || rewrittenPrefix))
             {
-                // S2a (card §1.1 third state, OQ-S2a-1 lean): the caller's explicit
-                // PreserveLayout selection flips the retain-GIDs column's executed
-                // policy to RETAIN_RAW with the layout-closure obligation — the
-                // admission segment (step 3.5) typed-reads every present layout
-                // table and the closure stage (step 4.5) merges the layout
-                // reference union before the composite closure. The matrix row's
-                // origin stays MatrixRow: the request only pulls the row's third
-                // alternate trigger, it never renegotiates the policy.
-                decision = new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
-                    SubsetDecisionOrigin.MatrixRow);
+                decision = compact
+                    ? new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                        SubsetDecisionOrigin.MatrixRow)
+                    : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
+                        SubsetDecisionOrigin.MatrixRow);
             }
             else if (!options.NoLayout)
             {
                 // Layout retention has no S1 execution path: the request refuses and
                 // points at S2 (W1 §2.2; S0-RF-004-LAYOUT). Compact keeps this shape
-                // under every option combination — the compact layout rewrite is
-                // S2b's execution face and PreserveLayout does not reach it.
+                // under every option combination except the S2b-1 rewritten prefix —
+                // an unrewritten family table refuses here as its first diagnostic.
                 state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
                     directory.TableLocation(ordinal), tag);
                 diagnostic = state.Diagnostic;
