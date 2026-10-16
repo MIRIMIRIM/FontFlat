@@ -359,14 +359,14 @@ public sealed class SubsetLayoutScopeTests
     }
 
     [Fact]
-    public void TrueCutStopsPullingCutLookupsAndRefusesAtThePendingProducer()
+    public void TrueCutStopsPullingCutLookupsAndReEmitsTheSurvivingSubset()
     {
         // The fifth alternate (retain form): a truly-cut GSUB flips to
         // RebuildTyped, the scoped closure enumerates only surviving lookups (the
         // cut lookups' references — GIDs 4..7 — never join), and the scoped
-        // rewrite producer, landing with the slice's next commit, is refused at
-        // with the decision's own tag until it exists (the SV producer-face
-        // precedent). No bytes publish.
+        // cascade re-emits the surviving subset over the identity seam: the
+        // output carries exactly one lookup (the plain single) behind one
+        // feature, and the report keeps the scoped closure facts.
         var options = new SubsetOptions
         {
             PreserveLayout = true,
@@ -375,32 +375,53 @@ public sealed class SubsetLayoutScopeTests
         var status = SubsetOperation.TryPrepare(
             Request(Face(GsubBytes(Model())), [1], options), out var result,
             out var report, out var diagnostic);
-        Assert.Equal(ReadStatus.UnsupportedFormat, status);
-        Assert.Null(result);
-        // The copy loop's switch refuses with the decision's own tag in Detail
-        // (the SV producer-face precedent; the scoped producer lands in ②).
-        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
-        Assert.Equal((ulong)SubsetFontFixture.GsubTag, diagnostic.Detail);
-        Assert.NotNull(report);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
         var census = Assert.Single(report!.LayoutReferenceCensus);
         Assert.Equal(SubsetFontFixture.GsubTag, census.Tag);
         Assert.Equal(2, census.ReferencedGidCount);
         Assert.Equal(new ushort[] { 2 }, report.LayoutClosureAddedGids);
         // The decision carries the fifth alternate's RebuildTyped over GSUB.
         bool gsubRebuilt = false;
-        foreach (var decision in report.Decisions)
+        foreach (var decision in report!.Decisions)
             if (decision.Tag == SubsetFontFixture.GsubTag)
                 gsubRebuilt = decision.Policy == SubsetPolicy.RebuildTyped &&
                     decision.Action == TableAction.Rebuild;
         Assert.True(gsubRebuilt);
+        // The output GSUB: the surviving subset only — one feature (TagB), one
+        // lookup (the plain single over {1}→{2}), one script whose default
+        // langsys re-indexed its feature list to the surviving entry.
+        byte[] output = OutputBytes(result!);
+        Ok(LayoutListsView.TryOpen(TableBytes(output, SubsetFontFixture.GsubTag),
+            out var view, out diagnostic, DataLocation.Anonymous(
+                SubsetFontFixture.GsubTag)));
+        NoDiagnostic(diagnostic);
+        Ok(view!.TryReadTable(NumGlyphs, LayoutLookupKind.Gsub, null, out var model,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Assert.Equal(1, model!.Scripts.Length);
+        Assert.Equal(1, model.Features.Length);
+        Assert.Equal(TagB, model.Features[0].Tag);
+        Assert.Equal(1, model.Lookups.Length);
+        // The scoped rewrite census row reads in≠out (3 subtables → 1) legally
+        // (OQ-S2c-10) beside the scope census row.
+        var rewriteRow = Assert.Single(report.LayoutRewriteCensus,
+            r => r.Tag == SubsetFontFixture.GsubTag);
+        Assert.Equal(3, rewriteRow.InputSubtableCount);
+        Assert.Equal(1, rewriteRow.OutputSubtableCount);
+        Assert.False(rewriteRow.CountsInvarianceHeld);
+        var scopeRow = Assert.Single(report.LayoutScopeCensus);
+        Assert.Equal(1, scopeRow.SurvivingLookupCount);
+        Assert.Equal(1, scopeRow.FeatureTagMatches);
     }
 
     [Fact]
-    public void TrueCutCompactRefusesAtThePendingProducer()
+    public void TrueCutCompactReEmitsTheSurvivingSubsetOverTheFrozenMap()
     {
-        // The compact form of the pending-producer face: the decide keeps the S2b
-        // Rebuild, and the rewrite window refuses the unscoped rewrite over a cut
-        // set (§8 commit ①) — the scoped producer replaces this refusal in ②.
+        // The compact form: the scoped cascade rides the frozen map and the map
+        // artifact publishes as usual; the cut lookups' GIDs stayed out of the
+        // closure, so the frozen domain carries only the surviving references.
         byte[] gsub = GsubBytes(Model());
         var options = new SubsetOptions
         {
@@ -418,13 +439,20 @@ public sealed class SubsetLayoutScopeTests
             Mode = SubsetMode.CompactRemap,
             Options = options
         }, out var result, out var report, out var diagnostic);
-        Assert.Equal(ReadStatus.UnsupportedFormat, status);
-        Assert.Null(result);
-        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
-        Assert.Equal(SubsetFontFixture.GsubTag, diagnostic.Location.TableTag);
-        Assert.NotNull(report);
-        // The scoped closure ran before the refusal: the cut lookups' GIDs stayed
-        // out of the frozen map's domain.
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+        Assert.NotNull(result!.Map);
         Assert.Equal(new ushort[] { 2 }, report!.LayoutClosureAddedGids);
+        Ok(LayoutListsView.TryOpen(
+            TableBytes(OutputBytes(result), SubsetFontFixture.GsubTag),
+            out var view, out diagnostic, DataLocation.Anonymous(
+                SubsetFontFixture.GsubTag)));
+        NoDiagnostic(diagnostic);
+        Ok(view!.TryReadTable(3, LayoutLookupKind.Gsub, null, out var model,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Assert.Equal(1, model!.Lookups.Length);
+        Assert.Equal(1, model.Features.Length);
     }
 }

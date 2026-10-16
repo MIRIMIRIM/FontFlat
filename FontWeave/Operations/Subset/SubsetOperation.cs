@@ -567,24 +567,6 @@ public static partial class SubsetOperation
             if (rebuildTags.Contains(Gdef) || rebuildTags.Contains(Gsub) ||
                 rebuildTags.Contains(Gpos))
             {
-                // S2c (card §8 commit ①, the SV producer-face precedent): a declared
-                // scope that truly cuts a layout list pulls its rewrite to the
-                // surviving subset; the scoped producer lands with the slice's next
-                // commit, so until it exists the window refuses with the decision's
-                // own tag — never passing an unscoped rewrite over a cut set. A
-                // no-op verdict rides the S2b whole-table rewrite unchanged (§4.2).
-                if (rebuildTags.Contains(Gsub) && state.GsubScope is { } gsubScope &&
-                    !gsubScope.ListsNoOp)
-                    return Refuse(state, ReadStatus.UnsupportedFormat,
-                        new(DiagnosticCode.UnsupportedOperation,
-                            faceAt with { TableTag = Gsub }, Gsub),
-                        out result, out report, out diagnostic);
-                if (rebuildTags.Contains(Gpos) && state.GposScope is { } gposScope &&
-                    !gposScope.ListsNoOp)
-                    return Refuse(state, ReadStatus.UnsupportedFormat,
-                        new(DiagnosticCode.UnsupportedOperation,
-                            faceAt with { TableTag = Gpos }, Gpos),
-                        out result, out report, out diagnostic);
                 // S2b-1 (card §2): the compact layout rewrite runs GDEF first — the
                 // GSUB/GPOS lookup flags validate against its rebuilt lookup context —
                 // then the two layout lists. Every stage reads the step 3.5 materialized
@@ -624,6 +606,15 @@ public static partial class SubsetOperation
             }
             if (rebuildTags.Contains(Jstf))
             {
+                // The S2c interim face (see the decide note): the scoped JSTF
+                // producer lands with the slice's third commit; until it exists a
+                // declared scope refuses here — the unscoped rebuild would ignore
+                // the script-tree cut and the mod-list remap.
+                if (ScopeDeclared(options))
+                    return Refuse(state, ReadStatus.UnsupportedFormat,
+                        new(DiagnosticCode.UnsupportedOperation,
+                            faceAt with { TableTag = Jstf }, Jstf),
+                        out result, out report, out diagnostic);
                 // S2b-2 (card §2.5): the JSTF rewrite consumes the neighbor lookup
                 // counts and the POST-rewrite GDEF context the pipeline re-parked
                 // (the GDEF rewrite parks its rebuilt context) — the record order
@@ -660,6 +651,22 @@ public static partial class SubsetOperation
                     return Refuse(state, status, diagnostic, out result,
                         out report, out diagnostic);
             }
+        }
+        // S2c (card §4/§5.1, the fifth alternate's retain execution face): a
+        // truly-cut layout list re-emits its surviving subset over the identity
+        // seam — retain-GIDs never constructs a map, so the rewrite engine sees
+        // the unchanged GID domain (OutputOf(g)=g, numGlyphs = the input domain)
+        // and only the rule/feature/lookup lists shrink. GDEF is scope-transparent
+        // (OQ-S2c-9): its decide row stays RETAIN_RAW and the admission context
+        // feeds the flags validation unchanged.
+        if (!compact && (rebuildTags.Contains(Gsub) || rebuildTags.Contains(Gpos)))
+        {
+            status = RewriteScopedRetainLayout(request.Face, state, rebuildTags,
+                directory, out rebuiltGsubLayout, out rebuiltGposLayout,
+                out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
         }
         var tables = new SortedDictionary<uint, byte[]>();
         for (int i = 0; i < directory.DeclaredCount; i++)
@@ -1360,6 +1367,12 @@ public static partial class SubsetOperation
             {
                 Gsub when state.GsubScope is { } gsubScope => !gsubScope.ListsNoOp,
                 Gpos when state.GposScope is { } gposScope => !gposScope.ListsNoOp,
+                // The JSTF interim face: the scoped JSTF producer (script/lang
+                // pruning, mod-list remap, the OQ-S2c-8 lean) lands with the
+                // slice's third commit; until it exists any declared scope pulls
+                // JSTF to Rebuild so the request refuses at the producer boundary
+                // instead of copying a tree the declaration may have cut.
+                Jstf when ScopeDeclared(options) => true,
                 _ => false
             };
             if (options.PreserveLayout && (!compact || rewrittenPrefix || scopeCut))
