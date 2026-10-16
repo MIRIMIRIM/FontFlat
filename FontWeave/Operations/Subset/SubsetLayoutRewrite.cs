@@ -21,9 +21,12 @@ namespace FontWeave.Operations.Subset;
 /// SID/CID identity can permute, so every key-order wire constraint (coverage
 /// entries, pair-set second glyphs, class-def ranges) re-groups over the sorted
 /// output keys with the parallel payloads riding the same permutation — the kern
-/// fmt0 canonical-sort precedent, a wire-equivalence tier member. Counts are
-/// invariant by construction and the root compilers re-answer every flags/context
-/// contract against the rebuilt GDEF context (the emission-side second defense).</summary>
+/// fmt0 canonical-sort precedent, a wire-equivalence tier member. Semantic orders
+/// (ligature preference, rule and sequence orders, feature/lookup record order)
+/// never move. Counts are invariant by construction and the root compilers
+/// re-answer every flags/context contract against the rebuilt GDEF context (the
+/// emission-side second defense). FV re-emits its typed model untouched (no GID
+/// domain; featureIndex identity, OQ-S2b-8).</summary>
 public static partial class SubsetOperation
 {
     /// <summary>The rewrite entry: GDEF first — the GSUB/GPOS lookup flags validate
@@ -45,6 +48,24 @@ public static partial class SubsetOperation
                     out diagnostic);
             status = RewriteCompactGdef(gdefModel, map, state.Budget, out gdef,
                 out context, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
+        if (rebuildTags.Contains(Gsub))
+        {
+            if (state.Gsub is not { } gsubModel)
+                return RewriteProducerMissing(map.SourceFace.Location, Gsub,
+                    out diagnostic);
+            status = RewriteCompactLayoutLists(gsubModel, map, LayoutLookupKind.Gsub,
+                context, state.Budget, out gsub, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
+        if (rebuildTags.Contains(Gpos))
+        {
+            if (state.Gpos is not { } gposModel)
+                return RewriteProducerMissing(map.SourceFace.Location, Gpos,
+                    out diagnostic);
+            status = RewriteCompactLayoutLists(gposModel, map, LayoutLookupKind.Gpos,
+                context, state.Budget, out gpos, out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
         diagnostic = default;
@@ -191,14 +212,13 @@ public static partial class SubsetOperation
     /// <summary>One class domain's per-entry remap (OQ-S2b-3): every mapped glyph
     /// keeps its class value, an unmapped glyph's entry drops (the definitional
     /// shrink — dropped glyphs were never closure members), and the survivors
-    /// re-group into maximal runs over the sorted output keys. The emission format
-    /// is the canonical smaller measure: format 1 only when the runs tile a dense
-    /// window no wider than the sparse encoding (the reader's expanded-membership
-    /// semantics make the two formats' class answers identical).</summary>
-    private static ReadStatus RewriteClassDef(ClassDefTable? classDef, GlyphRemap map,
-        BuildBudget budget, out ClassDefTable? rewritten, out FontDiagnostic diagnostic)
+    /// re-group into maximal runs over the sorted output keys.</summary>
+    private static ReadStatus RewriteClassDefRanges(ClassDefTable? classDef,
+        GlyphRemap map, out ClassDefRange[] ranges, out ushort format,
+        out FontDiagnostic diagnostic)
     {
-        rewritten = null;
+        ranges = [];
+        format = 2;
         diagnostic = default;
         if (classDef is null) return ReadStatus.Done;
         var keys = new List<ushort>();
@@ -216,7 +236,7 @@ public static partial class SubsetOperation
         var keyArray = keys.ToArray();
         var valueArray = values.ToArray();
         Array.Sort(keyArray, valueArray); // distinct keys: a total sort
-        var ranges = new List<ClassDefRange>(keyArray.Length);
+        var grouped = new List<ClassDefRange>(keyArray.Length);
         int at = 0;
         while (at < keyArray.Length)
         {
@@ -224,21 +244,1173 @@ public static partial class SubsetOperation
             while (end + 1 < keyArray.Length && keyArray[end + 1] == keyArray[end] + 1 &&
                 valueArray[end + 1] == valueArray[at])
                 end++;
-            ranges.Add(new ClassDefRange(keyArray[at], keyArray[end], valueArray[at]));
+            grouped.Add(new ClassDefRange(keyArray[at], keyArray[end], valueArray[at]));
             at = end + 1;
         }
+        // The emission format is the canonical smaller measure: format 1 only when
+        // the runs tile a dense window no wider than the sparse encoding (the
+        // reader's expanded-membership semantics make the two formats' class
+        // answers identical).
         bool tiles = true;
-        for (int i = 1; i < ranges.Count && tiles; i++)
-            tiles = ranges[i].StartGlyph == ranges[i - 1].EndGlyph + 1;
-        int denseCount = ranges.Count == 0
+        for (int i = 1; i < grouped.Count && tiles; i++)
+            tiles = grouped[i].StartGlyph == grouped[i - 1].EndGlyph + 1;
+        int denseCount = grouped.Count == 0
             ? 0
-            : ranges[^1].EndGlyph - ranges[0].StartGlyph + 1;
+            : grouped[^1].EndGlyph - grouped[0].StartGlyph + 1;
         int denseLength = ClassDefLayout.DenseValuesOffset +
             ClassDefLayout.ValueStride * denseCount;
         int sparseLength = ClassDefLayout.SparseRangesOffset +
-            ClassDefLayout.RangeStride * ranges.Count;
-        ushort format = tiles && denseLength <= sparseLength ? (ushort)1 : (ushort)2;
-        return ClassDefTableCompiler.TryCreate(ranges.ToArray(), map.OutputGlyphCount,
+            ClassDefLayout.RangeStride * grouped.Count;
+        ranges = grouped.ToArray();
+        format = tiles && denseLength <= sparseLength ? (ushort)1 : (ushort)2;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus RewriteClassDef(ClassDefTable? classDef, GlyphRemap map,
+        BuildBudget budget, out ClassDefTable? rewritten, out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = RewriteClassDefRanges(classDef, map, out var ranges,
+            out ushort format, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (classDef is null) return ReadStatus.Done;
+        return ClassDefTableCompiler.TryCreate(ranges, map.OutputGlyphCount,
             format, out rewritten, out diagnostic, budget, classDef.Location);
+    }
+
+    // ---- the layout lists (GSUB/GPOS; S2b card §2.1) ------------------------------
+
+    /// <summary>One layout list's rewrite: every lookup's typed leaves remap through
+    /// the frozen map into new leaf models over the output domain, each lookup
+    /// re-forms through its LookupTableCompiler factory with Flags/MarkFilteringSet
+    /// byte-stable (markset ordinals never move), and the root re-emits through the
+    /// Gsub/GposTableCompiler with the scripts, features and FV block reused as-is —
+    /// the feature and lookup record/index order never changes (the emission
+    /// invariant the JSTF index identity builds on), so every feature's lookup
+    /// indices stay identity and zero rules are lost. The zero-rule-loss contract
+    /// asserts per lookup that the subtable count survived (the leaf loops preserve
+    /// it by construction; the explicit break defends orchestration drift,
+    /// RF-S2b-2).</summary>
+    private static ReadStatus RewriteCompactLayoutLists(LayoutListsTable table,
+        GlyphRemap map, LayoutLookupKind kind, GdefLookupContext? context,
+        BuildBudget budget, out byte[]? bytes, out FontDiagnostic diagnostic)
+    {
+        bytes = null;
+        var lookups = new LookupTable[table.Lookups.Length];
+        for (int i = 0; i < lookups.Length; i++)
+        {
+            ReadStatus status = RewriteLookup(table.Lookups[i], map, kind, context,
+                budget, out var lookup, out diagnostic);
+            lookups[i] = lookup!;
+            if (status != ReadStatus.Done) return status;
+            if (lookups[i] is null ||
+                lookups[i]!.SubtableCount != table.Lookups[i].SubtableCount)
+                return RewriteMiss(map, table.Location.TableTag, -1, out diagnostic);
+        }
+        LayoutListsTable? root;
+        ReadStatus rootStatus;
+        if (kind == LayoutLookupKind.Gsub)
+        {
+            rootStatus = GsubTableCompiler.TryCreate(table.Version,
+                table.FeatureVariationsOffsetRaw, table.Scripts, table.Features,
+                lookups, map.OutputGlyphCount, out root, out diagnostic, budget.Limits,
+                table.Location, table.FeatureVariations);
+        }
+        else
+        {
+            rootStatus = GposTableCompiler.TryCreate(table.Version,
+                table.FeatureVariationsOffsetRaw, table.Scripts, table.Features,
+                lookups, map.OutputGlyphCount, out root, out diagnostic, budget.Limits,
+                table.Location, table.FeatureVariations);
+        }
+        if (rootStatus != ReadStatus.Done) return rootStatus;
+        ReadStatus compileStatus = kind == LayoutLookupKind.Gsub
+            ? GsubTableCompiler.TryCompile(root!, context, out bytes, out diagnostic,
+                budget)
+            : GposTableCompiler.TryCompile(root!, context, out bytes, out diagnostic,
+                budget);
+        if (compileStatus != ReadStatus.Done) return compileStatus;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus RewriteLookup(LookupTable lookup, GlyphRemap map,
+        LayoutLookupKind kind, GdefLookupContext? context, BuildBudget budget,
+        out LookupTable? rewritten, out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        return kind == LayoutLookupKind.Gsub
+            ? lookup.LookupType switch
+            {
+                1 => RewriteSingleSubstLookup(lookup, map, context, budget,
+                    out rewritten, out diagnostic),
+                2 => RewriteDirectLookup(lookup, static l => l.Multiples!, RewriteMultiple,
+                    LookupTableCompiler.TryCreateMultipleSubst, map, context, budget,
+                    out rewritten, out diagnostic),
+                3 => RewriteDirectLookup(lookup, static l => l.Alternates!, RewriteAlternate,
+                    LookupTableCompiler.TryCreateAlternateSubst, map, context, budget,
+                    out rewritten, out diagnostic),
+                4 => RewriteDirectLookup(lookup, static l => l.Ligatures!, RewriteLigature,
+                    LookupTableCompiler.TryCreateLigatureSubst, map, context, budget,
+                    out rewritten, out diagnostic),
+                5 => RewriteContextualLookup(lookup, map, context, budget,
+                    out rewritten, out diagnostic),
+                6 => RewriteChainingLookup(lookup, map, context, budget,
+                    out rewritten, out diagnostic),
+                7 => RewriteGsubExtensionLookup(lookup, map, context, budget,
+                    out rewritten, out diagnostic),
+                8 => RewriteDirectLookup(lookup, static l => l.ReverseChains!,
+                    RewriteReverseChain, LookupTableCompiler.TryCreateReverseChainSubst,
+                    map, context, budget, out rewritten, out diagnostic),
+                _ => UnsupportedLookupType(lookup, out diagnostic),
+            }
+            : lookup.LookupType switch
+            {
+                1 => RewriteSinglePosLookup(lookup, map, context, budget,
+                    out rewritten, out diagnostic),
+                2 => RewritePairPosLookup(lookup, map, context, budget,
+                    out rewritten, out diagnostic),
+                3 => RewriteDirectLookup(lookup, static l => l.CursiveAttachments!,
+                    RewriteCursive, LookupTableCompiler.TryCreateCursivePos, map, context,
+                    budget, out rewritten, out diagnostic),
+                4 => RewriteMarkLookup(lookup, map, context, budget,
+                    out rewritten, out diagnostic),
+                5 => RewriteMarkLookup(lookup, map, context, budget,
+                    out rewritten, out diagnostic),
+                6 => RewriteMarkLookup(lookup, map, context, budget,
+                    out rewritten, out diagnostic),
+                7 => RewriteContextualLookup(lookup, map, context, budget,
+                    out rewritten, out diagnostic),
+                8 => RewriteChainingLookup(lookup, map, context, budget,
+                    out rewritten, out diagnostic),
+                9 => RewriteGposExtensionLookup(lookup, map, context, budget,
+                    out rewritten, out diagnostic),
+                _ => UnsupportedLookupType(lookup, out diagnostic),
+            };
+    }
+
+    private static ReadStatus UnsupportedLookupType(LookupTable lookup,
+        out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+            lookup.Location.AtLocal(DataField.Tag, LookupLayout.TypeAt), out diagnostic,
+            lookup.LookupType);
+
+    /// <summary>The direct-leaf lookup shape (GSUB 2/3/4/8, GPOS 3): one leaf
+    /// rewriter per type plus the type's LookupTableCompiler factory, shared by the
+    /// whole family (the factory's per-child identity checks re-fire on the rewritten
+    /// leaves).</summary>
+    private delegate ReadStatus LeafRewriter<TLeaf>(TLeaf sub, GlyphRemap map,
+        BuildBudget budget, out TLeaf? rewritten, out FontDiagnostic diagnostic)
+        where TLeaf : class;
+
+    private delegate ReadStatus LookupFactory<TLeaf>(int numGlyphs,
+        IReadOnlyList<TLeaf> subtables, ushort flags, ushort? markFilteringSet,
+        GdefLookupContext? context, out LookupTable? model, out FontDiagnostic diagnostic,
+        BuildLimits? limits, DataLocation location)
+        where TLeaf : class;
+
+    private static ReadStatus RewriteDirectLookup<TLeaf>(LookupTable lookup,
+        Func<LookupTable, IReadOnlyList<TLeaf>> leaves, LeafRewriter<TLeaf> rewriter,
+        LookupFactory<TLeaf> factory, GlyphRemap map, GdefLookupContext? context,
+        BuildBudget budget, out LookupTable? rewritten, out FontDiagnostic diagnostic)
+        where TLeaf : class
+    {
+        rewritten = null;
+        var source = leaves(lookup);
+        var subtables = new TLeaf[source.Count];
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ReadStatus status = rewriter(source[i], map, budget, out var leaf,
+                out diagnostic);
+            subtables[i] = leaf!;
+            if (status != ReadStatus.Done) return status;
+        }
+        ReadStatus factoryStatus = factory(map.OutputGlyphCount, subtables,
+            lookup.Flags, lookup.MarkFilteringSet, context, out rewritten,
+            out diagnostic, budget.Limits, lookup.Location);
+        if (factoryStatus != ReadStatus.Done) return factoryStatus;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    // ---- GSUB 1 / GPOS 1 ----------------------------------------------------------
+
+    /// <summary>The GSUB type-1 form answer (OQ-S2b-4): the input format re-answers
+    /// in the output domain — a format-1 subtable whose uniform delta breaks under
+    /// the remap re-selects format 2 (definitional, never a drift); format 2 stays.</summary>
+    private static ReadStatus RewriteSingleSubstSubtable(SingleSubstTable sub,
+        GlyphRemap map, BuildBudget budget, out SingleSubstTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var substitutes = new ushort[sub.Substitutes.Length];
+        for (int i = 0; i < substitutes.Length; i++)
+        {
+            int output = map.OutputOf(sub.Substitutes[i]);
+            if (output < 0)
+                return RewriteMiss(map, sub.Coverage.Location.TableTag,
+                    sub.Substitutes[i], out diagnostic);
+            substitutes[i] = (ushort)output;
+        }
+        var ordered = new ushort[substitutes.Length];
+        for (int i = 0; i < ordered.Length; i++) ordered[i] = substitutes[ordinalOf[i]];
+        ushort format = sub.Format;
+        if (format == 1 && !HasUniformDelta(coverage!.Glyphs, ordered)) format = 2;
+        return SingleSubstTableCompiler.TryCreate(coverage!.Glyphs, ordered,
+            map.OutputGlyphCount, format, out rewritten, out diagnostic, budget,
+            sub.Location, coverage.Format);
+    }
+
+    private static bool HasUniformDelta(ReadOnlySpan<ushort> glyphs,
+        ReadOnlySpan<ushort> substitutes)
+    {
+        if (glyphs.IsEmpty) return true;
+        short delta = unchecked((short)(substitutes[0] - glyphs[0]));
+        for (int i = 1; i < glyphs.Length; i++)
+            if (unchecked((ushort)(glyphs[i] + delta)) != substitutes[i]) return false;
+        return true;
+    }
+
+    private static ReadStatus RewriteSingleSubstLookup(LookupTable lookup, GlyphRemap map,
+        GdefLookupContext? context, BuildBudget budget, out LookupTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        var source = lookup.SingleSubstitutions!;
+        var subtables = new SingleSubstTable[source.Count];
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ReadStatus status = RewriteSingleSubstSubtable(source[i], map, budget,
+                out var leaf, out diagnostic);
+            subtables[i] = leaf!;
+            if (status != ReadStatus.Done) return status;
+        }
+        ReadStatus factoryStatus = LookupTableCompiler.TryCreateSingleSubst(
+            map.OutputGlyphCount, subtables, lookup.Flags, lookup.MarkFilteringSet,
+            context, out rewritten, out diagnostic, budget, lookup.Location);
+        if (factoryStatus != ReadStatus.Done) return factoryStatus;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus RewriteSinglePosSubtable(SinglePosTable sub,
+        GlyphRemap map, BuildBudget budget, out SinglePosTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        // The value rows ride their coverage ordinals (format 2's per-key rows;
+        // format 1's single row permutes trivially).
+        var ordered = new StaticValueRecord[sub.Values.Length];
+        for (int v = 0; v < ordered.Length; v++) ordered[v] = sub.Values[ordinalOf[v]];
+        return SinglePosTableCompiler.TryCreate(coverage!.Glyphs, ordered,
+            map.OutputGlyphCount, sub.Format, sub.ValueFormat, out rewritten,
+            out diagnostic, budget, sub.Location, coverage.Format);
+    }
+
+    private static ReadStatus RewriteSinglePosLookup(LookupTable lookup, GlyphRemap map,
+        GdefLookupContext? context, BuildBudget budget, out LookupTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        var source = lookup.SinglePositions!;
+        var subtables = new SinglePosTable[source.Count];
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ReadStatus status = RewriteSinglePosSubtable(source[i], map, budget,
+                out var leaf, out diagnostic);
+            subtables[i] = leaf!;
+            if (status != ReadStatus.Done) return status;
+        }
+        ReadStatus factoryStatus = LookupTableCompiler.TryCreateSinglePos(
+            map.OutputGlyphCount, subtables, lookup.Flags, lookup.MarkFilteringSet,
+            context, out rewritten, out diagnostic, budget, lookup.Location);
+        if (factoryStatus != ReadStatus.Done) return factoryStatus;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    // ---- GSUB 2 / 3 ---------------------------------------------------------------
+
+    private static ReadStatus RewriteMultiple(MultipleSubstTable sub, GlyphRemap map,
+        BuildBudget budget, out MultipleSubstTable? rewritten, out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var sequences = new ushort[sub.SequenceCount][];
+        for (int i = 0; i < sequences.Length; i++)
+        {
+            status = RewriteGlyphSequence(sub.GetSequence(i), map,
+                sub.Coverage.Location.TableTag, out sequences[i], out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
+        var ordered = new ushort[sequences.Length][];
+        for (int i = 0; i < ordered.Length; i++) ordered[i] = sequences[ordinalOf[i]];
+        return MultipleSubstTableCompiler.TryCreate(coverage!.Glyphs, ordered,
+            map.OutputGlyphCount, out rewritten, out diagnostic, budget, sub.Location,
+            coverage.Format);
+    }
+
+    private static ReadStatus RewriteAlternate(AlternateSubstTable sub, GlyphRemap map,
+        BuildBudget budget, out AlternateSubstTable? rewritten, out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var alternateSets = new ushort[sub.AlternateSetCount][];
+        for (int i = 0; i < alternateSets.Length; i++)
+        {
+            status = RewriteGlyphSequence(sub.GetAlternateSet(i), map,
+                sub.Coverage.Location.TableTag, out alternateSets[i], out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
+        var ordered = new ushort[alternateSets.Length][];
+        for (int i = 0; i < ordered.Length; i++)
+            ordered[i] = alternateSets[ordinalOf[i]];
+        return AlternateSubstTableCompiler.TryCreate(coverage!.Glyphs, ordered,
+            map.OutputGlyphCount, out rewritten, out diagnostic, budget, sub.Location,
+            coverage.Format);
+    }
+
+    // ---- GSUB 4 -------------------------------------------------------------------
+
+    private static ReadStatus RewriteLigature(LigatureSubstTable sub, GlyphRemap map,
+        BuildBudget budget, out LigatureSubstTable? rewritten, out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var sets = new LigatureSetTable[sub.SetCount];
+        for (int i = 0; i < sets.Length; i++)
+        {
+            LigatureSetTable source = sub.GetSet(ordinalOf[i]);
+            var ligatures = new LigatureTable[source.LigatureCount];
+            for (int l = 0; l < ligatures.Length; l++)
+            {
+                LigatureTable rule = source.Ligatures[l];
+                int ligature = map.OutputOf(rule.LigatureGlyph);
+                if (ligature < 0)
+                    return RewriteMiss(map, sub.Coverage.Location.TableTag,
+                        rule.LigatureGlyph, out diagnostic);
+                status = RewriteGlyphSequence(rule.Components, map,
+                    sub.Coverage.Location.TableTag, out var components, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                // The ligature rules keep their wire preference order — semantic, so
+                // never re-ordered; only the GIDs move.
+                ligatures[l] = new((ushort)ligature, components, rule.Location, 0);
+            }
+            sets[i] = new(ligatures, source.Location, 0);
+        }
+        return LigatureSubstTableCompiler.TryCreate(coverage!.Glyphs, sets,
+            map.OutputGlyphCount, out rewritten, out diagnostic, budget, sub.Location,
+            coverage.Format);
+    }
+
+    // ---- GSUB 8 -------------------------------------------------------------------
+
+    private static ReadStatus RewriteReverseChain(ReverseChainSubstTable sub,
+        GlyphRemap map, BuildBudget budget, out ReverseChainSubstTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var substitutes = new ushort[sub.Substitutes.Length];
+        for (int i = 0; i < substitutes.Length; i++)
+        {
+            int output = map.OutputOf(sub.Substitutes[i]);
+            if (output < 0)
+                return RewriteMiss(map, sub.Coverage.Location.TableTag,
+                    sub.Substitutes[i], out diagnostic);
+            substitutes[i] = (ushort)output;
+        }
+        var ordered = new ushort[substitutes.Length];
+        for (int i = 0; i < ordered.Length; i++) ordered[i] = substitutes[ordinalOf[i]];
+        status = RewriteCoverageList(sub.BacktrackCoverages, map, budget,
+            out var backtrack, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = RewriteCoverageList(sub.LookaheadCoverages, map, budget,
+            out var lookahead, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        return ReverseChainSubstTableCompiler.TryCreate(coverage!, backtrack, lookahead,
+            ordered, map.OutputGlyphCount, out rewritten, out diagnostic, budget,
+            sub.Location);
+    }
+
+    /// <summary>A declared coverage chain remaps in its declared order — the chain
+    /// slots are positional (backtrack/lookahead and format-3 input semantics), so
+    /// no permutation across slots.</summary>
+    private static ReadStatus RewriteCoverageList(IReadOnlyList<CoverageTable> coverages,
+        GlyphRemap map, BuildBudget budget, out CoverageTable[] rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = new CoverageTable[coverages.Count];
+        for (int i = 0; i < rewritten.Length; i++)
+        {
+            ReadStatus status = RewriteCoverage(coverages[i], map, budget,
+                out var coverage, out _, out diagnostic);
+            rewritten[i] = coverage!;
+            if (status != ReadStatus.Done) return status;
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    // ---- GSUB 5 / GPOS 7 and GSUB 6 / GPOS 8 (the shared rule families) -----------
+
+    /// <summary>One contextual subtable (GSUB 5 / GPOS 7 shared model, OQ-T4-06-3):
+    /// format 1 remaps its rules' glyph sequences and permutes the rule sets with the
+    /// coverage sort; format 2 keeps the class-valued rules and rule sets untouched
+    /// (class values are identical) and rewrites only the coverage and the class
+    /// domain; format 3 remaps each chain-slot coverage in its declared order. The
+    /// seqLookup records' LookupListIndex never moves (the record-order invariant).</summary>
+    private static ReadStatus RewriteContextualSubtable(ContextualSubstTable sub,
+        GlyphRemap map, BuildBudget budget, out ContextualSubstTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        if (sub.Format == 3)
+        {
+            ReadStatus format3Status = RewriteCoverageList(sub.Coverages!, map, budget,
+                out var coverages, out diagnostic);
+            if (format3Status != ReadStatus.Done) return format3Status;
+            return ContextualSubstTableCompiler.TryCreateFormat3(coverages,
+                sub.LookupRecords!.ToArray(), map.OutputGlyphCount, out rewritten,
+                out diagnostic, budget, sub.Location);
+        }
+        ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (sub.Format == 2)
+        {
+            status = RewriteClassDef(sub.ClassDef, map, budget, out var classDef,
+                out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            // The rule sets index by class value — untouched (identical values).
+            return ContextualSubstTableCompiler.TryCreate(2, coverage!, classDef!,
+                sub.RuleSets!, map.OutputGlyphCount, out rewritten, out diagnostic,
+                budget, sub.Location);
+        }
+        status = RewriteContextualRuleSets(sub.RuleSets!, ordinalOf, map, budget,
+            out var orderedSets, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        return ContextualSubstTableCompiler.TryCreate(1, coverage!, null, orderedSets,
+            map.OutputGlyphCount, out rewritten, out diagnostic, budget, sub.Location);
+    }
+
+    private static ReadStatus RewriteContextualRuleSets(
+        IReadOnlyList<ContextualRuleSet?> ruleSets, int[] ordinalOf, GlyphRemap map,
+        BuildBudget budget, out ContextualRuleSet?[] ordered, out FontDiagnostic diagnostic)
+    {
+        ordered = new ContextualRuleSet?[ruleSets.Count];
+        for (int newIndex = 0; newIndex < ordered.Length; newIndex++)
+        {
+            ContextualRuleSet source = ruleSets[ordinalOf[newIndex]]!;
+            var rules = new ContextualRule[source.RuleCount];
+            for (int r = 0; r < rules.Length; r++)
+            {
+                ContextualRule rule = source.Rules[r];
+                var input = new ushort[rule.InputSequence.Length];
+                for (int i = 0; i < input.Length; i++)
+                {
+                    int output = map.OutputOf(rule.InputSequence[i]);
+                    if (output < 0)
+                        return RewriteMiss(map, rule.Location.TableTag,
+                            rule.InputSequence[i], out diagnostic);
+                    input[i] = (ushort)output;
+                }
+                // The lookup records keep their indices byte-stable (the record list
+                // is the rule's wire layout; the indices address the lookup record
+                // order, which never changes). lookupCount -1 = records unchanged.
+                ReadStatus status = ContextualSubstTableCompiler.TryCreateRule(input,
+                    rule.LookupRecords.ToArray(), -1, out var rewrittenRule,
+                    out diagnostic, budget, rule.Location);
+                rules[r] = rewrittenRule!;
+                if (status != ReadStatus.Done) return status;
+            }
+            ordered[newIndex] = AssembleContextualRuleSet(rules, source.Location);
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ContextualRuleSet AssembleContextualRuleSet(ContextualRule[] rules,
+        DataLocation location)
+    {
+        long consumed = ContextualRuleSetLayout.HeaderLength +
+            ContextualRuleSetLayout.OffsetStride * rules.Length;
+        foreach (var rule in rules) consumed += rule.ConsumedLength;
+        return new(rules, location, (int)consumed);
+    }
+
+    /// <summary>One chaining subtable (GSUB 6 / GPOS 8 shared model): format 1 remaps
+    /// all three glyph sequences and permutes the rule sets with the coverage;
+    /// format 2 keeps the class-valued rules and rewrites the three class domains;
+    /// format 3 remaps the three coverage chains.</summary>
+    private static ReadStatus RewriteChainingSubtable(ChainingSubstTable sub,
+        GlyphRemap map, BuildBudget budget, out ChainingSubstTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        if (sub.Format == 3)
+        {
+            ReadStatus format3Status = RewriteCoverageList(sub.BacktrackCoverages!, map,
+                budget, out var backtrack, out diagnostic);
+            if (format3Status != ReadStatus.Done) return format3Status;
+            format3Status = RewriteCoverageList(sub.InputCoverages!, map, budget,
+                out var input, out diagnostic);
+            if (format3Status != ReadStatus.Done) return format3Status;
+            format3Status = RewriteCoverageList(sub.LookaheadCoverages!, map, budget,
+                out var lookahead, out diagnostic);
+            if (format3Status != ReadStatus.Done) return format3Status;
+            return ChainingSubstTableCompiler.TryCreateFormat3(backtrack, input,
+                lookahead, sub.LookupRecords!.ToArray(), map.OutputGlyphCount,
+                out rewritten, out diagnostic, budget, sub.Location);
+        }
+        ReadStatus status = RewriteCoverage(sub.Coverage!, map, budget,
+            out var coverage, out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (sub.Format == 2)
+        {
+            status = RewriteClassDef(sub.BacktrackClassDef, map, budget,
+                out var backtrackDef, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = RewriteClassDef(sub.InputClassDef, map, budget,
+                out var inputDef, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = RewriteClassDef(sub.LookaheadClassDef, map, budget,
+                out var lookaheadDef, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            return ChainingSubstTableCompiler.TryCreate(2, coverage!, backtrackDef!,
+                inputDef!, lookaheadDef!, sub.RuleSets!, map.OutputGlyphCount,
+                out rewritten, out diagnostic, budget, sub.Location);
+        }
+        status = RewriteChainingRuleSets(sub.RuleSets!, ordinalOf, map, budget,
+            out var orderedSets, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        return ChainingSubstTableCompiler.TryCreate(1, coverage!, null, null, null,
+            orderedSets, map.OutputGlyphCount, out rewritten, out diagnostic, budget,
+            sub.Location);
+    }
+
+    private static ReadStatus RewriteChainingRuleSets(
+        IReadOnlyList<ChainingRuleSet?> ruleSets, int[] ordinalOf, GlyphRemap map,
+        BuildBudget budget, out ChainingRuleSet?[] ordered, out FontDiagnostic diagnostic)
+    {
+        ordered = new ChainingRuleSet?[ruleSets.Count];
+        for (int newIndex = 0; newIndex < ordered.Length; newIndex++)
+        {
+            ChainingRuleSet source = ruleSets[ordinalOf[newIndex]]!;
+            var rules = new ChainingRule[source.RuleCount];
+            for (int r = 0; r < rules.Length; r++)
+            {
+                ChainingRule rule = source.Rules[r];
+                uint tag = rule.Location.TableTag;
+                ReadStatus status = RewriteGlyphSequence(rule.BacktrackSequence, map,
+                    tag, out var backtrack, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = RewriteGlyphSequence(rule.InputSequence, map, tag,
+                    out var input, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = RewriteGlyphSequence(rule.LookaheadSequence, map, tag,
+                    out var lookahead, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = ChainingSubstTableCompiler.TryCreateRule(backtrack, input,
+                    lookahead, rule.LookupRecords.ToArray(), -1, out var rewrittenRule,
+                    out diagnostic, budget, rule.Location);
+                rules[r] = rewrittenRule!;
+                if (status != ReadStatus.Done) return status;
+            }
+            long consumed = ContextualRuleSetLayout.HeaderLength +
+                ContextualRuleSetLayout.OffsetStride * rules.Length;
+            foreach (var rule in rules) consumed += rule.ConsumedLength;
+            ordered[newIndex] = new(rules, source.Location, (int)consumed);
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus RewriteGlyphSequence(ReadOnlySpan<ushort> sequence,
+        GlyphRemap map, uint tag, out ushort[] rewritten, out FontDiagnostic diagnostic)
+    {
+        rewritten = new ushort[sequence.Length];
+        for (int i = 0; i < rewritten.Length; i++)
+        {
+            int output = map.OutputOf(sequence[i]);
+            if (output < 0) return RewriteMiss(map, tag, sequence[i], out diagnostic);
+            rewritten[i] = (ushort)output;
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus RewriteContextualLookup(LookupTable lookup, GlyphRemap map,
+        GdefLookupContext? context, BuildBudget budget, out LookupTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        var source = lookup.Contextuals!;
+        var subtables = new ContextualSubstTable[source.Count];
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ReadStatus status = RewriteContextualSubtable(source[i], map, budget,
+out var rewrittenLeaf, out diagnostic);
+                subtables[i] = rewrittenLeaf!;
+            if (status != ReadStatus.Done) return status;
+        }
+        if (lookup.Kind == LayoutLookupKind.Gsub)
+        {
+            ReadStatus status = LookupTableCompiler.TryCreateContextualSubst(map.OutputGlyphCount,
+                subtables, lookup.Flags, lookup.MarkFilteringSet, context,
+                out rewritten, out diagnostic, budget.Limits, lookup.Location);
+            if (status != ReadStatus.Done) return status;
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        // GPOS type 7: no kind-parameterized public factory exists (the T4-04 family
+        // factory pins kind Gsub), so the GPOS form builds the same model shape
+        // in-assembly — the exact TryCreateRuleFamily body, kind Gpos, including the
+        // per-child source checks and the flags re-validation against the rebuilt
+        // context — consuming the existing public surface only.
+        return FinishGposRuleFamilyLookup(lookup, map.OutputGlyphCount, 7, subtables,
+            null, context, budget, out rewritten, out diagnostic);
+    }
+
+    private static ReadStatus RewriteChainingLookup(LookupTable lookup, GlyphRemap map,
+        GdefLookupContext? context, BuildBudget budget, out LookupTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        var source = lookup.Chainings!;
+        var subtables = new ChainingSubstTable[source.Count];
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ReadStatus status = RewriteChainingSubtable(source[i], map, budget,
+out var rewrittenLeaf, out diagnostic);
+                subtables[i] = rewrittenLeaf!;
+            if (status != ReadStatus.Done) return status;
+        }
+        if (lookup.Kind == LayoutLookupKind.Gsub)
+        {
+            ReadStatus status = LookupTableCompiler.TryCreateChainingSubst(map.OutputGlyphCount,
+                subtables, lookup.Flags, lookup.MarkFilteringSet, context,
+                out rewritten, out diagnostic, budget.Limits, lookup.Location);
+            if (status != ReadStatus.Done) return status;
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        return FinishGposRuleFamilyLookup(lookup, map.OutputGlyphCount, 8, null,
+            subtables, context, budget, out rewritten, out diagnostic);
+    }
+
+    /// <summary>The GPOS 7/8 lookup model over rewritten shared-model leaves: the
+    /// TryCreateRuleFamily contract mirrored kind-for-kind (count cap, budget, per-
+    /// child NumGlyphs/source identity, GPOS source tag, flags validation against the
+    /// rebuilt context) — no Tables/Layout surface changes.</summary>
+    private static ReadStatus FinishGposRuleFamilyLookup(LookupTable lookup, int numGlyphs,
+        ushort lookupType, ContextualSubstTable[]? contextuales, ChainingSubstTable[]? chainings,
+        GdefLookupContext? context, BuildBudget budget, out LookupTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = LookupTable.ValidateGposSource(lookup.Location,
+            out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (contextuales is { } contextualChildren)
+        {
+            foreach (var child in contextualChildren)
+            {
+                if (child.NumGlyphs != numGlyphs ||
+                    child.Location.SourceId != lookup.Location.SourceId ||
+                    child.Location.FaceIndex != lookup.Location.FaceIndex)
+                    return ReadWire.Fail(ReadStatus.InvalidSource,
+                        DiagnosticCode.WrongSourceFace,
+                        lookup.Location.AtLocal(DataField.None, 0), out diagnostic);
+                status = LookupTable.ValidateGposSource(child.Location, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+            }
+        }
+        else
+        {
+            foreach (var child in chainings!)
+            {
+                if (child.NumGlyphs != numGlyphs ||
+                    child.Location.SourceId != lookup.Location.SourceId ||
+                    child.Location.FaceIndex != lookup.Location.FaceIndex)
+                    return ReadWire.Fail(ReadStatus.InvalidSource,
+                        DiagnosticCode.WrongSourceFace,
+                        lookup.Location.AtLocal(DataField.None, 0), out diagnostic);
+                status = LookupTable.ValidateGposSource(child.Location, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+            }
+        }
+        var candidate = new LookupTable(LayoutLookupKind.Gpos, numGlyphs, lookupType,
+            lookup.Flags, lookup.MarkFilteringSet, [], null, lookup.Location,
+            contextuales: contextuales, chainings: chainings);
+        status = candidate.ValidateFlags(context, out diagnostic, budget);
+        if (status != ReadStatus.Done) return status;
+        rewritten = candidate;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    // ---- GPOS 2 -------------------------------------------------------------------
+
+    /// <summary>Pair positioning (GPOS 2): format 1 permutes the pair sets with the
+    /// coverage and re-sorts each set's records by their remapped second glyph (the
+    /// strict wire order; the values ride along); format 2 keeps the class-keyed
+    /// matrix values byte-stable (identical class values) and rewrites only the
+    /// coverage and the two class domains, whose shared canonical format feeds the
+    /// factory's single classDefFormat parameter.</summary>
+    private static ReadStatus RewritePairPosSubtable(PairPosTable sub, GlyphRemap map,
+        BuildBudget budget, out PairPosTable? rewritten, out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        if (sub.Format == 2)
+        {
+            status = RewriteClassDefRanges(sub.ClassDef1, map, out var class1Ranges,
+                out ushort class1Format, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = RewriteClassDefRanges(sub.ClassDef2, map, out var class2Ranges,
+                out ushort class2Format, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            ushort classDefFormat = class1Format == 1 && class2Format == 1
+                ? (ushort)1 : (ushort)2;
+            var values1 = new StaticValueRecord[sub.Class1Count * sub.Class2Count];
+            var values2 = new StaticValueRecord[values1.Length];
+            for (int class1 = 0; class1 < sub.Class1Count; class1++)
+            {
+                for (int class2 = 0; class2 < sub.Class2Count; class2++)
+                {
+                    status = sub.TryGetMatrixValue(class1, class2,
+                        out values1[class1 * sub.Class2Count + class2],
+                        out values2[class1 * sub.Class2Count + class2], out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                }
+            }
+            return PairPosTableCompiler.TryCreate(coverage!.Glyphs, class1Ranges,
+                class2Ranges, (ushort)sub.Class1Count, (ushort)sub.Class2Count,
+                values1, values2, map.OutputGlyphCount, sub.ValueFormat1,
+                sub.ValueFormat2, out rewritten, out diagnostic, budget, sub.Location,
+                coverage.Format, classDefFormat);
+        }
+        var pairSets = new PairValueRecord[sub.PairSetCount][];
+        for (int set = 0; set < pairSets.Length; set++)
+        {
+            PairSetTable source = sub.PairSets![ordinalOf[set]];
+            var records = new PairValueRecord[source.PairValueCount];
+            for (int r = 0; r < records.Length; r++)
+            {
+                PairValueRecord record = source.Records[r];
+                int second = map.OutputOf(record.SecondGlyph);
+                if (second < 0)
+                    return RewriteMiss(map, sub.Coverage.Location.TableTag,
+                        record.SecondGlyph, out diagnostic);
+                records[r] = new PairValueRecord((ushort)second, record.Value1,
+                    record.Value2);
+            }
+            // The strict second-glyph wire order re-answers over the output keys
+            // (the kern fmt0 canonical-sort precedent).
+            Array.Sort(records, static (a, b) => a.SecondGlyph.CompareTo(b.SecondGlyph));
+            pairSets[set] = records;
+        }
+        return PairPosTableCompiler.TryCreate(coverage!.Glyphs, pairSets,
+            map.OutputGlyphCount, sub.ValueFormat1, sub.ValueFormat2, out rewritten,
+            out diagnostic, budget.Limits, sub.Location, coverage.Format);
+    }
+
+    private static ReadStatus RewritePairPosLookup(LookupTable lookup, GlyphRemap map,
+        GdefLookupContext? context, BuildBudget budget, out LookupTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        var source = lookup.PairPositions!;
+        var subtables = new PairPosTable[source.Count];
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ReadStatus status = RewritePairPosSubtable(source[i], map, budget,
+                out var leaf, out diagnostic);
+            subtables[i] = leaf!;
+            if (status != ReadStatus.Done) return status;
+        }
+        ReadStatus factoryStatus = LookupTableCompiler.TryCreatePairPos(
+            map.OutputGlyphCount, subtables, lookup.Flags, lookup.MarkFilteringSet,
+            context, out rewritten, out diagnostic, budget.Limits, lookup.Location);
+        if (factoryStatus != ReadStatus.Done) return factoryStatus;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    // ---- GPOS 3 -------------------------------------------------------------------
+
+    private static ReadStatus RewriteCursive(CursivePosTable sub, GlyphRemap map,
+        BuildBudget budget, out CursivePosTable? rewritten, out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var ordered = new EntryExitTable[sub.EntryExitCount];
+        for (int r = 0; r < ordered.Length; r++) ordered[r] = sub.Records[ordinalOf[r]];
+        return CursivePosTableCompiler.TryCreate(coverage!.Glyphs, ordered,
+            map.OutputGlyphCount, out rewritten, out diagnostic, budget, sub.Location,
+            coverage.Format);
+    }
+
+    // ---- GPOS 4 / 5 / 6 -----------------------------------------------------------
+
+    private static ReadStatus RewriteMarkBaseSubtable(MarkBasePosTable sub,
+        GlyphRemap map, BuildBudget budget, out MarkBasePosTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = RewriteMarkSide(sub.MarkCoverage, sub.Marks.ToArray(), map,
+            budget, out var markGlyphs, out var marks, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = RewriteCoverage(sub.BaseCoverage, map, budget, out var baseCoverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var cells = new AnchorTable?[baseCoverage!.Glyphs.Length * sub.ClassCount];
+        for (int b = 0; b < ordinalOf.Length; b++)
+        {
+            var row = sub.BaseRow(ordinalOf[b]);
+            for (int c = 0; c < sub.ClassCount; c++)
+                cells[b * sub.ClassCount + c] = row[c];
+        }
+        return MarkPosTableCompiler.TryCreate(markGlyphs, marks, baseCoverage.Glyphs,
+            cells, sub.ClassCount, map.OutputGlyphCount, out rewritten, out diagnostic,
+            budget.Limits, sub.Location, baseCoverage.Format);
+    }
+
+    private static ReadStatus RewriteMarkLigSubtable(MarkLigPosTable sub,
+        GlyphRemap map, BuildBudget budget, out MarkLigPosTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = RewriteMarkSide(sub.MarkCoverage, sub.Marks.ToArray(), map,
+            budget, out var markGlyphs, out var marks, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = RewriteCoverage(sub.LigatureCoverage, map, budget, out var ligCoverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var ligatures = new LigatureAttachTable[ligCoverage!.Glyphs.Length];
+        for (int l = 0; l < ligatures.Length; l++)
+            ligatures[l] = sub.Ligatures[ordinalOf[l]];
+        return MarkPosTableCompiler.TryCreateLig(markGlyphs, marks,
+            ligCoverage.Glyphs, ligatures, map.OutputGlyphCount, out rewritten,
+            out diagnostic, budget.Limits, sub.Location, ligCoverage.Format);
+    }
+
+    private static ReadStatus RewriteMarkMarkSubtable(MarkMarkPosTable sub,
+        GlyphRemap map, BuildBudget budget, out MarkMarkPosTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status = RewriteMarkSide(sub.MarkCoverage, sub.Marks.ToArray(), map,
+            budget, out var markGlyphs, out var marks, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = RewriteCoverage(sub.Mark2Coverage, map, budget, out var mark2Coverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var cells = new AnchorTable?[mark2Coverage!.Glyphs.Length * sub.ClassCount];
+        for (int m = 0; m < ordinalOf.Length; m++)
+        {
+            var row = sub.Mark2Row(ordinalOf[m]);
+            for (int c = 0; c < sub.ClassCount; c++)
+                cells[m * sub.ClassCount + c] = row[c];
+        }
+        return MarkPosTableCompiler.TryCreateMark(markGlyphs, marks,
+            mark2Coverage.Glyphs, cells, sub.ClassCount, map.OutputGlyphCount,
+            out rewritten, out diagnostic, budget.Limits, sub.Location,
+            mark2Coverage.Format);
+    }
+
+    /// <summary>The mark side permutes its records with the mark coverage sort;
+    /// anchors carry no GID and ride along.</summary>
+    private static ReadStatus RewriteMarkSide(CoverageTable markCoverage,
+        MarkRecord[] marks, GlyphRemap map, BuildBudget budget, out ushort[] markGlyphs,
+        out MarkRecord[] orderedMarks, out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = RewriteCoverage(markCoverage, map, budget, out var coverage,
+            out var ordinalOf, out diagnostic);
+        if (status != ReadStatus.Done)
+        {
+            markGlyphs = [];
+            orderedMarks = marks;
+            return status;
+        }
+        markGlyphs = coverage!.Glyphs.ToArray();
+        orderedMarks = new MarkRecord[marks.Length];
+        for (int i = 0; i < orderedMarks.Length; i++)
+            orderedMarks[i] = marks[ordinalOf[i]];
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus RewriteMarkLookup(LookupTable lookup, GlyphRemap map,
+        GdefLookupContext? context, BuildBudget budget, out LookupTable? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        ReadStatus status;
+        if (lookup.MarkBases is { } markBases)
+        {
+            var subtables = new MarkBasePosTable[markBases.Count];
+            for (int i = 0; i < subtables.Length; i++)
+            {
+                status = RewriteMarkBaseSubtable(markBases[i], map, budget,
+out var rewrittenLeaf, out diagnostic);
+                    subtables[i] = rewrittenLeaf!;
+                if (status != ReadStatus.Done) return status;
+            }
+            status = LookupTableCompiler.TryCreateMarkBase(map.OutputGlyphCount,
+                subtables, lookup.Flags, lookup.MarkFilteringSet, context,
+                out rewritten, out diagnostic, budget.Limits, lookup.Location);
+        }
+        else if (lookup.MarkLigs is { } markLigs)
+        {
+            var subtables = new MarkLigPosTable[markLigs.Count];
+            for (int i = 0; i < subtables.Length; i++)
+            {
+                status = RewriteMarkLigSubtable(markLigs[i], map, budget,
+out var rewrittenLeaf, out diagnostic);
+                    subtables[i] = rewrittenLeaf!;
+                if (status != ReadStatus.Done) return status;
+            }
+            status = LookupTableCompiler.TryCreateMarkLig(map.OutputGlyphCount,
+                subtables, lookup.Flags, lookup.MarkFilteringSet, context,
+                out rewritten, out diagnostic, budget.Limits, lookup.Location);
+        }
+        else
+        {
+            var markMarks = lookup.MarkMarks!;
+            var subtables = new MarkMarkPosTable[markMarks.Count];
+            for (int i = 0; i < subtables.Length; i++)
+            {
+                status = RewriteMarkMarkSubtable(markMarks[i], map, budget,
+out var rewrittenLeaf, out diagnostic);
+                    subtables[i] = rewrittenLeaf!;
+                if (status != ReadStatus.Done) return status;
+            }
+            status = LookupTableCompiler.TryCreateMarkMark(map.OutputGlyphCount,
+                subtables, lookup.Flags, lookup.MarkFilteringSet, context,
+                out rewritten, out diagnostic, budget.Limits, lookup.Location);
+        }
+        if (status != ReadStatus.Done) return status;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    // ---- GSUB 7 / GPOS 9 (the extension wrappers) ---------------------------------
+
+    /// <summary>The GSUB type-7 wrapper: every wrapped leaf re-runs its own rewriter
+    /// and the wrapper re-forms through ExtensionSubstTable.TryCreate — the wrapper
+    /// itself carries no GID reference.</summary>
+    private static ReadStatus RewriteGsubExtensionLookup(LookupTable lookup,
+        GlyphRemap map, GdefLookupContext? context, BuildBudget budget,
+        out LookupTable? rewritten, out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        var extensions = lookup.Extensions!;
+        var subtables = new ExtensionSubstTable[extensions.Count];
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ExtensionSubstTable ext = extensions[i];
+            ushort type = ext.ExtensionLookupType;
+            ReadStatus status;
+            switch (type)
+            {
+                case 1:
+                    status = RewriteSingleSubstSubtable(ext.Single!, map, budget,
+                        out var single, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionSubstTable.TryCreate(type, single, null, null,
+                        null, out var rewritten1, out diagnostic, ext.Location);
+                    subtables[i] = rewritten1!;
+                    break;
+                case 2:
+                    status = RewriteMultiple(ext.Multiple!, map, budget,
+                        out var multiple, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionSubstTable.TryCreate(type, null, multiple, null,
+                        null, out var rewritten2, out diagnostic, ext.Location);
+                    subtables[i] = rewritten2!;
+                    break;
+                case 3:
+                    status = RewriteAlternate(ext.Alternate!, map, budget,
+                        out var alternate, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionSubstTable.TryCreate(type, null, null, alternate,
+                        null, out var rewritten3, out diagnostic, ext.Location);
+                    subtables[i] = rewritten3!;
+                    break;
+                case 4:
+                    status = RewriteLigature(ext.Ligature!, map, budget,
+                        out var ligature, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionSubstTable.TryCreate(type, null, null, null,
+                        ligature, out var rewritten4, out diagnostic, ext.Location);
+                    subtables[i] = rewritten4!;
+                    break;
+                case 5:
+                    status = RewriteContextualSubtable(ext.Contextual!, map, budget,
+                        out var contextual, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionSubstTable.TryCreate(type, null, null, null,
+                        null, out var rewritten5, out diagnostic, ext.Location,
+                        contextual: contextual);
+                    subtables[i] = rewritten5!;
+                    break;
+                case 6:
+                    status = RewriteChainingSubtable(ext.Chaining!, map, budget,
+                        out var chaining, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionSubstTable.TryCreate(type, null, null, null,
+                        null, out var rewritten6, out diagnostic, ext.Location,
+                        chaining: chaining);
+                    subtables[i] = rewritten6!;
+                    break;
+                case 8:
+                    status = RewriteReverseChain(ext.ReverseChain!, map, budget,
+                        out var reverseChain, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionSubstTable.TryCreate(type, null, null, null,
+                        null, out var rewritten8, out diagnostic, ext.Location,
+                        reverseChain: reverseChain);
+                    subtables[i] = rewritten8!;
+                    break;
+                default:
+                    status = UnsupportedLookupType(lookup, out diagnostic);
+                    break;
+            }
+            if (status != ReadStatus.Done) return status;
+        }
+        ReadStatus factoryStatus = LookupTableCompiler.TryCreateExtensionSubst(
+            map.OutputGlyphCount, subtables, lookup.Flags, lookup.MarkFilteringSet,
+            context, out rewritten, out diagnostic, budget, lookup.Location);
+        if (factoryStatus != ReadStatus.Done) return factoryStatus;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The GPOS type-9 wrapper: the wrapped leaf re-runs its rewriter and
+    /// the wrapper re-forms through ExtensionPosTable.TryCreate; the lookup model
+    /// then takes the in-assembly GPOS-kind construction (the same mirror the GPOS
+    /// 7/8 family uses — no kind-parameterized public factory exists for GPOS 9),
+    /// with the flags re-validated against the rebuilt context.</summary>
+    private static ReadStatus RewriteGposExtensionLookup(LookupTable lookup,
+        GlyphRemap map, GdefLookupContext? context, BuildBudget budget,
+        out LookupTable? rewritten, out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        var extensions = lookup.ExtensionPositions!;
+        var subtables = new ExtensionPosTable[extensions.Count];
+        for (int i = 0; i < subtables.Length; i++)
+        {
+            ExtensionPosTable ext = extensions[i];
+            ushort type = ext.ExtensionLookupType;
+            ReadStatus status;
+            switch (type)
+            {
+                case 1:
+                    status = RewriteSinglePosSubtable(ext.Single!, map, budget,
+                        out var single, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionPosTable.TryCreate(type, single, null, null,
+                        out var rewrittenPos1, out diagnostic, ext.Location);
+                    subtables[i] = rewrittenPos1!;
+                    break;
+                case 2:
+                    status = RewritePairPosSubtable(ext.Pair!, map, budget,
+                        out var pair, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionPosTable.TryCreate(type, null, pair, null,
+                        out var rewrittenPos2, out diagnostic, ext.Location);
+                    subtables[i] = rewrittenPos2!;
+                    break;
+                case 3:
+                    status = RewriteCursive(ext.Cursive!, map, budget,
+                        out var cursive, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionPosTable.TryCreate(type, null, null, cursive,
+                        out var rewrittenPos3, out diagnostic, ext.Location);
+                    subtables[i] = rewrittenPos3!;
+                    break;
+                case 4:
+                    status = RewriteMarkBaseSubtable(ext.MarkBase!, map, budget,
+                        out var markBase, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionPosTable.TryCreate(type, null, null, null,
+                        out var rewrittenPos4, out diagnostic, ext.Location,
+                        markBase: markBase);
+                    subtables[i] = rewrittenPos4!;
+                    break;
+                case 5:
+                    status = RewriteMarkLigSubtable(ext.MarkLig!, map, budget,
+                        out var markLig, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionPosTable.TryCreate(type, null, null, null,
+                        out var rewrittenPos5, out diagnostic, ext.Location,
+                        markLig: markLig);
+                    subtables[i] = rewrittenPos5!;
+                    break;
+                case 6:
+                    status = RewriteMarkMarkSubtable(ext.MarkMark!, map, budget,
+                        out var markMark, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionPosTable.TryCreate(type, null, null, null,
+                        out var rewrittenPos6, out diagnostic, ext.Location,
+                        markMark: markMark);
+                    subtables[i] = rewrittenPos6!;
+                    break;
+                case 7:
+                    status = RewriteContextualSubtable(ext.Contextual!, map, budget,
+                        out var contextual, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionPosTable.TryCreate(type, null, null, null,
+                        out var rewrittenPos7, out diagnostic, ext.Location,
+                        contextual: contextual);
+                    subtables[i] = rewrittenPos7!;
+                    break;
+                case 8:
+                    status = RewriteChainingSubtable(ext.Chaining!, map, budget,
+                        out var chaining, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                    status = ExtensionPosTable.TryCreate(type, null, null, null,
+                        out var rewrittenPos8, out diagnostic, ext.Location,
+                        chaining: chaining);
+                    subtables[i] = rewrittenPos8!;
+                    break;
+                default:
+                    status = UnsupportedLookupType(lookup, out diagnostic);
+                    break;
+            }
+            if (status != ReadStatus.Done) return status;
+        }
+        ReadStatus sourceStatus = LookupTable.ValidateGposSource(lookup.Location,
+            out diagnostic);
+        if (sourceStatus != ReadStatus.Done) return sourceStatus;
+        var candidate = new LookupTable(LayoutLookupKind.Gpos, map.OutputGlyphCount, 9,
+            lookup.Flags, lookup.MarkFilteringSet, [], null, lookup.Location,
+            extensionPositions: subtables);
+        ReadStatus flagsStatus = candidate.ValidateFlags(context, out diagnostic, budget);
+        if (flagsStatus != ReadStatus.Done) return flagsStatus;
+        rewritten = candidate;
+        diagnostic = default;
+        return ReadStatus.Done;
     }
 }
