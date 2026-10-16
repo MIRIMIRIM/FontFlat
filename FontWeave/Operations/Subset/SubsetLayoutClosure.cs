@@ -31,17 +31,27 @@ namespace FontWeave.Operations.Subset;
 /// "closure correct" to "enumerator correct", S2a card §3 layer 1).</summary>
 public static partial class SubsetOperation
 {
-    /// <summary>The admission models the closure and its verification consume. BASE is
-    /// absent by design: its structure carries no GID reference (S2a card §2.4).</summary>
+    /// <summary>The admission models the closure and its verification consume. BASE
+    /// joined with the S2b-2 correction (OQ-S2b-6): BaseCoordFormat2's
+    /// referenceGlyph is a real GID reference, so the model rides the closure and
+    /// the verification; a null BASE is the absent-table form and the default
+    /// keeps the pre-correction constructions compiling.</summary>
     internal readonly record struct LayoutAdmission(GdefTable? Gdef,
         LayoutListsTable? Gsub, LayoutListsTable? Gpos, JstfTable? Jstf,
-        KernTable? Kern, MathTable? Math);
+        KernTable? Kern, MathTable? Math, BaseTable? Base = null);
 
     // ---- step 3.5: admission (fixed dependency order, one model per table) ----
 
+    // The mode-uniform admission (the merged S2b terminal state): every layout
+    // family row is migrated to its rewrite face, so the compact+PreserveLayout
+    // window admits the whole dependency order exactly as the retain-GIDs path
+    // always did — the S2b prefix discipline (S2b card §1, OQ-S2b-2) retired with
+    // its last gated segment (BASE materializing in both modes, the S2b-2
+    // correction). The admit-before-decide ordering stays: a read-chain failure
+    // is the first diagnostic for a table whose rewrite face cannot serve it.
     private static ReadStatus AdmitLayoutFamily(SfntDirectoryView directory,
         ProfileScan profile, MaxpTable maxp, PrepareState state,
-        bool layoutRewritePrefixOnly, out FontDiagnostic diagnostic)
+        out FontDiagnostic diagnostic)
     {
         diagnostic = default;
         var budget = state.Budget;
@@ -101,14 +111,9 @@ public static partial class SubsetOperation
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
-        // The rewrite prefix discipline (S2b card §1, OQ-S2b-2): under
-        // compact+PreserveLayout the admission runs only the segments whose decide
-        // rows are migrated to the compact rewrite — GDEF/GSUB/GPOS (S2b-1) and
-        // kern/JSTF/MATH (S2b-2, card §2.5) in this slice state — so an
-        // un-migrated table's first diagnostic stays the decide-stage code-23
-        // refusal rather than its read chain (RF-A would otherwise displace the
-        // frozen first diagnostic). The retain-GIDs path (layoutRewritePrefixOnly
-        // false) keeps the full dependency order.
+        // JSTF's cross-table lookup-index domains are the neighbor lists' counts
+        // (the JstfView signature authority) — validated against the parked
+        // models here and re-asserted at the rewrite seam (OQ-S2b-7).
         if (profile.HasJstf)
         {
             // JSTF's cross-table lookup-index domains are the neighbor lists' counts
@@ -166,20 +171,34 @@ public static partial class SubsetOperation
             if (status != ReadStatus.Done) return status;
             state.Math = math;
         }
-        if (profile.HasBase && !layoutRewritePrefixOnly)
+        if (profile.HasBase)
         {
-            // BASE carries no GID reference anywhere in its structure (S2a card
-            // §2.4): validation-only admission, no model, zero closure obligation.
+            // The S2b-2 correction (OQ-S2b-6, both modes): BASE's
+            // BaseCoordFormat2.referenceGlyph is a real GID reference, so the
+            // admission materializes the whole-table model (the S2a
+            // validation-only form upgraded) and answers the fmt2 census the
+            // compact decide row's conditional consumes; the closure merges the
+            // fmt2 references in both modes (the conservative superset — a
+            // fmt1-only BASE adds zero references, so the S2a frozen faces stay
+            // byte-identical).
             ReadStatus status = directory.TryGetTableBytes(profile.BaseOrdinal,
                 out var baseBytes, out diagnostic);
             if (status != ReadStatus.Done) return status;
             status = BaseView.TryOpen(baseBytes, out var baseView, out diagnostic,
                 directory.TableLocation(profile.BaseOrdinal));
             if (status != ReadStatus.Done) return status;
-            status = baseView.ValidateTable(maxp.NumGlyphs, axisCount, out diagnostic,
-                budget.Limits);
+            status = baseView.TryReadTable(maxp.NumGlyphs, axisCount,
+                out var baseModel, out diagnostic, budget.Limits);
             if (status != ReadStatus.Done) return status;
-            state.BaseAdmitted = true;
+            state.Base = baseModel;
+            state.BaseCoordFormat2Count = 0;
+            state.BaseFirstFmt2Reference = 0;
+            foreach (ushort reference in CollectBaseCoordReferences(baseModel!))
+            {
+                if (state.BaseCoordFormat2Count == 0)
+                    state.BaseFirstFmt2Reference = reference;
+                state.BaseCoordFormat2Count++;
+            }
         }
         diagnostic = default;
         return ReadStatus.Done;
@@ -310,11 +329,17 @@ public static partial class SubsetOperation
                 out diagnostic);
             if (diagnostic.Code != 0) return ReadStatus.ResourceLimit;
         }
-        if (state.BaseAdmitted)
+        if (state.Base is { } baseModel)
         {
-            // The zero-obligation declaration (S2a card §2.4): BASE's census row
-            // exists with zero references, by structure.
-            census.Add(new(Base, 0));
+            // The S2b-2 correction (OQ-S2b-6): the fmt2 referenceGlyph set joins
+            // the union; a fmt1-only BASE enumerates zero references, keeping the
+            // S2a zero row byte-identically.
+            var refs = new HashSet<int>();
+            CollectBaseReferences(baseModel, refs);
+            census.Add(new(Base, refs.Count));
+            MergeLayoutReferences(baseModel.Location, refs, retained, budget,
+                added, out diagnostic);
+            if (diagnostic.Code != 0) return ReadStatus.ResourceLimit;
         }
         // The product-side post-closure assertion (S2a card §3 layer 1): every
         // retained layout table's reference set must sit inside the merged bitmap.
@@ -378,12 +403,20 @@ public static partial class SubsetOperation
             if (!AllRetained(refs, retained, math.Location, out diagnostic))
                 return false;
         }
+        if (admission.Base is { } baseModel)
+        {
+            var refs = new HashSet<int>();
+            CollectBaseReferences(baseModel, refs);
+            if (!AllRetained(refs, retained, baseModel.Location, out diagnostic))
+                return false;
+        }
         diagnostic = default;
         return true;
     }
 
     private static LayoutAdmission AdmissionOf(PrepareState state) => new(
-        state.Gdef, state.Gsub, state.Gpos, state.Jstf, state.Kern, state.Math);
+        state.Gdef, state.Gsub, state.Gpos, state.Jstf, state.Kern, state.Math,
+        state.Base);
 
     private static void MergeLayoutReferences(DataLocation at, HashSet<int> refs,
         bool[] retained, BuildBudget budget, List<ushort> added,
@@ -497,6 +530,49 @@ public static partial class SubsetOperation
         for (int gid = classTable.FirstGlyph;
              gid < classTable.FirstGlyph + classTable.GlyphCount; gid++)
             into.Add(gid);
+    }
+
+    /// <summary>BASE (the S2b-2 correction, OQ-S2b-6): BaseCoordFormat2's
+    /// referenceGlyph is the table's one GID-reference face — every fmt2 coord on
+    /// both axes merges it (shared wire coords materialize once, the R7 identity
+    /// rule, and the set dedupes). The fmt1/fmt3 leaves carry no GID (their zero
+    /// word is not a glyph id), so a fmt1-only BASE enumerates nothing and the
+    /// S2a zero-obligation census row stays byte-identical.</summary>
+    private static void CollectBaseReferences(BaseTable baseTable, HashSet<int> into)
+    {
+        foreach (int reference in CollectBaseCoordReferences(baseTable))
+            into.Add(reference);
+    }
+
+    /// <summary>The fmt2 reference glyphs over both axis trees, wire order (the
+    /// census count and the decide row's first-reference detail share this
+    /// walk).</summary>
+    private static IEnumerable<ushort> CollectBaseCoordReferences(BaseTable baseTable)
+    {
+        foreach (var axis in new[] { baseTable.HorizAxis, baseTable.VertAxis })
+        {
+            if (axis is null) continue;
+            foreach (var (_, script) in axis.Scripts)
+            {
+                if (script.BaseValues is { } values)
+                    foreach (var coord in values.Coords)
+                        if (coord.Format == 2)
+                            yield return coord.ReferenceGlyph;
+                if (script.DefaultMinMax is { } minMax)
+                {
+                    foreach (var coord in new[] { minMax.MinCoord, minMax.MaxCoord })
+                        if (coord is { Format: 2 })
+                            yield return coord.ReferenceGlyph;
+                }
+                foreach (var (_, minMaxRow) in script.LangSys)
+                {
+                    foreach (var coord in new[] { minMaxRow.MinCoord,
+                        minMaxRow.MaxCoord })
+                        if (coord is { Format: 2 })
+                            yield return coord.ReferenceGlyph;
+                }
+            }
+        }
     }
 
     /// <summary>MATH (S2a card §2.5): the six coverage faces (glyphInfo's four

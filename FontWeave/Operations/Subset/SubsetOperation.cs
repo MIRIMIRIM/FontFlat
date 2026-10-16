@@ -142,21 +142,21 @@ public static partial class SubsetOperation
             return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic, out result,
                 out report, out diagnostic);
 
-        // Step 3.5 (S2a card §2.1; dual-mode since S2b-1, OQ-S2b-2): the PreserveLayout
-        // admission segment. Every present layout table in the admitted prefix walks its
-        // whole-table typed read chain in the fixed dependency order and parks its one
-        // model on the state. A read-chain failure propagates its own diagnostic (RF-A);
-        // a metadata-only lookup refuses (RF-B). The prefix is mode-dependent: retain
-        // admits the whole family (S2a), compact admits only the migrated rewrite
-        // prefix — GDEF→GSUB→GPOS (S2b-1) and kern (S2b-2, card §2.3) — because an
-        // unrewritten table's first diagnostic must stay the decide-stage code-23
-        // refusal, not a read-chain diagnostic (the admit-before-decide ordering
-        // makes the prefix the drift guard, S2b card §1).
+        // Step 3.5 (S2a card §2.1; dual-mode since S2b, card §1): the PreserveLayout
+        // admission segment. Every present layout table walks its whole-table typed
+        // read chain in the fixed dependency order and parks its one model on the
+        // state. A read-chain failure propagates its own diagnostic (RF-A); a
+        // metadata-only lookup refuses (RF-B). The admission is mode-uniform in the
+        // merged terminal state: every family row (GDEF/GSUB/GPOS from S2b-1,
+        // kern/JSTF/MATH/BASE from S2b-2) is migrated to its rewrite or corrected
+        // census face, so the S2b prefix discipline (admit only the migrated rows
+        // so an unrewritten table keeps its decide-stage code-23 first diagnostic)
+        // retired with its last gated segment.
         bool preserveLayout = options.PreserveLayout;
         if (preserveLayout)
         {
             status = AdmitLayoutFamily(directory, profile, maxp!, state,
-                layoutRewritePrefixOnly: compact, out diagnostic);
+                out diagnostic);
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
@@ -1218,7 +1218,7 @@ public static partial class SubsetOperation
                 : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
                     SubsetDecisionOrigin.MatrixRow);
         }
-        else if (compact && options.PreserveLayout && tag is Kern or Jstf or Math)
+        else if (compact && options.PreserveLayout && tag is Kern or Jstf or Math or Base)
         {
             // S2b-2 (card §2.3, OQ-S2b-5): the kern rewrite re-emits the v0
             // dialect only — the producer's factories refuse Apple-dialect roots
@@ -1237,8 +1237,28 @@ public static partial class SubsetOperation
                 diagnostic = state.Diagnostic;
                 return false;
             }
-            decision = new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
-                SubsetDecisionOrigin.MatrixRow);
+            if (tag == Base && state.BaseCoordFormat2Count > 0)
+            {
+                // S2b-2 (card §2.4, OQ-S2b-6): a BaseCoordFormat2.referenceGlyph is
+                // a real GID reference, so the compact rewrite cannot keep the
+                // table raw over the changed GID domain — the request refuses
+                // (RF-S2b-4) instead of growing a whole-axis-tree rebuild for one
+                // u16 field (the full reconstruction stays the registered future
+                // upgrade). RF-S2b-4's keyword contract: "base" /
+                // "BaseCoordFormat2" / "referenceGlyph"; the first reference GID
+                // rides in Detail.
+                state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
+                    directory.TableLocation(ordinal).At(DataField.Payload,
+                        (ulong)BaseCoordLayout.Format2HeaderField),
+                    state.BaseFirstFmt2Reference);
+                diagnostic = state.Diagnostic;
+                return false;
+            }
+            decision = tag == Base
+                ? new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
+                    SubsetDecisionOrigin.MatrixRow)
+                : new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                    SubsetDecisionOrigin.MatrixRow);
         }
         else if (tag is Kern or Gsub or Gpos or Gdef or Base or Jstf or Math)
         {
@@ -1494,9 +1514,13 @@ public static partial class SubsetOperation
             internal JstfTable? Jstf;
             internal KernTable? Kern;
             internal MathTable? Math;
-            // BASE is validation-only (no GID reference anywhere — S2a card §2.4);
-            // the flag only feeds the census's zero-reference row.
-            internal bool BaseAdmitted;
+            // The S2b-2 correction (OQ-S2b-6): BASE materializes with the
+            // admission segment (its fmt2 referenceGlyph is a real GID
+            // reference); the fmt2 census feeds the compact decide row's
+            // conditional and the closure merges the references in both modes.
+            internal BaseTable? Base;
+            internal int BaseCoordFormat2Count;
+            internal ushort BaseFirstFmt2Reference;
             // The layout union's additions (L \ (seed ∪ {0}), ascending — the merge
             // happened before the composite closure, so the two addition lists stay
             // disjoint by construction) and the per-table reference census (OQ-S2a-4).

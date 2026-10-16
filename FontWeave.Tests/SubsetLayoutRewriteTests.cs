@@ -759,6 +759,111 @@ public sealed class SubsetLayoutRewriteTests
             rebuiltPriority.GposShrinkageEnable!.LookupIndices.ToArray());
     }
 
+    // ---- commit 7: BASE (OQ-S2b-6) — the conditional row and the enumerator
+    // correction. A fmt1-only BASE stays RETAIN_RAW under compact+PreserveLayout
+    // (byte-identical payload, zero references), a fmt2 coord refuses (its
+    // referenceGlyph is a real GID reference), and the retain-mode closure merges
+    // the fmt2 reference in both modes (the conservative superset). ----
+
+    private static byte[] BaseBytes(bool fmt2)
+    {
+        // The axis carries a tag list: the writer's tagList-null slot has the
+        // registered write-face gap at a non-zero axis position (the S2b-2 report
+        // registers it for the T4-07 boundary), and the fixtures stay off it.
+        Ok(BaseAxisTableCompiler.TryCreate(new[] { 0x64736372u },
+            out var tagList, out var diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(BaseCoordTableCompiler.TryCreate(fmt2 ? (ushort)2 : (ushort)1, -100,
+            fmt2 ? (ushort)2 : (ushort)0, 0, null, NumGlyphs, out var coord,
+            out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(BaseAxisTableCompiler.TryCreate(0, new[] { coord! }, out var values,
+            out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(BaseAxisTableCompiler.TryCreate(values, null,
+            Array.Empty<BaseLangSysRecord>(), out var script, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(BaseAxisTableCompiler.TryCreate(tagList,
+            new[] { new BaseScriptRecord(0x44464C54u, script!) }, out var axis,
+            out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(BaseTableCompiler.TryCreate(BaseLayout.Version10, NumGlyphs, axis,
+            null, null, out var baseModel, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(BaseTableCompiler.TryCompile(baseModel!, out var bytes,
+            out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        return bytes!;
+    }
+
+    private const uint BaseTag = 0x42415345;
+
+    [Fact]
+    public void CompactPreserveBaseWithoutFormat2StaysRetainRaw()
+    {
+        byte[] baseBytes = BaseBytes(fmt2: false);
+        FontFaceRef face = FaceWithExtras(BaseTag, baseBytes, null);
+        var status = SubsetOperation.TryPrepare(CompactPreserve(face, [1]),
+            out var result, out var report, out var diagnostic);
+        Ok(status);
+        Assert.NotNull(result);
+        SubsetTableDecision decision = DecisionsOf(report!).Single(d => d.Tag == BaseTag);
+        Assert.Equal(TableAction.Preserve, decision.Action);
+        Assert.Equal(SubsetPolicy.RetainRaw, decision.Policy);
+        Assert.Equal(SubsetDecisionOrigin.MatrixRow, decision.Origin);
+        // The fmt1-only census row stays the zero form, the closure added nothing
+        // for BASE, and the payload moved byte-identically.
+        var census = report!.LayoutReferenceCensus.Single(c => c.Tag == BaseTag);
+        Assert.Equal(0, census.ReferencedGidCount);
+        Assert.Empty(report.LayoutClosureAddedGids);
+        Assert.True(OutputTablePayload(result!, BaseTag).AsSpan()
+            .SequenceEqual(baseBytes));
+    }
+
+    [Fact]
+    public void CompactPreserveBaseWithFormat2Refuses()
+    {
+        FontFaceRef face = FaceWithExtras(BaseTag, BaseBytes(fmt2: true), null);
+        var status = SubsetOperation.TryPrepare(CompactPreserve(face, [1]),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Null(result);
+        Assert.Equal(DiagnosticCode.LayoutFamilyUnsupported, diagnostic.Code);
+        Assert.Equal(BaseTag, diagnostic.Location.TableTag);
+        Assert.Equal(DataField.Payload, diagnostic.Location.Field);
+        Assert.Equal(2UL, diagnostic.Detail);
+        Assert.DoesNotContain(DecisionsOf(report!), d => d.Tag == BaseTag);
+    }
+
+    [Fact]
+    public void RetainPreserveClosureMergesBaseFormat2Reference()
+    {
+        // The same fmt2 face under the retain-GIDs third state: the enumerator
+        // correction (both modes) merges the referenceGlyph beyond the seed — the
+        // conservative superset the S2a gate re-verifies on the pinned faces.
+        FontFaceRef face = FaceWithExtras(BaseTag, BaseBytes(fmt2: true), null);
+        var request = new SubsetRequest
+        {
+            Face = face,
+            Root = new SubsetGlyphRoot { Kind = SubsetRootKind.ExplicitGlyphSet,
+                Gids = [1] },
+            Mode = SubsetMode.RetainGids,
+            Options = new SubsetOptions { PreserveLayout = true }
+        };
+        var status = SubsetOperation.TryPrepare(request, out var result,
+            out var report, out var diagnostic);
+        Ok(status);
+        Assert.NotNull(result);
+        Assert.Equal(new ushort[] { 2 }, report!.LayoutClosureAddedGids);
+        var census = report.LayoutReferenceCensus.Single(c => c.Tag == BaseTag);
+        Assert.Equal(1, census.ReferencedGidCount);
+        // The retain payload moved raw, byte-identically.
+        var bytes = new byte[result!.Font.OutputLength];
+        Ok(result!.Font.TryCopyTo(bytes, out _, out _));
+        Assert.Equal(TableAction.Preserve, DecisionsOf(report!)
+            .Single(d => d.Tag == BaseTag).Action);
+    }
+
     private static FontFaceRef FaceWithExtras(uint extraTag, byte[] extraBytes,
         byte[]? kern)
     {
