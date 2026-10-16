@@ -568,6 +568,11 @@ public static partial class SubsetOperation
                     return Refuse(state, status, diagnostic, out result, out report,
                         out diagnostic);
             }
+            // The shared rewrite census list (OQ-S2b-10): the S2b-1 layout lists
+            // appended their rows already (RewriteCompactLayout above), so the
+            // kern/JSTF/MATH producers append after them — the report's emission
+            // order follows the pipeline's.
+            var rewrites = state.LayoutRewriteCensus ??= [];
             if (rebuildTags.Contains(Kern))
             {
                 // S2b-2 (card §2.3): the compact+PreserveLayout kern rewrite — the
@@ -581,8 +586,8 @@ public static partial class SubsetOperation
                     return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
                         out result, out report, out diagnostic);
                 }
-                status = RebuildKern(kernModel, map!, budget, out rebuiltKern,
-                    out diagnostic);
+                status = RebuildKern(kernModel, map!, budget, rewrites,
+                    out rebuiltKern, out diagnostic);
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result,
                         out report, out diagnostic);
@@ -601,7 +606,7 @@ public static partial class SubsetOperation
                     return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
                         out result, out report, out diagnostic);
                 }
-                status = RebuildJstf(jstfModel, state, map!, budget,
+                status = RebuildJstf(jstfModel, state, map!, budget, rewrites,
                     out rebuiltJstf, out diagnostic);
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result,
@@ -619,8 +624,8 @@ public static partial class SubsetOperation
                     return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
                         out result, out report, out diagnostic);
                 }
-                status = RebuildMath(mathModel, map!, budget, out rebuiltMath,
-                    out diagnostic);
+                status = RebuildMath(mathModel, map!, budget, rewrites,
+                    out rebuiltMath, out diagnostic);
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result,
                         out report, out diagnostic);
@@ -1526,8 +1531,10 @@ public static partial class SubsetOperation
             // disjoint by construction) and the per-table reference census (OQ-S2a-4).
             internal List<ushort>? LayoutClosureAdded;
             internal List<LayoutTableCensus>? LayoutReferenceCensus;
-            // The compact rewrite's per-table count facts (OQ-S2b-10); parked only
-            // when the S2b-1 rewrite actually ran (compact + PreserveLayout).
+            // The compact rewrite's per-table count facts (OQ-S2b-10), emission
+            // order: the S2b-1 layout lists append first (RewriteCompactLayout),
+            // then the S2b-2 kern/JSTF/MATH producers; parked only when the
+            // rewrite window actually ran (compact + PreserveLayout).
             internal List<LayoutRewriteCensusRow>? LayoutRewriteCensus;
 
             /// <summary>Tags a SE rebuild stage found empty after pruning (OQ-SE-5):

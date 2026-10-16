@@ -44,7 +44,10 @@ public static partial class SubsetOperation
         gdef = gsub = gpos = null;
         GdefLookupContext? context = null;
         ReadStatus status;
-        var census = new List<LayoutRewriteCensusRow>(3);
+        // The shared census list (OQ-S2b-10, the merged emission order): the
+        // GDEF/GSUB/GPOS rows append here and the kern/JSTF/MATH producers append
+        // to the same list after it — one report face in rewrite order.
+        var census = state.LayoutRewriteCensus ??= new List<LayoutRewriteCensusRow>(3);
         if (rebuildTags.Contains(Gdef))
         {
             if (state.Gdef is not { } gdefModel)
@@ -87,7 +90,6 @@ public static partial class SubsetOperation
             census.Add(RewriteCensusRow(directory, Gpos, LookupSubtables(gposModel.Lookups),
                 gposSubtables, gpos!.Length));
         }
-        state.LayoutRewriteCensus = census;
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -104,9 +106,21 @@ public static partial class SubsetOperation
         if (ReadTableBytes(directory, tag, out _, out var payload, out _) ==
             ReadStatus.Done)
             inputBytes = payload.Length;
-        return new LayoutRewriteCensusRow(tag, inputSubtables, outputSubtables,
-            inputBytes, outputBytes, inputSubtables == outputSubtables);
+        return RewriteCensusRow(tag, inputSubtables, outputSubtables, inputBytes,
+            outputBytes);
     }
+
+    /// <summary>The census row's core (the merged S2b-2 producers' form): the
+    /// model-side overload for the kern/MATH/JSTF families, whose input length is
+    /// the admission model's own ConsumedLength — the same source table the
+    /// directory read admitted, so the two overloads state identical facts. The
+    /// count-identity verdict computes here once: every producer has already
+    /// refused its count break before appending, so a false cell never
+    /// publishes.</summary>
+    private static LayoutRewriteCensusRow RewriteCensusRow(uint tag,
+        int inputSubtables, int outputSubtables, int inputBytes, int outputBytes) =>
+        new(tag, inputSubtables, outputSubtables, inputBytes, outputBytes,
+            inputSubtables == outputSubtables);
 
     /// <summary>GDEF's subtable analog for the census: the present top-level child
     /// blocks (the two class domains, the mark sets, the attach and lig-caret lists,
@@ -1493,9 +1507,11 @@ out var rewrittenLeaf, out diagnostic);
     /// for the canonical layout), so an identity map re-emits a canonical source
     /// byte-identically and a remapped one wire-equivalently.</summary>
     private static ReadStatus RebuildKern(KernTable kern, GlyphRemap map,
-        BuildBudget budget, out byte[]? kernBytes, out FontDiagnostic diagnostic)
+        BuildBudget budget, List<LayoutRewriteCensusRow> rewrites,
+        out byte[]? kernBytes, out FontDiagnostic diagnostic)
     {
         kernBytes = null;
+        int inputSubtables = kern.SubtableCount;
         int outputGlyphs = map.OutputGlyphCount;
         var subtables = new KernSubtable[kern.SubtableCount];
         for (int i = 0; i < kern.SubtableCount; i++)
@@ -1541,7 +1557,9 @@ out var rewrittenLeaf, out diagnostic);
         rootStatus = KernTableCompiler.TryCompile(model, out var bytes,
             out diagnostic);
         if (rootStatus != ReadStatus.Done) return rootStatus;
-        return ChargeCompiled(budget, kern.Location, bytes!, out kernBytes,
+        rewrites.Add(RewriteCensusRow(KernLayout.Tag, inputSubtables,
+            model.SubtableCount, kern.ConsumedLength, bytes!.Length));
+        return ChargeCompiled(budget, kern.Location, bytes, out kernBytes,
             out diagnostic);
     }
 
@@ -1691,20 +1709,24 @@ out var rewrittenLeaf, out diagnostic);
     /// pipeline, so the unit test drives the producer directly — the S2a card §3
     /// layer-1 registration shape).</summary>
     internal static ReadStatus RebuildKernForTests(KernTable kern, GlyphRemap map,
-        out byte[]? kernBytes, out FontDiagnostic diagnostic) =>
-        RebuildKern(kern, map, new BuildBudget(new BuildLimits()), out kernBytes,
-            out diagnostic);
+        out byte[]? kernBytes, out FontDiagnostic diagnostic,
+        List<LayoutRewriteCensusRow>? rewrites = null) =>
+        RebuildKern(kern, map, new BuildBudget(new BuildLimits()),
+            rewrites ?? [], out kernBytes, out diagnostic);
 
     internal static ReadStatus RebuildMathForTests(MathTable math, GlyphRemap map,
-        out byte[]? mathBytes, out FontDiagnostic diagnostic) =>
-        RebuildMath(math, map, new BuildBudget(new BuildLimits()), out mathBytes,
-            out diagnostic);
+        out byte[]? mathBytes, out FontDiagnostic diagnostic,
+        List<LayoutRewriteCensusRow>? rewrites = null) =>
+        RebuildMath(math, map, new BuildBudget(new BuildLimits()),
+            rewrites ?? [], out mathBytes, out diagnostic);
 
     internal static ReadStatus RebuildJstfForTests(JstfTable jstf, GlyphRemap map,
-        out byte[]? jstfBytes, out FontDiagnostic diagnostic) =>
+        out byte[]? jstfBytes, out FontDiagnostic diagnostic,
+        List<LayoutRewriteCensusRow>? rewrites = null) =>
         RebuildJstf(jstf, new PrepareState(SubsetMode.CompactRemap,
             new BuildBudget(new BuildLimits())), map,
-            new BuildBudget(new BuildLimits()), out jstfBytes, out diagnostic);
+            new BuildBudget(new BuildLimits()), rewrites ?? [], out jstfBytes,
+            out diagnostic);
 
     // ---------------------------------------------------------------------
     // MATH (S2b card §2.5, commit ⑥): the six coverage faces and the hard
@@ -1716,9 +1738,12 @@ out var rewrittenLeaf, out diagnostic);
     // ---------------------------------------------------------------------
 
     private static ReadStatus RebuildMath(MathTable math, GlyphRemap map,
-        BuildBudget budget, out byte[]? mathBytes, out FontDiagnostic diagnostic)
+        BuildBudget budget, List<LayoutRewriteCensusRow> rewrites,
+        out byte[]? mathBytes, out FontDiagnostic diagnostic)
     {
         mathBytes = null;
+        int inputConstructions = (math.Variants?.VertGlyphCount ?? 0) +
+            (math.Variants?.HorizGlyphCount ?? 0);
         int outputGlyphs = map.OutputGlyphCount;
         MathGlyphInfoTable? glyphInfo = null;
         if (math.GlyphInfo is { } info)
@@ -1809,7 +1834,11 @@ out var rewrittenLeaf, out diagnostic);
         rootStatus = MathTableCompiler.TryCompile(model, out var bytes,
             out diagnostic);
         if (rootStatus != ReadStatus.Done) return rootStatus;
-        return ChargeCompiled(budget, math.Location, bytes!, out mathBytes,
+        int outputConstructions = (model!.Variants?.VertGlyphCount ?? 0) +
+            (model.Variants?.HorizGlyphCount ?? 0);
+        rewrites.Add(RewriteCensusRow(MathLayout.Tag, inputConstructions,
+            outputConstructions, math.ConsumedLength, bytes!.Length));
+        return ChargeCompiled(budget, math.Location, bytes, out mathBytes,
             out diagnostic);
     }
 
@@ -1918,10 +1947,11 @@ out var rewrittenLeaf, out diagnostic);
     // ---------------------------------------------------------------------
 
     private static ReadStatus RebuildJstf(JstfTable jstf, PrepareState state,
-        GlyphRemap map, BuildBudget budget, out byte[]? jstfBytes,
-        out FontDiagnostic diagnostic)
+        GlyphRemap map, BuildBudget budget, List<LayoutRewriteCensusRow> rewrites,
+        out byte[]? jstfBytes, out FontDiagnostic diagnostic)
     {
         jstfBytes = null;
+        int inputPriorities = JstfPriorityCount(jstf);
         int outputGlyphs = map.OutputGlyphCount;
         // OQ-S2b-7's count identity: the neighbor lists' record order never
         // changes, so the rebuilt counts equal the read counts; a drift would be
@@ -1956,8 +1986,25 @@ out var rewrittenLeaf, out diagnostic);
         rootStatus = JstfTableCompiler.TryCompile(model, out var bytes,
             out diagnostic);
         if (rootStatus != ReadStatus.Done) return rootStatus;
-        return ChargeCompiled(budget, jstf.Location, bytes!, out jstfBytes,
+        rewrites.Add(RewriteCensusRow(JstfLayout.Tag, inputPriorities,
+            JstfPriorityCount(model), jstf.ConsumedLength, bytes!.Length));
+        return ChargeCompiled(budget, jstf.Location, bytes, out jstfBytes,
             out diagnostic);
+    }
+
+    /// <summary>The whole script tree's priority count (the rewrite's structural
+    /// unit for the OQ-S2b-10 census row; the shared-identity caches make the
+    /// walk cheap but the count is the wire count).</summary>
+    private static int JstfPriorityCount(JstfTable jstf)
+    {
+        int count = 0;
+        foreach (var (_, script) in jstf.Scripts)
+        {
+            count += script.DefaultLangSys?.PriorityCount ?? 0;
+            foreach (var (_, langSys) in script.LangSys)
+                count += langSys.PriorityCount;
+        }
+        return count;
     }
 
     /// <summary>The JSTF rewrite's source-bound presentation tag (the OQ-T4-09-10

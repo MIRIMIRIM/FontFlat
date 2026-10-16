@@ -31,7 +31,12 @@ public enum DiagnosticCode : ushort
     LayoutFamilyUnsupported = 23,    // S0-RF-004-LAYOUT: "layout", "NoLayout", "S2";
                                      // S2a RF-D mutual exclusion: "PreserveLayout";
                                      // S2a RF-B/RF-C non-enumerable forms carry
-                                     // "metadata-only", "kern", "format <n>", "raw"
+                                     // "metadata-only", "kern", "format <n>", "raw";
+                                     // S2b RF-S2b-2 rewrite invariants carry
+                                     // "rewrite", "kern glyph <id>"; RF-S2b-3 the
+                                     // Apple dialect carries "Apple", "dialect";
+                                     // RF-S2b-4 the BASE conditional carries
+                                     // "BaseCoordFormat2", "referenceGlyph"
     NotdefExcluded = 24,             // S0-RF-005-NOTDEF: ".notdef", "GID 0", "exclude"
     SubsetModeRequired = 25,         // S0-RF-006-MODE: "mode", "SubsetMode"
     CmapFormatUnsupported = 26,      // S0-RF-007..010: "cmap", "format <n>", "unsupported"

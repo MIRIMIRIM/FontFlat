@@ -192,10 +192,14 @@ public sealed class SubsetLayoutRewriteTests
             .Single(d => d.Tag == SubsetFontFixture.KernTag);
         Assert.Equal(TableAction.Rebuild, kernDecision.Action);
         Assert.Equal(SubsetPolicy.RebuildTyped, kernDecision.Policy);
-        // The census carries the family rows in rewrite order: the GDEF row now,
-        // the kern row joining with the census unification (S2b-2 commit ⑧).
-        Assert.Equal(SubsetFontFixture.GdefTag,
-            report!.LayoutRewriteCensus.Single().Tag);
+        // The census carries the family rows in rewrite order: GDEF (the S2b-1
+        // layout lists) first, then the kern producer's row (the S2b-2 census
+        // unification) — one shared list, the pipeline's emission order.
+        Assert.Equal(
+            new uint[] { SubsetFontFixture.GdefTag, SubsetFontFixture.KernTag },
+            report!.LayoutRewriteCensus.Select(r => r.Tag).ToArray());
+        // Count identity holds on both rows (a breach refuses the operation).
+        Assert.All(report.LayoutRewriteCensus, r => Assert.True(r.CountsInvarianceHeld));
     }
 
     // Zero drift (M1): compact without PreserveLayout still refuses at the decide
@@ -371,6 +375,32 @@ public sealed class SubsetLayoutRewriteTests
         Assert.Equal(SubsetPolicy.RebuildTyped, decision.Policy);
         Assert.Equal(SubsetDecisionOrigin.MatrixRow, decision.Origin);
         Assert.True(OutputKernPayload(result!).AsSpan().SequenceEqual(kern));
+        // The OQ-S2b-10 census row: count identity and the byte fixed point.
+        var rewrite = report!.LayoutRewriteCensus.Single(r => r.Tag == KernTag);
+        Assert.Equal(1, rewrite.InputSubtableCount);
+        Assert.Equal(rewrite.InputSubtableCount, rewrite.OutputSubtableCount);
+        Assert.Equal(kern.Length, rewrite.OutputBytes);
+        Assert.True(rewrite.CountsInvarianceHeld);
+    }
+
+    [Fact]
+    public void NonRewriteRequestsCarryAnEmptyRewriteCensus()
+    {
+        var status = SubsetOperation.TryPrepare(
+            new SubsetRequest
+            {
+                Face = KernFace(Format0Kern((2, 5, -20))),
+                Root = new SubsetGlyphRoot { Kind = SubsetRootKind.ExplicitGlyphSet,
+                    Gids = [1] },
+                Mode = SubsetMode.RetainGids,
+                Options = new SubsetOptions { PreserveLayout = true }
+            },
+            out var result, out var report, out var diagnostic);
+        Ok(status);
+        Assert.NotNull(result);
+        // The retain third state keeps the table raw: no rewrite rows.
+        Assert.Empty(report!.LayoutRewriteCensus);
+        Assert.NotEmpty(report.LayoutReferenceCensus);
     }
 
     // The partial tier: seeds {1, 2} plus the closure's format-0 additions
