@@ -274,7 +274,7 @@ public static partial class SubsetOperation
             rebuiltEblc = null, rebuiltEbsc = null, rebuiltMerg = null;
         byte[]? rebuiltGdefLayout = null, rebuiltGsubLayout = null,
             rebuiltGposLayout = null;
-        byte[]? rebuiltKern = null;
+        byte[]? rebuiltKern = null, rebuiltJstf = null, rebuiltMath = null;
         var rebuildTags = new HashSet<uint>(
             state.Decisions.Where(d => d.Action == TableAction.Rebuild).Select(d => d.Tag));
         if (trueType)
@@ -587,6 +587,44 @@ public static partial class SubsetOperation
                     return Refuse(state, status, diagnostic, out result,
                         out report, out diagnostic);
             }
+            if (rebuildTags.Contains(Jstf))
+            {
+                // S2b-2 (card §2.5): the JSTF rewrite consumes the neighbor lookup
+                // counts and the POST-rewrite GDEF context the pipeline re-parked
+                // (the GDEF rewrite parks its rebuilt context) — the record order
+                // never changes, so the mod-list indices stay identity (OQ-S2b-7)
+                // and the count-identity assertion pins the seam.
+                if (state.Jstf is not { } jstfModel)
+                {
+                    diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                        faceAt with { TableTag = Jstf }, Jstf);
+                    return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
+                        out result, out report, out diagnostic);
+                }
+                status = RebuildJstf(jstfModel, state, map!, budget,
+                    out rebuiltJstf, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result,
+                        out report, out diagnostic);
+            }
+            if (rebuildTags.Contains(Math))
+            {
+                // S2b-2 (card §2.5): the six coverage faces and the variant/part
+                // hard references remap; the constants, kern values and devices
+                // travel as the admission model's own instances.
+                if (state.Math is not { } mathModel)
+                {
+                    diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                        faceAt with { TableTag = Math }, Math);
+                    return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
+                        out result, out report, out diagnostic);
+                }
+                status = RebuildMath(mathModel, map!, budget, out rebuiltMath,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result,
+                        out report, out diagnostic);
+            }
         }
         var tables = new SortedDictionary<uint, byte[]>();
         for (int i = 0; i < directory.DeclaredCount; i++)
@@ -628,6 +666,8 @@ public static partial class SubsetOperation
                     Gsub => rebuiltGsubLayout,
                     Gpos => rebuiltGposLayout,
                     Kern => rebuiltKern,
+                    Jstf => rebuiltJstf,
+                    Math => rebuiltMath,
                     _ => null
                 };
                 if (rebuilt is null && state.PayloadDropped.Contains(decision.Tag))
@@ -1178,16 +1218,18 @@ public static partial class SubsetOperation
                 : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
                     SubsetDecisionOrigin.MatrixRow);
         }
-        else if (compact && options.PreserveLayout && tag == Kern)
+        else if (compact && options.PreserveLayout && tag is Kern or Jstf or Math)
         {
-            // S2b-2 (card §2.3, OQ-S2b-5): the compact rewrite re-emits the v0
+            // S2b-2 (card §2.3, OQ-S2b-5): the kern rewrite re-emits the v0
             // dialect only — the producer's factories refuse Apple-dialect roots
             // (the read-side-only boundary), so the request refuses here instead of
             // passing an unrewritable kern over the changed GID domain. An
             // Apple-to-GPOS conversion would be new semantic invention and stays
             // registered not-taken. RF-S2b-3's keyword contract: "kern" / "Apple" /
-            // "dialect"; the raw version word rides in Detail.
-            if (state.Kern!.Dialect != KernDialect.Version0)
+            // "dialect"; the raw version word rides in Detail. The JSTF and MATH
+            // rows carry no decide-stage condition: their read chains already
+            // refused every unrewritable form at the admission segment.
+            if (tag == Kern && state.Kern!.Dialect != KernDialect.Version0)
             {
                 state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
                     directory.TableLocation(ordinal).At(DataField.Version, 0),
@@ -1205,11 +1247,11 @@ public static partial class SubsetOperation
             // modes — retain keeps the S2a RETAIN_RAW form, compact flips to the
             // primaryPolicy column's executed REBUILD_TYPED (MatrixRow origin: the
             // request only pulls the row's fourth alternate trigger, it never
-            // renegotiates the policy). The remaining unrewritten family rows
-            // (JSTF/MATH/BASE; kern joined the compact rewrite with S2b-2) keep
-            // their byte-identical pre-S2b shape: RETAIN_RAW under retain-GIDs
-            // only, the code-23 refusal under compact — their producers arrive
-            // with S2b-2.
+            // renegotiates the policy). The remaining unrewritten family row
+            // (BASE; kern/JSTF/MATH joined the compact rewrite with S2b-2) keeps
+            // its byte-identical pre-S2b shape: RETAIN_RAW under retain-GIDs
+            // only, the code-23 refusal under compact — its producer face arrives
+            // later in S2b-2.
             bool rewrittenPrefix = tag is Gsub or Gpos or Gdef;
             if (options.PreserveLayout && (!compact || rewrittenPrefix))
             {

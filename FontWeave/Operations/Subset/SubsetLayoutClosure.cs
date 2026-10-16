@@ -104,12 +104,12 @@ public static partial class SubsetOperation
         // The rewrite prefix discipline (S2b card §1, OQ-S2b-2): under
         // compact+PreserveLayout the admission runs only the segments whose decide
         // rows are migrated to the compact rewrite — GDEF/GSUB/GPOS (S2b-1) and
-        // kern (S2b-2 card §2.3) in this slice state — so an un-migrated table's
-        // first diagnostic stays the decide-stage code-23 refusal rather than its
-        // read chain (RF-A would otherwise displace the frozen first diagnostic).
-        // The retain-GIDs path (layoutRewritePrefixOnly false) keeps the full
-        // dependency order.
-        if (profile.HasJstf && !layoutRewritePrefixOnly)
+        // kern/JSTF/MATH (S2b-2, card §2.5) in this slice state — so an
+        // un-migrated table's first diagnostic stays the decide-stage code-23
+        // refusal rather than its read chain (RF-A would otherwise displace the
+        // frozen first diagnostic). The retain-GIDs path (layoutRewritePrefixOnly
+        // false) keeps the full dependency order.
+        if (profile.HasJstf)
         {
             // JSTF's cross-table lookup-index domains are the neighbor lists' counts
             // (the JstfView signature authority); its JstfMax inline lookups consume
@@ -153,7 +153,7 @@ public static partial class SubsetOperation
             }
             state.Kern = kern;
         }
-        if (profile.HasMath && !layoutRewritePrefixOnly)
+        if (profile.HasMath)
         {
             ReadStatus status = directory.TryGetTableBytes(profile.MathOrdinal,
                 out var mathBytes, out diagnostic);

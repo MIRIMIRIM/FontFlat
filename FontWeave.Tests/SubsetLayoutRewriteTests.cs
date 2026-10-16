@@ -327,7 +327,7 @@ public sealed class SubsetLayoutRewriteTests
         return forward;
     }
 
-    private static byte[] OutputKernPayload(SubsetResult result)
+    private static byte[] OutputTablePayload(SubsetResult result, uint tag)
     {
         var bytes = new byte[result.Font.OutputLength];
         Ok(result.Font.TryCopyTo(bytes, out int written, out _));
@@ -336,14 +336,17 @@ public sealed class SubsetLayoutRewriteTests
         for (int i = 0; i < count; i++)
         {
             int at = 12 + 16 * i;
-            uint tag = BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(at));
-            if (tag != KernTag) continue;
+            uint record = BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(at));
+            if (record != tag) continue;
             uint offset = BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(at + 8));
             uint length = BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(at + 12));
             return bytes.Skip((int)offset).Take((int)length).ToArray();
         }
-        throw new InvalidOperationException("no kern record in the output face");
+        throw new InvalidOperationException($"no {tag:X8} record in the output face");
     }
+
+    private static byte[] OutputKernPayload(SubsetResult result) =>
+        OutputTablePayload(result, KernTag);
 
     private static IReadOnlyList<SubsetTableDecision> DecisionsOf(
         SubsetReport report) => report.Decisions;
@@ -551,5 +554,228 @@ public sealed class SubsetLayoutRewriteTests
         Assert.Equal(DiagnosticCode.LayoutFamilyUnsupported, diagnostic.Code);
         Assert.Equal(DataField.GlyphId, diagnostic.Location.Field);
         Assert.Equal(5UL, diagnostic.Detail);
+    }
+
+    private const uint MathTag = 0x4D415448, JstfTag = 0x4A535446;
+
+    // ---- merged commit 1c7bfa6: MATH (the coverage + variant/part hard-reference face; the
+    // variants-only form is the S2a fixture's shape at the unit scale) ----
+
+    private static byte[] MathBytes()
+    {
+        Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 8, 9 },
+            NumGlyphs, 1, out var vertCoverage, out var diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(MathTableCompiler.TryCreate(default(MathValueRecord),
+            (StaticDeviceTable?)null,
+            new GlyphPartRecord[] { new(10, 2, 2, 100, 1) }, NumGlyphs,
+            out var assembly, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(MathTableCompiler.TryCreate(assembly,
+            new MathGlyphVariantRecord[] { new(10, 100) }, NumGlyphs,
+            out var construction, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(MathTableCompiler.TryCreate(10, vertCoverage, (CoverageTable?)null,
+            new MathGlyphConstructionTable[] { construction!, construction! },
+            Array.Empty<MathGlyphConstructionTable>(), out var variants,
+            out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(MathTableCompiler.TryCreate(MathLayout.Version10, NumGlyphs, null,
+            null, variants, out var math, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(MathTableCompiler.TryCompile(math!, out var bytes, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        return bytes!;
+    }
+
+    [Fact]
+    public void CompactPreserveMathRemapsCoveragesVariantsAndParts()
+    {
+        FontFaceRef face = FaceWithExtras(MathTag, MathBytes(), null);
+        var status = SubsetOperation.TryPrepare(CompactPreserve(face, [1]),
+            out var result, out var report, out var diagnostic);
+        Ok(status);
+        Assert.NotNull(result);
+        var forward = InputToOutput(result!);
+        // The closure merged the coverage glyphs and the variant/part glyph.
+        Assert.Equal(new ushort[] { 8, 9, 10 }, report!.LayoutClosureAddedGids);
+        byte[] output = OutputTablePayload(result!, MathTag);
+        Ok(MathView.TryOpen(output, out var view, out diagnostic,
+            DataLocation.Anonymous(MathTag)));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(view!.TryReadTable(forward.Count, out var math, out diagnostic,
+            new BuildLimits()));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(math!.Variants);
+        var variants = math.Variants!;
+        Assert.Equal(forward[8], variants.VertGlyphCoverage!.Glyphs[0]);
+        Assert.Equal(forward[9], variants.VertGlyphCoverage!.Glyphs[1]);
+        Assert.Equal(2, variants.VertGlyphCount);
+        var construction = variants.VertConstructions[0];
+        Assert.Equal(forward[10], construction.Variants[0].VariantGlyph);
+        Assert.NotNull(construction.Assembly);
+        Assert.Equal(forward[10], construction.Assembly!.Parts[0].GlyphId);
+        // The connector lengths, advance and flags travel verbatim.
+        Assert.Equal((ushort)100, construction.Assembly!.Parts[0].FullAdvance);
+        Assert.Equal((ushort)1, construction.Assembly!.Parts[0].PartFlags);
+    }
+
+    // ---- merged commit 1c7bfa6: JSTF (extender remap + JstfMax inline lookup remap; the
+    // mod-list indices stay identity per OQ-S2b-7) ----
+
+    private static byte[] JstfBytes(bool withMax)
+    {
+        FontDiagnostic diagnostic;
+        var lookups = new List<LookupTable>();
+        if (withMax)
+        {
+            Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 3 },
+                NumGlyphs, 1, out var coverage, out diagnostic));
+            Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+            Ok(SinglePosTableCompiler.TryCreate(coverage!.Glyphs,
+                new StaticValueRecord[] { new(0, 0, 15) }, NumGlyphs, 2, 0x0004,
+                out var single, out diagnostic));
+            Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+            Ok(LookupTableCompiler.TryCreateSinglePos(NumGlyphs, [single!],
+                0, null, null, out var lookup, out diagnostic));
+            Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+            lookups.Add(lookup!);
+        }
+        Ok(JstfTableCompiler.TryCreate(stackalloc ushort[] { 5, 6 }, NumGlyphs,
+            out var extenders, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        // The compact pipeline window admits the JSTF read with the parked
+        // neighbor counts (zero here — the wire's mod lists must be empty in this
+        // slice state; the non-empty index-identity face runs through the test
+        // bridge below).
+        Ok(JstfTableCompiler.TryCreate(JstfLookupDomain.Gsub,
+            Array.Empty<ushort>(), 0, out var gsubEnable, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        var max = withMax ? new JstfMaxTable([.. lookups], default, 0) : null;
+        Ok(JstfTableCompiler.TryCreate(gsubEnable, null, null, null, max,
+            null, null, null, null, null, out var priority, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(JstfTableCompiler.TryCreate([priority!], out var langSys,
+            out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(JstfTableCompiler.TryCreate(extenders, langSys,
+            Array.Empty<JstfLangSysRecord>(), out var script, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(JstfTableCompiler.TryCreate(JstfLayout.Version10, NumGlyphs,
+            0, 0, null, [new JstfScriptRecord(0x44464C54u, script!)],
+            out var jstf, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(JstfTableCompiler.TryCompile(jstf!, out var bytes, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        return bytes!;
+    }
+
+    [Fact]
+    public void CompactPreserveJstfRemapsExtendersAndInlineLookups()
+    {
+        FontFaceRef face = FaceWithExtras(JstfTag, JstfBytes(withMax: true), null);
+        var status = SubsetOperation.TryPrepare(CompactPreserve(face, [1]),
+            out var result, out var report, out var diagnostic);
+        Ok(status);
+        Assert.NotNull(result);
+        var forward = InputToOutput(result!);
+        // The closure merged the extender glyphs and the inline lookup's coverage.
+        Assert.Equal(new ushort[] { 3, 5, 6 }, report!.LayoutClosureAddedGids);
+        byte[] output = OutputTablePayload(result!, JstfTag);
+        Ok(JstfView.TryOpen(output, out var view, out diagnostic,
+            DataLocation.Anonymous(JstfTag)));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(view!.TryReadTable(forward.Count, 0, 0, null, out var jstf,
+            out diagnostic, new BuildLimits()));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.Equal(1, jstf!.ScriptCount);
+        var script = jstf.Scripts[0].Script;
+        Assert.Equal(forward[5], script!.ExtenderGlyphs!.Glyphs[0]);
+        Assert.Equal(forward[6], script!.ExtenderGlyphs!.Glyphs[1]);
+        Assert.NotNull(script.DefaultLangSys);
+        var priority = script.DefaultLangSys!.Priorities[0];
+        // The empty mod list rode the rewrite as the read model's own instance
+        // (the indices are record-order references; the non-empty identity face
+        // is the bridge test below).
+        Assert.NotNull(priority.GsubShrinkageEnable);
+        Assert.Empty(priority.GsubShrinkageEnable!.LookupIndices);
+        var max = priority.ShrinkageJstfMax;
+        Assert.NotNull(max);
+        Assert.Equal(1, max!.LookupCount);
+        var lookup = max.Lookups[0];
+        Assert.Equal(1, lookup.LookupType);
+        Assert.Equal(forward[3], lookup.SinglePositions![0].Coverage.Glyphs[0]);
+        // The value record travels verbatim.
+        Assert.Equal((short)15, lookup.SinglePositions![0].Values[0].XAdvance);
+    }
+
+    // The mod-list index identity at the model level: non-empty indices ride the
+    // rewrite byte-for-byte and the count-identity assertion pins the neighbor
+    // domain (the pipeline window reads with zero neighbor counts, so the
+    // non-empty form drives the producer through the test bridge).
+    [Fact]
+    public void JstfRewriteKeepsModListIndicesIdentity()
+    {
+        Ok(JstfTableCompiler.TryCreate(JstfLookupDomain.Gsub,
+            new ushort[] { 0 }, 1, out var gsubEnable, out var diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(JstfTableCompiler.TryCreate(JstfLookupDomain.Gpos,
+            new ushort[] { 0, 1 }, 2, out var gposEnable, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(JstfTableCompiler.TryCreate(gsubEnable, null, gposEnable, null, null,
+            null, null, null, null, null, out var priority, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(JstfTableCompiler.TryCreate([priority!], out var langSys,
+            out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(JstfTableCompiler.TryCreate(null, langSys,
+            Array.Empty<JstfLangSysRecord>(), out var script, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(JstfTableCompiler.TryCreate(JstfLayout.Version10, NumGlyphs, 1, 2,
+            null, [new JstfScriptRecord(0x44464C54u, script!)], out var jstf,
+            out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        var retained = new ushort[] { 0, 1, 2 };
+        FontFaceRef face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(NumGlyphs)));
+        Ok(GlyphRemap.TryCreate(face, NumGlyphs, retained, out var map,
+            out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        var status = SubsetOperation.RebuildJstfForTests(jstf!, map!,
+            out var bytes, out diagnostic);
+        Ok(status);
+        Ok(JstfView.TryOpen(bytes!, out var view, out diagnostic,
+            DataLocation.Anonymous(JstfTag)));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(view!.TryReadTable(retained.Length, 1, 2, null, out var reRead,
+            out diagnostic, new BuildLimits()));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        var rebuiltPriority = reRead!.Scripts[0].Script!.DefaultLangSys!
+            .Priorities[0];
+        Assert.Equal(new ushort[] { 0 },
+            rebuiltPriority.GsubShrinkageEnable!.LookupIndices.ToArray());
+        Assert.Equal(new ushort[] { 0, 1 },
+            rebuiltPriority.GposShrinkageEnable!.LookupIndices.ToArray());
+    }
+
+    private static FontFaceRef FaceWithExtras(uint extraTag, byte[] extraBytes,
+        byte[]? kern)
+    {
+        var tables = new List<(uint, byte[])>
+        {
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(NumGlyphs)),
+            (SubsetFontFixture.GlyfTag,
+                [.. Enumerable.Range(0, NumGlyphs)
+                    .SelectMany(_ => GlyfImages.NoContourGlyphRecord())]),
+            (SubsetFontFixture.LocaTag,
+                GlyfImages.LongLoca([.. Enumerable.Range(0, NumGlyphs + 1)
+                    .Select(i => (uint)(12 * i)).ToArray()])),
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41, 1))),
+            (extraTag, extraBytes),
+        };
+        if (kern is not null) tables.Add((KernTag, kern));
+        return SubsetFontFixture.Face([.. tables]);
     }
 }
