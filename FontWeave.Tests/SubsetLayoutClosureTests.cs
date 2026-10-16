@@ -132,12 +132,14 @@ public sealed class SubsetLayoutClosureTests
             out diagnostic));
         var retained = new bool[NumGlyphs];
         retained[0] = retained[1] = retained[2] = retained[4] = true;
-        Assert.False(SubsetOperation.VerifyLayoutClosureRetained(null, model!, null,
+        Assert.False(SubsetOperation.VerifyLayoutClosureRetained(
+            new SubsetOperation.LayoutAdmission(null, model!, null, null, null, null),
             retained, out var violation));
         Assert.Equal(DiagnosticCode.LayoutFamilyUnsupported, violation.Code);
         Assert.Equal(3UL, violation.Detail);
         retained[3] = true;
-        Assert.True(SubsetOperation.VerifyLayoutClosureRetained(null, model!, null,
+        Assert.True(SubsetOperation.VerifyLayoutClosureRetained(
+            new SubsetOperation.LayoutAdmission(null, model!, null, null, null, null),
             retained, out violation));
         Assert.Equal(DiagnosticCode.None, violation.Code);
     }

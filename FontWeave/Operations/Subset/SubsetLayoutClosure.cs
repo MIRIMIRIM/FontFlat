@@ -31,6 +31,12 @@ namespace FontWeave.Operations.Subset;
 /// "closure correct" to "enumerator correct", S2a card §3 layer 1).</summary>
 public static partial class SubsetOperation
 {
+    /// <summary>The admission models the closure and its verification consume. BASE is
+    /// absent by design: its structure carries no GID reference (S2a card §2.4).</summary>
+    internal readonly record struct LayoutAdmission(GdefTable? Gdef,
+        LayoutListsTable? Gsub, LayoutListsTable? Gpos, JstfTable? Jstf,
+        KernTable? Kern, MathTable? Math);
+
     // ---- step 3.5: admission (fixed dependency order, one model per table) ----
 
     private static ReadStatus AdmitLayoutFamily(SfntDirectoryView directory,
@@ -94,6 +100,78 @@ public static partial class SubsetOperation
                 maxp.NumGlyphs, LayoutLookupKind.Gpos, state.GdefContext, state, budget,
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
+        }
+        if (profile.HasJstf)
+        {
+            // JSTF's cross-table lookup-index domains are the neighbor lists' counts
+            // (the JstfView signature authority); its JstfMax inline lookups consume
+            // the same GDEF context as the GSUB/GPOS reads. JSTF/kern/MATH/BASE only
+            // expose the public BuildLimits entry (no internal BuildBudget overload),
+            // so the injection is the FontInspection shape (_admission.Limits,
+            // FontInspection.cs:690) — the S2a card §2.6 sanctioned form.
+            ReadStatus status = directory.TryGetTableBytes(profile.JstfOrdinal,
+                out var jstfBytes, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = JstfView.TryOpen(jstfBytes, out var jstfView, out diagnostic,
+                directory.TableLocation(profile.JstfOrdinal));
+            if (status != ReadStatus.Done) return status;
+            status = jstfView.TryReadTable(maxp.NumGlyphs,
+                state.Gsub?.Lookups.Length ?? 0, state.Gpos?.Lookups.Length ?? 0,
+                state.GdefContext, out var jstf, out diagnostic, budget.Limits);
+            if (status != ReadStatus.Done) return status;
+            state.Jstf = jstf;
+        }
+        if (profile.HasKern)
+        {
+            ReadStatus status = directory.TryGetTableBytes(profile.KernOrdinal,
+                out var kernBytes, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = KernView.TryOpen(kernBytes, out var kernView, out diagnostic,
+                directory.TableLocation(profile.KernOrdinal));
+            if (status != ReadStatus.Done) return status;
+            status = kernView.TryReadTable(maxp.NumGlyphs, out var kern, out diagnostic,
+                budget.Limits);
+            if (status != ReadStatus.Done) return status;
+            // RF-C (S2a card §5): a raw kern subtable (unknown format under either
+            // dialect) has no enumerable reference set — the code-23 contract with
+            // the subtable's dispatch format in the detail.
+            foreach (var subtable in kern!.Subtables)
+            {
+                if (subtable.IsTyped) continue;
+                state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
+                    subtable.Location, subtable.Format);
+                diagnostic = state.Diagnostic;
+                return ReadStatus.UnsupportedFormat;
+            }
+            state.Kern = kern;
+        }
+        if (profile.HasMath)
+        {
+            ReadStatus status = directory.TryGetTableBytes(profile.MathOrdinal,
+                out var mathBytes, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = MathView.TryOpen(mathBytes, out var mathView, out diagnostic,
+                directory.TableLocation(profile.MathOrdinal));
+            if (status != ReadStatus.Done) return status;
+            status = mathView.TryReadTable(maxp.NumGlyphs, out var math,
+                out diagnostic, budget.Limits);
+            if (status != ReadStatus.Done) return status;
+            state.Math = math;
+        }
+        if (profile.HasBase)
+        {
+            // BASE carries no GID reference anywhere in its structure (S2a card
+            // §2.4): validation-only admission, no model, zero closure obligation.
+            ReadStatus status = directory.TryGetTableBytes(profile.BaseOrdinal,
+                out var baseBytes, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = BaseView.TryOpen(baseBytes, out var baseView, out diagnostic,
+                directory.TableLocation(profile.BaseOrdinal));
+            if (status != ReadStatus.Done) return status;
+            status = baseView.ValidateTable(maxp.NumGlyphs, axisCount, out diagnostic,
+                budget.Limits);
+            if (status != ReadStatus.Done) return status;
+            state.BaseAdmitted = true;
         }
         diagnostic = default;
         return ReadStatus.Done;
@@ -197,12 +275,45 @@ public static partial class SubsetOperation
                 out diagnostic);
             if (diagnostic.Code != 0) return ReadStatus.ResourceLimit;
         }
+        if (state.Jstf is { } jstf)
+        {
+            var refs = new HashSet<int>();
+            CollectJstfReferences(jstf, refs);
+            census.Add(new(Jstf, refs.Count));
+            MergeLayoutReferences(jstf.Location, refs, retained, budget, added,
+                out diagnostic);
+            if (diagnostic.Code != 0) return ReadStatus.ResourceLimit;
+        }
+        if (state.Kern is { } kern)
+        {
+            var refs = new HashSet<int>();
+            CollectKernReferences(kern, refs);
+            census.Add(new(Kern, refs.Count));
+            MergeLayoutReferences(kern.Location, refs, retained, budget, added,
+                out diagnostic);
+            if (diagnostic.Code != 0) return ReadStatus.ResourceLimit;
+        }
+        if (state.Math is { } math)
+        {
+            var refs = new HashSet<int>();
+            CollectMathReferences(math, refs);
+            census.Add(new(Math, refs.Count));
+            MergeLayoutReferences(math.Location, refs, retained, budget, added,
+                out diagnostic);
+            if (diagnostic.Code != 0) return ReadStatus.ResourceLimit;
+        }
+        if (state.BaseAdmitted)
+        {
+            // The zero-obligation declaration (S2a card §2.4): BASE's census row
+            // exists with zero references, by structure.
+            census.Add(new(Base, 0));
+        }
         // The product-side post-closure assertion (S2a card §3 layer 1): every
         // retained layout table's reference set must sit inside the merged bitmap.
         // It shares the enumerators with the merge, so it defends against
         // orchestration errors, not enumerator omissions.
-        if (!VerifyLayoutClosureRetained(state.Gdef, state.Gsub, state.Gpos,
-                retained, out diagnostic))
+        if (!VerifyLayoutClosureRetained(AdmissionOf(state), retained,
+                out diagnostic))
             return ReadStatus.UnsupportedFormat;
         added.Sort();
         state.LayoutClosureAdded = added;
@@ -214,34 +325,57 @@ public static partial class SubsetOperation
     /// <summary>The verification entry shared by the pipeline and the tests: every
     /// reference the retained layout tables enumerate must sit inside the merged
     /// bitmap; the first escape names its GID under the code-23 contract.</summary>
-    internal static bool VerifyLayoutClosureRetained(GdefTable? gdef,
-        LayoutListsTable? gsub, LayoutListsTable? gpos, bool[] retained,
-        out FontDiagnostic diagnostic)
+    internal static bool VerifyLayoutClosureRetained(in LayoutAdmission admission,
+        bool[] retained, out FontDiagnostic diagnostic)
     {
-        if (gdef is not null)
+        if (admission.Gdef is { } gdef)
         {
             var refs = new HashSet<int>();
             CollectGdefReferences(gdef, refs);
             if (!AllRetained(refs, retained, gdef.Location, out diagnostic))
                 return false;
         }
-        if (gsub is not null)
+        if (admission.Gsub is { } gsub)
         {
             var refs = new HashSet<int>();
             CollectLayoutListsReferences(gsub, refs);
             if (!AllRetained(refs, retained, gsub.Location, out diagnostic))
                 return false;
         }
-        if (gpos is not null)
+        if (admission.Gpos is { } gpos)
         {
             var refs = new HashSet<int>();
             CollectLayoutListsReferences(gpos, refs);
             if (!AllRetained(refs, retained, gpos.Location, out diagnostic))
                 return false;
         }
+        if (admission.Jstf is { } jstf)
+        {
+            var refs = new HashSet<int>();
+            CollectJstfReferences(jstf, refs);
+            if (!AllRetained(refs, retained, jstf.Location, out diagnostic))
+                return false;
+        }
+        if (admission.Kern is { } kern)
+        {
+            var refs = new HashSet<int>();
+            CollectKernReferences(kern, refs);
+            if (!AllRetained(refs, retained, kern.Location, out diagnostic))
+                return false;
+        }
+        if (admission.Math is { } math)
+        {
+            var refs = new HashSet<int>();
+            CollectMathReferences(math, refs);
+            if (!AllRetained(refs, retained, math.Location, out diagnostic))
+                return false;
+        }
         diagnostic = default;
         return true;
     }
+
+    private static LayoutAdmission AdmissionOf(PrepareState state) => new(
+        state.Gdef, state.Gsub, state.Gpos, state.Jstf, state.Kern, state.Math);
 
     private static void MergeLayoutReferences(DataLocation at, HashSet<int> refs,
         bool[] retained, BuildBudget budget, List<ushort> added,
@@ -289,6 +423,104 @@ public static partial class SubsetOperation
         if (gdef.MarkGlyphSets is { } sets)
             foreach (var set in sets.Sets)
                 AddCoverage(set, into);
+    }
+
+    /// <summary>JSTF (S2a card §2.5): the extender list is the justification
+    /// algorithm's hard reference and merges; the enable/disable mod-lists are
+    /// lookup-index references (domain-checked at the JstfView signature, no GID);
+    /// every JstfMax inline lookup is a full LookupTable and re-enters the shared
+    /// per-lookup collector.</summary>
+    private static void CollectJstfReferences(JstfTable jstf, HashSet<int> into)
+    {
+        foreach (var script in jstf.Scripts)
+        {
+            if (script.Script.ExtenderGlyphs is { } extenders)
+                AddGlyphs(extenders.Glyphs, into);
+            CollectLangSys(script.Script.DefaultLangSys, into);
+            foreach (var langSys in script.Script.LangSys)
+                CollectLangSys(langSys.LangSys, into);
+        }
+    }
+
+    private static void CollectLangSys(JstfLangSysTable? langSys, HashSet<int> into)
+    {
+        if (langSys is null) return;
+        foreach (var priority in langSys.Priorities)
+        {
+            CollectMaxLookups(priority.ShrinkageJstfMax, into);
+            CollectMaxLookups(priority.ExtensionJstfMax, into);
+        }
+    }
+
+    private static void CollectMaxLookups(JstfMaxTable? max, HashSet<int> into)
+    {
+        if (max is null) return;
+        foreach (var lookup in max.Lookups)
+            CollectLookupReferences(lookup, lookup.NumGlyphs, into);
+    }
+
+    /// <summary>kern (S2a card §2.4): format-0 pairs merge both ends; format-2 class
+    /// matrices merge the covered class ranges [First, First+GlyphCount) on both
+    /// axes — every covered glyph participates in the matrix. Raw bodies never reach
+    /// here: the admission refused them (RF-C).</summary>
+    private static void CollectKernReferences(KernTable kern, HashSet<int> into)
+    {
+        foreach (var subtable in kern.Subtables)
+        {
+            switch (subtable.Body)
+            {
+                case KernFormat0Body format0:
+                    foreach (var pair in format0.Pairs)
+                    {
+                        into.Add(pair.Left);
+                        into.Add(pair.Right);
+                    }
+                    break;
+                case KernFormat2Body format2:
+                    AddClassRange(format2.LeftClassTable, into);
+                    AddClassRange(format2.RightClassTable, into);
+                    break;
+            }
+        }
+    }
+
+    private static void AddClassRange(KernClassTable classTable, HashSet<int> into)
+    {
+        for (int gid = classTable.FirstGlyph;
+             gid < classTable.FirstGlyph + classTable.GlyphCount; gid++)
+            into.Add(gid);
+    }
+
+    /// <summary>MATH (S2a card §2.5): the six coverage faces (glyphInfo's four
+    /// families and the variants' two direction coverages) plus the hard per-glyph
+    /// references — every construction's variant glyphs and every assembly's part
+    /// glyphs — merge.</summary>
+    private static void CollectMathReferences(MathTable math, HashSet<int> into)
+    {
+        if (math.GlyphInfo is { } glyphInfo)
+        {
+            AddCoverage(glyphInfo.ItalicsCorrectionInfo?.Coverage, into);
+            AddCoverage(glyphInfo.TopAccentAttachment?.Coverage, into);
+            AddCoverage(glyphInfo.KernInfo?.Coverage, into);
+            AddCoverage(glyphInfo.ExtendedShapeCoverage, into);
+        }
+        if (math.Variants is not { } variants) return;
+        AddCoverage(variants.VertGlyphCoverage, into);
+        AddCoverage(variants.HorizGlyphCoverage, into);
+        foreach (var construction in variants.VertConstructions)
+            AddConstructionReferences(construction, into);
+        foreach (var construction in variants.HorizConstructions)
+            AddConstructionReferences(construction, into);
+    }
+
+    private static void AddConstructionReferences(MathGlyphConstructionTable construction,
+        HashSet<int> into)
+    {
+        foreach (var variant in construction.Variants)
+            into.Add(variant.VariantGlyph);
+        if (construction.Assembly is { } assembly)
+            foreach (var part in assembly.Parts)
+                into.Add(part.GlyphId);
     }
 
     private static void CollectLayoutListsReferences(LayoutListsTable table,
@@ -639,6 +871,11 @@ public static partial class SubsetOperation
     }
 
     private static void AddGlyphs(ReadOnlySpan<ushort> glyphs, HashSet<int> into)
+    {
+        foreach (ushort glyph in glyphs) into.Add(glyph);
+    }
+
+    private static void AddGlyphs(IReadOnlyList<ushort> glyphs, HashSet<int> into)
     {
         foreach (ushort glyph in glyphs) into.Add(glyph);
     }

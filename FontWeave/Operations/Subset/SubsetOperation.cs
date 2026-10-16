@@ -1374,6 +1374,12 @@ public static partial class SubsetOperation
             internal GdefLookupContext? GdefContext;
             internal LayoutListsTable? Gsub;
             internal LayoutListsTable? Gpos;
+            internal JstfTable? Jstf;
+            internal KernTable? Kern;
+            internal MathTable? Math;
+            // BASE is validation-only (no GID reference anywhere — S2a card §2.4);
+            // the flag only feeds the census's zero-reference row.
+            internal bool BaseAdmitted;
             // The layout union's additions (L \ (seed ∪ {0}), ascending — the merge
             // happened before the composite closure, so the two addition lists stay
             // disjoint by construction) and the per-table reference census (OQ-S2a-4).
