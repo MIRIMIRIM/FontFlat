@@ -140,6 +140,16 @@ public readonly record struct CmapConsumedRecord(ushort PlatformId, ushort Encod
 /// never a per-GID listing). A zero row is the legal no-reference form (BASE).</summary>
 public readonly record struct LayoutTableCensus(uint Tag, int ReferencedGidCount);
 
+/// <summary>Per-table rewrite census of one compact+PreserveLayout rewritten layout
+/// table (OQ-S2b-10): the count-level in/out facts — subtable counts (GSUB/GPOS: the
+/// lookup list's total subtable count; GDEF: the present top-level child blocks),
+/// table payload lengths, and whether the count-identity invariant held (the §3
+/// zero-rule-loss defense's recorded result; the GDEF class domains' definitional
+/// entry shrink is entry-level, so it never moves this count).</summary>
+public readonly record struct LayoutRewriteCensusRow(uint Tag, int InputSubtableCount,
+    int OutputSubtableCount, int InputBytes, int OutputBytes,
+    bool CountsInvarianceHeld);
+
 /// <summary>Per-table policy report (W1 §4.2 member set). Success and failure paths share
 /// this type: a failure retains every decision formed before the first refusing one plus
 /// the diagnostic itself, and no font bytes are published.</summary>
@@ -154,6 +164,7 @@ public sealed class SubsetReport
     private readonly string? _mapArtifactSha256;
     private readonly ushort[] _layoutClosureAddedGids;
     private readonly LayoutTableCensus[] _layoutReferenceCensus;
+    private readonly LayoutRewriteCensusRow[] _layoutRewriteCensus;
 
     internal SubsetReport(SubsetMode? mode, SubsetTableDecision[] decisions,
         int unselectedSlotCount, ushort[] closureAddedGids, uint[] droppedTables,
@@ -161,7 +172,8 @@ public sealed class SubsetReport
         FontDiagnostic[] diagnostics, string? mapArtifactSha256 = null,
         CffStaleness? cffStaleness = null, VorgStaleness? vorgStaleness = null,
         ushort[]? layoutClosureAddedGids = null,
-        LayoutTableCensus[]? layoutReferenceCensus = null)
+        LayoutTableCensus[]? layoutReferenceCensus = null,
+        LayoutRewriteCensusRow[]? layoutRewriteCensus = null)
     {
         Mode = mode;
         _decisions = decisions;
@@ -176,6 +188,7 @@ public sealed class SubsetReport
         Vorg = vorgStaleness;
         _layoutClosureAddedGids = layoutClosureAddedGids ?? [];
         _layoutReferenceCensus = layoutReferenceCensus ?? [];
+        _layoutRewriteCensus = layoutRewriteCensus ?? [];
     }
 
     /// <summary>The declared mode; null when the request was refused before a mode could
@@ -209,6 +222,12 @@ public sealed class SubsetReport
     /// admission order (S2a card §2.6): count level only. Empty without PreserveLayout.</summary>
     public IReadOnlyList<LayoutTableCensus> LayoutReferenceCensus =>
         Array.AsReadOnly(_layoutReferenceCensus);
+
+    /// <summary>The per-table rewrite census of every compact+PreserveLayout rewritten
+    /// layout table, in the rewrite order GDEF→GSUB→GPOS (OQ-S2b-10): count level only.
+    /// Empty on every request the rewrite did not run.</summary>
+    public IReadOnlyList<LayoutRewriteCensusRow> LayoutRewriteCensus =>
+        Array.AsReadOnly(_layoutRewriteCensus);
 
     /// <summary>Tags whose action is Drop; consistent with Decisions (W1 §4.2).</summary>
     public IReadOnlyList<uint> DroppedTables => Array.AsReadOnly(_droppedTables);

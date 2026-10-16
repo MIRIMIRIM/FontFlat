@@ -559,7 +559,7 @@ public static partial class SubsetOperation
                 // models, remaps through the frozen map, and re-emits through the
                 // existing compilers; a remap miss or a count break refuses with no
                 // bytes published (RF-S2b-2).
-                status = RewriteCompactLayout(state, map!, rebuildTags,
+                status = RewriteCompactLayout(state, map!, rebuildTags, directory,
                     out rebuiltGdefLayout, out rebuiltGsubLayout, out rebuiltGposLayout,
                     out diagnostic);
                 if (status != ReadStatus.Done)
@@ -1415,6 +1415,9 @@ public static partial class SubsetOperation
             // disjoint by construction) and the per-table reference census (OQ-S2a-4).
             internal List<ushort>? LayoutClosureAdded;
             internal List<LayoutTableCensus>? LayoutReferenceCensus;
+            // The compact rewrite's per-table count facts (OQ-S2b-10); parked only
+            // when the S2b-1 rewrite actually ran (compact + PreserveLayout).
+            internal List<LayoutRewriteCensusRow>? LayoutRewriteCensus;
 
             /// <summary>Tags a SE rebuild stage found empty after pruning (OQ-SE-5):
             /// the payload-time drop revises the decide-stage Rebuild before any byte
@@ -1443,7 +1446,8 @@ public static partial class SubsetOperation
                     [.. CmapConsumedNotEmitted], [.. Diagnostics], MapArtifactSha256,
                     CffStaleness, VorgStaleness,
                     LayoutClosureAdded?.ToArray() ?? [],
-                    LayoutReferenceCensus?.ToArray() ?? []);
+                    LayoutReferenceCensus?.ToArray() ?? [],
+                    LayoutRewriteCensus?.ToArray() ?? []);
             }
         }
 }

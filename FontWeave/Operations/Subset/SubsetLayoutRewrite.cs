@@ -1,3 +1,4 @@
+using FontWeave.Containers;
 using FontWeave.Core;
 using FontWeave.Tables.Layout;
 
@@ -33,22 +34,27 @@ public static partial class SubsetOperation
     /// against its rebuilt lookup context — then the two layout lists (S2b card §2.2
     /// emission order). A tag with a Rebuild decision whose admission model is absent
     /// refuses at the producer boundary (the gvar/CFF2 producer shape): decide and
-    /// admission disagree only on a pipeline bug.</summary>
+    /// admission disagree only on a pipeline bug. Each rewritten tag's count-level
+    /// in/out facts land in the census (OQ-S2b-10), in rewrite order.</summary>
     private static ReadStatus RewriteCompactLayout(PrepareState state, GlyphRemap map,
-        HashSet<uint> rebuildTags, out byte[]? gdef, out byte[]? gsub, out byte[]? gpos,
+        HashSet<uint> rebuildTags, SfntDirectoryView directory,
+        out byte[]? gdef, out byte[]? gsub, out byte[]? gpos,
         out FontDiagnostic diagnostic)
     {
         gdef = gsub = gpos = null;
         GdefLookupContext? context = null;
         ReadStatus status;
+        var census = new List<LayoutRewriteCensusRow>(3);
         if (rebuildTags.Contains(Gdef))
         {
             if (state.Gdef is not { } gdefModel)
                 return RewriteProducerMissing(map.SourceFace.Location, Gdef,
                     out diagnostic);
             status = RewriteCompactGdef(gdefModel, map, state.Budget, out gdef,
-                out context, out diagnostic);
+                out context, out int gdefSubtables, out diagnostic);
             if (status != ReadStatus.Done) return status;
+            census.Add(RewriteCensusRow(directory, Gdef, ChildBlocks(gdefModel),
+                gdefSubtables, gdef!.Length));
         }
         if (rebuildTags.Contains(Gsub))
         {
@@ -56,8 +62,11 @@ public static partial class SubsetOperation
                 return RewriteProducerMissing(map.SourceFace.Location, Gsub,
                     out diagnostic);
             status = RewriteCompactLayoutLists(gsubModel, map, LayoutLookupKind.Gsub,
-                context, state.Budget, out gsub, out diagnostic);
+                context, state.Budget, out gsub, out int gsubSubtables,
+                out diagnostic);
             if (status != ReadStatus.Done) return status;
+            census.Add(RewriteCensusRow(directory, Gsub, LookupSubtables(gsubModel.Lookups),
+                gsubSubtables, gsub!.Length));
         }
         if (rebuildTags.Contains(Gpos))
         {
@@ -65,11 +74,51 @@ public static partial class SubsetOperation
                 return RewriteProducerMissing(map.SourceFace.Location, Gpos,
                     out diagnostic);
             status = RewriteCompactLayoutLists(gposModel, map, LayoutLookupKind.Gpos,
-                context, state.Budget, out gpos, out diagnostic);
+                context, state.Budget, out gpos, out int gposSubtables,
+                out diagnostic);
             if (status != ReadStatus.Done) return status;
+            census.Add(RewriteCensusRow(directory, Gpos, LookupSubtables(gposModel.Lookups),
+                gposSubtables, gpos!.Length));
         }
+        state.LayoutRewriteCensus = census;
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    /// <summary>One census row's measures (OQ-S2b-10): the input payload length comes
+    /// from the source directory, the counts from the input and rebuilt models, and
+    /// the count-identity result is recorded here — the per-lookup defense already
+    /// refused on a count break (RF-S2b-2), so a false cell can only ride a GDEF
+    /// child block the compiler dropped.</summary>
+    private static LayoutRewriteCensusRow RewriteCensusRow(SfntDirectoryView directory,
+        uint tag, int inputSubtables, int outputSubtables, int outputBytes)
+    {
+        int inputBytes = 0;
+        if (ReadTableBytes(directory, tag, out _, out var payload, out _) ==
+            ReadStatus.Done)
+            inputBytes = payload.Length;
+        return new LayoutRewriteCensusRow(tag, inputSubtables, outputSubtables,
+            inputBytes, outputBytes, inputSubtables == outputSubtables);
+    }
+
+    /// <summary>GDEF's subtable analog for the census: the present top-level child
+    /// blocks (the two class domains, the mark sets, the attach and lig-caret lists,
+    /// the item variation store).</summary>
+    private static int ChildBlocks(GdefTable gdef) =>
+        (gdef.GlyphClasses is not null ? 1 : 0) +
+        (gdef.MarkAttachmentClasses is not null ? 1 : 0) +
+        (gdef.MarkGlyphSets is not null ? 1 : 0) +
+        (gdef.AttachList is not null ? 1 : 0) +
+        (gdef.LigCaretList is not null ? 1 : 0) +
+        (gdef.ItemVariationStore is not null ? 1 : 0);
+
+    /// <summary>The layout lists' subtable analog for the census: the lookup list's
+    /// total subtable count.</summary>
+    private static int LookupSubtables(ReadOnlySpan<LookupTable> lookups)
+    {
+        int total = 0;
+        foreach (var lookup in lookups) total += lookup.SubtableCount;
+        return total;
     }
 
     private static ReadStatus RewriteProducerMissing(DataLocation faceAt, uint tag,
@@ -131,10 +180,11 @@ public static partial class SubsetOperation
     /// face reads them lazily, GdefLookupContext.TryCreate checks identity only).</summary>
     private static ReadStatus RewriteCompactGdef(GdefTable gdef, GlyphRemap map,
         BuildBudget budget, out byte[]? bytes, out GdefLookupContext? context,
-        out FontDiagnostic diagnostic)
+        out int subtableCount, out FontDiagnostic diagnostic)
     {
         bytes = null;
         context = null;
+        subtableCount = 0;
         int numGlyphs = map.OutputGlyphCount;
         ReadStatus status = RewriteClassDef(gdef.GlyphClasses, map, budget,
             out var glyphClasses, out diagnostic);
@@ -200,6 +250,7 @@ public static partial class SubsetOperation
         status = GdefTableCompiler.TryCompile(rewritten!, out bytes, out diagnostic,
             budget);
         if (status != ReadStatus.Done) return status;
+        subtableCount = ChildBlocks(rewritten!);
         var classes = new GdefClassDefinitions(gdef.Version, numGlyphs, glyphClasses,
             markAttachmentClasses, 0, 0, 0, 0, gdef.Location);
         status = GdefLookupContext.TryCreate(classes, markSets,
@@ -294,9 +345,11 @@ public static partial class SubsetOperation
     /// RF-S2b-2).</summary>
     private static ReadStatus RewriteCompactLayoutLists(LayoutListsTable table,
         GlyphRemap map, LayoutLookupKind kind, GdefLookupContext? context,
-        BuildBudget budget, out byte[]? bytes, out FontDiagnostic diagnostic)
+        BuildBudget budget, out byte[]? bytes, out int subtableCount,
+        out FontDiagnostic diagnostic)
     {
         bytes = null;
+        subtableCount = 0;
         var lookups = new LookupTable[table.Lookups.Length];
         for (int i = 0; i < lookups.Length; i++)
         {
@@ -308,6 +361,7 @@ public static partial class SubsetOperation
                 lookups[i]!.SubtableCount != table.Lookups[i].SubtableCount)
                 return RewriteMiss(map, table.Location.TableTag, -1, out diagnostic);
         }
+        subtableCount = LookupSubtables(lookups);
         LayoutListsTable? root;
         ReadStatus rootStatus;
         if (kind == LayoutLookupKind.Gsub)
