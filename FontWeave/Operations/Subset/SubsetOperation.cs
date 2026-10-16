@@ -271,6 +271,8 @@ public static partial class SubsetOperation
         byte[]? rebuiltColr = null, rebuiltSvg = null, rebuiltSbix = null,
             rebuiltCbdt = null, rebuiltCblc = null, rebuiltEbdt = null,
             rebuiltEblc = null, rebuiltEbsc = null, rebuiltMerg = null;
+        byte[]? rebuiltGdefLayout = null, rebuiltGsubLayout = null,
+            rebuiltGposLayout = null;
         var rebuildTags = new HashSet<uint>(
             state.Decisions.Where(d => d.Action == TableAction.Rebuild).Select(d => d.Tag));
         if (trueType)
@@ -548,6 +550,22 @@ public static partial class SubsetOperation
                     return Refuse(state, status, diagnostic, out result, out report,
                         out diagnostic);
             }
+            if (rebuildTags.Contains(Gdef) || rebuildTags.Contains(Gsub) ||
+                rebuildTags.Contains(Gpos))
+            {
+                // S2b-1 (card §2): the compact layout rewrite runs GDEF first — the
+                // GSUB/GPOS lookup flags validate against its rebuilt lookup context —
+                // then the two layout lists. Every stage reads the step 3.5 materialized
+                // models, remaps through the frozen map, and re-emits through the
+                // existing compilers; a remap miss or a count break refuses with no
+                // bytes published (RF-S2b-2).
+                status = RewriteCompactLayout(state, map!, rebuildTags,
+                    out rebuiltGdefLayout, out rebuiltGsubLayout, out rebuiltGposLayout,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
         }
         var tables = new SortedDictionary<uint, byte[]>();
         for (int i = 0; i < directory.DeclaredCount; i++)
@@ -585,6 +603,9 @@ public static partial class SubsetOperation
                     Hvar => rebuiltHvar,
                     Vvar => rebuiltVvar,
                     Cff2 => rebuiltCff2,
+                    Gdef => rebuiltGdefLayout,
+                    Gsub => rebuiltGsubLayout,
+                    Gpos => rebuiltGposLayout,
                     _ => null
                 };
                 if (rebuilt is null && state.PayloadDropped.Contains(decision.Tag))

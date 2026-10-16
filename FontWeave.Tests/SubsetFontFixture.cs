@@ -14,7 +14,8 @@ internal static class SubsetFontFixture
     internal const uint HeadTag = 0x68656164, MaxpTag = 0x6D617870, GlyfTag = 0x676C7966,
         LocaTag = 0x6C6F6361, CmapTag = 0x636D6170, NameTag = 0x6E616D65,
         GsubTag = 0x47535542, DsigTag = 0x44534947, PostTag = 0x706F7374,
-        FvarTag = 0x66766172, CffTag = 0x43464620, ZzZzTag = 0x5A7A5A7A;
+        FvarTag = 0x66766172, CffTag = 0x43464620, ZzZzTag = 0x5A7A5A7A,
+        GdefTag = 0x47444546, GposTag = 0x47504F53, KernTag = 0x6B65726E;
     // The variable-family tags (SV slice): append-only additions for the VF profile
     // fixtures, per the shared-fixture convention (never edit an existing member).
     internal const uint Cff2Tag = 0x43464632, GvarTag = 0x67766172, HvarTag = 0x48564152,
