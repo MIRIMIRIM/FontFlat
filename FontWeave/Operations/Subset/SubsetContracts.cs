@@ -32,10 +32,40 @@ public sealed record SubsetGlyphRoot
 /// declaration is reported (W1 §2.1, OQ-S0-1).</summary>
 public enum SubsetUnknownTableChoice : byte { Drop = 1, Preserve = 2 }
 
-/// <summary>The five explicit caller option families (the S2a slice added
-/// PreserveLayout as the fifth member; the original four keep their frozen
-/// semantics byte for byte). Everything else is decided by the frozen policy
-/// matrix and cannot be negotiated by a request (W1 §2).</summary>
+/// <summary>The caller's explicit three-tier layout retention scope (S2c card §1.1):
+/// per dimension null = the dimension is wholly kept, a non-null list = exactly the
+/// listed tags survive (a 4-byte script tag, a tagged LangSys record tag, a
+/// FeatureList entry tag — matched verbatim), and an empty list = the dimension is
+/// cut to empty (a legal value — the zero-count ScriptList root is a legal wire
+/// form). There are no wildcards and no negative lists: a null member covers the
+/// wildcard's expressiveness (OQ-S2c-2). A declared tag absent from the face is
+/// ignored and registered (the per-dimension match counts make the typo visible in
+/// the scope census, OQ-S2c-7/10), never a refusal — a refusal would couple the
+/// declaration to one face's catalogue.</summary>
+public sealed record SubsetLayoutScope
+{
+    /// <summary>The surviving ScriptList record tags; null keeps every script.</summary>
+    public IReadOnlyList<uint>? ScriptTags { get; init; }
+
+    /// <summary>The surviving tagged LangSys record tags inside every surviving
+    /// script; null keeps every tagged language. A script's DefaultLanguage carries
+    /// no tag, so it follows the script and is never constrained by this list.</summary>
+    public IReadOnlyList<uint>? LanguageTags { get; init; }
+
+    /// <summary>The surviving FeatureList entry tags; null keeps every feature.
+    /// FeatureList is one global list with per-(script,langsys) eligibility copies of
+    /// its entries, so a declared feature tag keeps *all* of that tag's entries —
+    /// the eligibility dimension is adjudicated independently by the script and
+    /// language lists. A surviving langsys's required feature is implicitly kept
+    /// (shapers apply it unconditionally) even when its tag is not declared.</summary>
+    public IReadOnlyList<uint>? FeatureTags { get; init; }
+}
+
+/// <summary>The six explicit caller option families (the S2a slice added
+/// PreserveLayout as the fifth member; the S2c slice added LayoutScope as the
+/// sixth; the original four keep their frozen semantics byte for byte). Everything
+/// else is decided by the frozen policy matrix and cannot be negotiated by a
+/// request (W1 §2).</summary>
 public sealed record SubsetOptions
 {
     /// <summary>Per-tag declarations for out-of-catalogue tags only; a known tag here is
@@ -59,6 +89,21 @@ public sealed record SubsetOptions
     /// <summary>true drops fpgm/prep/cvt/LTSH and strips glyf instructions during the
     /// rebuild; gasp is preserved regardless (W1 §2.3, OQ-S0-4).</summary>
     public bool DropHinting { get; init; }
+
+    /// <summary>The explicit script/language/feature retention scope of the layout
+    /// family (S2c card §1). null (the member itself, not an empty scope record) means
+    /// undeclared: the PreserveLayout semantics stay exactly the pre-S2c form — in
+    /// retain-GIDs the whole-table RETAIN_RAW closure, in compact-remap the S2b whole-
+    /// table rewrite — byte for byte. A declared scope (any member non-null) is legal
+    /// only together with PreserveLayout=true and NoLayout=false: deleting the layout
+    /// family or refusing to retain it has no common meaning with declaring which part
+    /// of it survives — both contradictions refuse outright under the code-23 contract
+    /// (S2c card §1.3). Declaring a scope whose resolution keeps every script, feature
+    /// and lookup is the no-op form: the output is byte-identical to the undeclared
+    /// request (the consequence-equivalence verdict, S2c card §4.2); a declaration
+    /// that truly cuts pulls the surviving-subset re-emission (the matrix's fifth
+    /// alternate).</summary>
+    public SubsetLayoutScope? LayoutScope { get; init; }
 
     /// <summary>true drops DSIG; false preserves an empty marker and refuses a real
     /// signature (W1 §2.4, OQ-S0-2).</summary>
@@ -106,7 +151,7 @@ public readonly record struct SubsetTableDecision(uint Tag, TableAction Action,
 public enum SubsetOptionId : byte
 {
     Mode = 1, NoLayout = 2, DropHinting = 3, DropDigitalSignature = 4, ExcludeNotdef = 5,
-    UnknownTable = 6, PreserveLayout = 7
+    UnknownTable = 6, PreserveLayout = 7, LayoutScope = 8
 }
 
 /// <summary>Machine-readable record of one effective option choice, so an auditor can
@@ -145,10 +190,24 @@ public readonly record struct LayoutTableCensus(uint Tag, int ReferencedGidCount
 /// lookup list's total subtable count; GDEF: the present top-level child blocks),
 /// table payload lengths, and whether the count-identity invariant held (the §3
 /// zero-rule-loss defense's recorded result; the GDEF class domains' definitional
-/// entry shrink is entry-level, so it never moves this count).</summary>
+/// entry shrink is entry-level, so it never moves this count). A row for a table the
+/// S2c scope rewrote over its surviving subset legally reads in≠out — the
+/// count-identity assertion scopes to the rows of unscoped rewrites only
+/// (OQ-S2c-10); every surviving lookup's own subtable count is still asserted.</summary>
 public readonly record struct LayoutRewriteCensusRow(uint Tag, int InputSubtableCount,
     int OutputSubtableCount, int InputBytes, int OutputBytes,
     bool CountsInvarianceHeld);
+
+/// <summary>Per-table scope census of one resolved layout list table (OQ-S2c-10):
+/// the input and surviving element counts (scripts/features/lookups) plus the
+/// per-dimension declared-tag match counts — a declared tag matching nothing (the
+/// typo case) reads zero here and is never a refusal (OQ-S2c-7). Rows appear for
+/// every layout list table a declared scope resolved, no-op verdicts included;
+/// every request without a declared scope carries no rows.</summary>
+public readonly record struct LayoutScopeCensusRow(uint Tag, int InputScriptCount,
+    int SurvivingScriptCount, int InputFeatureCount, int SurvivingFeatureCount,
+    int InputLookupCount, int SurvivingLookupCount, int ScriptTagMatches,
+    int LanguageTagMatches, int FeatureTagMatches);
 
 /// <summary>Per-table policy report (W1 §4.2 member set). Success and failure paths share
 /// this type: a failure retains every decision formed before the first refusing one plus
@@ -165,6 +224,7 @@ public sealed class SubsetReport
     private readonly ushort[] _layoutClosureAddedGids;
     private readonly LayoutTableCensus[] _layoutReferenceCensus;
     private readonly LayoutRewriteCensusRow[] _layoutRewriteCensus;
+    private readonly LayoutScopeCensusRow[] _layoutScopeCensus;
 
     internal SubsetReport(SubsetMode? mode, SubsetTableDecision[] decisions,
         int unselectedSlotCount, ushort[] closureAddedGids, uint[] droppedTables,
@@ -173,7 +233,8 @@ public sealed class SubsetReport
         CffStaleness? cffStaleness = null, VorgStaleness? vorgStaleness = null,
         ushort[]? layoutClosureAddedGids = null,
         LayoutTableCensus[]? layoutReferenceCensus = null,
-        LayoutRewriteCensusRow[]? layoutRewriteCensus = null)
+        LayoutRewriteCensusRow[]? layoutRewriteCensus = null,
+        LayoutScopeCensusRow[]? layoutScopeCensus = null)
     {
         Mode = mode;
         _decisions = decisions;
@@ -189,6 +250,7 @@ public sealed class SubsetReport
         _layoutClosureAddedGids = layoutClosureAddedGids ?? [];
         _layoutReferenceCensus = layoutReferenceCensus ?? [];
         _layoutRewriteCensus = layoutRewriteCensus ?? [];
+        _layoutScopeCensus = layoutScopeCensus ?? [];
     }
 
     /// <summary>The declared mode; null when the request was refused before a mode could
@@ -228,6 +290,13 @@ public sealed class SubsetReport
     /// Empty on every request the rewrite did not run.</summary>
     public IReadOnlyList<LayoutRewriteCensusRow> LayoutRewriteCensus =>
         Array.AsReadOnly(_layoutRewriteCensus);
+
+    /// <summary>The per-table scope census of every layout list table the declared
+    /// LayoutScope resolved (OQ-S2c-10), in the resolution order GSUB→GPOS: the
+    /// surviving element counts and the per-dimension declared-tag match counts,
+    /// count level only. Empty on every request without a declared scope.</summary>
+    public IReadOnlyList<LayoutScopeCensusRow> LayoutScopeCensus =>
+        Array.AsReadOnly(_layoutScopeCensus);
 
     /// <summary>Tags whose action is Drop; consistent with Decisions (W1 §4.2).</summary>
     public IReadOnlyList<uint> DroppedTables => Array.AsReadOnly(_droppedTables);

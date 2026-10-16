@@ -30,6 +30,8 @@ public enum DiagnosticCode : ushort
                                      // exclusion form remain registered)
     LayoutFamilyUnsupported = 23,    // S0-RF-004-LAYOUT: "layout", "NoLayout", "S2";
                                      // S2a RF-D mutual exclusion: "PreserveLayout";
+                                     // S2c RF-S2c-1 scope contradictions carry
+                                     // "LayoutScope", "NoLayout", "PreserveLayout";
                                      // S2a RF-B/RF-C non-enumerable forms carry
                                      // "metadata-only", "kern", "format <n>", "raw";
                                      // S2b RF-S2b-2 rewrite invariants carry

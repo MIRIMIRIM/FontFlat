@@ -162,6 +162,18 @@ public static partial class SubsetOperation
                     out diagnostic);
         }
 
+        // Step 3.6 (S2c card §3): the layout-scope resolution runs once over the
+        // admission models, before decide — the per-table no-op verdict is decide's
+        // input (a no-op table keeps its undeclared action; a truly-cut table pulls
+        // the matrix's fifth alternate). Zero timing movement elsewhere.
+        if (preserveLayout && ScopeDeclared(options))
+        {
+            status = ResolveLayoutScopes(state, options.LayoutScope!, out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+        }
+
         // Step 4: per-record policy decision. The array is reserved up front and the
         // whole loop completes before any payload work (decide-whole-before-compile,
         // MetadataEditOperation.cs:67-94).
@@ -555,6 +567,24 @@ public static partial class SubsetOperation
             if (rebuildTags.Contains(Gdef) || rebuildTags.Contains(Gsub) ||
                 rebuildTags.Contains(Gpos))
             {
+                // S2c (card §8 commit ①, the SV producer-face precedent): a declared
+                // scope that truly cuts a layout list pulls its rewrite to the
+                // surviving subset; the scoped producer lands with the slice's next
+                // commit, so until it exists the window refuses with the decision's
+                // own tag — never passing an unscoped rewrite over a cut set. A
+                // no-op verdict rides the S2b whole-table rewrite unchanged (§4.2).
+                if (rebuildTags.Contains(Gsub) && state.GsubScope is { } gsubScope &&
+                    !gsubScope.ListsNoOp)
+                    return Refuse(state, ReadStatus.UnsupportedFormat,
+                        new(DiagnosticCode.UnsupportedOperation,
+                            faceAt with { TableTag = Gsub }, Gsub),
+                        out result, out report, out diagnostic);
+                if (rebuildTags.Contains(Gpos) && state.GposScope is { } gposScope &&
+                    !gposScope.ListsNoOp)
+                    return Refuse(state, ReadStatus.UnsupportedFormat,
+                        new(DiagnosticCode.UnsupportedOperation,
+                            faceAt with { TableTag = Gpos }, Gpos),
+                        out result, out report, out diagnostic);
                 // S2b-1 (card §2): the compact layout rewrite runs GDEF first — the
                 // GSUB/GPOS lookup flags validate against its rebuilt lookup context —
                 // then the two layout lists. Every stage reads the step 3.5 materialized
@@ -789,6 +819,44 @@ public static partial class SubsetOperation
             // code stays 23 (the zero-new-codes discipline, OQ-S2a-5) and the
             // registered keyword contract carries both option names.
             diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported, request.Face.Location);
+            return false;
+        }
+        // S2c (card §1.1/§1.3, OQ-S2c-2/3): the LayoutScope records land first — the
+        // refusal paths keep every already-formed record (W1 §2.5) — then the two
+        // contradiction forms refuse under the same code-23 contract: a declared
+        // scope has no common meaning with dropping the layout family, and none with
+        // PreserveLayout=false (no retention path to scope; a silent ignore would be
+        // a caller foot-gun). The registered RF-S2c-1 keyword contract names
+        // "LayoutScope" alongside both option names.
+        if (options.LayoutScope is { } scope)
+        {
+            if (scope.ScriptTags is { } scriptTags)
+                foreach (uint scriptTag in scriptTags)
+                    state.OptionRecords.Add(new(SubsetOptionId.LayoutScope, scriptTag,
+                        "Script"));
+            if (scope.LanguageTags is { } languageTags)
+                foreach (uint languageTag in languageTags)
+                    state.OptionRecords.Add(new(SubsetOptionId.LayoutScope, languageTag,
+                        "Language"));
+            if (scope.FeatureTags is { } featureTags)
+                foreach (uint featureTag in featureTags)
+                    state.OptionRecords.Add(new(SubsetOptionId.LayoutScope, featureTag,
+                        "Feature"));
+        }
+        if (ScopeDeclared(options) && options.NoLayout)
+        {
+            // Detail 1 = the NoLayout contradiction form (Detail 0 = the
+            // PreserveLayout form below); both keep the request-face location.
+            state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
+                request.Face.Location, 1);
+            diagnostic = state.Diagnostic;
+            return false;
+        }
+        if (ScopeDeclared(options) && !options.PreserveLayout)
+        {
+            state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
+                request.Face.Location, 0);
+            diagnostic = state.Diagnostic;
             return false;
         }
         if (options.UnknownTables is { } declared)
@@ -1277,13 +1345,31 @@ public static partial class SubsetOperation
             // its byte-identical pre-S2b shape: RETAIN_RAW under retain-GIDs
             // only, the code-23 refusal under compact — its producer face arrives
             // later in S2b-2.
+            //
+            // S2c (card §3 step 4, the fifth alternate): a declared scope whose
+            // resolution truly cuts the table pulls the row's fifth alternate —
+            // retain-GIDs flips to RebuildTyped over the surviving subset (raw
+            // retention would strand the cut lookups' references on empty slots, the
+            // §4 argument). A no-op verdict short-circuits: the action stays exactly
+            // the undeclared form and the output stays byte-identical (§4.2). The
+            // transparent rows (GDEF/kern/MATH/BASE — no script/feature domain or a
+            // disproportionate cut, OQ-S2c-9) never move. JSTF's script-tree cut
+            // joins with its rewrite face.
             bool rewrittenPrefix = tag is Gsub or Gpos or Gdef;
-            if (options.PreserveLayout && (!compact || rewrittenPrefix))
+            bool scopeCut = tag switch
+            {
+                Gsub when state.GsubScope is { } gsubScope => !gsubScope.ListsNoOp,
+                Gpos when state.GposScope is { } gposScope => !gposScope.ListsNoOp,
+                _ => false
+            };
+            if (options.PreserveLayout && (!compact || rewrittenPrefix || scopeCut))
             {
                 decision = compact
                     ? new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
                         SubsetDecisionOrigin.MatrixRow)
-                    : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
+                    : new(tag,
+                        scopeCut ? TableAction.Rebuild : TableAction.Preserve,
+                        scopeCut ? SubsetPolicy.RebuildTyped : SubsetPolicy.RetainRaw,
                         SubsetDecisionOrigin.MatrixRow);
             }
             else if (!options.NoLayout)
@@ -1519,6 +1605,12 @@ public static partial class SubsetOperation
             internal JstfTable? Jstf;
             internal KernTable? Kern;
             internal MathTable? Math;
+            // The S2c step 3.6 scope resolutions (card §2): one verdict per declared
+            // layout list table, parked once and consumed by decide and the scoped
+            // closure without re-derivation. Null = the table resolved no-op-free
+            // because no declaration covers it (no scope, or the table absent).
+            internal SubsetOperation.LayoutScopeResolution? GsubScope;
+            internal SubsetOperation.LayoutScopeResolution? GposScope;
             // The S2b-2 correction (OQ-S2b-6): BASE materializes with the
             // admission segment (its fmt2 referenceGlyph is a real GID
             // reference); the fmt2 census feeds the compact decide row's
@@ -1536,6 +1628,9 @@ public static partial class SubsetOperation
             // then the S2b-2 kern/JSTF/MATH producers; parked only when the
             // rewrite window actually ran (compact + PreserveLayout).
             internal List<LayoutRewriteCensusRow>? LayoutRewriteCensus;
+            // The S2c scope census (OQ-S2c-10): one row per resolved layout list
+            // table, resolution order GSUB→GPOS; parked when step 3.6 ran.
+            internal List<LayoutScopeCensusRow>? LayoutScopeCensus;
 
             /// <summary>Tags a SE rebuild stage found empty after pruning (OQ-SE-5):
             /// the payload-time drop revises the decide-stage Rebuild before any byte
@@ -1565,7 +1660,8 @@ public static partial class SubsetOperation
                     CffStaleness, VorgStaleness,
                     LayoutClosureAdded?.ToArray() ?? [],
                     LayoutReferenceCensus?.ToArray() ?? [],
-                    LayoutRewriteCensus?.ToArray() ?? []);
+                    LayoutRewriteCensus?.ToArray() ?? [],
+                    LayoutScopeCensus?.ToArray() ?? []);
             }
         }
 }

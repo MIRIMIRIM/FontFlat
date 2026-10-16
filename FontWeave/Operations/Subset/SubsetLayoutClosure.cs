@@ -287,7 +287,8 @@ public static partial class SubsetOperation
         if (state.Gsub is { } gsub)
         {
             var refs = new HashSet<int>();
-            CollectLayoutListsReferences(gsub, refs);
+            CollectLayoutListsReferences(gsub, refs,
+                state.GsubScope?.SurvivingLookups);
             census.Add(new(Gsub, refs.Count));
             MergeLayoutReferences(gsub.Location, refs, retained, budget, added,
                 out diagnostic);
@@ -296,7 +297,8 @@ public static partial class SubsetOperation
         if (state.Gpos is { } gpos)
         {
             var refs = new HashSet<int>();
-            CollectLayoutListsReferences(gpos, refs);
+            CollectLayoutListsReferences(gpos, refs,
+                state.GposScope?.SurvivingLookups);
             census.Add(new(Gpos, refs.Count));
             MergeLayoutReferences(gpos.Location, refs, retained, budget, added,
                 out diagnostic);
@@ -344,9 +346,12 @@ public static partial class SubsetOperation
         // The product-side post-closure assertion (S2a card §3 layer 1): every
         // retained layout table's reference set must sit inside the merged bitmap.
         // It shares the enumerators with the merge, so it defends against
-        // orchestration errors, not enumerator omissions.
+        // orchestration errors, not enumerator omissions. The scope resolutions
+        // re-answer it over the surviving lookups (S2c card §3 step 4.5: the same
+        // 口径 as the merge — an undeclared request passes null and walks full).
         if (!VerifyLayoutClosureRetained(AdmissionOf(state), retained,
-                out diagnostic))
+                out diagnostic, state.GsubScope?.SurvivingLookups,
+                state.GposScope?.SurvivingLookups))
             return ReadStatus.UnsupportedFormat;
         added.Sort();
         state.LayoutClosureAdded = added;
@@ -357,9 +362,12 @@ public static partial class SubsetOperation
 
     /// <summary>The verification entry shared by the pipeline and the tests: every
     /// reference the retained layout tables enumerate must sit inside the merged
-    /// bitmap; the first escape names its GID under the code-23 contract.</summary>
+    /// bitmap; the first escape names its GID under the code-23 contract. The
+    /// surviving-lookup lists scope the two layout lists to the S2c resolution's
+    /// sets (null = the undeclared full walk).</summary>
     internal static bool VerifyLayoutClosureRetained(in LayoutAdmission admission,
-        bool[] retained, out FontDiagnostic diagnostic)
+        bool[] retained, out FontDiagnostic diagnostic,
+        List<int>? gsubSurvivingLookups = null, List<int>? gposSurvivingLookups = null)
     {
         if (admission.Gdef is { } gdef)
         {
@@ -371,14 +379,14 @@ public static partial class SubsetOperation
         if (admission.Gsub is { } gsub)
         {
             var refs = new HashSet<int>();
-            CollectLayoutListsReferences(gsub, refs);
+            CollectLayoutListsReferences(gsub, refs, gsubSurvivingLookups);
             if (!AllRetained(refs, retained, gsub.Location, out diagnostic))
                 return false;
         }
         if (admission.Gpos is { } gpos)
         {
             var refs = new HashSet<int>();
-            CollectLayoutListsReferences(gpos, refs);
+            CollectLayoutListsReferences(gpos, refs, gposSurvivingLookups);
             if (!AllRetained(refs, retained, gpos.Location, out diagnostic))
                 return false;
         }
@@ -608,10 +616,20 @@ public static partial class SubsetOperation
     }
 
     private static void CollectLayoutListsReferences(LayoutListsTable table,
-        HashSet<int> into)
+        HashSet<int> into, List<int>? survivingLookups = null)
     {
-        foreach (var lookup in table.Lookups)
-            CollectLookupReferences(lookup, table.NumGlyphs, into);
+        // S2c (card §3 step 4.5): a declared scope enumerates only the resolution's
+        // surviving lookups — a cut lookup no longer pulls glyphs — while the
+        // undeclared walk stays the full loop (the same code, zero drift).
+        if (survivingLookups is null)
+        {
+            foreach (var lookup in table.Lookups)
+                CollectLookupReferences(lookup, table.NumGlyphs, into);
+            return;
+        }
+        foreach (int lookupIndex in survivingLookups)
+            CollectLookupReferences(table.Lookups[lookupIndex], table.NumGlyphs,
+                into);
     }
 
     private static void CollectLookupReferences(LookupTable lookup, int numGlyphs,
