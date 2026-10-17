@@ -525,7 +525,9 @@ public static partial class SubsetOperation
 
     /// <summary>Rewrite-walk per-program state: the renumbering maps and new biases
     /// the call sites read, the plan's stem memo (with the FD context the mask
-    /// widths read it under) and the program's output bytes.</summary>
+    /// widths read it under) and the program's output bytes. A null plan slot keeps
+    /// its INDEX's own bias — the walk falls back to the called table's current
+    /// bias, since an unpruned INDEX renumbers to itself (the nullable biases).</summary>
     private sealed class RewriteState
     {
         internal RewriteState(SubrPrunePlan plan, int fd, SubrIndexPlan? localPlan,
@@ -535,8 +537,8 @@ public static partial class SubsetOperation
             Fd = fd;
             LocalMap = localPlan?.NewIndexOfOld;
             GlobalMap = globalPlan?.NewIndexOfOld;
-            NewLocalBias = localPlan?.NewBias ?? 0;
-            NewGlobalBias = globalPlan?.NewBias ?? 0;
+            NewLocalBias = localPlan?.NewBias;
+            NewGlobalBias = globalPlan?.NewBias;
         }
 
         internal SubrPrunePlan Plan { get; }
@@ -549,9 +551,12 @@ public static partial class SubsetOperation
 
         internal int[]? GlobalMap { get; }
 
-        internal int NewLocalBias { get; }
+        /// <summary>The new bias of the pruned INDEX; null when that INDEX kept every
+        /// body (the walk then reads the unchanged bias off the called table, so an
+        /// unpruned INDEX's sites keep their operand values — the value rule).</summary>
+        internal int? NewLocalBias { get; }
 
-        internal int NewGlobalBias { get; }
+        internal int? NewGlobalBias { get; }
 
         internal readonly List<byte> Output = [];
 
@@ -878,8 +883,13 @@ public static partial class SubsetOperation
                     return ReadWire.Fail(ReadStatus.UnsupportedFormat,
                         DiagnosticCode.UnsupportedOperation, _at, out diagnostic,
                         unchecked((ulong)(long)top.Value), (ulong)table.Length);
-                _pendingOperand = newIdx -
-                    (local ? _rewrite.NewLocalBias : _rewrite.NewGlobalBias);
+                // A null plan slot means the INDEX kept every body: the new bias is
+                // the one the unchanged count still yields, so the site's operand
+                // value re-derives to its original and the bytes stay (the value
+                // rule, card §3.3's re-encoding judgment).
+                int newBias = (local ? _rewrite.NewLocalBias : _rewrite.NewGlobalBias)
+                    ?? SubrBias(table.Length);
+                _pendingOperand = newIdx - newBias;
                 // The called body's stem contribution keeps this frame's hint count
                 // runtime-faithful without descending (the analysis's memo; a miss
                 // is a pipeline bug the refusal surfaces, never a silent width).

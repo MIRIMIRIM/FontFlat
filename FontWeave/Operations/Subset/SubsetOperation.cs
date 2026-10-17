@@ -1878,6 +1878,9 @@ public static partial class SubsetOperation
                 // appears once the artifact has serialized (SC card §1.3); the staleness
                 // members stay null unless the static CFF1 profile admission filled them.
                 // The S4 prune counts read the parked plan (zero/empty without one).
+                // The per-FD array stays empty unless some Local Subrs INDEX actually
+                // pruned (the member contract): a plan that only pruned globals keeps
+                // the per-FD fact vacuous rather than a column of zeros.
                 int subrPrunedGlobal = 0;
                 int[] subrPrunedLocalByFd = [];
                 if (SubrPrunePlan is { } plan)
@@ -1886,6 +1889,8 @@ public static partial class SubsetOperation
                     subrPrunedLocalByFd = new int[plan.LocalByFd.Length];
                     for (int fd = 0; fd < subrPrunedLocalByFd.Length; fd++)
                         subrPrunedLocalByFd[fd] = plan.PrunedLocalCount(fd);
+                    if (subrPrunedLocalByFd.All(count => count == 0))
+                        subrPrunedLocalByFd = [];
                 }
                 return new SubsetReport(Mode, [.. Decisions], UnselectedSlotCount,
                     ClosureAdded?.ToArray() ?? [], [.. Dropped], [.. OptionRecords],
