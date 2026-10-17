@@ -214,6 +214,32 @@ public sealed class Cff1Table
         return ReadStatus.Done;
     }
 
+    /// <summary>Standard-encoding resolution for the Type 2 endchar seac form (S3 card
+    /// §2.2): the code is always interpreted through the predefined Standard encoding —
+    /// never the face's own encoding form, which may be Expert or custom, while the seac
+    /// reference is defined against the standard codes (TN5176 Type 2 appendix) — and
+    /// the SID's standard name matches the charset by name. sid=0 (the code has no
+    /// Standard entry) and mapped=false (the name is not in the charset) are the
+    /// caller's refusal inputs, never structural failures.</summary>
+    internal ReadStatus TryMapStandardCode(int code, out int sid, out bool mapped,
+        out int glyph, out FontDiagnostic diagnostic)
+    {
+        mapped = false;
+        glyph = 0;
+        sid = Cff1Predefined.EncodingSid(0, code);
+        if (sid == 0)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        ReadStatus status = SidName(sid, out string? name, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var map = BuildGlyphNameMap();
+        mapped = map.TryGetValue(name!, out glyph);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
     private ReadStatus SidName(int sid, out string? name, out FontDiagnostic diagnostic)
     {
         name = null;

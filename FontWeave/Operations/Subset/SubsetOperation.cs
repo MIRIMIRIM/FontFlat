@@ -196,6 +196,20 @@ public static partial class SubsetOperation
                     out report, out diagnostic);
         }
 
+        // Step 4.2 (S3 card §1.3, OQ-S3-5): one CFF1 materialization for both modes.
+        // The seac closure scans the typed model, so the decide-complete pipeline
+        // materializes the table once here and parks it on the state; the compact map
+        // freeze and the payload rebuilds consume the parked model without a second
+        // read (single-parse discipline, S1c card §1.2).
+        if (profile.HasCff)
+        {
+            status = MaterializeCff1(directory, profile.CffOrdinal, state,
+                out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+        }
+
         // Step 4.5 (S2a card §2.2): the layout reference union merges into the
         // retained set before the composite closure, so the existing CloseComposites
         // worklist consumes the extended set unchanged and the two addition lists
@@ -203,6 +217,22 @@ public static partial class SubsetOperation
         if (preserveLayout)
         {
             status = CloseLayoutReferences(state, out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+        }
+
+        // Step 4.6 (S3 card §2.1): the CFF1 seac closure — the retained set extends to
+        // every base/accent glyph a Type 2 endchar seac form references by standard
+        // code, worklist fixed point over the typed model parked at step 4.2. It runs
+        // after the layout union, so layout-added programs are scanned too, and before
+        // the map freeze, so compact's frozen order carries the additions (card §1.2);
+        // the composite closure below skips CFF faces by its trueType profile gate, so
+        // the three addition lists stay disjoint by construction.
+        if (profile.HasCff)
+        {
+            status = CloseSeacReferences(request.Face.Location, state, budget,
+                out diagnostic);
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
@@ -227,8 +257,9 @@ public static partial class SubsetOperation
         // Step 5.5 (compact only, SC card §1.1): freeze the one GlyphRemap over the
         // final retained set and serialize the map artifact before any payload stage.
         // On a static CFF1 face the output order is the ascending stable identity of
-        // the charset (SID/CID), so the freeze materializes the CFF table once and
-        // parks the model on the state for the payload rebuilds (S1c card §1.2).
+        // the charset (SID/CID); the freeze consumes the model parked at step 4.2
+        // (S3 card §1.3) — the closure's additions above are already in the retained
+        // set and enter the frozen order (S3 card §1.2).
         GlyphRemap? map = null;
         if (compact)
         {
@@ -1642,6 +1673,11 @@ public static partial class SubsetOperation
             // disjoint by construction) and the per-table reference census (OQ-S2a-4).
             internal List<ushort>? LayoutClosureAdded;
             internal List<LayoutTableCensus>? LayoutReferenceCensus;
+            // The S3 seac closure's additions (the base/accent glyphs the retained
+            // programs' Type 2 endchar seac forms reference, ascending — the closure
+            // runs after the layout union and only adds glyphs still unretained, so
+            // the list stays disjoint from the layout additions by construction).
+            internal List<ushort>? SeacClosureAdded;
             // The compact rewrite's per-table count facts (OQ-S2b-10), emission
             // order: the S2b-1 layout lists append first (RewriteCompactLayout),
             // then the S2b-2 kern/JSTF/MATH producers; parked only when the
@@ -1680,7 +1716,8 @@ public static partial class SubsetOperation
                     LayoutClosureAdded?.ToArray() ?? [],
                     LayoutReferenceCensus?.ToArray() ?? [],
                     LayoutRewriteCensus?.ToArray() ?? [],
-                    LayoutScopeCensus?.ToArray() ?? []);
+                    LayoutScopeCensus?.ToArray() ?? [],
+                    SeacClosureAdded?.ToArray() ?? []);
             }
         }
 }

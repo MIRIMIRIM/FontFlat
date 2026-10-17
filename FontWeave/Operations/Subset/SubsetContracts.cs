@@ -225,6 +225,7 @@ public sealed class SubsetReport
     private readonly LayoutTableCensus[] _layoutReferenceCensus;
     private readonly LayoutRewriteCensusRow[] _layoutRewriteCensus;
     private readonly LayoutScopeCensusRow[] _layoutScopeCensus;
+    private readonly ushort[] _seacClosureAddedGids;
 
     internal SubsetReport(SubsetMode? mode, SubsetTableDecision[] decisions,
         int unselectedSlotCount, ushort[] closureAddedGids, uint[] droppedTables,
@@ -234,7 +235,8 @@ public sealed class SubsetReport
         ushort[]? layoutClosureAddedGids = null,
         LayoutTableCensus[]? layoutReferenceCensus = null,
         LayoutRewriteCensusRow[]? layoutRewriteCensus = null,
-        LayoutScopeCensusRow[]? layoutScopeCensus = null)
+        LayoutScopeCensusRow[]? layoutScopeCensus = null,
+        ushort[]? seacClosureAddedGids = null)
     {
         Mode = mode;
         _decisions = decisions;
@@ -251,6 +253,7 @@ public sealed class SubsetReport
         _layoutReferenceCensus = layoutReferenceCensus ?? [];
         _layoutRewriteCensus = layoutRewriteCensus ?? [];
         _layoutScopeCensus = layoutScopeCensus ?? [];
+        _seacClosureAddedGids = seacClosureAddedGids ?? [];
     }
 
     /// <summary>The declared mode; null when the request was refused before a mode could
@@ -279,6 +282,16 @@ public sealed class SubsetReport
     /// closure only ever adds glyphs still unretained.</summary>
     public IReadOnlyList<ushort> LayoutClosureAddedGids =>
         Array.AsReadOnly(_layoutClosureAddedGids);
+
+    /// <summary>GIDs the CFF1 seac closure pulled into the retained set (S3 card §2.3):
+    /// the base and accent glyphs every retained Type 2 endchar seac form references by
+    /// standard-encoding code, ascending, excluding glyphs already retained (the root,
+    /// the implicit GID 0 and any layout addition). Empty on every request whose face
+    /// carries no static CFF1 table with a seac form. Disjoint from the layout list by
+    /// construction: the seac closure runs after the layout union and only ever adds
+    /// glyphs still unretained.</summary>
+    public IReadOnlyList<ushort> SeacClosureAddedGids =>
+        Array.AsReadOnly(_seacClosureAddedGids);
 
     /// <summary>The per-table reference census of every retained layout table, in the
     /// admission order (S2a card §2.6): count level only. Empty without PreserveLayout.</summary>

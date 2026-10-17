@@ -11,12 +11,13 @@ namespace FontWeave.Operations.Subset;
 /// output order is the ascending stable identity (OQ-SC-6 lean) and one GlyphRemap
 /// instance is frozen for the whole operation. On a TrueType face the stable identity
 /// is the input GID itself (glyf kind, zero new work); on a static CFF1 face it is the
-/// charset SID (name-keyed) or CID (CID-keyed), so the freeze materializes the CFF
-/// table exactly once — the same view chain feeding the payload rebuilds, never a
-/// second reader — guards the .notdef identity (S1c card §1.1), and sorts the retained
-/// set ascending by that identity. The map artifact serializes immediately after the
-/// freeze — decide complete, no payload copied — with the payload charged to Buffer and
-/// the traversal to Work (W1 §5.2 row 2); exhaustion refuses with
+/// charset SID (name-keyed) or CID (CID-keyed), so the freeze consumes the CFF model
+/// the decide-side materialization step parked (S3 card §1.3, OQ-S3-5) — the same view
+/// chain feeding the payload rebuilds, never a second reader — guards the .notdef
+/// identity (S1c card §1.1), and sorts the retained set ascending by that identity,
+/// the seac closure's additions already included. The map artifact serializes
+/// immediately after the freeze — decide complete, no payload copied — with the payload
+/// charged to Buffer and the traversal to Work (W1 §5.2 row 2); exhaustion refuses with
 /// ResourceLimit/BudgetExceeded at TemporaryBytes and never degrades into a map-less
 /// product (W1 §4.3, S0-BF-002).</summary>
 public static partial class SubsetOperation
@@ -42,26 +43,26 @@ public static partial class SubsetOperation
         DataLocation cffAt = default;
         if (cffOrdinal >= 0)
         {
-            // CFF1 face: the stable identity needs the charset expansion, so the table
-            // materializes here, once, through the official typed read chain; the model
-            // is parked on the state for the payload rebuilds (S1c card §1.2 — same
-            // view chain for map artifact and rebuild, no second reader).
-            ReadStatus status = directory.TryGetTableBytes(cffOrdinal, out var cffBytes,
-                out diagnostic);
-            if (status != ReadStatus.Done) return status;
-            status = Cff1View.TryOpen(cffBytes, out var view, out diagnostic,
-                directory.TableLocation(cffOrdinal));
-            if (status != ReadStatus.Done) return status;
-            status = view.TryRead(out var nameKeyed, out var cidKeyed,
-                out var flavor, out diagnostic, budget);
-            if (status != ReadStatus.Done) return status;
-            state.CffNameKeyed = nameKeyed;
-            state.CffCidKeyed = cidKeyed;
-            identities = flavor == Cff1Flavor.CidKeyed
-                ? cidKeyed!.CharsetCids
+            // CFF1 face: the stable identity needs the charset expansion of the model
+            // the decide-side materialization step parked (S3 card §1.3, OQ-S3-5) —
+            // the freeze never opens the table again, the same view chain keeps
+            // feeding the payload rebuilds (S1c card §1.2's single-parse discipline).
+            Cff1Table? nameKeyed = state.CffNameKeyed;
+            CidCff1Table? cidKeyed = state.CffCidKeyed;
+            if (nameKeyed is null && cidKeyed is null)
+            {
+                // The step 4.2 materialization parked the model for every admitted
+                // CFF face; a missing one is a pipeline bug, never a request error
+                // (the parked-model guard shape of the variable rebuilds).
+                diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                    face.Location with { TableTag = Cff }, Cff);
+                return ReadStatus.UnsupportedFormat;
+            }
+            identities = cidKeyed is not null
+                ? cidKeyed.CharsetCids
                 : nameKeyed!.CharsetSids;
-            cffAt = flavor == Cff1Flavor.CidKeyed
-                ? cidKeyed!.Location
+            cffAt = cidKeyed is not null
+                ? cidKeyed.Location
                 : nameKeyed!.Location;
             // A1 (S1c card §1.1): 0 is .notdef's identity — the expansion forces
             // sids[0]/cids[0] = 0, so any gid >= 1 carrying 0 would share the identity
