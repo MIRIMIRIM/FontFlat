@@ -78,6 +78,136 @@ public static partial class SubsetOperation
         }
     }
 
+    /// <summary>The JSTF scope verdict (S2c card §5.2, OQ-S2c-8): the script/lang
+    /// tree prunes by the same tag lists, and the mod-list entries re-answer
+    /// against the GSUB/GPOS surviving-lookup remaps — a target the scope cut
+    /// deletes its entry (enable/disable over a deleted lookup is a no-op, so the
+    /// deletion is the honest form; the increasing-order observation survives the
+    /// subsequence). The extender lists never cut (no script domain — the hard
+    /// reference face) and the JstfMax inline lookups ride their script.</summary>
+    internal sealed class JstfScopeResolution
+    {
+        internal int InputScriptCount { get; init; }
+        internal List<int> SurvivingScripts { get; } = [];
+        internal List<int>[] SurvivingLanguages { get; set; } = [];
+        internal int DanglingModEntries { get; set; }
+        internal int DeclaredScriptMatches { get; set; }
+        internal int DeclaredLanguageMatches { get; set; }
+        /// <summary>Whether both neighbor tables' surviving-lookup remaps ride
+        /// identity (a table absent, unscoped, or no-op). The mod entries
+        /// address the neighbor lookup record ordinals (S2b OQ-S2b-7), so a
+        /// neighbor that truly cut shifts every later index — the JSTF short
+        /// circuit must not fire while the mod domains move, or a raw-preserved
+        /// tree keeps mod entries pointing at the wrong lookups.</summary>
+        internal bool NeighborRemapsIdentity { get; set; }
+
+        /// <summary>The no-op verdict: the script trees are whole, no mod entry
+        /// dangles, and the neighbor remaps are identity — then (and only then)
+        /// the short-circuit keeps the undeclared decision byte for byte.</summary>
+        internal bool ListsNoOp => SurvivingScripts.Count == InputScriptCount &&
+            DanglingModEntries == 0 && NeighborRemapsIdentity;
+    }
+
+    /// <summary>The JSTF resolution (after the two list tables — the mod remaps
+    /// borrow their old→new maps): script/lang matching over the JSTF tree, the
+    /// dangling census over every mod list, and the per-dimension match counts.</summary>
+    private static void ResolveJstfScope(JstfTable jstf, SubsetLayoutScope scope,
+        PrepareState state, out JstfScopeResolution resolution,
+        out FontDiagnostic diagnostic)
+    {
+        var verdict = new JstfScopeResolution
+        {
+            InputScriptCount = jstf.ScriptCount
+        };
+        if (scope.ScriptTags is { } scriptTags)
+        {
+            var present = new HashSet<uint>();
+            foreach (var (tag, _) in jstf.Scripts) present.Add(tag);
+            verdict.DeclaredScriptMatches = CountListMatches(scriptTags, present);
+        }
+        if (scope.LanguageTags is { } languageTags)
+        {
+            var present = new HashSet<uint>();
+            foreach (var (_, script) in jstf.Scripts)
+                foreach (var (langTag, _) in script.LangSys)
+                    present.Add(langTag);
+            verdict.DeclaredLanguageMatches = CountListMatches(languageTags, present);
+        }
+        var languages = new List<List<int>>();
+        for (int s = 0; s < jstf.ScriptCount; s++)
+        {
+            (uint tag, JstfScriptTable script) = jstf.Scripts[s];
+            if (scope.ScriptTags is { } tags && !ContainsTag(tags, tag)) continue;
+            verdict.SurvivingScripts.Add(s);
+            var rows = new List<int>();
+            for (int l = 0; l < script.LangSysCount; l++)
+                if (scope.LanguageTags is null ||
+                    ContainsTag(scope.LanguageTags, script.LangSys[l].Tag))
+                    rows.Add(l);
+            languages.Add(rows);
+        }
+        verdict.SurvivingLanguages = [.. languages];
+        // The dangling census: every mod entry whose target lookup the GSUB/GPOS
+        // scope cut. A table without a resolution (absent or no-op) contributes
+        // its full count as the domain — identity remaps, nothing dangles.
+        verdict.DanglingModEntries = CountDanglingMods(jstf, state);
+        // The neighbor remaps: a truly-cut neighbor shifts the record ordinals
+        // the surviving mod entries address, so the tree re-emits over the remap
+        // even with zero dangles (§5.2 — the remap is unconditional under a
+        // neighbor cut; the raw form would address the wrong lookups).
+        verdict.NeighborRemapsIdentity =
+            (state.GsubScope is null || state.GsubScope.ListsNoOp) &&
+            (state.GposScope is null || state.GposScope.ListsNoOp);
+        resolution = verdict;
+        diagnostic = default;
+    }
+
+    private static int CountDanglingMods(JstfTable jstf, PrepareState state)
+    {
+        int dangling = 0;
+        foreach (var (_, script) in jstf.Scripts)
+        {
+            CollectDangling(script.DefaultLangSys, state, ref dangling);
+            foreach (var (_, langSys) in script.LangSys)
+                CollectDangling(langSys, state, ref dangling);
+        }
+        return dangling;
+    }
+
+    private static void CollectDangling(JstfLangSysTable? langSys, PrepareState state,
+        ref int dangling)
+    {
+        if (langSys is null) return;
+        foreach (var priority in langSys.Priorities)
+        {
+            CountSlots(priority.GsubShrinkageEnable, priority.GsubShrinkageDisable,
+                priority.GposShrinkageEnable, priority.GposShrinkageDisable,
+                priority.GsubExtensionEnable, priority.GsubExtensionDisable,
+                priority.GposExtensionEnable, priority.GposExtensionDisable,
+                state, ref dangling);
+        }
+    }
+
+    private static void CountSlots(JstfModListTable? gsubShrinkageEnable,
+        JstfModListTable? gsubShrinkageDisable, JstfModListTable? gposShrinkageEnable,
+        JstfModListTable? gposShrinkageDisable, JstfModListTable? gsubExtensionEnable,
+        JstfModListTable? gsubExtensionDisable, JstfModListTable? gposExtensionEnable,
+        JstfModListTable? gposExtensionDisable, PrepareState state, ref int dangling)
+    {
+        foreach (var mod in new[] { gsubShrinkageEnable, gsubShrinkageDisable,
+            gposShrinkageEnable, gposShrinkageDisable, gsubExtensionEnable,
+            gsubExtensionDisable, gposExtensionEnable, gposExtensionDisable })
+        {
+            if (mod is null) continue;
+            int[]? remap = mod.Domain == JstfLookupDomain.Gsub
+                ? state.GsubScope?.LookupNewIndex
+                : state.GposScope?.LookupNewIndex;
+            if (remap is null) continue;
+            foreach (ushort index in mod.LookupIndices)
+                if (index >= remap.Length || remap[index] < 0) dangling++;
+        }
+    }
+
     /// <summary>The declaration's "set" test (S2c card §1.3): any member non-null.
     /// A scope record with every member null is indistinguishable from an absent
     /// declaration — there is nothing to match.</summary>
@@ -109,8 +239,48 @@ public static partial class SubsetOperation
             if (status != ReadStatus.Done) return status;
             census.Add(ScopeCensusRow(state.GposScope!));
         }
+        if (state.Jstf is { } jstf)
+        {
+            ResolveJstfScope(jstf, scope, state, out state.JstfScope,
+                out diagnostic);
+            if (diagnostic.Code != 0) return ReadStatus.InvalidFormat;
+            census.Add(new LayoutScopeCensusRow(Jstf, jstf.ScriptCount,
+                state.JstfScope.SurvivingScripts.Count, 0, 0, 0, 0,
+                state.JstfScope.DeclaredScriptMatches,
+                state.JstfScope.DeclaredLanguageMatches, 0, 0));
+        }
+        // The GDEF transparency row (OQ-S2c-9): the mark sets are never renumbered
+        // (the MFS ordinal domain is the all-sets policy), so a mark set every
+        // surviving lookup stopped referencing stays — the orphan count registers
+        // the staleness honestly (the MERG raw / OQ-S2a-7 stance).
+        if (state.Gdef is { } gdef)
+            census.Add(new LayoutScopeCensusRow(Gdef, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                CountOrphanMarkSets(gdef, state)));
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    /// <summary>The orphan mark-set count: the sets no surviving lookup's
+    /// MarkFilteringSet names (the conservative keep's registered face).</summary>
+    private static int CountOrphanMarkSets(GdefTable gdef, PrepareState state)
+    {
+        if (gdef.MarkGlyphSets is not { } sets) return 0;
+        var used = new HashSet<int>();
+        foreach (var table in new[] { state.Gsub, state.Gpos })
+        {
+            if (table is null) continue;
+            var resolution = table == state.Gsub ? state.GsubScope : state.GposScope;
+            IEnumerable<int> surviving = resolution is null
+                ? Enumerable.Range(0, table.Lookups.Length)
+                : resolution.SurvivingLookups;
+            foreach (int i in surviving)
+                if (table.Lookups[i].MarkFilteringSet is { } markSet)
+                    used.Add(markSet);
+        }
+        int orphans = 0;
+        for (int s = 0; s < sets.Sets.Count; s++)
+            if (!used.Contains(s)) orphans++;
+        return orphans;
     }
 
     /// <summary>The scope census row (OQ-S2c-10): the surviving element counts and
@@ -120,7 +290,7 @@ public static partial class SubsetOperation
             verdict.InputFeatureCount, verdict.SurvivingFeatures.Count,
             verdict.InputLookupCount, verdict.SurvivingLookups.Count,
             verdict.DeclaredScriptMatches, verdict.DeclaredLanguageMatches,
-            verdict.DeclaredFeatureMatches);
+            verdict.DeclaredFeatureMatches, 0);
 
     /// <summary>One table's resolution (S2c card §2.1): record-level tag matching,
     /// the required-feature implicit keep, the FV alternate merge, and the nested-

@@ -207,7 +207,7 @@ public readonly record struct LayoutRewriteCensusRow(uint Tag, int InputSubtable
 public readonly record struct LayoutScopeCensusRow(uint Tag, int InputScriptCount,
     int SurvivingScriptCount, int InputFeatureCount, int SurvivingFeatureCount,
     int InputLookupCount, int SurvivingLookupCount, int ScriptTagMatches,
-    int LanguageTagMatches, int FeatureTagMatches);
+    int LanguageTagMatches, int FeatureTagMatches, int OrphanMarkSets);
 
 /// <summary>Per-table policy report (W1 §4.2 member set). Success and failure paths share
 /// this type: a failure retains every decision formed before the first refusing one plus

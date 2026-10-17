@@ -183,9 +183,10 @@ public static partial class SubsetOperation
     /// row's in!=out is legal, the per-lookup subtable identity still asserts).</summary>
     private static ReadStatus RewriteScopedRetainLayout(FontFaceRef face,
         PrepareState state, HashSet<uint> rebuildTags, SfntDirectoryView directory,
-        out byte[]? gsub, out byte[]? gpos, out FontDiagnostic diagnostic)
+        out byte[]? gsub, out byte[]? gpos, out byte[]? jstf,
+        out FontDiagnostic diagnostic)
     {
-        gsub = gpos = null;
+        gsub = gpos = jstf = null;
         var outputMap = LayoutOutputMap.Identity(face, state.Retained.Length);
         var census = state.LayoutRewriteCensus ??= [];
         if (rebuildTags.Contains(Gsub))
@@ -212,8 +213,204 @@ public static partial class SubsetOperation
             census.Add(RewriteCensusRow(directory, Gpos,
                 LookupSubtables(gposModel.Lookups), gposSubtables, gpos!.Length));
         }
+        if (rebuildTags.Contains(Jstf))
+        {
+            if (state.Jstf is not { } jstfModel ||
+                state.JstfScope is not { } jstfScope)
+                return RewriteProducerMissing(face.Location, Jstf, out diagnostic);
+            ReadStatus jstfStatus = RebuildScopedJstfCore(jstfModel, state,
+                jstfScope, outputMap, outputMap.OutputGlyphCount, state.Budget,
+                census, out jstf, out diagnostic);
+            if (jstfStatus != ReadStatus.Done) return jstfStatus;
+        }
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    /// <summary>The S2c scoped JSTF producer (card 5.2, OQ-S2c-8): the surviving
+    /// script tree re-emits through the leaf factories - the extender lists remap
+    /// (never cut: no script domain), the JstfMax inline lookups ride the seam,
+    /// and every mod list re-answers its entries against the neighbor tables'
+    /// surviving-lookup remaps, a dangling entry deleting (enable/disable over a
+    /// deleted lookup is a no-op; the emptied list drops to the absent slot form)
+    /// and the increasing-order observation riding the subsequence. The root
+    /// re-emits with the neighbor tables' new lookup counts - the AnswerScript
+    /// re-answer is the defensive face (RF-S2c-4; the dangling deletion means it
+    /// cannot fire on well-formed input). The census row reads in!=out legally
+    /// (OQ-S2c-10).</summary>
+    private static ReadStatus RebuildScopedJstf(JstfTable jstf, PrepareState state,
+        JstfScopeResolution scope, GlyphRemap map, BuildBudget budget,
+        List<LayoutRewriteCensusRow> rewrites, out byte[]? jstfBytes,
+        out FontDiagnostic diagnostic) =>
+        RebuildScopedJstfCore(jstf, state, scope, LayoutOutputMap.Frozen(map),
+            map.OutputGlyphCount, budget, rewrites, out jstfBytes, out diagnostic);
+
+    private static ReadStatus RebuildScopedJstfCore(JstfTable jstf,
+        PrepareState state, JstfScopeResolution scope, LayoutOutputMap outputMap,
+        int outputGlyphs, BuildBudget budget, List<LayoutRewriteCensusRow> rewrites,
+        out byte[]? jstfBytes, out FontDiagnostic diagnostic)
+    {
+        jstfBytes = null;
+        int inputPriorities = JstfPriorityCount(jstf);
+        // The neighbor tables' new lookup counts: a scoped table answers with its
+        // surviving count, an unscoped or absent one with the count the JSTF read
+        // was answered with (the mods ride identity there).
+        int gsubNewCount = state.GsubScope?.SurvivingLookups.Count ??
+            state.Gsub?.Lookups.Length ?? jstf.GsubLookupCount;
+        int gposNewCount = state.GposScope?.SurvivingLookups.Count ??
+            state.Gpos?.Lookups.Length ?? jstf.GposLookupCount;
+        DataLocation at = jstfModelLocation(jstf.Location);
+        var scripts = new List<JstfScriptRecord>(scope.SurvivingScripts.Count);
+        for (int s = 0; s < scope.SurvivingScripts.Count; s++)
+        {
+            (uint tag, JstfScriptTable script) = jstf.Scripts[scope.SurvivingScripts[s]];
+            JstfExtenderGlyphTable? extenders = null;
+            if (script.ExtenderGlyphs is { } extenderModel)
+            {
+                var glyphs = new ushort[extenderModel.GlyphCount];
+                for (int i = 0; i < glyphs.Length; i++)
+                {
+                    ReadStatus status = RemapGlyphId(at, extenderModel.Glyphs[i],
+                        outputMap, out glyphs[i], out diagnostic);
+                    if (status != ReadStatus.Done) return status;
+                }
+                ReadStatus extenderStatus = JstfTableCompiler.TryCreate(glyphs,
+                    outputGlyphs, out JstfExtenderGlyphTable? rebuiltExtenders,
+                    out diagnostic, location: at);
+                if (extenderStatus != ReadStatus.Done) return extenderStatus;
+                extenders = rebuiltExtenders;
+            }
+            ReadStatus langSysStatus = RebuildScopedJstfLangSys(script.DefaultLangSys,
+                state, at, outputMap, outputGlyphs, state.GdefContext, budget,
+                out var defaultLangSys, out diagnostic);
+            if (langSysStatus != ReadStatus.Done) return langSysStatus;
+            var langSysRows = new List<JstfLangSysRecord>(
+                scope.SurvivingLanguages[s].Count);
+            foreach (int languageOrdinal in scope.SurvivingLanguages[s])
+            {
+                (uint langTag, JstfLangSysTable langSys) =
+                    script.LangSys[languageOrdinal];
+                langSysStatus = RebuildScopedJstfLangSys(langSys, state, at,
+                    outputMap, outputGlyphs, state.GdefContext, budget,
+                    out var rebuiltLangSys, out diagnostic);
+                if (langSysStatus != ReadStatus.Done) return langSysStatus;
+                langSysRows.Add(new(langTag, rebuiltLangSys!));
+            }
+            ReadStatus scriptStatus = JstfTableCompiler.TryCreate(extenders,
+                defaultLangSys, langSysRows, out JstfScriptTable? rebuiltScript,
+                out diagnostic, location: at);
+            if (scriptStatus != ReadStatus.Done) return scriptStatus;
+            scripts.Add(new(tag, rebuiltScript!));
+        }
+        ReadStatus rootStatus = JstfTableCompiler.TryCreate(jstf.Version,
+            outputGlyphs, gsubNewCount, gposNewCount, state.GdefContext, scripts,
+            out JstfTable? model, out diagnostic, location: at);
+        if (rootStatus != ReadStatus.Done) return rootStatus;
+        rootStatus = JstfTableCompiler.TryCompile(model!, out var bytes,
+            out diagnostic);
+        if (rootStatus != ReadStatus.Done) return rootStatus;
+        rewrites.Add(RewriteCensusRow(JstfLayout.Tag, inputPriorities,
+            JstfPriorityCount(model!), jstf.ConsumedLength, bytes!.Length));
+        return ChargeCompiled(budget, jstf.Location, bytes, out jstfBytes,
+            out diagnostic);
+    }
+
+    /// <summary>One JSTF langsys's scoped rebuild: every priority re-forms with the
+    /// remapped mod lists and the seam-rewritten JstfMax inline lookups; a zero-
+    /// priority langsys is the OQ-5 legal empty form and keeps its row.</summary>
+    private static ReadStatus RebuildScopedJstfLangSys(JstfLangSysTable? langSys,
+        PrepareState state, DataLocation at, LayoutOutputMap outputMap,
+        int outputGlyphs, GdefLookupContext? context, BuildBudget budget,
+        out JstfLangSysTable? rebuilt, out FontDiagnostic diagnostic)
+    {
+        rebuilt = null;
+        if (langSys is null)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        var priorities = new JstfPriorityTable[langSys.PriorityCount];
+        for (int p = 0; p < langSys.PriorityCount; p++)
+        {
+            JstfPriorityTable priority = langSys.Priorities[p];
+            ReadStatus status = RebuildJstfMax(at, priority.ShrinkageJstfMax,
+                outputMap, outputGlyphs, context, out var shrinkageMax,
+                out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = RebuildJstfMax(at, priority.ExtensionJstfMax, outputMap,
+                outputGlyphs, context, out var extensionMax, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            // The eight mod slots rebuild before the priority composes, so a
+            // remap failure refuses before anything constructs.
+            var slots = new[]
+            {
+                priority.GsubShrinkageEnable, priority.GsubShrinkageDisable,
+                priority.GposShrinkageEnable, priority.GposShrinkageDisable,
+                priority.GsubExtensionEnable, priority.GsubExtensionDisable,
+                priority.GposExtensionEnable, priority.GposExtensionDisable,
+            };
+            var mods = new JstfModListTable?[slots.Length];
+            for (int m = 0; m < slots.Length; m++)
+            {
+                status = RebuildScopedModList(slots[m], state, out mods[m],
+                    out diagnostic);
+                if (status != ReadStatus.Done) return status;
+            }
+            status = JstfTableCompiler.TryCreate(mods[0], mods[1], mods[2], mods[3],
+                shrinkageMax, mods[4], mods[5], mods[6], mods[7], extensionMax,
+                out JstfPriorityTable? rebuiltPriority, out diagnostic, at);
+            if (status != ReadStatus.Done) return status;
+            priorities[p] = rebuiltPriority!;
+        }
+        return JstfTableCompiler.TryCreate(priorities, out rebuilt, out diagnostic,
+            location: at);
+    }
+
+    /// <summary>One mod list's scoped re-answer (OQ-S2c-8): the entries whose
+    /// target lookup survived ride the old-to-new remap in wire order (the
+    /// increasing-order observation rides the subsequence); a dangling entry
+    /// deletes, and an emptied list drops to the absent slot form. No neighbor
+    /// resolution (the table absent or unscoped) rides identity. A factory
+    /// failure propagates its own status (the budget face rides ResourceLimit;
+    /// the domain face is the RF-S2c-4 defense and cannot fire on well-formed
+    /// input — every remapped target is a surviving ordinal by construction).</summary>
+    private static ReadStatus RebuildScopedModList(JstfModListTable? mod,
+        PrepareState state, out JstfModListTable? rebuilt,
+        out FontDiagnostic diagnostic)
+    {
+        rebuilt = null;
+        if (mod is null)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        int[]? remap = mod.Domain == JstfLookupDomain.Gsub
+            ? state.GsubScope?.LookupNewIndex
+            : state.GposScope?.LookupNewIndex;
+        if (remap is null)
+        {
+            diagnostic = default;
+            rebuilt = mod;
+            return ReadStatus.Done;
+        }
+        var indices = new List<ushort>(mod.LookupCount);
+        foreach (ushort old in mod.LookupIndices)
+        {
+            int target = old < remap.Length ? remap[old] : -1;
+            if (target < 0) continue; // the dangling entry deletes
+            indices.Add((ushort)target);
+        }
+        if (indices.Count == 0)
+        {
+            diagnostic = default;
+            return ReadStatus.Done; // the emptied list drops to the absent slot form
+        }
+        int domainCount = mod.Domain == JstfLookupDomain.Gsub
+            ? state.GsubScope!.SurvivingLookups.Count
+            : state.GposScope!.SurvivingLookups.Count;
+        return JstfTableCompiler.TryCreate(mod.Domain,
+            CollectionsMarshal.AsSpan(indices), domainCount,
+            out rebuilt, out diagnostic, location: mod.Location);
     }
 
     /// <summary>The S2c record-remap refusal (RF-S2c-3): a rule record whose target
@@ -1907,6 +2104,7 @@ out var rewrittenLeaf, out diagnostic);
         kernBytes = null;
         int inputSubtables = kern.SubtableCount;
         int outputGlyphs = map.OutputGlyphCount;
+        var outputMap = LayoutOutputMap.Frozen(map);
         var subtables = new KernSubtable[kern.SubtableCount];
         for (int i = 0; i < kern.SubtableCount; i++)
         {
@@ -1917,13 +2115,13 @@ out var rewrittenLeaf, out diagnostic);
             {
                 case KernFormat0Body format0:
                     status = RebuildKernFormat0(kern.Location, subtable, format0,
-                        map, outputGlyphs, out rebuilt, out diagnostic);
+                        outputMap, outputGlyphs, out rebuilt, out diagnostic);
                     if (status != ReadStatus.Done) return status;
                     subtables[i] = rebuilt!;
                     break;
                 case KernFormat2Body format2:
                     status = RebuildKernFormat2(kern.Location, subtable, format2,
-                        map, outputGlyphs, out rebuilt, out diagnostic);
+                        outputMap, outputGlyphs, out rebuilt, out diagnostic);
                     if (status != ReadStatus.Done) return status;
                     subtables[i] = rebuilt!;
                     break;
@@ -1958,7 +2156,7 @@ out var rewrittenLeaf, out diagnostic);
     }
 
     private static ReadStatus RebuildKernFormat0(DataLocation at, KernSubtable subtable,
-        KernFormat0Body format0, GlyphRemap map, int outputGlyphs,
+        KernFormat0Body format0, LayoutOutputMap map, int outputGlyphs,
         out KernSubtable? rebuilt, out FontDiagnostic diagnostic)
     {
         rebuilt = null;
@@ -1990,7 +2188,7 @@ out var rewrittenLeaf, out diagnostic);
     }
 
     private static ReadStatus RebuildKernFormat2(DataLocation at, KernSubtable subtable,
-        KernFormat2Body format2, GlyphRemap map, int outputGlyphs,
+        KernFormat2Body format2, LayoutOutputMap map, int outputGlyphs,
         out KernSubtable? rebuilt, out FontDiagnostic diagnostic)
     {
         rebuilt = null;
@@ -2051,7 +2249,7 @@ out var rewrittenLeaf, out diagnostic);
     /// monotone frozen map over the closure-merged range). A miss or a gap is the
     /// domain-broken refusal (RF-S2b-2).</summary>
     private static ReadStatus RemapContiguousClassDomain(DataLocation at,
-        KernClassTable classTable, GlyphRemap map, out int remappedFirst,
+        KernClassTable classTable, LayoutOutputMap map, out int remappedFirst,
         out FontDiagnostic diagnostic)
     {
         remappedFirst = 0;
@@ -2076,7 +2274,7 @@ out var rewrittenLeaf, out diagnostic);
     /// construction and only the membership half can fail (the closure keeps every
     /// retained reference mapped; a miss is the RF-S2b-2 refusal).</summary>
     private static ReadStatus RemapGlyphId(DataLocation at, int inputGlyph,
-        GlyphRemap map, out ushort outputGlyph, out FontDiagnostic diagnostic)
+        LayoutOutputMap map, out ushort outputGlyph, out FontDiagnostic diagnostic)
     {
         outputGlyph = 0;
         int mapped = map.OutputOf(inputGlyph);
@@ -2139,6 +2337,7 @@ out var rewrittenLeaf, out diagnostic);
         int inputConstructions = (math.Variants?.VertGlyphCount ?? 0) +
             (math.Variants?.HorizGlyphCount ?? 0);
         int outputGlyphs = map.OutputGlyphCount;
+        var outputMap = LayoutOutputMap.Frozen(map);
         MathGlyphInfoTable? glyphInfo = null;
         if (math.GlyphInfo is { } info)
         {
@@ -2146,7 +2345,7 @@ out var rewrittenLeaf, out diagnostic);
             if (info.ItalicsCorrectionInfo is { } italicsModel)
             {
                 ReadStatus status = RebuildCoverage(math.Location,
-                    italicsModel.Coverage, map, outputGlyphs, out var coverage,
+                    italicsModel.Coverage, outputMap, outputGlyphs, out var coverage,
                     out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 // The "Should" family keeps its records and device slots verbatim.
@@ -2159,7 +2358,7 @@ out var rewrittenLeaf, out diagnostic);
             if (info.TopAccentAttachment is { } topAccentModel)
             {
                 ReadStatus status = RebuildCoverage(math.Location,
-                    topAccentModel.Coverage, map, outputGlyphs, out var coverage,
+                    topAccentModel.Coverage, outputMap, outputGlyphs, out var coverage,
                     out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 // The "Must" coincidence re-derives at the factory; the injective
@@ -2170,14 +2369,14 @@ out var rewrittenLeaf, out diagnostic);
                 if (status != ReadStatus.Done) return status;
             }
             ReadStatus extendedStatus = RebuildCoverage(math.Location,
-                info.ExtendedShapeCoverage, map, outputGlyphs, out var extended,
+                info.ExtendedShapeCoverage, outputMap, outputGlyphs, out var extended,
                 out diagnostic);
             if (extendedStatus != ReadStatus.Done) return extendedStatus;
             MathKernInfoTable? kernInfo = null;
             if (info.KernInfo is { } kernModel)
             {
                 ReadStatus status = RebuildCoverage(math.Location,
-                    kernModel.Coverage, map, outputGlyphs, out var coverage,
+                    kernModel.Coverage, outputMap, outputGlyphs, out var coverage,
                     out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 status = MathTableCompiler.TryCreate(coverage, kernModel.Records,
@@ -2191,18 +2390,19 @@ out var rewrittenLeaf, out diagnostic);
         if (math.Variants is { } variantsModel)
         {
             ReadStatus status = RebuildCoverage(math.Location,
-                variantsModel.VertGlyphCoverage, map, outputGlyphs,
+                variantsModel.VertGlyphCoverage, outputMap, outputGlyphs,
                 out var vertCoverage, out diagnostic);
             if (status != ReadStatus.Done) return status;
             status = RebuildCoverage(math.Location,
-                variantsModel.HorizGlyphCoverage, map, outputGlyphs,
+                variantsModel.HorizGlyphCoverage, outputMap, outputGlyphs,
                 out var horizCoverage, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            status = RebuildConstructions(variantsModel.VertConstructions, map,
-                outputGlyphs, out var vertConstructions, out diagnostic);
+            status = RebuildConstructions(variantsModel.VertConstructions,
+                outputMap, outputGlyphs, out var vertConstructions, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            status = RebuildConstructions(variantsModel.HorizConstructions, map,
-                outputGlyphs, out var horizConstructions, out diagnostic);
+            status = RebuildConstructions(variantsModel.HorizConstructions,
+                outputMap, outputGlyphs, out var horizConstructions,
+                out diagnostic);
             if (status != ReadStatus.Done) return status;
             status = MathTableCompiler.TryCreate(
                 variantsModel.MinConnectorOverlap, vertCoverage, horizCoverage,
@@ -2237,7 +2437,7 @@ out var rewrittenLeaf, out diagnostic);
     }
 
     private static ReadStatus RebuildConstructions(
-        IReadOnlyList<MathGlyphConstructionTable> constructions, GlyphRemap map,
+        IReadOnlyList<MathGlyphConstructionTable> constructions, LayoutOutputMap map,
         int outputGlyphs, out MathGlyphConstructionTable[] rebuilt,
         out FontDiagnostic diagnostic)
     {
@@ -2295,7 +2495,7 @@ out var rewrittenLeaf, out diagnostic);
     /// the remapped glyphs stay strictly ascending in place and the factory keeps
     /// the input's format; a miss is the RF-S2b-2 refusal.</summary>
     private static ReadStatus RebuildCoverage(DataLocation at, CoverageTable? coverage,
-        GlyphRemap map, int outputGlyphs, out CoverageTable? rebuilt,
+        LayoutOutputMap map, int outputGlyphs, out CoverageTable? rebuilt,
         out FontDiagnostic diagnostic)
     {
         rebuilt = null;
@@ -2347,6 +2547,7 @@ out var rewrittenLeaf, out diagnostic);
         jstfBytes = null;
         int inputPriorities = JstfPriorityCount(jstf);
         int outputGlyphs = map.OutputGlyphCount;
+        var outputMap = LayoutOutputMap.Frozen(map);
         // OQ-S2b-7's count identity: the neighbor lists' record order never
         // changes, so the rebuilt counts equal the read counts; a drift would be
         // an S2b-1 rewrite bug this assertion pins at the JSTF seam.
@@ -2363,8 +2564,8 @@ out var rewrittenLeaf, out diagnostic);
         for (int s = 0; s < jstf.ScriptCount; s++)
         {
             (uint tag, JstfScriptTable script) = jstf.Scripts[s];
-            ReadStatus status = RebuildJstfScript(at, script, map, outputGlyphs,
-                state.GdefContext, out JstfScriptTable? rebuiltScript,
+            ReadStatus status = RebuildJstfScript(at, script, outputMap,
+                outputGlyphs, state.GdefContext, out JstfScriptTable? rebuiltScript,
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
             scripts[s] = new(tag, rebuiltScript!);
@@ -2407,7 +2608,7 @@ out var rewrittenLeaf, out diagnostic);
         readLocation with { TableTag = SinglePosLayout.Tag };
 
     private static ReadStatus RebuildJstfScript(DataLocation at,
-        JstfScriptTable script, GlyphRemap map, int outputGlyphs,
+        JstfScriptTable script, LayoutOutputMap map, int outputGlyphs,
         GdefLookupContext? context, out JstfScriptTable? rebuilt,
         out FontDiagnostic diagnostic)
     {
@@ -2435,8 +2636,8 @@ out var rewrittenLeaf, out diagnostic);
         for (int i = 0; i < script.LangSysCount; i++)
         {
             (uint tag, JstfLangSysTable langSys) = script.LangSys[i];
-            status2 = RebuildJstfLangSys(at, langSys, map, outputGlyphs, context,
-                out var rebuiltLangSys, out diagnostic);
+            status2 = RebuildJstfLangSys(at, langSys, map, outputGlyphs,
+                context, out var rebuiltLangSys, out diagnostic);
             if (status2 != ReadStatus.Done) return status2;
             langSysRows[i] = new(tag, rebuiltLangSys!);
         }
@@ -2445,7 +2646,7 @@ out var rewrittenLeaf, out diagnostic);
     }
 
     private static ReadStatus RebuildJstfLangSys(DataLocation at,
-        JstfLangSysTable? langSys, GlyphRemap map, int outputGlyphs,
+        JstfLangSysTable? langSys, LayoutOutputMap map, int outputGlyphs,
         GdefLookupContext? context, out JstfLangSysTable? rebuilt,
         out FontDiagnostic diagnostic)
     {
@@ -2485,7 +2686,7 @@ out var rewrittenLeaf, out diagnostic);
     }
 
     private static ReadStatus RebuildJstfMax(DataLocation at, JstfMaxTable? max,
-        GlyphRemap map, int outputGlyphs, GdefLookupContext? context,
+        LayoutOutputMap map, int outputGlyphs, GdefLookupContext? context,
         out JstfMaxTable? rebuilt, out FontDiagnostic diagnostic)
     {
         rebuilt = null;
@@ -2516,7 +2717,7 @@ out var rewrittenLeaf, out diagnostic);
     /// identity too (the S2b card §2.1 lookup-level contract). The subtable
     /// sequence is identity and asserted.</summary>
     private static ReadStatus RewriteInlineGposLookup(DataLocation at,
-        LookupTable lookup, GlyphRemap map, int outputGlyphs,
+        LookupTable lookup, LayoutOutputMap map, int outputGlyphs,
         GdefLookupContext? context, out LookupTable? rebuilt,
         out FontDiagnostic diagnostic)
     {
@@ -2656,7 +2857,7 @@ out var rewrittenLeaf, out diagnostic);
     }
 
     private static ReadStatus RebuildSinglePosLeaf(DataLocation at,
-        SinglePosTable sub, GlyphRemap map, int outputGlyphs,
+        SinglePosTable sub, LayoutOutputMap map, int outputGlyphs,
         out SinglePosTable? rebuilt, out FontDiagnostic diagnostic)
     {
         rebuilt = null;
@@ -2675,7 +2876,7 @@ out var rewrittenLeaf, out diagnostic);
     }
 
     private static ReadStatus RebuildPairPosLeaf(DataLocation at, PairPosTable sub,
-        GlyphRemap map, int outputGlyphs, out PairPosTable? rebuilt,
+        LayoutOutputMap map, int outputGlyphs, out PairPosTable? rebuilt,
         out FontDiagnostic diagnostic)
     {
         rebuilt = null;
@@ -2735,7 +2936,7 @@ out var rewrittenLeaf, out diagnostic);
     }
 
     private static ReadStatus RebuildCursiveLeaf(DataLocation at,
-        CursivePosTable sub, GlyphRemap map, int outputGlyphs,
+        CursivePosTable sub, LayoutOutputMap map, int outputGlyphs,
         out CursivePosTable? rebuilt, out FontDiagnostic diagnostic)
     {
         rebuilt = null;
@@ -2753,7 +2954,7 @@ out var rewrittenLeaf, out diagnostic);
     }
 
     private static ReadStatus RebuildMarkBaseLeaf(DataLocation at,
-        MarkBasePosTable sub, GlyphRemap map, int outputGlyphs,
+        MarkBasePosTable sub, LayoutOutputMap map, int outputGlyphs,
         out MarkBasePosTable? rebuilt, out FontDiagnostic diagnostic)
     {
         rebuilt = null;
@@ -2782,7 +2983,7 @@ out var rewrittenLeaf, out diagnostic);
     }
 
     private static ReadStatus RebuildMarkLigLeaf(DataLocation at,
-        MarkLigPosTable sub, GlyphRemap map, int outputGlyphs,
+        MarkLigPosTable sub, LayoutOutputMap map, int outputGlyphs,
         out MarkLigPosTable? rebuilt, out FontDiagnostic diagnostic)
     {
         rebuilt = null;
@@ -2803,7 +3004,7 @@ out var rewrittenLeaf, out diagnostic);
     }
 
     private static ReadStatus RebuildMarkMarkLeaf(DataLocation at,
-        MarkMarkPosTable sub, GlyphRemap map, int outputGlyphs,
+        MarkMarkPosTable sub, LayoutOutputMap map, int outputGlyphs,
         out MarkMarkPosTable? rebuilt, out FontDiagnostic diagnostic)
     {
         rebuilt = null;
@@ -2831,7 +3032,7 @@ out var rewrittenLeaf, out diagnostic);
     }
 
     private static ReadStatus RebuildExtensionLeaf(DataLocation at,
-        ExtensionPosTable extension, GlyphRemap map, int outputGlyphs,
+        ExtensionPosTable extension, LayoutOutputMap map, int outputGlyphs,
         out ExtensionPosTable? rebuilt, out FontDiagnostic diagnostic)
     {
         rebuilt = null;
@@ -2901,7 +3102,7 @@ out var rewrittenLeaf, out diagnostic);
     /// monotone map keeps the image ascending); an unmapped member is the RF-S2b-2
     /// refusal (the closure merged the class domain).</summary>
     private static ReadStatus RebuildClassDef(DataLocation at,
-        ClassDefTable classDef, GlyphRemap map, int outputGlyphs,
+        ClassDefTable classDef, LayoutOutputMap map, int outputGlyphs,
         out ClassDefTable? rebuilt, out FontDiagnostic diagnostic)
     {
         rebuilt = null;

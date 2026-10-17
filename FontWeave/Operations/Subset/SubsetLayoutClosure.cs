@@ -307,7 +307,8 @@ public static partial class SubsetOperation
         if (state.Jstf is { } jstf)
         {
             var refs = new HashSet<int>();
-            CollectJstfReferences(jstf, refs);
+            CollectJstfReferences(jstf, refs,
+                state.JstfScope?.SurvivingScripts);
             census.Add(new(Jstf, refs.Count));
             MergeLayoutReferences(jstf.Location, refs, retained, budget, added,
                 out diagnostic);
@@ -351,7 +352,8 @@ public static partial class SubsetOperation
         // 口径 as the merge — an undeclared request passes null and walks full).
         if (!VerifyLayoutClosureRetained(AdmissionOf(state), retained,
                 out diagnostic, state.GsubScope?.SurvivingLookups,
-                state.GposScope?.SurvivingLookups))
+                state.GposScope?.SurvivingLookups,
+                state.JstfScope?.SurvivingScripts))
             return ReadStatus.UnsupportedFormat;
         added.Sort();
         state.LayoutClosureAdded = added;
@@ -367,7 +369,8 @@ public static partial class SubsetOperation
     /// sets (null = the undeclared full walk).</summary>
     internal static bool VerifyLayoutClosureRetained(in LayoutAdmission admission,
         bool[] retained, out FontDiagnostic diagnostic,
-        List<int>? gsubSurvivingLookups = null, List<int>? gposSurvivingLookups = null)
+        List<int>? gsubSurvivingLookups = null, List<int>? gposSurvivingLookups = null,
+        List<int>? jstfSurvivingScripts = null)
     {
         if (admission.Gdef is { } gdef)
         {
@@ -393,7 +396,7 @@ public static partial class SubsetOperation
         if (admission.Jstf is { } jstf)
         {
             var refs = new HashSet<int>();
-            CollectJstfReferences(jstf, refs);
+            CollectJstfReferences(jstf, refs, jstfSurvivingScripts);
             if (!AllRetained(refs, retained, jstf.Location, out diagnostic))
                 return false;
         }
@@ -479,16 +482,31 @@ public static partial class SubsetOperation
     /// lookup-index references (domain-checked at the JstfView signature, no GID);
     /// every JstfMax inline lookup is a full LookupTable and re-enters the shared
     /// per-lookup collector.</summary>
-    private static void CollectJstfReferences(JstfTable jstf, HashSet<int> into)
+    private static void CollectJstfReferences(JstfTable jstf, HashSet<int> into,
+        List<int>? survivingScripts = null)
     {
-        foreach (var script in jstf.Scripts)
+        // S2c (card §0 item 2/§5.2): a declared scope enumerates only the
+        // resolution's surviving scripts — a cut script's extenders and JstfMax
+        // lookups no longer pull glyphs — while the undeclared walk stays the
+        // full loop (the same code, zero drift).
+        if (survivingScripts is null)
         {
-            if (script.Script.ExtenderGlyphs is { } extenders)
-                AddGlyphs(extenders.Glyphs, into);
-            CollectLangSys(script.Script.DefaultLangSys, into);
-            foreach (var langSys in script.Script.LangSys)
-                CollectLangSys(langSys.LangSys, into);
+            foreach (var script in jstf.Scripts)
+                CollectJstfScriptReferences(script.Script, into);
+            return;
         }
+        foreach (int scriptOrdinal in survivingScripts)
+            CollectJstfScriptReferences(jstf.Scripts[scriptOrdinal].Script, into);
+    }
+
+    private static void CollectJstfScriptReferences(JstfScriptTable script,
+        HashSet<int> into)
+    {
+        if (script.ExtenderGlyphs is { } extenders)
+            AddGlyphs(extenders.Glyphs, into);
+        CollectLangSys(script.DefaultLangSys, into);
+        foreach (var langSys in script.LangSys)
+            CollectLangSys(langSys.LangSys, into);
     }
 
     private static void CollectLangSys(JstfLangSysTable? langSys, HashSet<int> into)

@@ -291,33 +291,24 @@ public sealed class SubsetLayoutScopeRewriteTests
         Assert.Equal(0, scopeRow.ScriptTagMatches);
     }
 
-    // The JSTF interim face: a declared scope pulls JSTF to Rebuild and the
-    // pending scoped producer refuses with the decision's own tag in both modes
-    // (the third commit replaces this with the script/lang pruning + mod remap).
+    // The JSTF no-op face: an empty JSTF tree under a declared scope resolves to
+    // the no-op verdict — the undeclared decision (raw Preserve) rides and the
+    // output is byte-identical; the true-cut forms live in the families tests.
     [Fact]
-    public void DeclaredScopeOnAJstfFaceRefusesAtThePendingProducer()
+    public void DeclaredScopeOnAnEmptyJstfFaceIsTheNoOpShortCircuit()
     {
         byte[] gsub = GsubBytes(RemapModel());
-        // Retain: the decide flip sends JSTF to Rebuild; the copy loop's switch
-        // refuses with the decision's own tag (rebuilt null, no bytes published).
-        var retainStatus = SubsetOperation.TryPrepare(
-            Request(Face(gsub, withJstf: true), [1], SubsetMode.RetainGids,
-                Scoped(new SubsetLayoutScope { ScriptTags = [TagDflt] })),
-            out var retainResult, out _, out var retainDiagnostic);
-        Assert.Equal(ReadStatus.UnsupportedFormat, retainStatus);
-        Assert.Null(retainResult);
-        // The copy loop's switch: the face-level location, the decision's tag in
-        // Detail.
-        Assert.Equal(DiagnosticCode.UnsupportedOperation, retainDiagnostic.Code);
-        Assert.Equal((ulong)JstfTag, retainDiagnostic.Detail);
-        // Compact: the producer block refuses before the unscoped rebuild runs.
-        var compactStatus = SubsetOperation.TryPrepare(
-            Request(Face(gsub, withJstf: true), [1], SubsetMode.CompactRemap,
-                Scoped(new SubsetLayoutScope { ScriptTags = [TagDflt] })),
-            out var compactResult, out _, out var compactDiagnostic);
-        Assert.Equal(ReadStatus.UnsupportedFormat, compactStatus);
-        Assert.Null(compactResult);
-        Assert.Equal(DiagnosticCode.UnsupportedOperation, compactDiagnostic.Code);
-        Assert.Equal(JstfTag, compactDiagnostic.Location.TableTag);
+        byte[] jstf = JstfBytes();
+        var options = Scoped(new SubsetLayoutScope { ScriptTags = [TagDflt] });
+        var status = SubsetOperation.TryPrepare(
+            Request(Face(gsub, withJstf: true), [1], SubsetMode.RetainGids, options),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        NoDiagnostic(diagnostic);
+        Assert.NotNull(result);
+        // The raw copy: the JSTF payload moves byte-identically.
+        Assert.Equal(jstf, TableBytes(OutputBytes(result!), JstfTag));
+        // The scope census carries the JSTF row (the zero-script verdict).
+        Assert.Contains(report!.LayoutScopeCensus, r => r.Tag == JstfTag);
     }
 }

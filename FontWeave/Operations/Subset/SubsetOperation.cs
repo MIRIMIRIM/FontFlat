@@ -606,20 +606,6 @@ public static partial class SubsetOperation
             }
             if (rebuildTags.Contains(Jstf))
             {
-                // The S2c interim face (see the decide note): the scoped JSTF
-                // producer lands with the slice's third commit; until it exists a
-                // declared scope refuses here — the unscoped rebuild would ignore
-                // the script-tree cut and the mod-list remap.
-                if (ScopeDeclared(options))
-                    return Refuse(state, ReadStatus.UnsupportedFormat,
-                        new(DiagnosticCode.UnsupportedOperation,
-                            faceAt with { TableTag = Jstf }, Jstf),
-                        out result, out report, out diagnostic);
-                // S2b-2 (card §2.5): the JSTF rewrite consumes the neighbor lookup
-                // counts and the POST-rewrite GDEF context the pipeline re-parked
-                // (the GDEF rewrite parks its rebuilt context) — the record order
-                // never changes, so the mod-list indices stay identity (OQ-S2b-7)
-                // and the count-identity assertion pins the seam.
                 if (state.Jstf is not { } jstfModel)
                 {
                     diagnostic = new(DiagnosticCode.UnsupportedOperation,
@@ -627,11 +613,34 @@ public static partial class SubsetOperation
                     return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
                         out result, out report, out diagnostic);
                 }
-                status = RebuildJstf(jstfModel, state, map!, budget, rewrites,
-                    out rebuiltJstf, out diagnostic);
-                if (status != ReadStatus.Done)
-                    return Refuse(state, status, diagnostic, out result,
-                        out report, out diagnostic);
+                // S2c (card §5.2): a scope verdict that truly cut the JSTF tree
+                // runs the scoped producer — the script/lang pruning, the mod-list
+                // dangling deletion and remap, the AnswerScript re-answer against
+                // the neighbor tables' new lookup counts; a no-op verdict rides
+                // the S2b whole-table rebuild unchanged (§4.2).
+                if (state.JstfScope is { } compactJstfScope &&
+                    !compactJstfScope.ListsNoOp)
+                {
+                    status = RebuildScopedJstf(jstfModel, state, compactJstfScope,
+                        map!, budget, rewrites, out rebuiltJstf, out diagnostic);
+                    if (status != ReadStatus.Done)
+                        return Refuse(state, status, diagnostic, out result,
+                            out report, out diagnostic);
+                }
+                else
+                {
+                    // S2b-2 (card §2.5): the JSTF rewrite consumes the neighbor
+                    // lookup counts and the POST-rewrite GDEF context the pipeline
+                    // re-parked (the GDEF rewrite parks its rebuilt context) — the
+                    // record order never changes, so the mod-list indices stay
+                    // identity (OQ-S2b-7) and the count-identity assertion pins
+                    // the seam.
+                    status = RebuildJstf(jstfModel, state, map!, budget, rewrites,
+                        out rebuiltJstf, out diagnostic);
+                    if (status != ReadStatus.Done)
+                        return Refuse(state, status, diagnostic, out result,
+                            out report, out diagnostic);
+                }
             }
             if (rebuildTags.Contains(Math))
             {
@@ -659,11 +668,12 @@ public static partial class SubsetOperation
         // and only the rule/feature/lookup lists shrink. GDEF is scope-transparent
         // (OQ-S2c-9): its decide row stays RETAIN_RAW and the admission context
         // feeds the flags validation unchanged.
-        if (!compact && (rebuildTags.Contains(Gsub) || rebuildTags.Contains(Gpos)))
+        if (!compact && (rebuildTags.Contains(Gsub) || rebuildTags.Contains(Gpos) ||
+                rebuildTags.Contains(Jstf)))
         {
             status = RewriteScopedRetainLayout(request.Face, state, rebuildTags,
                 directory, out rebuiltGsubLayout, out rebuiltGposLayout,
-                out diagnostic);
+                out rebuiltJstf, out diagnostic);
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
@@ -1367,12 +1377,7 @@ public static partial class SubsetOperation
             {
                 Gsub when state.GsubScope is { } gsubScope => !gsubScope.ListsNoOp,
                 Gpos when state.GposScope is { } gposScope => !gposScope.ListsNoOp,
-                // The JSTF interim face: the scoped JSTF producer (script/lang
-                // pruning, mod-list remap, the OQ-S2c-8 lean) lands with the
-                // slice's third commit; until it exists any declared scope pulls
-                // JSTF to Rebuild so the request refuses at the producer boundary
-                // instead of copying a tree the declaration may have cut.
-                Jstf when ScopeDeclared(options) => true,
+                Jstf when state.JstfScope is { } jstfScope => !jstfScope.ListsNoOp,
                 _ => false
             };
             if (options.PreserveLayout && (!compact || rewrittenPrefix || scopeCut))
@@ -1624,6 +1629,7 @@ public static partial class SubsetOperation
             // because no declaration covers it (no scope, or the table absent).
             internal SubsetOperation.LayoutScopeResolution? GsubScope;
             internal SubsetOperation.LayoutScopeResolution? GposScope;
+            internal SubsetOperation.JstfScopeResolution? JstfScope;
             // The S2b-2 correction (OQ-S2b-6): BASE materializes with the
             // admission segment (its fmt2 referenceGlyph is a real GID
             // reference); the fmt2 census feeds the compact decide row's
