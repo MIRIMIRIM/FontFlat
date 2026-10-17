@@ -227,4 +227,201 @@ public sealed class SubsetCff2SubsetTests
             Assert.Equal(input, outBytes);
         }
     }
+
+    // ---- the blend-stem face (the S4 walker's CFF2 blend pin) ------------------
+
+    /// <summary>One DICT integer in the minimal form (single byte over [-107, 107],
+    /// the two-byte positive window, else the 28 shortint).</summary>
+    private static void DictInt(List<byte> dict, int value)
+    {
+        if (value is >= -107 and <= 107)
+        {
+            dict.Add((byte)(value + 139));
+        }
+        else if (value is >= 108 and <= 1131)
+        {
+            int remainder = value - 108;
+            dict.Add((byte)(247 + (remainder >> 8)));
+            dict.Add((byte)(remainder & 0xFF));
+        }
+        else
+        {
+            dict.Add(28);
+            dict.Add((byte)((value >> 8) & 0xFF));
+            dict.Add((byte)(value & 0xFF));
+        }
+    }
+
+    /// <summary>The blend-stem charstring (TN5171 §5's shape every real CFF2
+    /// variable face writes): two hstem/vstem declarations whose operands arrive
+    /// as blend results — <c>n defaults, n deltas, n</c> then blend — followed by
+    /// the hintmask. Two blends keep 2+2 stem values, so the mask width is one
+    /// byte, and the mask byte is 0xFF so a walker that wiped the stack at blend
+    /// (hints 0 → width 0) reads the mask byte as the 5-byte fixed push and
+    /// derails mid-token, while a walker with a wrong region count (width 2)
+    /// skips past the program: both broken models refuse where the correct one
+    /// completes by fall-off (TN5171 charstrings end without a terminator).</summary>
+    private static byte[] BlendStemCharstring()
+    {
+        var program = new List<byte>();
+        for (int round = 0; round < 2; round++)
+        {
+            for (int i = 0; i < 5; i++) program.Add(140); // five defaults
+            for (int i = 0; i < 5; i++) program.Add(140); // five deltas
+            program.Add(144);                             // the result count 5
+            program.Add(16);                              // blend
+            program.Add(round == 0 ? (byte)1 : (byte)3);  // hstem / vstem
+        }
+        program.Add(19);  // hintmask: hints 4 → skip 1
+        program.Add(0xFF); // the one mask byte
+        return [.. program];
+    }
+
+    /// <summary>A single-FD CFF2 table with a one-region variation store (the
+    /// store<->fvar signature coupling satisfied by the fvar table in the face)
+    /// whose three charstrings are the blend-stem program: the shape the S4
+    /// walker's first blend model died of. Wire layout is test-side, byte-level.</summary>
+    private static byte[] Cff2WithBlendStems(out byte[] charStringsIndex)
+    {
+        byte[] charstring = BlendStemCharstring();
+
+        // CharStrings INDEX: 3 items of the 28-byte blend-stem program.
+        int itemTotal = charstring.Length * 3;
+        var charStrings = new byte[4 + 1 + 4 + itemTotal];
+        BinaryPrimitives.WriteUInt32BigEndian(charStrings.AsSpan(0), 3);
+        charStrings[4] = 1; // offSize
+        for (int i = 0; i <= 3; i++)
+            charStrings[5 + i] = (byte)(1 + i * charstring.Length);
+        for (int i = 0; i < 3; i++)
+            charstring.CopyTo(charStrings.AsSpan(9 + i * charstring.Length));
+        charStringsIndex = charStrings;
+
+        // FDArray INDEX: one FontDICT `0 0` (139 encodes 0), key 0x12 escape —
+        // the empty-private form, no local subrs, so nothing is prunable.
+        var fdArray = new byte[] { 0, 0, 0, 1, 1, 1, 4, 139, 139, 18 };
+
+        // VariationStore: length(u16) + format 1 + one-region region list +
+        // one ItemVariationData of itemCount 0 over region 0 (the real-corpus
+        // shape). k = RegionIndexCount = 1 is what the blend arithmetic reads.
+        var regionList = new byte[4 + 6];
+        BinaryPrimitives.WriteUInt16BigEndian(regionList.AsSpan(0), 1); // axisCount
+        BinaryPrimitives.WriteUInt16BigEndian(regionList.AsSpan(2), 1); // regionCount
+        regionList.AsSpan(4, 6).Clear(); // the (0,0,0) region axis triple
+        var varData = new byte[6 + 2];
+        BinaryPrimitives.WriteUInt16BigEndian(varData.AsSpan(0), 0); // itemCount
+        BinaryPrimitives.WriteUInt16BigEndian(varData.AsSpan(2), 0); // wordDeltaCount
+        BinaryPrimitives.WriteUInt16BigEndian(varData.AsSpan(4), 1); // regionIndexCount
+        BinaryPrimitives.WriteUInt16BigEndian(varData.AsSpan(6), 0); // regionIndexes[0]
+        int regionListOffset = 12;                    // right after the offsets array
+        int varDataOffset = regionListOffset + regionList.Length;
+        var store = new byte[8 + 4 + regionList.Length + varData.Length];
+        BinaryPrimitives.WriteUInt16BigEndian(store.AsSpan(0), 1);   // format
+        BinaryPrimitives.WriteUInt32BigEndian(store.AsSpan(2),
+            (uint)regionListOffset);
+        BinaryPrimitives.WriteUInt16BigEndian(store.AsSpan(6), 1);   // dataCount
+        BinaryPrimitives.WriteUInt32BigEndian(store.AsSpan(8), (uint)varDataOffset);
+        regionList.CopyTo(store.AsSpan(regionListOffset));
+        varData.CopyTo(store.AsSpan(varDataOffset));
+        var storeBlock = new byte[2 + store.Length];
+        BinaryPrimitives.WriteUInt16BigEndian(storeBlock.AsSpan(0),
+            (ushort)store.Length); // the length field the vstore slice reads
+        store.CopyTo(storeBlock.AsSpan(2));
+
+        // Layout: header 5 | TopDICT L | GlobalSubrs 4 | CharStrings | FDArray
+        // | VarStore. TopDICT keys: CharStrings(0x11), FDArray(12 24), vstore(24).
+        // The offsets depend on the TopDICT length the operand encoding yields,
+        // so the layout settles by fixed point (the minimal DICT integer form).
+        var topDict = new List<byte>();
+        int charStringsAt = 0, fdArrayAt = 0, storeAt = 0;
+        for (int topDictLength = 13; ;)
+        {
+            int globalSubrsAt = 5 + topDictLength, charStringsCandidate = globalSubrsAt + 4;
+            int fdArrayCandidate = charStringsCandidate + charStrings.Length,
+                storeCandidate = fdArrayCandidate + fdArray.Length;
+            topDict.Clear();
+            DictInt(topDict, charStringsCandidate);
+            topDict.Add(0x11);                                   // CharStrings key
+            DictInt(topDict, fdArrayCandidate);
+            topDict.Add(12);
+            topDict.Add(0x24);                                   // FDArray key
+            DictInt(topDict, storeCandidate);
+            topDict.Add(24);                                     // vstore key
+            if (topDict.Count == topDictLength)
+            {
+                charStringsAt = charStringsCandidate;
+                fdArrayAt = fdArrayCandidate;
+                storeAt = storeCandidate;
+                break;
+            }
+            topDictLength = topDict.Count;
+        }
+        var bytes = new byte[storeAt + storeBlock.Length];
+        bytes[0] = 2;             // majorVersion
+        bytes[1] = 0;             // minorVersion
+        bytes[2] = 5;             // headerSize
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(3), (ushort)topDict.Count);
+        topDict.CopyTo(bytes.AsSpan(5));
+        bytes.AsSpan(5 + topDict.Count, 4).Clear(); // empty GlobalSubr INDEX: u32 count 0
+        charStrings.CopyTo(bytes.AsSpan(charStringsAt));
+        fdArray.CopyTo(bytes.AsSpan(fdArrayAt));
+        storeBlock.CopyTo(bytes.AsSpan(storeAt));
+        return bytes;
+    }
+
+    /// <summary>The blend-stem face: the CFF2-with-store table over the standard
+    /// fixture core plus the fvar axis authority the store's signature requires.</summary>
+    private static FontFaceRef BlendFace(out byte[] cff2In, out byte[] charStringsIndex)
+    {
+        cff2In = Cff2WithBlendStems(out charStringsIndex);
+        return SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp05(NumGlyphs)),
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapWithMacRoman((0x41, 1))),
+            (SubsetFontFixture.FvarTag, SubsetFontFixture.Fvar(1)),
+            (SubsetFontFixture.Cff2Tag, cff2In),
+            (SubsetFontFixture.VorgTag, Vorg((0, 700), (1, 750), (2, 800))));
+    }
+
+    // The S4 walker's CFF2 blend pin: full select over the blend-stem face —
+    // every stem declared over blend results — must publish (the first model's
+    // stack wipe desynced the mask width and refused this exact shape), and the
+    // plan-null identity anchor holds: the CharStrings INDEX re-slots byte for
+    // byte because nothing was prunable.
+    [Fact]
+    public void BlendStemFullSelectPublishesAndKeepsCharStringsByteIdentical()
+    {
+        var face = BlendFace(out _, out byte[] charStringsIndex);
+        var status = SubsetOperation.TryPrepare(Request(face,
+            [(ushort)0, (ushort)1, (ushort)2], SubsetMode.CompactRemap),
+            out var result, out _, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        byte[] cff2Out = TableOf(Output(result!), SubsetFontFixture.Cff2Tag,
+            out bool present);
+        Assert.True(present);
+
+        // the output's CharStrings INDEX at its TopDICT key: byte-identical to
+        // the input's INDEX (the identity anchor — the items move, never rewrite)
+        int at = 5;
+        int charStringsOffset = -1;
+        while (at < 5 + BinaryPrimitives.ReadUInt16BigEndian(cff2Out.AsSpan(3)))
+        {
+            int operand = cff2Out[at] - 139;
+            at++;
+            if (cff2Out[at] == 0x11)
+            {
+                charStringsOffset = operand;
+                break;
+            }
+            if (cff2Out[at] == 12) at++;
+            at++;
+        }
+        Assert.True(charStringsOffset > 0);
+        Assert.Equal(charStringsIndex,
+            cff2Out[charStringsOffset..(charStringsOffset + charStringsIndex.Length)]);
+        // the pin's self-check: the INDEX the walker walked is the 3-item
+        // blend-stem INDEX the builder above produced
+        Assert.Equal(3u, BinaryPrimitives.ReadUInt32BigEndian(charStringsIndex.AsSpan(0)));
+        Assert.Equal(3 * 28, charStringsIndex.Length - 9);
+    }
 }

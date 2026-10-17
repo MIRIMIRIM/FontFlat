@@ -255,8 +255,8 @@ public static partial class SubsetOperation
                 selected[o] = model.CharStrings[inputOrder[o]];
             }
             ReadStatus pruneStatus = RewritePrograms(selected, programFds,
-                globals, fdLocals, prune, cff2: false, model.Location, budget,
-                out charStrings, out diagnostic);
+                globals, fdLocals, prune, cff2: false, regionCounts: null,
+                model.Location, budget, out charStrings, out diagnostic);
             if (pruneStatus != ReadStatus.Done) return pruneStatus;
             if (prune.Global is { } globalPlan)
             {
@@ -266,7 +266,8 @@ public static partial class SubsetOperation
                         globalPlan.Survivors[s], out int ctx) ? ctx : 0;
                 pruneStatus = RewriteSurvivorBodies(globals, globalPlan.Survivors,
                     contextFds, globals, fdLocals, prune, cff2: false,
-                    model.Location, budget, out globalSubrs, out diagnostic);
+                    regionCounts: null, model.Location, budget, out globalSubrs,
+                    out diagnostic);
                 if (pruneStatus != ReadStatus.Done) return pruneStatus;
             }
             else
@@ -285,8 +286,8 @@ public static partial class SubsetOperation
                 }
                 pruneStatus = RewriteSurvivorBodies(fdLocals[fd],
                     localPlan.Survivors, new int[localPlan.NewCount], globals,
-                    fdLocals, prune, cff2: false, model.Location, budget,
-                    out var renewedLocals, out diagnostic);
+                    fdLocals, prune, cff2: false, regionCounts: null,
+                    model.Location, budget, out var renewedLocals, out diagnostic);
                 if (pruneStatus != ReadStatus.Done) return pruneStatus;
                 bool renewedHasLocals = localPlan.NewCount > 0;
                 var privateEntries = renewedHasLocals || !old.HasLocalSubrs

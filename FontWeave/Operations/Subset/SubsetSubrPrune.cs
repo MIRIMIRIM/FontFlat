@@ -253,9 +253,12 @@ public static partial class SubsetOperation
 
     /// <summary>The CFF2 analysis (OQ-S4-1 lean, card §2.1's CFF2 addendum): the
     /// same per-FD bucketing over the FontDICT binding, with the vsindex/blend
-    /// stack effects the walker applies in its CFF2 mode and no endchar (TN5171
-    /// charstrings end by fall-off). TopDICT carries no charset/encoding, so the
-    /// stable identity and this stage never interact.</summary>
+    /// stack effects the walker applies in its CFF2 mode — blend carries its
+    /// result count as a stack operand and keeps its defaults (TN5171 §5), so the
+    /// stems declared over blend results still total correctly and the mask skip
+    /// widths stay in sync — and no endchar (TN5171 charstrings end by fall-off).
+    /// TopDICT carries no charset/encoding, so the stable identity and this stage
+    /// never interact.</summary>
     private static ReadStatus PruneSubrsCff2(Tables.Cff2Table model, GlyphRemap map,
         BuildBudget budget, out SubrPrunePlan? plan, out FontDiagnostic diagnostic)
     {
@@ -283,7 +286,7 @@ public static partial class SubsetOperation
             }
             var walk = new SubrWalk(budget, model.Location.At(DataField.GlyphId, 0, gid),
                 fdLocals[fd], globals, cff2: true, seac: false, analysis, fd,
-                rewrite: null);
+                rewrite: null, RegionCountsByVsindex(model.Store));
             ReadStatus status = walk.RunReach(model.CharStringsInternal[gid],
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
@@ -329,6 +332,22 @@ public static partial class SubsetOperation
         }
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    /// <summary>Per-vsindex region counts over the parked store (TN5171 §5): slot v
+    /// is the RegionIndexCount of the ItemVariationData selector v names, and a
+    /// NULL data slot — the spec's "no variation data" outer — reads as zero
+    /// regions (blend keeps its defaults alone). A face without a store yields the
+    /// empty table, so any blend's selector is out of domain and refuses. The CFF2
+    /// walk's blend arithmetic reads this table; without it the stem totals behind
+    /// every mask width would silently desync.</summary>
+    private static int[] RegionCountsByVsindex(Tables.Variation.VariationStoreTable? store)
+    {
+        if (store is null) return [];
+        var counts = new int[store.DataCount];
+        for (int v = 0; v < store.DataCount; v++)
+            counts[v] = store.Data[v]?.RegionIndexCount ?? 0;
+        return counts;
     }
 
     /// <summary>The name-keyed analysis (§2.2's FD-0 form): one local INDEX, one
@@ -401,8 +420,8 @@ public static partial class SubsetOperation
     /// stack shape no single-byte rewrite can serve.</summary>
     private static ReadStatus RewritePrograms(byte[][] programs, int[] programFds,
         byte[][] globals, byte[][][] fdLocals, SubrPrunePlan plan, bool cff2,
-        DataLocation modelAt, BuildBudget budget, out byte[][] rewritten,
-        out FontDiagnostic diagnostic)
+        int[]? regionCounts, DataLocation modelAt, BuildBudget budget,
+        out byte[][] rewritten, out FontDiagnostic diagnostic)
     {
         rewritten = new byte[programs.Length][];
         for (int i = 0; i < programs.Length; i++)
@@ -411,7 +430,7 @@ public static partial class SubsetOperation
             var rewrite = new RewriteState(plan, fd, plan.LocalByFd[fd], plan.Global);
             var walk = new SubrWalk(budget, modelAt.At(DataField.GlyphId, 0, i),
                 fdLocals[fd], globals, cff2, seac: false, analysis: null, fd,
-                rewrite: rewrite);
+                rewrite: rewrite, regionCounts);
             ReadStatus status = walk.RunRewrite(programs[i], out diagnostic);
             if (status != ReadStatus.Done) return status;
             rewritten[i] = [.. rewrite.Output];
@@ -425,8 +444,8 @@ public static partial class SubsetOperation
     /// single scanning context from the plan; local bodies: their own FD).</summary>
     private static ReadStatus RewriteSurvivorBodies(byte[][] bodies, int[] survivorOld,
         int[] bodyFds, byte[][] globals, byte[][][] fdLocals, SubrPrunePlan plan,
-        bool cff2, DataLocation modelAt, BuildBudget budget, out byte[][] rewritten,
-        out FontDiagnostic diagnostic)
+        bool cff2, int[]? regionCounts, DataLocation modelAt, BuildBudget budget,
+        out byte[][] rewritten, out FontDiagnostic diagnostic)
     {
         rewritten = new byte[survivorOld.Length][];
         for (int s = 0; s < survivorOld.Length; s++)
@@ -436,7 +455,7 @@ public static partial class SubsetOperation
             var rewrite = new RewriteState(plan, fd, plan.LocalByFd[fd], plan.Global);
             var walk = new SubrWalk(budget, modelAt.At(DataField.GlyphId, 0, old),
                 fdLocals[fd], globals, cff2, seac: false, analysis: null, fd,
-                rewrite: rewrite);
+                rewrite: rewrite, regionCounts);
             ReadStatus status = walk.RunRewrite(bodies[old], out diagnostic);
             if (status != ReadStatus.Done) return status;
             rewritten[s] = [.. rewrite.Output];
@@ -470,13 +489,13 @@ public static partial class SubsetOperation
             selected[o] = model.CharStrings[inputOrder[o]];
         ReadStatus status = RewritePrograms(selected,
             new int[inputOrder.Length], globals, fdLocals, plan, cff2: false,
-            model.Location, budget, out charStrings, out diagnostic);
+            regionCounts: null, model.Location, budget, out charStrings, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (globalPlan is { } prunedGlobal)
         {
             status = RewriteSurvivorBodies(globals, prunedGlobal.Survivors,
                 new int[prunedGlobal.NewCount], globals, fdLocals, plan, cff2: false,
-                model.Location, budget, out globalSubrs, out diagnostic);
+                regionCounts: null, model.Location, budget, out globalSubrs, out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
         else
@@ -487,7 +506,7 @@ public static partial class SubsetOperation
         {
             status = RewriteSurvivorBodies(locals, prunedLocal.Survivors,
                 new int[prunedLocal.NewCount], globals, fdLocals, plan, cff2: false,
-                model.Location, budget, out localSubrs, out diagnostic);
+                regionCounts: null, model.Location, budget, out localSubrs, out diagnostic);
             if (status != ReadStatus.Done) return status;
             hasLocalSubrs = prunedLocal.NewCount > 0;
         }
@@ -586,7 +605,11 @@ public static partial class SubsetOperation
     /// analysis; an unknown or wild call operand refuses (A1/A2); a truncated
     /// token, a mask skip past the program, a body that neither returns nor ends
     /// and nesting deeper than TN5177 appendix B's ten frames refuse (A3); the
-    /// per-body stem memo feeds re-entries without rescans.
+    /// per-body stem memo feeds re-entries without rescans. The CFF2 mode tracks
+    /// the blend result count and the vsindex region counts (TN5171 §5), so the
+    /// stems declared over blend results still total and the mask widths stay in
+    /// sync — a blend whose count, selector or depth the walk cannot serve
+    /// refuses (A3) instead of desyncing.
     ///
     /// rewrite (the S4 payload, card §3.3): no descent — every call site re-encodes
     /// its operand from the parked maps, mask widths read the plan's stem memo, and
@@ -617,6 +640,15 @@ public static partial class SubsetOperation
         private readonly int _fd;
         private readonly RewriteState? _rewrite;
 
+        /// <summary>Per-vsindex region counts (TN5171 §5, CFF2 mode only): the
+        /// RegionIndexCount of the ItemVariationData each selector names, a NULL
+        /// data slot read as zero regions. Null outside CFF2 mode.</summary>
+        private readonly int[]? _regionCounts;
+
+        /// <summary>The current vsindex selector, or −1 once poisoned by an
+        /// unknown or out-of-domain value (the next blend refuses).</summary>
+        private int _vsindex;
+
         private readonly List<Slot> _stack = [];
         private int _hints;
         private readonly List<(int Kind, int Index)> _path = [];
@@ -644,7 +676,7 @@ public static partial class SubsetOperation
 
         internal SubrWalk(BuildBudget budget, DataLocation at, byte[][] locals,
             byte[][] globals, bool cff2, bool seac, SubrAnalysis? analysis, int fd,
-            RewriteState? rewrite)
+            RewriteState? rewrite, int[]? regionCounts = null)
         {
             _budget = budget;
             _at = at;
@@ -655,6 +687,7 @@ public static partial class SubsetOperation
             _analysis = analysis;
             _fd = fd;
             _rewrite = rewrite;
+            _regionCounts = regionCounts;
         }
 
         // ---- entries ---------------------------------------------------------
@@ -819,15 +852,14 @@ public static partial class SubsetOperation
                 }
                 if (_cff2 && b == 15)
                 {
-                    Pop(1); // vsindex: the selector is consumed
+                    ReadStatus status = ApplyVsindex(out diagnostic);
+                    if (status != ReadStatus.Done) return status;
                     continue;
                 }
                 if (_cff2 && b == 16)
                 {
-                    // blend: the pop count depends on the runtime region count —
-                    // the conservative clear poisons every later call operand into
-                    // the unknown that refuses (card §2.1's CFF2 addendum).
-                    _stack.Clear();
+                    ReadStatus status = ApplyBlend(out diagnostic);
+                    if (status != ReadStatus.Done) return status;
                     continue;
                 }
                 if (b is 4 or 5 or 6 or 7 or 8 or 21 or 22 or 24 or 25 or 26 or 27
@@ -949,6 +981,65 @@ public static partial class SubsetOperation
             }
             _stack.Clear();
             foreach (var _ in saved) _stack.Add(default); // the caller resumes unknowable
+            return ReadStatus.Done;
+        }
+
+        /// <summary>vsindex (TN5171 §5): the selector names the ItemVariationData
+        /// whose region count every later blend reads. A known in-domain selector
+        /// arms the count; an unknown or out-of-domain one poisons it — the next
+        /// blend refuses, because a poisoned count would silently desync the stem
+        /// totals every later mask width reads (the §2.1 mask-width lesson).</summary>
+        private ReadStatus ApplyVsindex(out FontDiagnostic diagnostic)
+        {
+            Slot top = _stack.Count > 0 ? _stack[^1] : default;
+            Pop(1);
+            _vsindex = top.Known && _regionCounts is not null &&
+                (uint)top.Value < (uint)_regionCounts.Length
+                ? top.Value : -1;
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+
+        /// <summary>blend (TN5171 §5): the top operand is the result count n; the
+        /// n defaults stay on the stack and the n·k deltas go, so the frame keeps
+        /// depth − 1 − n·k values — the top n of them (the defaults) demoted to
+        /// the unknown, since the blend math is not modeled. k is the region count
+        /// of the ItemVariationData the current vsindex selects. The count operand
+        /// is what keeps the walk runtime-faithful: CFF2 declares its stems over
+        /// blend results, so a stack wipe here would zero the stem totals and every
+        /// later mask skip width would read the wrong bytes (the desync this
+        /// walker's first draft died of). An unknown count, a poisoned region
+        /// count or a stack that dips below the block refuses (A3): finite, before
+        /// any byte exists, per OQ-S4-3.</summary>
+        private ReadStatus ApplyBlend(out FontDiagnostic diagnostic)
+        {
+            Slot top = _stack.Count > 0 ? _stack[^1] : default;
+            if (!top.Known)
+                return FailUnknownOperand(out diagnostic);
+            int count = top.Value;
+            int? regions = _vsindex >= 0 && _regionCounts is not null &&
+                (uint)_vsindex < (uint)_regionCounts.Length
+                ? _regionCounts[_vsindex] : null;
+            if (count < 0 || regions is not { } k)
+            {
+                return ReadWire.Fail(ReadStatus.UnsupportedFormat,
+                    DiagnosticCode.UnsupportedOperation, _at, out diagnostic,
+                    unchecked((ulong)(long)count),
+                    (uint)(_vsindex < 0 || _regionCounts is null
+                        ? 0 : _regionCounts.Length));
+            }
+            Pop(1);
+            int keep = _stack.Count - count * k;
+            if (keep < 0)
+            {
+                return ReadWire.Fail(ReadStatus.UnsupportedFormat,
+                    DiagnosticCode.UnsupportedOperation, _at, out diagnostic,
+                    (uint)(_stack.Count + 1), (uint)(count * k + 1));
+            }
+            _stack.RemoveRange(keep, _stack.Count - keep);
+            for (int v = keep - count > 0 ? keep - count : 0; v < keep; v++)
+                _stack[v] = default;
+            diagnostic = default;
             return ReadStatus.Done;
         }
 
@@ -1117,11 +1208,13 @@ public static partial class SubsetOperation
                 }
                 else if (_cff2 && b == 15)
                 {
-                    Pop(1);
+                    ReadStatus status = ApplyVsindex(out diagnostic);
+                    if (status != ReadStatus.Done) return status;
                 }
                 else if (_cff2 && b == 16)
                 {
-                    _stack.Clear();
+                    ReadStatus status = ApplyBlend(out diagnostic);
+                    if (status != ReadStatus.Done) return status;
                 }
                 else if (b is 4 or 5 or 6 or 7 or 8 or 21 or 22 or 24 or 25 or 26
                     or 27 or 30 or 34 or 35 or 36 or 37)
