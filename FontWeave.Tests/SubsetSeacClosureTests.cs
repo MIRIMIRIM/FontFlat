@@ -204,8 +204,10 @@ public sealed class SubsetSeacClosureTests
     {
         // The census's per-program scan misses this shape (S1c gate finding): the glyph
         // frame pushes adx ady bchar, calls the subr, and the subr body pushes achar
-        // and ends the glyph — the stack persists across the call boundary.
-        byte[] glyph = [.. Num(0), .. Num(0), .. Num(CodeA), .. Num(107), 10];
+        // and ends the glyph — the stack persists across the call boundary. The call
+        // operand is the spec form: index 0 − bias 107 over the 1-subr INDEX (TN5177
+        // §4.7 corrected, S4 card §8 finding 1).
+        byte[] glyph = [.. Num(0), .. Num(0), .. Num(CodeA), .. Num(-107), 10];
         byte[] subr = [.. Num(CodeAcute), 14];
         var face = Face(
             (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
@@ -294,7 +296,8 @@ public sealed class SubsetSeacClosureTests
     {
         // Two callsubr calls build the seac stack across frames: subr 0 pushes
         // adx ady, subr 1 pushes bchar achar — one stack, three bodies, one form.
-        byte[] glyph = [.. Num(107), 10, .. Num(108), 10, 14];
+        // Operands are the spec form −107/−106 (indices 0/1 minus bias 107).
+        byte[] glyph = [.. Num(-107), 10, .. Num(-106), 10, 14];
         byte[] subr0 = [.. Num(0), .. Num(0), 11];
         byte[] subr1 = [.. Num(CodeA), .. Num(CodeAcute), 11];
         var face = Face(
@@ -313,9 +316,10 @@ public sealed class SubsetSeacClosureTests
     public void CallPathCycleGuardTerminates()
     {
         // A self-calling subr must end its branch at the guard, not loop forever; the
-        // glyph then ends plainly and the operation succeeds with nothing added.
-        byte[] glyph = [.. Num(107), 10, 14];
-        byte[] subr0 = [.. Num(107), 10];
+        // glyph then ends plainly and the operation succeeds with nothing added. The
+        // operands are the spec form (index 0 − bias 107).
+        byte[] glyph = [.. Num(-107), 10, 14];
+        byte[] subr0 = [.. Num(-107), 10];
         var face = Face(
             (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
             (SubsetFontFixture.MaxpTag, Maxp05(4)),

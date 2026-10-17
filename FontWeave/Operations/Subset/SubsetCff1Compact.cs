@@ -11,16 +11,20 @@ namespace FontWeave.Operations.Subset;
 /// supplements pruned to surviving names), CID-keyed FDSelect (per-glyph FD values
 /// remapped, wire format preserved, FD numbers never renumbered) and VORG (records ∘
 /// map, dropped glyphs' records deleted) — and hand the result to the existing T3
-/// compilers unchanged. CharStrings are re-ordered byte-for-byte copies; String and
-/// subroutine INDEXes move verbatim (counts unchanged, so both subr bias inputs stay
-/// frozen, TN5176 §4.7). Every model forms before anything compiles, so a failure still
-/// refuses with nothing published.</summary>
+/// compilers unchanged. CharStrings are re-ordered copies — byte-for-byte while no
+/// subr prune plan is parked (S1c), rewritten at their callsubr/callgsubr sites with
+/// re-encoded operands when one is (S4 card §3.3), with the Subr INDEX supply drawn
+/// from the plan's survivors (null plans keep String and both subroutine INDEXes
+/// verbatim: counts unchanged, so both subr bias inputs stay frozen, TN5176 §4.7).
+/// Every model forms before anything compiles, so a failure still refuses with
+/// nothing published.</summary>
 public static partial class SubsetOperation
 {
     // ---- name-keyed (S1c card §2.1-§2.4) ----------------------------------------
 
     private static ReadStatus RebuildCff1NameKeyed(Cff1Table model, GlyphRemap map,
-        BuildBudget budget, out byte[]? cffBytes, out FontDiagnostic diagnostic)
+        SubrPrunePlan? prune, BuildBudget budget, out byte[]? cffBytes,
+        out FontDiagnostic diagnostic)
     {
         cffBytes = null;
         var inputOrder = map.OutputToInput;
@@ -103,17 +107,39 @@ public static partial class SubsetOperation
             }
         }
 
-        // CharStrings: reordered byte-for-byte copies; String and both subroutine
-        // INDEXes stay verbatim on the model, so their counts — and therefore both subr
-        // bias inputs — never move (S1c card §2.2).
-        var charStrings = new byte[outputCount][];
-        for (int o = 0; o < outputCount; o++)
-            charStrings[o] = model.CharStrings[inputOrder[o]];
+        // CharStrings: reordered copies; String and both subroutine INDEXes stay
+        // verbatim on the model (so their counts — and therefore both subr bias
+        // inputs — never move, S1c card §2.2) until a parked prune plan replaces
+        // the supply with the survivors' rewritten bodies (S4 card §3.1-§3.3); an
+        // INDEX pruned to zero survivors loses its Private DICT's Subrs key.
+        byte[][] charStrings, globalSubrs, localSubrs;
+        bool hasLocalSubrs;
+        Cff1DictEntry[] privateDict;
+        if (prune is null)
+        {
+            charStrings = new byte[outputCount][];
+            for (int o = 0; o < outputCount; o++)
+                charStrings[o] = model.CharStrings[inputOrder[o]];
+            globalSubrs = model.GlobalSubrs.ToArray();
+            localSubrs = model.LocalSubrs.ToArray();
+            hasLocalSubrs = model.HasLocalSubrs;
+            privateDict = model.PrivateDict.ToArray();
+        }
+        else
+        {
+            ReadStatus pruneStatus = RewriteSubrPrograms(model, map, prune, budget,
+                out charStrings, out globalSubrs, out localSubrs, out hasLocalSubrs,
+                out diagnostic);
+            if (pruneStatus != ReadStatus.Done) return pruneStatus;
+            privateDict = hasLocalSubrs || !model.HasLocalSubrs
+                ? model.PrivateDict.ToArray()
+                : PrivateEntriesWithoutSubrs(model.PrivateDict);
+        }
 
         var rebuilt = new Cff1Table(model.HeaderMajor, model.HeaderMinor,
             model.HeaderHdrSize, model.NameBytes.ToArray(),
-            topDict, model.Strings.ToArray(), model.GlobalSubrs.ToArray(),
-            model.LocalSubrs.ToArray(), model.HasLocalSubrs, model.PrivateDict.ToArray(),
+            topDict, model.Strings.ToArray(), globalSubrs,
+            localSubrs, hasLocalSubrs, privateDict,
             charsetForm, sids, encodingForm, codes, supplements, charStrings,
             model.Location);
         return Cff1TableCompiler.TryCompile(rebuilt, out cffBytes, out diagnostic, budget);
@@ -141,7 +167,8 @@ public static partial class SubsetOperation
     // ---- CID-keyed (S1c card §2.5) ----------------------------------------------
 
     private static ReadStatus RebuildCidCff1(CidCff1Table model, GlyphRemap map,
-        BuildBudget budget, out byte[]? cffBytes, out FontDiagnostic diagnostic)
+        SubrPrunePlan? prune, BuildBudget budget, out byte[]? cffBytes,
+        out FontDiagnostic diagnostic)
     {
         cffBytes = null;
         var inputOrder = map.OutputToInput;

@@ -299,6 +299,21 @@ public static partial class SubsetOperation
                     out diagnostic);
         }
 
+        // Step 5.6 (S4 card §2.3): the compact subr prune plan — the frozen map is
+        // the final retained set (composite, layout and seac additions included), so
+        // the reachability walk's domain is final here. The plan parks on the state
+        // and the payload rebuilds consume it; a failure refuses atomically with
+        // nothing published (§4's finite refusal face). Retain-GIDs never runs this
+        // stage (OQ-S4-2): the retain path's CFF bytes stay zero-touched.
+        if (compact && profile.HasCff)
+        {
+            status = PruneSubrs(state.CffNameKeyed, state.CffCidKeyed, map!, budget,
+                out state.SubrPrunePlan, out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+        }
+
         // Step 6: derived counts over the final retained set.
         if (!budget.Work(numGlyphs, faceAt, out diagnostic))
             return Refuse(state, ReadStatus.ResourceLimit, diagnostic, out result,
@@ -442,11 +457,13 @@ public static partial class SubsetOperation
                 // consumes it without a second read (S1c card §1.2). The flavor picks
                 // the producer: name-keyed through Cff1TableCompiler, CID-keyed through
                 // the derived-model entry of CidCff1TableCompiler (S1c card §2.5).
+                // The parked prune plan (S4 card §2.3) rewrites the programs and
+                // prunes the Subr INDEXes; null rides the S1c verbatim path (§3.5).
                 status = state.CffCidKeyed is not null
-                    ? RebuildCidCff1(state.CffCidKeyed, map!, budget, out rebuiltCff,
-                        out diagnostic)
-                    : RebuildCff1NameKeyed(state.CffNameKeyed!, map!, budget,
-                        out rebuiltCff, out diagnostic);
+                    ? RebuildCidCff1(state.CffCidKeyed, map!, state.SubrPrunePlan,
+                        budget, out rebuiltCff, out diagnostic)
+                    : RebuildCff1NameKeyed(state.CffNameKeyed!, map!,
+                        state.SubrPrunePlan, budget, out rebuiltCff, out diagnostic);
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result, out report,
                         out diagnostic);
@@ -1812,6 +1829,12 @@ public static partial class SubsetOperation
             // null on every explicit-GID request).
             internal CmapTable? CmapModel;
             internal ushort[]? ResolvedRootGids;
+
+            // The S4 compact subr prune plan (card §2.3): computed once after the
+            // map freeze over the final retained set, consumed by the payload CFF
+            // rebuilds without re-derivation; null = identity (nothing pruned
+            // anywhere) and the payload rides the S1c verbatim path (§3.5).
+            internal SubrPrunePlan? SubrPrunePlan;
             // The compact rewrite's per-table count facts (OQ-S2b-10), emission
             // order: the S2b-1 layout lists append first (RewriteCompactLayout),
             // then the S2b-2 kern/JSTF/MATH producers; parked only when the
@@ -1843,6 +1866,16 @@ public static partial class SubsetOperation
                 // before that point has no additions to report. The map artifact sha
                 // appears once the artifact has serialized (SC card §1.3); the staleness
                 // members stay null unless the static CFF1 profile admission filled them.
+                // The S4 prune counts read the parked plan (zero/empty without one).
+                int subrPrunedGlobal = 0;
+                int[] subrPrunedLocalByFd = [];
+                if (SubrPrunePlan is { } plan)
+                {
+                    subrPrunedGlobal = plan.PrunedGlobalCount;
+                    subrPrunedLocalByFd = new int[plan.LocalByFd.Length];
+                    for (int fd = 0; fd < subrPrunedLocalByFd.Length; fd++)
+                        subrPrunedLocalByFd[fd] = plan.PrunedLocalCount(fd);
+                }
                 return new SubsetReport(Mode, [.. Decisions], UnselectedSlotCount,
                     ClosureAdded?.ToArray() ?? [], [.. Dropped], [.. OptionRecords],
                     [.. CmapConsumedNotEmitted], [.. Diagnostics], MapArtifactSha256,
@@ -1851,7 +1884,8 @@ public static partial class SubsetOperation
                     LayoutReferenceCensus?.ToArray() ?? [],
                     LayoutRewriteCensus?.ToArray() ?? [],
                     LayoutScopeCensus?.ToArray() ?? [],
-                    SeacClosureAdded?.ToArray() ?? []);
+                    SeacClosureAdded?.ToArray() ?? [],
+                    subrPrunedGlobal, subrPrunedLocalByFd);
             }
         }
 }

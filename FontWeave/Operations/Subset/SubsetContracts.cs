@@ -254,6 +254,8 @@ public sealed class SubsetReport
     private readonly LayoutRewriteCensusRow[] _layoutRewriteCensus;
     private readonly LayoutScopeCensusRow[] _layoutScopeCensus;
     private readonly ushort[] _seacClosureAddedGids;
+    private readonly int _subrPrunedGlobal;
+    private readonly int[] _subrPrunedLocalByFd;
 
     internal SubsetReport(SubsetMode? mode, SubsetTableDecision[] decisions,
         int unselectedSlotCount, ushort[] closureAddedGids, uint[] droppedTables,
@@ -264,7 +266,8 @@ public sealed class SubsetReport
         LayoutTableCensus[]? layoutReferenceCensus = null,
         LayoutRewriteCensusRow[]? layoutRewriteCensus = null,
         LayoutScopeCensusRow[]? layoutScopeCensus = null,
-        ushort[]? seacClosureAddedGids = null)
+        ushort[]? seacClosureAddedGids = null,
+        int subrPrunedGlobal = 0, int[]? subrPrunedLocalByFd = null)
     {
         Mode = mode;
         _decisions = decisions;
@@ -282,6 +285,8 @@ public sealed class SubsetReport
         _layoutRewriteCensus = layoutRewriteCensus ?? [];
         _layoutScopeCensus = layoutScopeCensus ?? [];
         _seacClosureAddedGids = seacClosureAddedGids ?? [];
+        _subrPrunedGlobal = subrPrunedGlobal;
+        _subrPrunedLocalByFd = subrPrunedLocalByFd ?? [];
     }
 
     /// <summary>The declared mode; null when the request was refused before a mode could
@@ -320,6 +325,21 @@ public sealed class SubsetReport
     /// glyphs still unretained.</summary>
     public IReadOnlyList<ushort> SeacClosureAddedGids =>
         Array.AsReadOnly(_seacClosureAddedGids);
+
+    /// <summary>Subr programs pruned from the Global Subrs INDEX of a compact-remap
+    /// CFF rebuild (S4 card §1.4): the pre-prune count minus the survivor count;
+    /// 0 whenever the INDEX kept every body — including every identity plan and
+    /// every request the prune stage never ran for. A pruning fact otherwise
+    /// derivable only by re-running the reachability scan (the
+    /// <see cref="LayoutClosureAddedGids"/> reporting precedent).</summary>
+    public int SubrPrunedGlobal => _subrPrunedGlobal;
+
+    /// <summary>Per-FD counts of the subr programs pruned from each Local Subrs
+    /// INDEX, in FDArray order (name-keyed: the single entry of its one INDEX, the
+    /// FD-0 same-method form); empty on every request without a compact CFF
+    /// rebuild or with no local INDEX pruned anywhere.</summary>
+    public IReadOnlyList<int> SubrPrunedLocalByFd =>
+        Array.AsReadOnly(_subrPrunedLocalByFd);
 
     /// <summary>The per-table reference census of every retained layout table, in the
     /// admission order (S2a card §2.6): count level only. Empty without PreserveLayout.</summary>
