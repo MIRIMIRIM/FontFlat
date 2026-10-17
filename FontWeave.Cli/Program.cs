@@ -32,7 +32,7 @@ internal static class Program
                 "validate INPUT [--face N] [--table TAG]\n" +
                 "inspect INPUT [--face N] [--table TAG] [--show-raw]\n" +
                 "edit-rebuild INPUT --record N --text TEXT --output OUTPUT [--head-revision INT32] [--head-modified INT64]\n" +
-                "subset INPUT --mode retain|compact --gids LIST --output OUTPUT [--face N] [--map PATH] [--no-layout]\n" +
+                "subset INPUT --mode retain|compact --gids LIST|--codepoints CPS|--text TEXT --output OUTPUT [--face N] [--map PATH] [--no-layout]\n" +
                 "    [--preserve-layout] [--drop-hinting] [--drop-signature] [--scope-script TAGS] [--scope-language TAGS]\n" +
                 "    [--scope-feature TAGS] [--unknown-table TAG=drop|preserve[,TAG=choice...]] [--max-temporary-bytes N] [--max-work-units N]\n" +
                 "names INPUT [--face N] [--show-raw]\n" +
@@ -44,8 +44,12 @@ internal static class Program
                 "Legacy name-* commands accept --hex HEX instead of --text/--encoding.\n" +
                 "edit-rebuild uses strict UTF-16BE; head revision is raw signed 16.16, modified is OpenType seconds.\n" +
                 "TAG is four ASCII characters or 0xXXXXXXXX. Typed commands accept --max-temporary-bytes and --max-work-units.\n" +
-                "subset --gids is the only execution root: comma-separated decimal or 0x-hexadecimal GIDs, given order preserved;\n" +
-                "text and codepoint roots register with a later slice (--codepoints and --text are not accepted yet).\n" +
+                "subset takes exactly one execution root: --gids LIST is comma-separated decimal or 0x-hexadecimal GIDs, given\n" +
+                "order preserved; --codepoints CPS is a comma-separated list of U+XXXX hexadecimal Unicode scalar values, given\n" +
+                "order preserved; --text TEXT is a literal string whose characters form a set (deduplicated, order-free, no\n" +
+                "normalization). The three roots are mutually exclusive; give exactly one. --codepoints and --text resolve\n" +
+                "through the typed cmap read and refuse a scalar with no Unicode-semantic mapping. --scope-* with --text is\n" +
+                "the text root's derived scope declaration; with --gids/--codepoints it is the explicit layout scope.\n" +
                 "subset --scope-* TAGS lists are comma-separated four-character tags; an empty value cuts that dimension to\n" +
                 "empty and an absent option keeps every tag of that dimension. subset --map is compact-only and must be a new path:\n" +
                 "the map publishes first and the font is the commit marker.\n" +
@@ -313,6 +317,17 @@ internal static class Program
         };
         if (mapPath is not null && mode != SubsetMode.CompactRemap)
             throw new CliException("Usage", "--map requires --mode compact; retain-GIDs never produces a map artifact.");
+        // The three root forms are single-choice at the command line: multiple
+        // roots or no root is a usage error. The API's own no-root and dual-form
+        // refusals stay the API-level witness (the CLI never constructs them).
+        bool hasGids = options.ContainsKey("gids");
+        bool hasCodepoints = options.ContainsKey("codepoints");
+        bool hasText = options.ContainsKey("text");
+        if (hasGids && hasCodepoints || hasGids && hasText || hasCodepoints && hasText)
+            throw new CliException("Usage",
+                "--gids, --codepoints and --text are mutually exclusive; give exactly one subset root.");
+        if (!hasGids && !hasCodepoints && !hasText)
+            throw new CliException("Usage", "One subset root is required: --gids, --codepoints or --text.");
         var result = new Dictionary<string, object?>
         {
             ["operation"] = "subset", ["input"] = input, ["faceIndex"] = faceIndex,
@@ -336,14 +351,47 @@ internal static class Program
         uint[]? scriptTags = ParseTagList(options, "scope-script");
         uint[]? languageTags = ParseTagList(options, "scope-language");
         uint[]? featureTags = ParseTagList(options, "scope-feature");
+        SubsetGlyphRoot root;
+        SubsetLayoutScope? layoutScope;
+        if (hasText)
+        {
+            // The text root is the character-set semantics (SR card §2.2): the
+            // --scope-* lists ride the root as its derived scope declaration, so
+            // the explicit options.LayoutScope stays null and the dual-scope-source
+            // request (the code-23 detail-2 refusal) is never constructed here.
+            root = new SubsetGlyphRoot
+            {
+                Kind = SubsetRootKind.TextLayout,
+                Text = Required(options, "text"),
+                ScriptTags = scriptTags,
+                LanguageTags = languageTags,
+                FeatureTags = featureTags
+            };
+            layoutScope = null;
+        }
+        else
+        {
+            root = hasCodepoints
+                ? new SubsetGlyphRoot
+                {
+                    Kind = SubsetRootKind.UnicodeCodepoints,
+                    Codepoints = ParseCodepoints(Required(options, "codepoints"))
+                }
+                : new SubsetGlyphRoot
+                {
+                    Kind = SubsetRootKind.ExplicitGlyphSet,
+                    Gids = ParseGids(Required(options, "gids"))
+                };
+            layoutScope = scriptTags is null && languageTags is null && featureTags is null
+                ? null : new SubsetLayoutScope
+                {
+                    ScriptTags = scriptTags, LanguageTags = languageTags, FeatureTags = featureTags
+                };
+        }
         var request = new SubsetRequest
         {
             Face = face,
-            Root = new SubsetGlyphRoot
-            {
-                Kind = SubsetRootKind.ExplicitGlyphSet,
-                Gids = ParseGids(Required(options, "gids"))
-            },
+            Root = root,
             Mode = mode,
             Options = new SubsetOptions
             {
@@ -351,11 +399,7 @@ internal static class Program
                 NoLayout = options.ContainsKey("no-layout"),
                 PreserveLayout = options.ContainsKey("preserve-layout"),
                 DropHinting = options.ContainsKey("drop-hinting"),
-                LayoutScope = scriptTags is null && languageTags is null && featureTags is null
-                    ? null : new SubsetLayoutScope
-                    {
-                        ScriptTags = scriptTags, LanguageTags = languageTags, FeatureTags = featureTags
-                    },
+                LayoutScope = layoutScope,
                 DropDigitalSignature = options.ContainsKey("drop-signature")
             }
         };
@@ -511,8 +555,23 @@ internal static class Program
         return [.. gids];
     }
 
-    private static uint[]? ParseTagList(Dictionary<string, string?> options, string key)
+    private static uint[] ParseCodepoints(string value)
     {
+        List<uint> codepoints = [];
+        foreach (string token in value.Split(','))
+        {
+            if (token.Length > 2 && token.StartsWith("U+", StringComparison.OrdinalIgnoreCase) &&
+                uint.TryParse(token.AsSpan(2), NumberStyles.AllowHexSpecifier,
+                    CultureInfo.InvariantCulture, out uint codepoint))
+                codepoints.Add(codepoint);
+            else
+                throw new CliException("Usage",
+                    "--codepoints must be a comma-separated list of U+XXXX hexadecimal Unicode scalar values.");
+        }
+        return [.. codepoints];
+    }
+
+    private static uint[]? ParseTagList(Dictionary<string, string?> options, string key)    {
         if (!options.TryGetValue(key, out string? value) || value is null) return null;
         if (value.Length == 0) return [];
         return [.. value.Split(',').Select(token => ParseTag(token, key))];
@@ -911,8 +970,9 @@ internal static class Program
             allowed.UnionWith(["output", "record", "text", "head-revision", "head-modified",
                 "drop-signature", "unknown-tables", "max-temporary-bytes", "max-work-units"]);
         else if (command == "subset")
-            allowed.UnionWith(["output", "mode", "gids", "map", "no-layout", "preserve-layout",
-                "drop-hinting", "drop-signature", "scope-script", "scope-language", "scope-feature",
+            allowed.UnionWith(["output", "mode", "gids", "codepoints", "text", "map",
+                "no-layout", "preserve-layout", "drop-hinting", "drop-signature",
+                "scope-script", "scope-language", "scope-feature",
                 "unknown-table", "max-temporary-bytes", "max-work-units"]);
         else if (command is "inspect" or "names") allowed.Add("show-raw");
         else
