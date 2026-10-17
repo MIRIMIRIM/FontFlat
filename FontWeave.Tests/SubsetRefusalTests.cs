@@ -351,17 +351,37 @@ public sealed class SubsetRefusalTests
         OutOfRange = 0, Duplicate = 1, Disordered = 2
     }
 
-    // The Unicode root is contract text only in this slice; it refuses, never fakes a
-    // resolution (card §1.1).
+    // The Unicode root executes since SR (card §2.1): the former not-yet-implemented
+    // refusal is lifted. The empty codepoint list is the legal empty set — the
+    // resolution yields no GIDs and the retained set is the implicit GID 0 alone
+    // (the same judgment as the empty explicit GID list; the fixture mirrors the
+    // SubsetRebuildTests full-pipeline shape).
     [Fact]
-    public void UnicodeRootRefusesAsNotImplemented()
+    public void UnicodeRootEmptySetResolvesToNotdefOnly()
     {
-        var face = TrueTypeFace();
-        var status = SubsetOperation.TryPrepare(Request(face, null), out var result,
-            out _, out var diagnostic);
-        Assert.Equal(ReadStatus.UnsupportedFormat, status);
-        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
-        Assert.Null(result);
+        byte[] glyfSource =
+        [
+            .. SubsetFontFixture.InstructedSimpleGlyph(),
+            .. GlyfImages.NoContourGlyphRecord(),
+            .. GlyfImages.CompositeRecord(0),
+            .. GlyfImages.NoContourGlyphRecord()
+        ];
+        var face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(4)),
+            (SubsetFontFixture.GlyfTag, glyfSource),
+            (SubsetFontFixture.LocaTag, GlyfImages.LongLoca([0, 18, 30, 46, 58])),
+            (SubsetFontFixture.CmapTag,
+                SubsetFontFixture.CmapCanonical((0x41, 1), (0x42, 2), (0x13000, 2))),
+            (SubsetFontFixture.GsubTag, SubsetFontFixture.Dummy()));
+        var options = new SubsetOptions { NoLayout = true };
+        var status = SubsetOperation.TryPrepare(Request(face, null, options: options),
+            out var result, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal(3, report!.UnselectedSlotCount); // numGlyphs 4 minus the seed {0}
+        Assert.Contains(report.OptionRecords, r => r.Id == SubsetOptionId.Root &&
+            r.Value == nameof(SubsetRootKind.UnicodeCodepoints));
     }
 
     // An unbound face is a caller parameter error, not a font diagnostic (W1 §1.1).

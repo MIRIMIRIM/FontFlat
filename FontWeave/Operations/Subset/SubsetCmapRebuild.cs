@@ -15,23 +15,32 @@ namespace FontWeave.Operations.Subset;
 /// not arbitrated (first record in wire order wins a duplicate code point).</summary>
 public static partial class SubsetOperation
 {
-    private static ReadStatus RebuildCmap(SfntDirectoryView directory, int cmapOrdinal,
-        MaxpTable maxp, bool[] retained, BuildBudget budget, out byte[]? cmapBytes,
-        out List<CmapConsumedRecord> consumedNotEmitted, out FontDiagnostic diagnostic,
-        GlyphRemap? map = null)
+    private static ReadStatus RebuildCmap(PrepareState state, SfntDirectoryView directory,
+        int cmapOrdinal, MaxpTable maxp, bool[] retained, BuildBudget budget,
+        out byte[]? cmapBytes, out List<CmapConsumedRecord> consumedNotEmitted,
+        out FontDiagnostic diagnostic, GlyphRemap? map = null)
     {
         cmapBytes = null;
         consumedNotEmitted = [];
-        ReadStatus status = directory.TryGetTableBytes(cmapOrdinal, out var cmapSource,
-            out diagnostic);
-        if (status != ReadStatus.Done) return status;
         DataLocation cmapAt = directory.TableLocation(cmapOrdinal);
-        status = CmapContext.TryCreate(maxp, cmapAt, out var context, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = CmapView.TryOpen(cmapSource, out var view, out diagnostic, cmapAt);
-        if (status != ReadStatus.Done) return status;
-        status = view.TryRead(context!, out var model, out diagnostic, budget);
-        if (status != ReadStatus.Done) return status;
+        // Single parse (SR card §2.4, OQ-SR-5): a resolved-root request parks the one
+        // materialized model on the state and the rebuild consumes it — no second read.
+        // An explicit-GID request leaves the park null and the read chain runs exactly
+        // as before, byte for byte (the zero-drift mechanical guarantee).
+        CmapTable? model = state.CmapModel;
+        ReadStatus status;
+        if (model is null)
+        {
+            status = directory.TryGetTableBytes(cmapOrdinal, out var cmapSource,
+                out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = CmapContext.TryCreate(maxp, cmapAt, out var context, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = CmapView.TryOpen(cmapSource, out var view, out diagnostic, cmapAt);
+            if (status != ReadStatus.Done) return status;
+            status = view.TryRead(context!, out model, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+        }
 
         // One union keyed by code point; the first record in wire order supplies the
         // value for a duplicate, and only mappings into the retained set survive. The

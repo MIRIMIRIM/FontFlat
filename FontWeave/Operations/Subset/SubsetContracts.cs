@@ -6,9 +6,10 @@ namespace FontWeave.Operations.Subset;
 /// undeclared or out-of-domain value is a finite refusal (W1 §1.4, S0-RF-006-MODE).</summary>
 public enum SubsetMode : byte { RetainGids = 1, CompactRemap = 2 }
 
-/// <summary>Discriminant of the request root. The root produces the input GID set; both
-/// kinds feed the same pipeline once resolved (W1 §1.2).</summary>
-public enum SubsetRootKind : byte { ExplicitGlyphSet = 1, UnicodeCodepoints = 2 }
+/// <summary>Discriminant of the request root. The root produces the input GID set; every
+/// kind feeds the same pipeline once resolved (W1 §1.2; the SR slice executes the two
+/// resolved forms alongside the explicit one).</summary>
+public enum SubsetRootKind : byte { ExplicitGlyphSet = 1, UnicodeCodepoints = 2, TextLayout = 3 }
 
 /// <summary>The request root: exactly one form must be populated. Explicit GIDs are a
 /// normalized input sequence (strictly ascending, no duplicates); every value must fall
@@ -18,13 +19,38 @@ public sealed record SubsetGlyphRoot
 {
     public SubsetRootKind Kind { get; init; }
 
-    /// <summary>Form (a) root: caller-supplied input-face GIDs. This is the only root
-    /// the S1a slice executes; form (b) is refused as not-yet-implemented.</summary>
+    /// <summary>Form (a) root: caller-supplied input-face GIDs. The seed is the caller's
+    /// sequence verbatim (validated, never normalized).</summary>
     public IReadOnlyList<ushort>? Gids { get; init; }
 
     /// <summary>Form (b) root: Unicode scalar values resolved through the typed cmap
-    /// read. Carried for contract completeness; resolution lands with a later slice.</summary>
+    /// read — every Unicode-semantic record is consulted, a code point with no mapping
+    /// or with two distinct mappings refuses, and a resolution never produces a partial
+    /// GID set (W1 §1.2; SR card §2.1).</summary>
     public IReadOnlyList<uint>? Codepoints { get; init; }
+
+    /// <summary>Form (c) root (SR card §2.2): UTF-16 text decoded once into a Unicode
+    /// scalar-value set (deduplicated, order-free — text is a set-semantics entry, unlike
+    /// the form (b) sequence's precise input contract; an unpaired surrogate refuses).
+    /// Zero normalization is performed: the request is interpreted over its characters
+    /// as given. The decoded set resolves through exactly the form (b) path.</summary>
+    public string? Text { get; init; }
+
+    /// <summary>Form (c) declaration dimensions (SR card §2.2, caller-declared — the
+    /// pipeline has no built-in Unicode script data to derive them): the same value
+    /// domain and matching semantics as <see cref="SubsetLayoutScope"/>. A non-null
+    /// member derives that scope dimension; when any member is non-null the three
+    /// together derive the request's layout scope, mutually exclusive with
+    /// <see cref="SubsetOptions.LayoutScope"/> (the dual-source request refuses).</summary>
+    public IReadOnlyList<uint>? ScriptTags { get; init; }
+
+    /// <summary>Form (c) derived-scope language dimension (tagged LangSys record tags);
+    /// null derives nothing for this dimension. See <see cref="ScriptTags"/>.</summary>
+    public IReadOnlyList<uint>? LanguageTags { get; init; }
+
+    /// <summary>Form (c) derived-scope feature dimension (FeatureList entry tags);
+    /// null derives nothing for this dimension. See <see cref="ScriptTags"/>.</summary>
+    public IReadOnlyList<uint>? FeatureTags { get; init; }
 }
 
 /// <summary>Per-table caller choice for out-of-catalogue tags. There is deliberately no
@@ -147,11 +173,13 @@ public enum SubsetDecisionOrigin : byte { MatrixRow = 1, RequestOption = 2, Mode
 public readonly record struct SubsetTableDecision(uint Tag, TableAction Action,
     SubsetPolicy Policy, SubsetDecisionOrigin Origin);
 
-/// <summary>Which explicit option a record captures.</summary>
+/// <summary>Which explicit option a record captures. The SR slice added Root
+/// (the root form in force) and TextRootScope (the TextLayout root's derived
+/// scope declaration, one record per declared tag) as members 9 and 10 (OQ-SR-6).</summary>
 public enum SubsetOptionId : byte
 {
     Mode = 1, NoLayout = 2, DropHinting = 3, DropDigitalSignature = 4, ExcludeNotdef = 5,
-    UnknownTable = 6, PreserveLayout = 7, LayoutScope = 8
+    UnknownTable = 6, PreserveLayout = 7, LayoutScope = 8, Root = 9, TextRootScope = 10
 }
 
 /// <summary>Machine-readable record of one effective option choice, so an auditor can

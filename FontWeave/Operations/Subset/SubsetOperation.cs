@@ -125,7 +125,10 @@ public static partial class SubsetOperation
             return Refuse(state, ReadStatus.InvalidFormat, diagnostic, out result,
                 out report, out diagnostic);
         }
-        if (!TryValidateRootGids(request, numGlyphs, maxp!.Location, state, out diagnostic))
+        // SR: the sequence gate is the explicit root's own — a resolved root's scalars
+        // were validated at step 1 (R3) and its GIDs at step 3.25 (R7).
+        if (request.Root!.Gids is not null &&
+            !TryValidateRootGids(request, numGlyphs, maxp!.Location, state, out diagnostic))
             return Refuse(state, ReadStatus.InvalidFormat, diagnostic, out result,
                 out report, out diagnostic);
 
@@ -141,6 +144,21 @@ public static partial class SubsetOperation
             !TryAdmitCmapFormats(directory, profile.CmapOrdinal, state, out diagnostic))
             return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic, out result,
                 out report, out diagnostic);
+
+        // Step 3.25 (SR card §2.4): the resolved roots turn their scalar values into
+        // the input GID set here — the cmap gate has passed, the layout admission has
+        // not run, and the materialized cmap model parks on the state for the rebuild
+        // (OQ-SR-5). A TextLayout root's derived scope rides out for step 3.6; the
+        // explicit-GID root skips this stage entirely and the pipeline is untouched.
+        SubsetLayoutScope? derivedScope = null;
+        if (request.Root!.Kind is not SubsetRootKind.ExplicitGlyphSet)
+        {
+            status = ResolveSubsetRoot(request, directory, profile, maxp!, numGlyphs,
+                state, out derivedScope, out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+        }
 
         // Step 3.5 (S2a card §2.1; dual-mode since S2b, card §1): the PreserveLayout
         // admission segment. Every present layout table walks its whole-table typed
@@ -165,10 +183,14 @@ public static partial class SubsetOperation
         // Step 3.6 (S2c card §3): the layout-scope resolution runs once over the
         // admission models, before decide — the per-table no-op verdict is decide's
         // input (a no-op table keeps its undeclared action; a truly-cut table pulls
-        // the matrix's fifth alternate). Zero timing movement elsewhere.
-        if (preserveLayout && ScopeDeclared(options))
+        // the matrix's fifth alternate). Zero timing movement elsewhere. The SR slice
+        // threads the effective scope: an explicit options.LayoutScope always wins
+        // (the dual-source request refused at step 1), else the TextLayout root's
+        // derived scope — the same S2c machine consumes either form.
+        SubsetLayoutScope? effectiveScope = options.LayoutScope ?? derivedScope;
+        if (preserveLayout && ScopeDeclaredOn(effectiveScope))
         {
-            status = ResolveLayoutScopes(state, options.LayoutScope!, out diagnostic);
+            status = ResolveLayoutScopes(state, effectiveScope!, out diagnostic);
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
@@ -183,7 +205,13 @@ public static partial class SubsetOperation
                 out report, out diagnostic);
         state.Retained = new bool[numGlyphs];
         state.Retained[0] = true; // .notdef is an implicit member (W1 §1.3).
-        foreach (ushort gid in request.Root!.Gids!) state.Retained[gid] = true;
+        // SR (card §2.4): the explicit seed is the caller's sequence verbatim (unchanged
+        // byte path); a resolved root seeds its step-3.25 set instead — both forms feed
+        // the same seeder, so an equal set produces an equal font (the §5 identity tier).
+        if (request.Root!.Gids is { } explicitGids)
+            foreach (ushort gid in explicitGids) state.Retained[gid] = true;
+        else
+            foreach (ushort gid in state.ResolvedRootGids!) state.Retained[gid] = true;
         for (int i = 0; i < directory.DeclaredCount; i++)
         {
             status = directory.TryGetRecord(i, out var record, out diagnostic);
@@ -343,9 +371,9 @@ public static partial class SubsetOperation
         }
         if (profile.HasCmap)
         {
-            status = RebuildCmap(directory, profile.CmapOrdinal, maxp!, state.Retained,
-                budget, out rebuiltCmap, out var consumedNotEmitted, out diagnostic,
-                compact ? map : null);
+            status = RebuildCmap(state, directory, profile.CmapOrdinal, maxp!,
+                state.Retained, budget, out rebuiltCmap, out var consumedNotEmitted,
+                out diagnostic, compact ? map : null);
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
@@ -826,17 +854,59 @@ public static partial class SubsetOperation
                 return false;
             }
         }
-        else
+        else if (root.Kind == SubsetRootKind.UnicodeCodepoints)
         {
             if (root.Codepoints is null || root.Gids is not null)
             {
                 diagnostic = new(DiagnosticCode.InvalidValue, request.Face.Location);
                 return false;
             }
-            // The Unicode root is contract text, not an executed path in this slice; it
-            // refuses as not-yet-implemented instead of pretending it resolved (card §1.1).
-            diagnostic = new(DiagnosticCode.UnsupportedOperation, request.Face.Location);
-            return false;
+            // R3 (SR card §2.1): the explicit codepoint list is a precise input
+            // contract — strictly ascending Unicode scalar values, no duplicates, no
+            // surrogates; violations refuse rather than normalize (the :914-944
+            // explicit-GID shape; the empty list is the legal empty set).
+            int previousCode = -1;
+            foreach (uint codepoint in root.Codepoints)
+            {
+                if (codepoint is >= 0xD800 and <= 0xDFFF || codepoint > 0x10FFFF)
+                {
+                    diagnostic = new(DiagnosticCode.InvalidValue,
+                        request.Face.Location.At(DataField.CharCode, codepoint), codepoint);
+                    return false;
+                }
+                if (previousCode >= 0 && codepoint <= (uint)previousCode)
+                {
+                    diagnostic = new(DiagnosticCode.InvalidValue,
+                        request.Face.Location.At(DataField.CharCode, codepoint), codepoint,
+                        (uint)previousCode);
+                    return false;
+                }
+                previousCode = (int)codepoint;
+            }
+        }
+        else
+        {
+            // Form (c) (SR card §2.2): the text must be present and the other two
+            // root shapes absent (the same pollution guard as forms (a)/(b)).
+            if (root.Text is null || root.Gids is not null || root.Codepoints is not null)
+            {
+                diagnostic = new(DiagnosticCode.InvalidValue, request.Face.Location);
+                return false;
+            }
+            // R4 (SR card §2.2): an unpaired surrogate refuses as a request-shape
+            // violation before any table work — a UTF-16 walk, no decode yet.
+            for (int i = 0; i < root.Text.Length; i++)
+            {
+                char unit = root.Text[i];
+                bool high = unit >= '\uD800' && unit <= '\uDBFF';
+                bool low = unit >= '\uDC00' && unit <= '\uDFFF';
+                bool pairFollows = i + 1 < root.Text.Length &&
+                    root.Text[i + 1] >= '\uDC00' && root.Text[i + 1] <= '\uDFFF';
+                if (!low && !(high && !pairFollows)) continue;
+                diagnostic = new(DiagnosticCode.InvalidUtf16,
+                    request.Face.Location.At(DataField.Payload, (ulong)i));
+                return false;
+            }
         }
         if (request.Mode is not { } mode)
         {
@@ -891,6 +961,58 @@ public static partial class SubsetOperation
                     state.OptionRecords.Add(new(SubsetOptionId.LayoutScope, featureTag,
                         "Feature"));
         }
+        // SR (card §2.3, OQ-SR-4): the TextLayout root's derived scope declaration
+        // records land here — on a refusal path they, like the explicit-scope records
+        // above, stay in the report (W1 §2.5). The derived scope is legal only as the
+        // single scope authority: the dual-source request refuses (detail 2), and the
+        // same two contradictions an explicit scope hits refuse with the same details
+        // (a derived scope with NoLayout has nothing to retain; one without
+        // PreserveLayout is the caller foot-gun, no retention path to scope).
+        bool derivedScopeDeclared = root.Kind == SubsetRootKind.TextLayout &&
+            (root.ScriptTags is not null || root.LanguageTags is not null ||
+                root.FeatureTags is not null);
+        if (derivedScopeDeclared)
+        {
+            if (root.ScriptTags is { } derivedScripts)
+                foreach (uint scriptTag in derivedScripts)
+                    state.OptionRecords.Add(new(SubsetOptionId.TextRootScope, scriptTag,
+                        "Script"));
+            if (root.LanguageTags is { } derivedLanguages)
+                foreach (uint languageTag in derivedLanguages)
+                    state.OptionRecords.Add(new(SubsetOptionId.TextRootScope, languageTag,
+                        "Language"));
+            if (root.FeatureTags is { } derivedFeatures)
+                foreach (uint featureTag in derivedFeatures)
+                    state.OptionRecords.Add(new(SubsetOptionId.TextRootScope, featureTag,
+                        "Feature"));
+            if (options.LayoutScope is not null)
+            {
+                // Detail 2 = the dual-source form: two scope authorities have no merge
+                // semantics — intersecting or unioning them would guess (OQ-SR-4).
+                state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
+                    request.Face.Location, 2);
+                diagnostic = state.Diagnostic;
+                return false;
+            }
+            if (options.NoLayout)
+            {
+                // Detail 1 = the NoLayout contradiction form, shared with the explicit
+                // scope below (SR card §2.3 posture 2).
+                state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
+                    request.Face.Location, 1);
+                diagnostic = state.Diagnostic;
+                return false;
+            }
+            if (!options.PreserveLayout)
+            {
+                // Detail 0 = the PreserveLayout contradiction form, shared with the
+                // explicit scope below (SR card §2.3 posture 3).
+                state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
+                    request.Face.Location, 0);
+                diagnostic = state.Diagnostic;
+                return false;
+            }
+        }
         if (ScopeDeclared(options) && options.NoLayout)
         {
             // Detail 1 = the NoLayout contradiction form (Detail 0 = the
@@ -926,6 +1048,9 @@ public static partial class SubsetOperation
 
         // "Selection into the report" (W1 §2.5): every effective option value is recorded.
         state.OptionRecords.Add(new(SubsetOptionId.Mode, 0, mode.ToString()));
+        // SR (OQ-SR-6): the root form in force rides the report so an auditor can
+        // reconstruct the resolution input alongside the option set.
+        state.OptionRecords.Add(new(SubsetOptionId.Root, 0, root.Kind.ToString()));
         state.OptionRecords.Add(new(SubsetOptionId.NoLayout, 0, options.NoLayout.ToString()));
         state.OptionRecords.Add(new(SubsetOptionId.PreserveLayout, 0,
             options.PreserveLayout.ToString()));
@@ -1678,6 +1803,15 @@ public static partial class SubsetOperation
             // runs after the layout union and only adds glyphs still unretained, so
             // the list stays disjoint from the layout additions by construction).
             internal List<ushort>? SeacClosureAdded;
+
+            // The SR step 3.25 pair (SR card §2.4, OQ-SR-5): the resolved roots'
+            // materialized cmap model (parked once; the rebuild consumes it and never
+            // re-reads the table — an explicit-GID request leaves it null and the
+            // rebuild reads exactly as before, the zero-drift mechanical guarantee)
+            // and the resolved root's GID set (ascending, duplicate-free, in-domain;
+            // null on every explicit-GID request).
+            internal CmapTable? CmapModel;
+            internal ushort[]? ResolvedRootGids;
             // The compact rewrite's per-table count facts (OQ-S2b-10), emission
             // order: the S2b-1 layout lists append first (RewriteCompactLayout),
             // then the S2b-2 kern/JSTF/MATH producers; parked only when the
