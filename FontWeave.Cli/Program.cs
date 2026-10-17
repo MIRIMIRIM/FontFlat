@@ -7,6 +7,7 @@ using FontWeave;
 using FontWeave.Containers;
 using FontWeave.Core;
 using FontWeave.Inspection;
+using FontWeave.Operations.Subset;
 using CompiledFont = FontWeave.Operations.CompiledFont;
 using HeadMetadataEdit = FontWeave.Tables.HeadMetadataEdit;
 using MetadataEditOperation = FontWeave.Operations.MetadataEditOperation;
@@ -31,6 +32,9 @@ internal static class Program
                 "validate INPUT [--face N] [--table TAG]\n" +
                 "inspect INPUT [--face N] [--table TAG] [--show-raw]\n" +
                 "edit-rebuild INPUT --record N --text TEXT --output OUTPUT [--head-revision INT32] [--head-modified INT64]\n" +
+                "subset INPUT --mode retain|compact --gids LIST --output OUTPUT [--face N] [--map PATH] [--no-layout]\n" +
+                "    [--preserve-layout] [--drop-hinting] [--drop-signature] [--scope-script TAGS] [--scope-language TAGS]\n" +
+                "    [--scope-feature TAGS] [--unknown-table TAG=drop|preserve[,TAG=choice...]] [--max-temporary-bytes N] [--max-work-units N]\n" +
                 "names INPUT [--face N] [--show-raw]\n" +
                 "name-replace INPUT --record N --text TEXT --encoding utf16be --output OUTPUT\n" +
                 "name-add INPUT --platform N --encoding-id N --language N --name-id N --text TEXT --encoding utf16be --output OUTPUT\n" +
@@ -40,6 +44,11 @@ internal static class Program
                 "Legacy name-* commands accept --hex HEX instead of --text/--encoding.\n" +
                 "edit-rebuild uses strict UTF-16BE; head revision is raw signed 16.16, modified is OpenType seconds.\n" +
                 "TAG is four ASCII characters or 0xXXXXXXXX. Typed commands accept --max-temporary-bytes and --max-work-units.\n" +
+                "subset --gids is the only execution root: comma-separated decimal or 0x-hexadecimal GIDs, given order preserved;\n" +
+                "text and codepoint roots register with a later slice (--codepoints and --text are not accepted yet).\n" +
+                "subset --scope-* TAGS lists are comma-separated four-character tags; an empty value cuts that dimension to\n" +
+                "empty and an absent option keeps every tag of that dimension. subset --map is compact-only and must be a new path:\n" +
+                "the map publishes first and the font is the commit marker.\n" +
                 "Selected raw inspection accepts --max-raw-bytes (default 8 MiB); oversized payloads are refused.\n" +
                 "All results are JSON. Output must be a new path; inputs are never overwritten.");
             return args.Length == 0 ? 2 : 0;
@@ -75,7 +84,7 @@ internal static class Program
         string command = args[0];
         bool edit = command is "name-replace" or "name-add" or "name-delete" or "edit-rebuild";
         bool copy = command == "copy-original";
-        if (!edit && !copy && command is not ("inspect" or "names" or "validate"))
+        if (!edit && !copy && command is not ("inspect" or "names" or "validate" or "subset"))
             throw new CliException("Usage", $"Unknown command '{command}'.");
         var options = ParseOptions(args.AsSpan(2));
         ValidateOptions(command, options);
@@ -87,8 +96,15 @@ internal static class Program
         };
         limits.Validate();
         string input = Path.GetFullPath(args[1]);
-        string? output = edit || copy ? Path.GetFullPath(Required(options, "output")) : null;
+        string? output = edit || copy || command == "subset"
+            ? Path.GetFullPath(Required(options, "output")) : null;
         if (output is not null) CheckOutputPath(input, output);
+        if (command == "subset")
+        {
+            string? map = options.ContainsKey("map") ? Path.GetFullPath(Required(options, "map")) : null;
+            CheckNewPath(input, map, output);
+            return ExecuteSubset(input, output!, map, faceIndex, options, limits, out exitCode);
+        }
         if (command is "validate" or "edit-rebuild" || command == "inspect" && options.ContainsKey("table"))
             return ExecuteTyped(command, input, output, faceIndex, options, limits, out exitCode);
         byte[] inputBytes = ReadInput(input, limits.MaxInputBytes);
@@ -275,6 +291,259 @@ internal static class Program
         return SetOutcome(result, status, diagnostic, out exitCode);
     }
 
+    private static Dictionary<string, object?> ExecuteSubset(string input, string output,
+        string? mapPath, int faceIndex, Dictionary<string, string?> options, FontLimits fileLimits,
+        out int exitCode)
+    {
+        var limits = new BuildLimits
+        {
+            MaxInputBytes = fileLimits.MaxInputBytes,
+            MaxOutputBytes = fileLimits.MaxOutputBytes,
+            MaxTemporaryBytes = LongInteger(options, "max-temporary-bytes", 128L * 1024 * 1024),
+            MaxWorkUnits = LongInteger(options, "max-work-units", 512L * 1024 * 1024)
+        };
+        if (limits.MaxTemporaryBytes < 0 || limits.MaxWorkUnits < 0)
+            throw new CliException("Usage", "Build budgets must be nonnegative.");
+        string modeText = Required(options, "mode");
+        SubsetMode mode = modeText switch
+        {
+            "retain" => SubsetMode.RetainGids,
+            "compact" => SubsetMode.CompactRemap,
+            _ => throw new CliException("Usage", "--mode must be retain or compact.")
+        };
+        if (mapPath is not null && mode != SubsetMode.CompactRemap)
+            throw new CliException("Usage", "--map requires --mode compact; retain-GIDs never produces a map artifact.");
+        var result = new Dictionary<string, object?>
+        {
+            ["operation"] = "subset", ["input"] = input, ["faceIndex"] = faceIndex,
+            ["sourceId"] = null, ["inputLength"] = null, ["mode"] = modeText,
+            ["limits"] = LimitsReport(limits), ["report"] = null,
+            ["output"] = null, ["outputLength"] = null, ["written"] = 0,
+            ["outputWritten"] = false, ["map"] = null, ["usage"] = null, ["decisions"] = null
+        };
+
+        ReadStatus status = TryReadTypedInput(input, limits.MaxInputBytes, out byte[]? inputBytes,
+            out FontDiagnostic diagnostic);
+        if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
+        result["inputLength"] = inputBytes!.Length;
+        status = FontSource.TryCopy(inputBytes, out FontSource? source, out diagnostic, limits.MaxInputBytes);
+        if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
+        FontSource actualSource = source!;
+        result["sourceId"] = actualSource.SourceId;
+        status = actualSource.TryGetFace(faceIndex, out FontFaceRef face, out diagnostic);
+        if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
+
+        uint[]? scriptTags = ParseTagList(options, "scope-script");
+        uint[]? languageTags = ParseTagList(options, "scope-language");
+        uint[]? featureTags = ParseTagList(options, "scope-feature");
+        var request = new SubsetRequest
+        {
+            Face = face,
+            Root = new SubsetGlyphRoot
+            {
+                Kind = SubsetRootKind.ExplicitGlyphSet,
+                Gids = ParseGids(Required(options, "gids"))
+            },
+            Mode = mode,
+            Options = new SubsetOptions
+            {
+                UnknownTables = ParseUnknownTables(options),
+                NoLayout = options.ContainsKey("no-layout"),
+                PreserveLayout = options.ContainsKey("preserve-layout"),
+                DropHinting = options.ContainsKey("drop-hinting"),
+                LayoutScope = scriptTags is null && languageTags is null && featureTags is null
+                    ? null : new SubsetLayoutScope
+                    {
+                        ScriptTags = scriptTags, LanguageTags = languageTags, FeatureTags = featureTags
+                    },
+                DropDigitalSignature = options.ContainsKey("drop-signature")
+            }
+        };
+        status = SubsetOperation.TryPrepare(request, out SubsetResult? prepared,
+            out SubsetReport? report, out diagnostic, limits);
+        if (report is not null)
+        {
+            result["report"] = SubsetReportProjection(report);
+            // The wire-order decisions formed before a refusal freeze into the report;
+            // the receipt surfaces them at the top level for both outcomes, so an
+            // auditor reads the same decision projection on either path.
+            result["decisions"] = SubsetDecisionReport(report.Decisions);
+        }
+        if (status != ReadStatus.Done || prepared is null)
+            return SetOutcome(result, status, diagnostic, out exitCode);
+        SubsetResult subset = prepared!;
+
+        // The canonical map serialization completes in memory before any file write;
+        // a serialization failure refuses with zero files published while the report
+        // keeps the freeze-time pinned sha (the conservative atomic presentation).
+        byte[]? mapBytes = null;
+        if (subset.Map is not null && mapPath is not null)
+        {
+            status = FrozenMapArtifactCodec.TrySerialize(subset.Map, out mapBytes, out diagnostic);
+            if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
+        }
+        byte[] bytes = GC.AllocateUninitializedArray<byte>(subset.Font.OutputLength);
+        status = subset.Font.TryCopyTo(bytes, out int written, out diagnostic);
+        if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
+
+        // Publication order: map first, font last — the font is the commit marker.
+        // A failed font write removes the already published map (no orphans).
+        bool mapPublished = false;
+        try
+        {
+            if (mapBytes is not null)
+            {
+                WriteNewFile(mapPath!, mapBytes);
+                mapPublished = true;
+            }
+            WriteNewFile(output, bytes);
+        }
+        catch
+        {
+            if (mapPublished)
+            {
+                try { File.Delete(mapPath!); } catch { /* best-effort orphan cleanup */ }
+            }
+            throw;
+        }
+        result["output"] = output;
+        result["outputLength"] = subset.Font.OutputLength;
+        result["written"] = written;
+        result["outputWritten"] = true;
+        result["usage"] = UsageReport(subset.Font.Usage);
+        result["map"] = mapBytes is null ? null : new
+        {
+            path = mapPath, sha256 = Sha256Hex(mapBytes), entryCount = subset.Map!.Entries.Count
+        };
+        return SetOutcome(result, status, diagnostic, out exitCode);
+    }
+
+    private static object SubsetReportProjection(SubsetReport report) => new
+    {
+        mode = report.Mode.HasValue ? (int?)report.Mode.Value : null,
+        modeName = report.Mode?.ToString(),
+        unselectedSlotCount = report.UnselectedSlotCount,
+        closureAddedGids = report.ClosureAddedGids.ToArray(),
+        layoutClosureAddedGids = report.LayoutClosureAddedGids.ToArray(),
+        droppedTables = report.DroppedTables.ToArray(),
+        optionRecords = report.OptionRecords.Select(record => new
+        {
+            id = (int)record.Id, idName = record.Id.ToString(),
+            tag = record.Tag, tagText = TagText(record.Tag), value = record.Value
+        }).ToArray(),
+        cmapConsumedNotEmitted = report.CmapConsumedNotEmitted.Select(record => new
+        {
+            platformId = record.PlatformId, encodingId = record.EncodingId
+        }).ToArray(),
+        mapArtifactSha256 = report.MapArtifactSha256,
+        layoutReferenceCensus = report.LayoutReferenceCensus.Select(row => new
+        {
+            tag = row.Tag, tagText = TagText(row.Tag), referencedGidCount = row.ReferencedGidCount
+        }).ToArray(),
+        layoutRewriteCensus = report.LayoutRewriteCensus.Select(row => new
+        {
+            tag = row.Tag, tagText = TagText(row.Tag), inputSubtableCount = row.InputSubtableCount,
+            outputSubtableCount = row.OutputSubtableCount, inputBytes = row.InputBytes,
+            outputBytes = row.OutputBytes, countsInvarianceHeld = row.CountsInvarianceHeld
+        }).ToArray(),
+        layoutScopeCensus = report.LayoutScopeCensus.Select(row => new
+        {
+            tag = row.Tag, tagText = TagText(row.Tag), inputScriptCount = row.InputScriptCount,
+            survivingScriptCount = row.SurvivingScriptCount, inputFeatureCount = row.InputFeatureCount,
+            survivingFeatureCount = row.SurvivingFeatureCount, inputLookupCount = row.InputLookupCount,
+            survivingLookupCount = row.SurvivingLookupCount, scriptTagMatches = row.ScriptTagMatches,
+            languageTagMatches = row.LanguageTagMatches, featureTagMatches = row.FeatureTagMatches,
+            orphanMarkSets = row.OrphanMarkSets
+        }).ToArray(),
+        cff = report.Cff is null ? null : new
+        {
+            flavor = report.Cff.Flavor, charStringsCount = report.Cff.CharStringsCount,
+            charsetForm = new { predefined = report.Cff.CharsetForm.Predefined, format = report.Cff.CharsetForm.Format },
+            encodingForm = report.Cff.EncodingForm.HasValue
+                ? new
+                {
+                    predefined = report.Cff.EncodingForm.Value.Predefined,
+                    format = report.Cff.EncodingForm.Value.Format,
+                    hasSupplement = report.Cff.EncodingForm.Value.HasSupplement
+                } : null,
+            charsetSidColumnReachable = report.Cff.CharsetSidColumnReachable,
+            rosSids = report.Cff.RosSids, cidCount = report.Cff.CidCount,
+            fdSelectFormat = report.Cff.FdSelectFormat,
+            unselectedSlotSemantics = report.Cff.UnselectedSlotSemantics
+        },
+        vorg = report.Vorg is null ? null : new
+        {
+            defaultVertOriginY = report.Vorg.DefaultVertOriginY,
+            numVertOriginYMetrics = report.Vorg.NumVertOriginYMetrics
+        },
+        maxpMaximaNotRecomputed = report.MaxpMaximaNotRecomputed,
+        diagnostics = report.Diagnostics.Select(DiagnosticReport).ToArray()
+    };
+
+    private static object[] SubsetDecisionReport(IReadOnlyList<SubsetTableDecision> decisions)
+    {
+        var result = new object[decisions.Count];
+        for (int i = 0; i < decisions.Count; i++)
+            result[i] = new
+            {
+                tag = decisions[i].Tag, tagText = TagText(decisions[i].Tag),
+                action = (int)decisions[i].Action, actionName = decisions[i].Action.ToString(),
+                policy = (int)decisions[i].Policy, policyName = decisions[i].Policy.ToString(),
+                origin = (int)decisions[i].Origin, originName = decisions[i].Origin.ToString()
+            };
+        return result;
+    }
+
+    private static ushort[] ParseGids(string value)
+    {
+        List<ushort> gids = [];
+        foreach (string token in value.Split(','))
+        {
+            if (ushort.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out ushort gid) ||
+                token.Length > 2 && token.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+                ushort.TryParse(token.AsSpan(2), NumberStyles.AllowHexSpecifier,
+                    CultureInfo.InvariantCulture, out gid))
+                gids.Add(gid);
+            else
+                throw new CliException("Usage",
+                    "--gids must be a comma-separated list of decimal or 0x-hexadecimal GIDs; ranges are not accepted.");
+        }
+        return [.. gids];
+    }
+
+    private static uint[]? ParseTagList(Dictionary<string, string?> options, string key)
+    {
+        if (!options.TryGetValue(key, out string? value) || value is null) return null;
+        if (value.Length == 0) return [];
+        return [.. value.Split(',').Select(token => ParseTag(token, key))];
+    }
+
+    private static Dictionary<uint, SubsetUnknownTableChoice>? ParseUnknownTables(
+        Dictionary<string, string?> options)
+    {
+        if (!options.TryGetValue("unknown-table", out string? value) || value is null) return null;
+        var declarations = new Dictionary<uint, SubsetUnknownTableChoice>();
+        foreach (string item in value.Split(','))
+        {
+            int at = item.IndexOf('=');
+            if (at <= 0 || at == item.Length - 1)
+                throw new CliException("Usage", "--unknown-table entries must be TAG=drop or TAG=preserve.");
+            uint tag = ParseTag(item[..at], "unknown-table");
+            SubsetUnknownTableChoice choice = item[(at + 1)..] switch
+            {
+                "drop" => SubsetUnknownTableChoice.Drop,
+                "preserve" => SubsetUnknownTableChoice.Preserve,
+                _ => throw new CliException("Usage", "--unknown-table choices must be drop or preserve.")
+            };
+            if (!declarations.TryAdd(tag, choice))
+                throw new CliException("Usage", $"Duplicate --unknown-table declaration for '{TagText(tag)}'.");
+        }
+        return declarations;
+    }
+
+    private static string Sha256Hex(byte[] bytes) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+
     private static ReadStatus ReadHeadEdit(FontFaceRef face, Dictionary<string, string?> options,
         BuildLimits limits, out HeadMetadataEdit edit, out FontDiagnostic diagnostic)
     {
@@ -445,13 +714,13 @@ internal static class Program
         return result;
     }
 
-    private static uint ParseTag(string value)
+    private static uint ParseTag(string value, string option = "table")
     {
         if (value.Length == 10 && value.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
             uint.TryParse(value.AsSpan(2), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out uint tag))
             return tag;
         if (value.Length != 4 || value.Any(character => character > 0x7F))
-            throw new CliException("Usage", "--table must be four ASCII characters or 0xXXXXXXXX.");
+            throw new CliException("Usage", $"--{option} must be four ASCII characters or 0xXXXXXXXX.");
         return (uint)value[0] << 24 | (uint)value[1] << 16 | (uint)value[2] << 8 | value[3];
     }
 
@@ -571,6 +840,18 @@ internal static class Program
             throw new CliException("DestinationExists", "Output already exists; M1 does not overwrite files.");
     }
 
+    private static void CheckNewPath(string input, string? candidate, string? output)
+    {
+        var comparer = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (candidate is null) return;
+        if (output is not null && string.Equals(candidate, output, comparer))
+            throw new CliException("Usage", "Map must not be the output path.");
+        if (string.Equals(candidate, input, comparer))
+            throw new CliException("Usage", "Map must not be the input path.");
+        if (File.Exists(candidate) || Directory.Exists(candidate))
+            throw new CliException("Usage", "Map already exists; M1 does not overwrite files.");
+    }
+
     private static void WriteNewFile(string output, byte[] bytes)
     {
         string directory = Path.GetDirectoryName(output)!;
@@ -601,7 +882,8 @@ internal static class Program
                 throw new CliException("Usage", $"Unexpected argument '{args[i]}'.");
             string name = args[i][2..];
             string? value = null;
-            if (name is not ("drop-signature" or "show-raw" or "json"))
+            if (name is not ("drop-signature" or "show-raw" or "json"
+                or "no-layout" or "preserve-layout" or "drop-hinting"))
             {
                 if (++i == args.Length || args[i].StartsWith("--", StringComparison.Ordinal))
                     throw new CliException("Usage", $"--{name} requires a value.");
@@ -628,6 +910,10 @@ internal static class Program
         else if (command == "edit-rebuild")
             allowed.UnionWith(["output", "record", "text", "head-revision", "head-modified",
                 "drop-signature", "unknown-tables", "max-temporary-bytes", "max-work-units"]);
+        else if (command == "subset")
+            allowed.UnionWith(["output", "mode", "gids", "map", "no-layout", "preserve-layout",
+                "drop-hinting", "drop-signature", "scope-script", "scope-language", "scope-feature",
+                "unknown-table", "max-temporary-bytes", "max-work-units"]);
         else if (command is "inspect" or "names") allowed.Add("show-raw");
         else
         {
