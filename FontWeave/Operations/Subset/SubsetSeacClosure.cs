@@ -117,19 +117,15 @@ public static partial class SubsetOperation
         BuildBudget budget, int gid, int code, List<ushort> added, Queue<int> queue,
         out FontDiagnostic diagnostic)
     {
+        // The seac codes are Standard-encoding bytes by definition; a known literal
+        // outside 0..255 has no Standard entry, so it refuses on the same tier without
+        // handing the accessor an out-of-domain code.
+        if (code is < 0 or > 0xFF)
+            return RefuseUnmappedCode(model, gid, code, out diagnostic);
         ReadStatus status = model.TryMapStandardCode(code, out int sid, out bool mapped,
             out int refGid, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (sid == 0)
-        {
-            // Category 1 (card §2.3): the code has no Standard encoding entry, so no
-            // glyph could ever answer the reference; Detail is the code, Expected the
-            // empty SID.
-            return ReadWire.Fail(ReadStatus.UnsupportedFormat,
-                DiagnosticCode.UnsupportedOperation,
-                model.Location.At(DataField.GlyphId, 0, gid), out diagnostic,
-                (ulong)code, 0UL);
-        }
+        if (sid == 0) return RefuseUnmappedCode(model, gid, code, out diagnostic);
         if (!mapped)
         {
             // Category 2: the standard name is not in the charset — the input face's
@@ -149,6 +145,16 @@ public static partial class SubsetOperation
         queue.Enqueue(refGid);
         return ReadStatus.Done;
     }
+
+    /// <summary>Category 1 (card §2.3): the code has no Standard encoding entry, so no
+    /// glyph could ever answer the reference; Detail is the code (sign-extended for the
+    /// impossible negative literals), Expected the empty SID.</summary>
+    private static ReadStatus RefuseUnmappedCode(Cff1Table model, int gid, int code,
+        out FontDiagnostic diagnostic) =>
+        ReadWire.Fail(ReadStatus.UnsupportedFormat,
+            DiagnosticCode.UnsupportedOperation,
+            model.Location.At(DataField.GlyphId, 0, gid), out diagnostic,
+            unchecked((ulong)(long)code), 0UL);
 
     /// <summary>TN5176 §4.7: the call bias as a function of the CALLED INDEX's count —
     /// the only bias input, which this closure never moves (the S1c §2.2 frozen fact:
@@ -234,7 +240,10 @@ public static partial class SubsetOperation
                 int b = program[i];
                 if (b == 28 && i + 2 < n)
                 {
-                    _stack.Add(Slot.Of((short)((program[i + 1] << 8) | program[i + 2])));
+                    // 16-bit signed literal; the sign extension stays in int space so
+                    // the checked builds never narrow through short.
+                    int raw = (program[i + 1] << 8) | program[i + 2];
+                    _stack.Add(Slot.Of(raw >= 0x8000 ? raw - 0x10000 : raw));
                     i += 3;
                 }
                 else if (b is >= 32 and <= 246)
@@ -404,7 +413,7 @@ public static partial class SubsetOperation
             if (top.Known)
             {
                 int idx = top.Value - SubrBias(table.Length);
-                if ((uint)idx < (uint)table.Length)
+                if (idx >= 0 && idx < table.Length)
                     return ScanBody(kind, idx, table[idx], out bcharCode,
                         out acharCode, out found, out diagnostic);
                 // Out of range: the program would fault at run time; no body to scan.
