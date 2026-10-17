@@ -222,38 +222,130 @@ public static partial class SubsetOperation
 
     /// <summary>Re-slots the parked CFF2 model over the frozen map (OQ-SV-4
     ///attached lean): output item o of the CharString INDEX is the input item
-    /// <c>outputToInput[o]</c> as a byte[] reference move (zero copies, zero
-    /// charstring semantics — the blend/vsindex operand domains are never
-    /// touched), the per-glyph FD index re-slots the same way (FD numbers are
+    /// <c>outputToInput[o]</c> as a byte[] reference move while no subr prune plan
+    /// is parked (zero copies, zero charstring semantics — the blend/vsindex
+    /// operand domains are never touched), or a plan-rewritten program whose
+    /// callsubr/callgsubr sites re-encode over the pruned INDEXes (S4 card §3.3,
+    /// OQ-S4-1 lean); the per-glyph FD index re-slots the same way (FD numbers are
     /// explicit wire attribute fields whose value domain never renumbers), and
-    /// every other member — TopDICT, GlobalSubrs, FDArray with its Private
-    /// DICTs and LocalSubrs, the FDSelect wire format, the variation store —
-    /// carries over verbatim on the derived model, whose compile re-runs the
-    /// layout fixpoint over the subset sizes and re-answers the FDSelect runs
-    /// in the source's format family. The re-slot deliberately bypasses the
-    /// TryCreate factory: the read model is already fully guarded, and staying
-    /// on it keeps the "zero charstring semantics" boundary literal.</summary>
+    /// every other member — TopDICT, FDArray with its Private DICTs, the FDSelect
+    /// wire format, the variation store — carries over verbatim on the derived
+    /// model, whose compile re-runs the layout fixpoint over the subset sizes and
+    /// re-answers the FDSelect runs in the source's format family. Under a plan the
+    /// Global Subrs renew from the plan's survivors and every FontDICT's Private
+    /// DICT renews from its FD's survivor bucket (a bucket pruned to zero loses
+    /// the Private DICT's 0x13 key with its INDEX). The re-slot deliberately
+    /// bypasses the TryCreate factory: the read model is already fully guarded,
+    /// and staying on it keeps the semantic boundary explicit.</summary>
     private static ReadStatus RebuildCff2(Tables.Cff2Table model, GlyphRemap map,
-        BuildBudget budget, out byte[]? cff2Bytes, out FontDiagnostic diagnostic)
+        SubrPrunePlan? prune, BuildBudget budget, out byte[]? cff2Bytes,
+        out FontDiagnostic diagnostic)
     {
         cff2Bytes = null;
         var inputOrder = map.OutputToInput;
         int outputCount = map.OutputGlyphCount;
         if (!budget.Work(outputCount, model.Location, out diagnostic))
             return ReadStatus.ResourceLimit;
-        var charStrings = new byte[outputCount][];
-        var fdIndex = new int[outputCount];
+        byte[][] charStrings;
+        byte[][] globalSubrs;
+        Tables.Cff2FontDict[] fontDicts;
+        if (prune is null)
+        {
+            charStrings = new byte[outputCount][];
+            var fdIndex = new int[outputCount];
+            for (int o = 0; o < outputCount; o++)
+            {
+                int input = inputOrder[o];
+                charStrings[o] = model.CharStrings[input];
+                fdIndex[o] = model.FdIndex[input];
+            }
+            globalSubrs = model.GlobalSubrsInternal;
+            fontDicts = model.FontDictsInternal;
+            var rebuilt = new Tables.Cff2Table(model.MinorVersion, model.HeaderSize,
+                model.TopDictInternal, model.HasVariationStore, globalSubrs,
+                charStrings, fontDicts, model.FdSelectFormat, fdIndex,
+                model.Store, model.CharstringStats, model.Location,
+                model.ConsumedLength);
+            return Tables.Cff2TableCompiler.TryCompile(rebuilt, out cff2Bytes,
+                out diagnostic, budget);
+        }
+
+        byte[][] globals = model.GlobalSubrsInternal;
+        int fdCount = model.FontDictCount;
+        var fdLocals = new byte[fdCount][][];
+        for (int fd = 0; fd < fdCount; fd++)
+            fdLocals[fd] = model.FontDictsInternal[fd].Private?.LocalSubrs ?? [];
+        var programFds = new int[outputCount];
+        charStrings = new byte[outputCount][];
+        var selected = new byte[outputCount][];
         for (int o = 0; o < outputCount; o++)
         {
             int input = inputOrder[o];
-            charStrings[o] = model.CharStrings[input];
-            fdIndex[o] = model.FdIndex[input];
+            programFds[o] = model.FdIndex[input];
+            selected[o] = model.CharStrings[input];
         }
-        var rebuilt = new Tables.Cff2Table(model.MinorVersion, model.HeaderSize,
-            model.TopDictInternal, model.HasVariationStore, model.GlobalSubrsInternal,
-            charStrings, model.FontDictsInternal, model.FdSelectFormat, fdIndex,
-            model.Store, model.CharstringStats, model.Location, model.ConsumedLength);
-        return Tables.Cff2TableCompiler.TryCompile(rebuilt, out cff2Bytes,
+        ReadStatus pruneStatus = RewritePrograms(selected, programFds,
+            globals, fdLocals, prune, cff2: true, model.Location, budget,
+            out charStrings, out diagnostic);
+        if (pruneStatus != ReadStatus.Done) return pruneStatus;
+        var fdIndexPruned = new int[outputCount];
+        for (int o = 0; o < outputCount; o++)
+            fdIndexPruned[o] = model.FdIndex[inputOrder[o]];
+        if (prune.Global is { } globalPlan)
+        {
+            var contextFds = new int[globalPlan.NewCount];
+            for (int s = 0; s < globalPlan.NewCount; s++)
+                contextFds[s] = prune.GlobalContextFd.TryGetValue(
+                    globalPlan.Survivors[s], out int ctx) ? ctx : 0;
+            pruneStatus = RewriteSurvivorBodies(globals, globalPlan.Survivors,
+                contextFds, globals, fdLocals, prune, cff2: true, model.Location,
+                budget, out globalSubrs, out diagnostic);
+            if (pruneStatus != ReadStatus.Done) return pruneStatus;
+        }
+        else
+        {
+            globalSubrs = globals;
+        }
+        fontDicts = new Tables.Cff2FontDict[fdCount];
+        for (int fd = 0; fd < fdCount; fd++)
+        {
+            var old = model.FontDictsInternal[fd];
+            var localPlan = prune.LocalByFd[fd];
+            if (localPlan is null)
+            {
+                fontDicts[fd] = old;
+                continue;
+            }
+            var privateDict = old.Private;
+            if (privateDict is null)
+            {
+                // Unreachable by construction: an FD without a Private DICT owns
+                // no local INDEX, so its plan slot stays null and the branch above
+                // returned — refuse defensively instead of inventing the DICT.
+                diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                    model.Location, (uint)fd, 0UL);
+                return ReadStatus.UnsupportedFormat;
+            }
+            pruneStatus = RewriteSurvivorBodies(fdLocals[fd], localPlan.Survivors,
+                new int[localPlan.NewCount], globals, fdLocals, prune, cff2: true,
+                model.Location, budget, out var renewedLocals, out diagnostic);
+            if (pruneStatus != ReadStatus.Done) return pruneStatus;
+            bool renewedHasLocals = localPlan.NewCount > 0;
+            var entries = renewedHasLocals || !privateDict.HasLocalSubrs
+                ? privateDict.Entries
+                : [.. privateDict.Entries.Where(entry =>
+                    entry.Operator != Tables.Cff2Operators.PrivateLocalSubrs)];
+            fontDicts[fd] = new Tables.Cff2FontDict(old.Entry,
+                new Tables.Cff2PrivateDict(entries, renewedLocals,
+                    entries.Sum(static entry => entry.BlendCount),
+                    privateDict.VsindexValue));
+        }
+        var rebuiltPruned = new Tables.Cff2Table(model.MinorVersion, model.HeaderSize,
+            model.TopDictInternal, model.HasVariationStore, globalSubrs,
+            charStrings, fontDicts, model.FdSelectFormat, fdIndexPruned,
+            model.Store, model.CharstringStats, model.Location,
+            model.ConsumedLength);
+        return Tables.Cff2TableCompiler.TryCompile(rebuiltPruned, out cff2Bytes,
             out diagnostic, budget);
     }
 }

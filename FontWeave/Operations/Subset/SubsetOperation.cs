@@ -313,6 +313,17 @@ public static partial class SubsetOperation
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
         }
+        if (compact && profile.HasCff2)
+        {
+            // OQ-S4-1 lean: CFF2 rides the same slice — the walker's CFF2 mode
+            // (vsindex/blend stack effects, no endchar) and the per-FontDICT local
+            // buckets, everything else the CFF1 form.
+            status = PruneSubrsCff2(state.Cff2!, map!, budget, out state.SubrPrunePlan,
+                out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+        }
 
         // Step 6: derived counts over the final retained set.
         if (!budget.Work(numGlyphs, faceAt, out diagnostic))
@@ -545,8 +556,8 @@ public static partial class SubsetOperation
                     return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
                         out result, out report, out diagnostic);
                 }
-                status = RebuildCff2(cff2Model, map!, budget, out rebuiltCff2,
-                    out diagnostic);
+                status = RebuildCff2(cff2Model, map!, state.SubrPrunePlan, budget,
+                    out rebuiltCff2, out diagnostic);
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result,
                         out report, out diagnostic);

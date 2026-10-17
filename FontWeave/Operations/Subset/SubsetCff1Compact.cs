@@ -127,9 +127,9 @@ public static partial class SubsetOperation
         }
         else
         {
-            ReadStatus pruneStatus = RewriteSubrPrograms(model, map, prune, budget,
-                out charStrings, out globalSubrs, out localSubrs, out hasLocalSubrs,
-                out diagnostic);
+            ReadStatus pruneStatus = RewriteSubrProgramsNameKeyed(model, map, prune,
+                budget, out charStrings, out globalSubrs, out localSubrs,
+                out hasLocalSubrs, out diagnostic);
             if (pruneStatus != ReadStatus.Done) return pruneStatus;
             privateDict = hasLocalSubrs || !model.HasLocalSubrs
                 ? model.PrivateDict.ToArray()
@@ -219,17 +219,88 @@ public static partial class SubsetOperation
             : CidFdSelect.FromRanges(outputCount, maximumFd + 1,
                 FdRangesOf(newFd), model.FdSelect.Location, model.FdSelect.Offset);
 
-        // CharStrings reorder as byte-for-byte copies; Name, Top DICT, String INDEX,
-        // Global Subrs and every Font DICT (with its Private DICT and Local Subrs)
-        // carry over verbatim on the derived model, whose compile re-runs the layout
-        // fixpoint over the subset sizes through the CID compiler's own Prepare/Emit.
-        var charStrings = new byte[outputCount][];
-        for (int o = 0; o < outputCount; o++)
-            charStrings[o] = model.CharStrings[inputOrder[o]];
+        // CharStrings reorder as copies — byte-for-byte on the S1c verbatim path
+        // (null plan), rewritten at their call sites when a prune plan is parked
+        // (S4 card §3.3). The per-FD supply follows the plan: every FD's Local
+        // Subrs renew from its survivor bucket under that FD's own context (an FD
+        // no retained glyph references has an empty bucket, so its INDEX prunes
+        // away and its Private DICT loses the Subrs key, card §2.2; the FDArray
+        // itself keeps every FD), and the Global Subrs renew from the face-wide
+        // bucket under each body's scanning context.
+        byte[][] charStrings;
+        CidFontDict[] fontDicts;
+        byte[][] globalSubrs;
+        if (prune is null)
+        {
+            charStrings = new byte[outputCount][];
+            for (int o = 0; o < outputCount; o++)
+                charStrings[o] = model.CharStrings[inputOrder[o]];
+            fontDicts = model.FontDicts.ToArray();
+            globalSubrs = model.GlobalSubrs.ToArray();
+        }
+        else
+        {
+            byte[][] globals = model.GlobalSubrs.ToArray();
+            var fdLocals = new byte[model.FdCount][][];
+            for (int fd = 0; fd < model.FdCount; fd++)
+                fdLocals[fd] = model[fd].LocalSubrs.ToArray();
+            var programFds = new int[outputCount];
+            charStrings = new byte[outputCount][];
+            var selected = new byte[outputCount][];
+            for (int o = 0; o < outputCount; o++)
+            {
+                ReadStatus fdStatus = model.TryGetFdIndex(inputOrder[o],
+                    out programFds[o], out diagnostic);
+                if (fdStatus != ReadStatus.Done) return fdStatus;
+                selected[o] = model.CharStrings[inputOrder[o]];
+            }
+            ReadStatus pruneStatus = RewritePrograms(selected, programFds,
+                globals, fdLocals, prune, cff2: false, model.Location, budget,
+                out charStrings, out diagnostic);
+            if (pruneStatus != ReadStatus.Done) return pruneStatus;
+            if (prune.Global is { } globalPlan)
+            {
+                var contextFds = new int[globalPlan.NewCount];
+                for (int s = 0; s < globalPlan.NewCount; s++)
+                    contextFds[s] = prune.GlobalContextFd.TryGetValue(
+                        globalPlan.Survivors[s], out int ctx) ? ctx : 0;
+                pruneStatus = RewriteSurvivorBodies(globals, globalPlan.Survivors,
+                    contextFds, globals, fdLocals, prune, cff2: false,
+                    model.Location, budget, out globalSubrs, out diagnostic);
+                if (pruneStatus != ReadStatus.Done) return pruneStatus;
+            }
+            else
+            {
+                globalSubrs = globals;
+            }
+            fontDicts = new CidFontDict[model.FdCount];
+            for (int fd = 0; fd < model.FdCount; fd++)
+            {
+                var old = model[fd];
+                var localPlan = prune.LocalByFd[fd];
+                if (localPlan is null)
+                {
+                    fontDicts[fd] = old;
+                    continue;
+                }
+                pruneStatus = RewriteSurvivorBodies(fdLocals[fd],
+                    localPlan.Survivors, new int[localPlan.NewCount], globals,
+                    fdLocals, prune, cff2: false, model.Location, budget,
+                    out var renewedLocals, out diagnostic);
+                if (pruneStatus != ReadStatus.Done) return pruneStatus;
+                bool renewedHasLocals = localPlan.NewCount > 0;
+                var privateEntries = renewedHasLocals || !old.HasLocalSubrs
+                    ? old.PrivateEntries.ToArray()
+                    : PrivateEntriesWithoutSubrs(old.PrivateEntries);
+                fontDicts[fd] = new CidFontDict(old.Ordinal, old.RawBytes.ToArray(),
+                    old.Entries.ToArray(), old.PrivateOffset, old.PrivateSize,
+                    privateEntries, renewedHasLocals, renewedLocals, old.Location);
+            }
+        }
         var derived = new CidCff1Table(model.HeaderMajor, model.HeaderMinor,
             model.HeaderHdrSize, model.HeaderOffSize, model.NameBytes.ToArray(),
-            topDict, model.Strings.ToArray(), model.GlobalSubrs.ToArray(),
-            model.Ros, model.CidCount, fdSelect, model.FontDicts.ToArray(), cids,
+            topDict, model.Strings.ToArray(), globalSubrs,
+            model.Ros, model.CidCount, fdSelect, fontDicts, cids,
             charStrings, charsetForm, model.Location, model.FdArrayOffset,
             model.CharsetOffset, model.FdSelectOffset, model.CharStringsOffset);
         return CidCff1TableCompiler.TryCompile(derived, new CidEditPlan(),

@@ -195,16 +195,140 @@ public static partial class SubsetOperation
         GlyphRemap map, BuildBudget budget, out SubrPrunePlan? plan,
         out FontDiagnostic diagnostic)
     {
-        if (cidKeyed is not null)
+        return cidKeyed is not null
+            ? PruneSubrsCid(cidKeyed, map, budget, out plan, out diagnostic)
+            : PruneSubrsNameKeyed(nameKeyed!, map, budget, out plan, out diagnostic);
+    }
+
+    /// <summary>The CID-keyed analysis (card §2.2, OQ-S4-4 lean): the global set is
+    /// face-wide while every FD's local set buckets separately — a glyph's callsubr
+    /// resolves only against its FDSelect-bound FD's INDEX and that FD's count's
+    /// bias — and each retained glyph's program walks under its own FD context. An
+    /// FD no retained glyph references has an empty bucket, so its INDEX prunes to
+    /// zero survivors and its Private DICT loses the Subrs key (FDArray never
+    /// shrinks). A global body carrying local calls that more than one FD context
+    /// scans refuses (A3): its call operand would need a per-context re-encoding no
+    /// single byte can serve.</summary>
+    private static ReadStatus PruneSubrsCid(CidCff1Table model, GlyphRemap map,
+        BuildBudget budget, out SubrPrunePlan? plan, out FontDiagnostic diagnostic)
+    {
+        plan = null;
+        byte[][] globals = model.GlobalSubrs.ToArray();
+        var fdLocals = new byte[model.FdCount][][];
+        for (int fd = 0; fd < model.FdCount; fd++)
+            fdLocals[fd] = model[fd].LocalSubrs.ToArray();
+        var analysis = new SubrAnalysis();
+        var inputOrder = map.OutputToInput;
+        for (int o = 0; o < inputOrder.Length; o++)
         {
-            // The CID flavor's per-FD analysis lands with its own wiring commit
-            // (S4 card §5 ②); until then the CID rebuild rides the S1c verbatim
-            // path (identity, the §3.5 anchor).
-            plan = null;
+            int gid = inputOrder[o];
+            ReadStatus status = model.TryGetFdIndex(gid, out int fd, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            var walk = new SubrWalk(budget, model.Location.At(DataField.GlyphId, 0, gid),
+                fdLocals[fd], globals, cff2: false, seac: false, analysis, fd,
+                rewrite: null);
+            status = walk.RunReach(model.CharStrings[gid], out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
+        ReadStatus guard = RefuseDivergentGlobalLocals(analysis, model.Location,
+            out diagnostic);
+        if (guard != ReadStatus.Done) return guard;
+        var globalPlan = BuildIndexPlan(analysis.GlobalReach, globals.Length);
+        var localPlans = new SubrIndexPlan?[model.FdCount];
+        bool any = globalPlan is not null;
+        for (int fd = 0; fd < model.FdCount; fd++)
+        {
+            localPlans[fd] = BuildIndexPlan(analysis.LocalSet(fd), fdLocals[fd].Length);
+            any |= localPlans[fd] is not null;
+        }
+        if (!any)
+        {
             diagnostic = default;
             return ReadStatus.Done;
         }
-        return PruneSubrsNameKeyed(nameKeyed!, map, budget, out plan, out diagnostic);
+        plan = analysis.ToPlan(globalPlan, localPlans);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The CFF2 analysis (OQ-S4-1 lean, card §2.1's CFF2 addendum): the
+    /// same per-FD bucketing over the FontDICT binding, with the vsindex/blend
+    /// stack effects the walker applies in its CFF2 mode and no endchar (TN5171
+    /// charstrings end by fall-off). TopDICT carries no charset/encoding, so the
+    /// stable identity and this stage never interact.</summary>
+    private static ReadStatus PruneSubrsCff2(Tables.Cff2Table model, GlyphRemap map,
+        BuildBudget budget, out SubrPrunePlan? plan, out FontDiagnostic diagnostic)
+    {
+        plan = null;
+        byte[][] globals = model.GlobalSubrsInternal;
+        int fdCount = model.FontDictCount;
+        var fdLocals = new byte[fdCount][][];
+        for (int fd = 0; fd < fdCount; fd++)
+            fdLocals[fd] = model.FontDictsInternal[fd].Private?.LocalSubrs ?? [];
+        var analysis = new SubrAnalysis();
+        var inputOrder = map.OutputToInput;
+        for (int o = 0; o < inputOrder.Length; o++)
+        {
+            int gid = inputOrder[o];
+            int fd = model.FdIndexInternal[gid];
+            if ((uint)fd >= (uint)fdCount)
+            {
+                // The read model guarantees the FD binding's domain; a violation is
+                // a pipeline bug, refused at the model's own location (A2's face
+                // form — the FDSelect drift the strict validator pins).
+                return ReadWire.Fail(ReadStatus.UnsupportedFormat,
+                    DiagnosticCode.UnsupportedOperation,
+                    model.Location.At(DataField.GlyphId, 0, gid), out diagnostic,
+                    (uint)fd, (uint)fdCount);
+            }
+            var walk = new SubrWalk(budget, model.Location.At(DataField.GlyphId, 0, gid),
+                fdLocals[fd], globals, cff2: true, seac: false, analysis, fd,
+                rewrite: null);
+            ReadStatus status = walk.RunReach(model.CharStringsInternal[gid],
+                out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
+        ReadStatus guard = RefuseDivergentGlobalLocals(analysis, model.Location,
+            out diagnostic);
+        if (guard != ReadStatus.Done) return guard;
+        var globalPlan = BuildIndexPlan(analysis.GlobalReach, globals.Length);
+        var localPlans = new SubrIndexPlan?[fdCount];
+        bool any = globalPlan is not null;
+        for (int fd = 0; fd < fdCount; fd++)
+        {
+            localPlans[fd] = BuildIndexPlan(analysis.LocalSet(fd), fdLocals[fd].Length);
+            any |= localPlans[fd] is not null;
+        }
+        if (!any)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        plan = analysis.ToPlan(globalPlan, localPlans);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The multi-FD divergence guard (§4 A3): a global body whose program
+    /// calls locals and which more than one FD context reaches would need one call
+    /// operand to renumber identically for every calling context — a fact no
+    /// single-context scan proves, so the shape refuses. Detail names the body,
+    /// Expected the single context the rewrite could serve.</summary>
+    private static ReadStatus RefuseDivergentGlobalLocals(SubrAnalysis analysis,
+        DataLocation modelAt, out FontDiagnostic diagnostic)
+    {
+        foreach (int body in analysis.GlobalReach)
+        {
+            if (analysis.GlobalLocalCall.Contains(body) &&
+                analysis.GlobalBodyFds[body].Count > 1)
+            {
+                diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                    modelAt, (uint)body, 1UL);
+                return ReadStatus.UnsupportedFormat;
+            }
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
     }
 
     /// <summary>The name-keyed analysis (§2.2's FD-0 form): one local INDEX, one
@@ -266,82 +390,111 @@ public static partial class SubsetOperation
 
     // ---- the payload rewriter (§3.3) ---------------------------------------------
 
-    /// <summary>Rewrites every retained glyph program and every surviving subr body
-    /// under a parked plan: a token-level walk that copies bytes verbatim except the
+    /// <summary>Rewrites the retained programs — one FD context each — under a
+    /// parked plan: a token-level walk that copies bytes verbatim except the
     /// callsubr/callgsubr sites, whose operand re-encodes as new index − new bias in
     /// the minimal push form; a site whose value the renumbering leaves unchanged
     /// keeps its original operand bytes (the judgment is by value, not width). Mask
-    /// skip widths read the analysis's stem memo (§2.1) so the walk tracks the
+    /// skip widths read the plan's stem memo (§2.1) so the walk tracks the
     /// runtime's hint count across call frames. Sites whose operand does not sit in
     /// the immediately preceding push token refuse (A3): their value's origin is a
     /// stack shape no single-byte rewrite can serve.</summary>
-    private static ReadStatus RewriteSubrPrograms(Cff1Table model, GlyphRemap map,
+    private static ReadStatus RewritePrograms(byte[][] programs, int[] programFds,
+        byte[][] globals, byte[][][] fdLocals, SubrPrunePlan plan, bool cff2,
+        DataLocation modelAt, BuildBudget budget, out byte[][] rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = new byte[programs.Length][];
+        for (int i = 0; i < programs.Length; i++)
+        {
+            int fd = programFds[i];
+            var rewrite = new RewriteState(plan, fd, plan.LocalByFd[fd], plan.Global);
+            var walk = new SubrWalk(budget, modelAt.At(DataField.GlyphId, 0, i),
+                fdLocals[fd], globals, cff2, seac: false, analysis: null, fd,
+                rewrite: rewrite);
+            ReadStatus status = walk.RunRewrite(programs[i], out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            rewritten[i] = [.. rewrite.Output];
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Rewrites one pruned INDEX's surviving bodies in survivor order, each
+    /// under the FD context its mask widths read the memo under (global bodies: their
+    /// single scanning context from the plan; local bodies: their own FD).</summary>
+    private static ReadStatus RewriteSurvivorBodies(byte[][] bodies, int[] survivorOld,
+        int[] bodyFds, byte[][] globals, byte[][][] fdLocals, SubrPrunePlan plan,
+        bool cff2, DataLocation modelAt, BuildBudget budget, out byte[][] rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = new byte[survivorOld.Length][];
+        for (int s = 0; s < survivorOld.Length; s++)
+        {
+            int old = survivorOld[s];
+            int fd = bodyFds[s];
+            var rewrite = new RewriteState(plan, fd, plan.LocalByFd[fd], plan.Global);
+            var walk = new SubrWalk(budget, modelAt.At(DataField.GlyphId, 0, old),
+                fdLocals[fd], globals, cff2, seac: false, analysis: null, fd,
+                rewrite: rewrite);
+            ReadStatus status = walk.RunRewrite(bodies[old], out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            rewritten[s] = [.. rewrite.Output];
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The name-keyed form (FD 0 everywhere): the retained programs, the
+    /// surviving global bodies and the surviving local bodies of the one INDEX.
+    /// Also decides the Private DICT's Subrs key: an INDEX pruned to zero survivors
+    /// loses the key (card §1.1's key-delete face) — a stale operand would point
+    /// into the body it no longer owns.</summary>
+    private static ReadStatus RewriteSubrProgramsNameKeyed(Cff1Table model, GlyphRemap map,
         SubrPrunePlan plan, BuildBudget budget, out byte[][] charStrings,
         out byte[][] globalSubrs, out byte[][] localSubrs, out bool hasLocalSubrs,
         out FontDiagnostic diagnostic)
     {
-        charStrings = [];
-        globalSubrs = [];
-        localSubrs = [];
-        hasLocalSubrs = false;
         var localPlan = plan.LocalByFd[0];
         var globalPlan = plan.Global;
         byte[][] globals = model.GlobalSubrs.ToArray();
         byte[][] locals = model.LocalSubrs.ToArray();
+        byte[][][] fdLocals = [locals];
         var inputOrder = map.OutputToInput;
-        charStrings = new byte[inputOrder.Length][];
+        charStrings = [];
+        globalSubrs = [];
+        localSubrs = [];
+        hasLocalSubrs = false;
+        var selected = new byte[inputOrder.Length][];
         for (int o = 0; o < inputOrder.Length; o++)
-        {
-            int gid = inputOrder[o];
-            var rewrite = new RewriteState(plan, fd: 0, localPlan, globalPlan);
-            var walk = new SubrWalk(budget, model.Location.At(DataField.GlyphId, 0, gid),
-                locals, globals, cff2: false, seac: false, analysis: null, fd: 0,
-                rewrite: rewrite);
-            ReadStatus status = walk.RunRewrite(model.CharStrings[gid], out diagnostic);
-            if (status != ReadStatus.Done) return status;
-            charStrings[o] = [.. rewrite.Output];
-        }
-
-        // Surviving bodies re-emit in survivor order, each under its scanning FD
-        // context (name-keyed: always FD 0).
-        globalSubrs = globals;
+            selected[o] = model.CharStrings[inputOrder[o]];
+        ReadStatus status = RewritePrograms(selected,
+            new int[inputOrder.Length], globals, fdLocals, plan, cff2: false,
+            model.Location, budget, out charStrings, out diagnostic);
+        if (status != ReadStatus.Done) return status;
         if (globalPlan is { } prunedGlobal)
         {
-            var rewritten = new byte[prunedGlobal.NewCount][];
-            for (int s = 0; s < prunedGlobal.NewCount; s++)
-            {
-                int old = prunedGlobal.Survivors[s];
-                var rewrite = new RewriteState(plan, fd: 0, localPlan,
-                    globalPlan);
-                var walk = new SubrWalk(budget, model.Location.At(DataField.GlyphId,
-                    0, old), locals, globals, cff2: false, seac: false,
-                    analysis: null, fd: 0, rewrite: rewrite);
-                ReadStatus status = walk.RunRewrite(globals[old], out diagnostic);
-                if (status != ReadStatus.Done) return status;
-                rewritten[s] = [.. rewrite.Output];
-            }
-            globalSubrs = rewritten;
+            status = RewriteSurvivorBodies(globals, prunedGlobal.Survivors,
+                new int[prunedGlobal.NewCount], globals, fdLocals, plan, cff2: false,
+                model.Location, budget, out globalSubrs, out diagnostic);
+            if (status != ReadStatus.Done) return status;
         }
-
-        localSubrs = locals;
-        hasLocalSubrs = model.HasLocalSubrs;
+        else
+        {
+            globalSubrs = globals;
+        }
         if (localPlan is { } prunedLocal)
         {
-            var rewritten = new byte[prunedLocal.NewCount][];
-            for (int s = 0; s < prunedLocal.NewCount; s++)
-            {
-                int old = prunedLocal.Survivors[s];
-                var rewrite = new RewriteState(plan, fd: 0, localPlan,
-                    globalPlan);
-                var walk = new SubrWalk(budget, model.Location.At(DataField.GlyphId,
-                    0, old), locals, globals, cff2: false, seac: false,
-                    analysis: null, fd: 0, rewrite: rewrite);
-                ReadStatus status = walk.RunRewrite(locals[old], out diagnostic);
-                if (status != ReadStatus.Done) return status;
-                rewritten[s] = [.. rewrite.Output];
-            }
-            localSubrs = rewritten;
+            status = RewriteSurvivorBodies(locals, prunedLocal.Survivors,
+                new int[prunedLocal.NewCount], globals, fdLocals, plan, cff2: false,
+                model.Location, budget, out localSubrs, out diagnostic);
+            if (status != ReadStatus.Done) return status;
             hasLocalSubrs = prunedLocal.NewCount > 0;
+        }
+        else
+        {
+            localSubrs = locals;
+            hasLocalSubrs = model.HasLocalSubrs;
         }
         diagnostic = default;
         return ReadStatus.Done;
@@ -472,10 +625,12 @@ public static partial class SubsetOperation
 
         internal int AcharCode { get; private set; }
 
-        /// <summary>The rewrite walk's pending call operand (new index − new bias),
-        /// emitted by the loop once the flush bookkeeping knows where the operand
-        /// token starts.</summary>
+        /// <summary>The rewrite walk's pending call operand (new index − new bias)
+        /// and the called body's memoized stem contribution (the frame's mask
+        /// widths read it, the §2.1 memo doing the no-descent walk's accounting).
+        /// </summary>
         private int _pendingOperand;
+        private int _pendingStems;
 
         /// <summary>An endchar anywhere in the call graph ends the whole program
         /// (TN5177 §4.2 Note 6): every walker frame stops, so a charstring that
@@ -626,12 +781,12 @@ public static partial class SubsetOperation
                     i += skip;
                     continue;
                 }
-                if (b == 11)
+                if (!_cff2 && b == 11)
                 {
                     ended = true; // return: leave this body, the caller frame continues
                     break;
                 }
-                if (b == 14)
+                if (!_cff2 && b == 14)
                 {
                     // endchar: 4-5 operands = the deprecated seac form (TN5176 Type 2
                     // appendix), only read in the seac policy; the operator ends the
@@ -725,6 +880,22 @@ public static partial class SubsetOperation
                         unchecked((ulong)(long)top.Value), (ulong)table.Length);
                 _pendingOperand = newIdx -
                     (local ? _rewrite.NewLocalBias : _rewrite.NewGlobalBias);
+                // The called body's stem contribution keeps this frame's hint count
+                // runtime-faithful without descending (the analysis's memo; a miss
+                // is a pipeline bug the refusal surfaces, never a silent width).
+                int stems = local
+                    ? (_rewrite.Plan.LocalStems.TryGetValue(_rewrite.Fd,
+                            out var localMap) &&
+                        localMap.TryGetValue(old, out int localStems)
+                            ? localStems : -1)
+                    : (_rewrite.Plan.GlobalStems.TryGetValue((_rewrite.Fd, old),
+                            out int globalStems)
+                            ? globalStems : -1);
+                if (stems < 0)
+                    return ReadWire.Fail(ReadStatus.UnsupportedFormat,
+                        DiagnosticCode.UnsupportedOperation, _at, out diagnostic,
+                        (uint)old, 0UL);
+                _pendingStems = stems;
                 return ReadStatus.Done;
             }
             if (local && _analysis is { } analysis && _path.Count > 0 &&
@@ -870,6 +1041,7 @@ public static partial class SubsetOperation
                     if (_stack.Count > 0) _stack.RemoveAt(_stack.Count - 1);
                     ReadStatus status = Call(b == 10, top, out diagnostic);
                     if (status != ReadStatus.Done) return status;
+                    _hints += _pendingStems; // the called body's stems executed here
                     if (freshAt < 0)
                     {
                         // The call's operand did not come from an immediately
