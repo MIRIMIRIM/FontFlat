@@ -650,6 +650,51 @@ public sealed class SubsetLayoutRewriteTests
         Assert.Equal((ushort)1, construction.Assembly!.Parts[0].PartFlags);
     }
 
+    // The non-monotone compact map (the CFF1 SID/CID freeze sorts the output by
+    // stable identity) reaches the MATH producer through compact+PreserveLayout, so
+    // the rebuilt coverage must re-group its keys ascending with every value row
+    // riding the same permutation — the in-place image is not the sorted one. The
+    // pipeline's glyf fixtures cannot freeze a permuting map, so the bridge drives
+    // the producer directly over the hand-frozen order [0, 2, 1].
+    [Fact]
+    public void CompactPreserveMathCoverageSortsOverNonMonotoneMap()
+    {
+        FontFaceRef face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(3)));
+        Ok(GlyphRemap.TryCreate(face, 3, stackalloc ushort[] { 0, 2, 1 }, out var map,
+            out var diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 1, 2 }, 3, 1,
+            out var coverage, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(MathTableCompiler.TryCreate(coverage,
+            new MathValueRecord[] { new(100, 0), new(200, 0) },
+            new StaticDeviceTable?[2], out MathItalicsCorrectionInfoTable? italics,
+            out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        var glyphInfo = new MathGlyphInfoTable(italics, null, null, null,
+            default, 0);
+        Ok(MathTableCompiler.TryCreate(MathLayout.Version10, 3, null, glyphInfo,
+            null, out var math, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(SubsetOperation.RebuildMathForTests(math!, map!, out var bytes,
+            out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(MathView.TryOpen(bytes!, out var view, out diagnostic,
+            DataLocation.Anonymous(MathTag)));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(view!.TryReadTable(3, out var reRead, out diagnostic, new BuildLimits()));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        var outItalics = reRead!.GlyphInfo!.ItalicsCorrectionInfo!;
+        // The keys re-group ascending in the output domain...
+        Assert.Equal(new ushort[] { 1, 2 }, outItalics.Coverage!.Glyphs.ToArray());
+        // ...and the value rows moved with their coverage keys: input 2 rides
+        // output 1, so its 200 leads and input 1's 100 follows.
+        Assert.Equal(200, outItalics.Records[0].Value);
+        Assert.Equal(100, outItalics.Records[1].Value);
+    }
+
     // ---- merged commit 1c7bfa6: JSTF (extender remap + JstfMax inline lookup remap; the
     // mod-list indices stay identity per OQ-S2b-7) ----
 

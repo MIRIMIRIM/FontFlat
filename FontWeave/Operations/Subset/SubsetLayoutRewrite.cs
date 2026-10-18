@@ -2450,12 +2450,16 @@ out var rewrittenLeaf, out diagnostic);
             {
                 ReadStatus status = RebuildCoverage(math.Location,
                     italicsModel.Coverage, outputMap, outputGlyphs, out var coverage,
-                    out diagnostic);
+                    out var italicsOrdinal, out diagnostic);
                 if (status != ReadStatus.Done) return status;
-                // The "Should" family keeps its records and device slots verbatim.
-                status = MathTableCompiler.TryCreate(coverage, italicsModel.Records,
-                    italicsModel.Devices, out italics, out diagnostic,
-                    location: math.Location);
+                // The "Should" family keeps its records and device slots verbatim,
+                // riding their coverage's sort.
+                status = MathTableCompiler.TryCreate(coverage,
+                    Permute(italicsModel.Records, italicsOrdinal),
+                    italicsModel.Devices is null
+                        ? null
+                        : Permute(italicsModel.Devices, italicsOrdinal),
+                    out italics, out diagnostic, location: math.Location);
                 if (status != ReadStatus.Done) return status;
             }
             MathTopAccentAttachmentTable? topAccent = null;
@@ -2463,28 +2467,32 @@ out var rewrittenLeaf, out diagnostic);
             {
                 ReadStatus status = RebuildCoverage(math.Location,
                     topAccentModel.Coverage, outputMap, outputGlyphs, out var coverage,
-                    out diagnostic);
+                    out var accentOrdinal, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 // The "Must" coincidence re-derives at the factory; the injective
                 // map keeps the remapped coverage's length equal to the records'.
                 status = MathTableCompiler.TryCreate(coverage,
-                    topAccentModel.Records, topAccentModel.Devices, out topAccent,
-                    out diagnostic, location: math.Location);
+                    Permute(topAccentModel.Records, accentOrdinal),
+                    topAccentModel.Devices is null
+                        ? null
+                        : Permute(topAccentModel.Devices, accentOrdinal),
+                    out topAccent, out diagnostic, location: math.Location);
                 if (status != ReadStatus.Done) return status;
             }
             ReadStatus extendedStatus = RebuildCoverage(math.Location,
                 info.ExtendedShapeCoverage, outputMap, outputGlyphs, out var extended,
-                out diagnostic);
+                out _, out diagnostic);
             if (extendedStatus != ReadStatus.Done) return extendedStatus;
             MathKernInfoTable? kernInfo = null;
             if (info.KernInfo is { } kernModel)
             {
                 ReadStatus status = RebuildCoverage(math.Location,
                     kernModel.Coverage, outputMap, outputGlyphs, out var coverage,
-                    out diagnostic);
+                    out var kernOrdinal, out diagnostic);
                 if (status != ReadStatus.Done) return status;
-                status = MathTableCompiler.TryCreate(coverage, kernModel.Records,
-                    out kernInfo, out diagnostic, location: math.Location);
+                status = MathTableCompiler.TryCreate(coverage,
+                    Permute(kernModel.Records, kernOrdinal), out kernInfo,
+                    out diagnostic, location: math.Location);
                 if (status != ReadStatus.Done) return status;
             }
             glyphInfo = new(italics, topAccent, extended, kernInfo, math.Location,
@@ -2495,18 +2503,21 @@ out var rewrittenLeaf, out diagnostic);
         {
             ReadStatus status = RebuildCoverage(math.Location,
                 variantsModel.VertGlyphCoverage, outputMap, outputGlyphs,
-                out var vertCoverage, out diagnostic);
+                out var vertCoverage, out var vertOrdinal, out diagnostic);
             if (status != ReadStatus.Done) return status;
             status = RebuildCoverage(math.Location,
                 variantsModel.HorizGlyphCoverage, outputMap, outputGlyphs,
-                out var horizCoverage, out diagnostic);
+                out var horizCoverage, out var horizOrdinal, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            status = RebuildConstructions(variantsModel.VertConstructions,
-                outputMap, outputGlyphs, out var vertConstructions, out diagnostic);
+            // The construction rows are the coverages' parallel payloads and ride
+            // their sort; each row's inner variant/part references remap in place.
+            status = RebuildConstructions(
+                Permute(variantsModel.VertConstructions, vertOrdinal), outputMap,
+                outputGlyphs, out var vertConstructions, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            status = RebuildConstructions(variantsModel.HorizConstructions,
-                outputMap, outputGlyphs, out var horizConstructions,
-                out diagnostic);
+            status = RebuildConstructions(
+                Permute(variantsModel.HorizConstructions, horizOrdinal), outputMap,
+                outputGlyphs, out var horizConstructions, out diagnostic);
             if (status != ReadStatus.Done) return status;
             status = MathTableCompiler.TryCreate(
                 variantsModel.MinConnectorOverlap, vertCoverage, horizCoverage,
@@ -2595,26 +2606,35 @@ out var rewrittenLeaf, out diagnostic);
         return ReadStatus.Done;
     }
 
-    /// <summary>One coverage's image: the map is monotone over the closure set, so
-    /// the remapped glyphs stay strictly ascending in place and the factory keeps
-    /// the input's format; a miss is the RF-S2b-2 refusal.</summary>
+    /// <summary>One coverage's image: the keys remap into the output domain and sort
+    /// ascending (the wire's strict order) — the compact map's output order can
+    /// permute the input order on a CFF1 face, so the in-place image is not the
+    /// sorted one — and <paramref name="ordinalOf"/> carries the permutation —
+    /// ordinalOf[newIndex] = source ordinal — so the caller can ride the parallel
+    /// payloads (an identity permutation on the TrueType monotone order). A miss is
+    /// the RF-S2b-2 refusal.</summary>
     private static ReadStatus RebuildCoverage(DataLocation at, CoverageTable? coverage,
         LayoutOutputMap map, int outputGlyphs, out CoverageTable? rebuilt,
-        out FontDiagnostic diagnostic)
+        out int[] ordinalOf, out FontDiagnostic diagnostic)
     {
         rebuilt = null;
+        ordinalOf = [];
         if (coverage is null)
         {
             diagnostic = default;
             return ReadStatus.Done;
         }
         var glyphs = new ushort[coverage.Glyphs.Length];
+        ordinalOf = new int[coverage.Glyphs.Length];
         for (int i = 0; i < glyphs.Length; i++)
         {
             ReadStatus status = RemapGlyphId(at, coverage.Glyphs[i], map,
                 out glyphs[i], out diagnostic);
             if (status != ReadStatus.Done) return status;
+            ordinalOf[i] = i;
         }
+        // The frozen map is injective, so the keys are distinct and the sort is total.
+        Array.Sort(glyphs, ordinalOf);
         ReadStatus create = CoverageTableCompiler.TryCreate(glyphs, outputGlyphs,
             coverage.Format, out rebuilt, out diagnostic, location: at);
         if (create != ReadStatus.Done) return create;
@@ -2623,6 +2643,16 @@ out var rewrittenLeaf, out diagnostic);
                 (ulong)glyphs.Length), (ulong)rebuilt.Glyphs.Length,
                 out diagnostic);
         return ReadStatus.Done;
+    }
+
+    /// <summary>The parallel payloads ride their coverage's sort: the element at
+    /// source ordinal <c>ordinalOf[i]</c> lands at sorted position i (the
+    /// RewriteCoverage contract the MATH and JSTF-inline producers share).</summary>
+    private static T[] Permute<T>(IReadOnlyList<T> source, int[] ordinalOf)
+    {
+        var permuted = new T[ordinalOf.Length];
+        for (int i = 0; i < permuted.Length; i++) permuted[i] = source[ordinalOf[i]];
+        return permuted;
     }
 
 
@@ -2966,15 +2996,18 @@ out var rewrittenLeaf, out diagnostic);
     {
         rebuilt = null;
         ReadStatus status = RebuildCoverage(at, sub.Coverage, map, outputGlyphs,
-            out var coverage, out diagnostic);
+            out var coverage, out var coverageOrdinal, out diagnostic);
         if (status != ReadStatus.Done)
         {
             rebuilt = null;
             return status;
         }
         // The physical value rows travel verbatim (one for format 1, one per
-        // coverage key for format 2).
-        return SinglePosTableCompiler.TryCreate(coverage!.Glyphs, sub.Values,
+        // coverage key for format 2) and the per-key rows ride the coverage's sort.
+        StaticValueRecord[] values = sub.Format == 1
+            ? sub.Values.ToArray()
+            : Permute(sub.Values.ToArray(), coverageOrdinal);
+        return SinglePosTableCompiler.TryCreate(coverage!.Glyphs, values,
             outputGlyphs, sub.Format, sub.ValueFormat, out rebuilt,
             out diagnostic, location: at, coverageFormat: sub.Coverage.Format);
     }
@@ -2985,7 +3018,7 @@ out var rewrittenLeaf, out diagnostic);
     {
         rebuilt = null;
         ReadStatus status = RebuildCoverage(at, sub.Coverage, map, outputGlyphs,
-            out var coverage, out diagnostic);
+            out var coverage, out var coverageOrdinal, out diagnostic);
         if (status != ReadStatus.Done)
         {
             rebuilt = null;
@@ -2993,10 +3026,12 @@ out var rewrittenLeaf, out diagnostic);
         }
         if (sub.Format == 1)
         {
+            // The pair sets are the coverage's parallel payloads: position s of the
+            // rebuilt array remaps the source set the sorted key rode.
             var pairSets = new PairValueRecord[sub.PairSetCount][];
             for (int s = 0; s < sub.PairSetCount; s++)
             {
-                PairSetTable pairSet = sub.PairSets![s];
+                PairSetTable pairSet = sub.PairSets![coverageOrdinal[s]];
                 pairSets[s] = new PairValueRecord[pairSet.PairValueCount];
                 for (int r = 0; r < pairSet.PairValueCount; r++)
                 {
@@ -3045,16 +3080,18 @@ out var rewrittenLeaf, out diagnostic);
     {
         rebuilt = null;
         ReadStatus status = RebuildCoverage(at, sub.Coverage, map, outputGlyphs,
-            out var coverage, out diagnostic);
+            out var coverage, out var coverageOrdinal, out diagnostic);
         if (status != ReadStatus.Done)
         {
             rebuilt = null;
             return status;
         }
-        // The EntryExit records and their anchors carry no GID beyond the coverage.
+        // The EntryExit records and their anchors carry no GID beyond the coverage
+        // and ride its sort.
         return CursivePosTableCompiler.TryCreate(coverage!.Glyphs,
-            sub.Records.ToArray(), outputGlyphs, out rebuilt, out diagnostic,
-            location: at, coverageFormat: sub.Coverage.Format);
+            Permute(sub.Records.ToArray(), coverageOrdinal), outputGlyphs,
+            out rebuilt, out diagnostic, location: at,
+            coverageFormat: sub.Coverage.Format);
     }
 
     private static ReadStatus RebuildMarkBaseLeaf(DataLocation at,
@@ -3063,14 +3100,14 @@ out var rewrittenLeaf, out diagnostic);
     {
         rebuilt = null;
         ReadStatus status = RebuildCoverage(at, sub.MarkCoverage, map,
-            outputGlyphs, out var markCoverage, out diagnostic);
+            outputGlyphs, out var markCoverage, out var markOrdinal, out diagnostic);
         if (status != ReadStatus.Done)
         {
             rebuilt = null;
             return status;
         }
         status = RebuildCoverage(at, sub.BaseCoverage, map, outputGlyphs,
-            out var baseCoverage, out diagnostic);
+            out var baseCoverage, out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
         var baseCells = new AnchorTable?[sub.BaseCount * sub.ClassCount];
         for (int b = 0; b < sub.BaseCount; b++)
@@ -3079,11 +3116,12 @@ out var rewrittenLeaf, out diagnostic);
             for (int c = 0; c < sub.ClassCount; c++)
                 baseCells[b * sub.ClassCount + c] = row[c];
         }
-        // The mark array and the anchor matrix carry no GID beyond the coverages.
+        // The mark array rides its coverage's sort; the anchor matrix carries no
+        // GID beyond the coverages.
         return MarkPosTableCompiler.TryCreate(markCoverage!.Glyphs,
-            sub.Marks.ToArray(), baseCoverage!.Glyphs, baseCells, sub.ClassCount,
-            outputGlyphs, out rebuilt, out diagnostic, location: at,
-            coverageFormat: sub.MarkCoverage.Format);
+            Permute(sub.Marks.ToArray(), markOrdinal), baseCoverage!.Glyphs,
+            baseCells, sub.ClassCount, outputGlyphs, out rebuilt, out diagnostic,
+            location: at, coverageFormat: sub.MarkCoverage.Format);
     }
 
     private static ReadStatus RebuildMarkLigLeaf(DataLocation at,
@@ -3092,19 +3130,20 @@ out var rewrittenLeaf, out diagnostic);
     {
         rebuilt = null;
         ReadStatus status = RebuildCoverage(at, sub.MarkCoverage, map,
-            outputGlyphs, out var markCoverage, out diagnostic);
+            outputGlyphs, out var markCoverage, out var markOrdinal, out diagnostic);
         if (status != ReadStatus.Done)
         {
             rebuilt = null;
             return status;
         }
         status = RebuildCoverage(at, sub.LigatureCoverage, map, outputGlyphs,
-            out var ligCoverage, out diagnostic);
+            out var ligCoverage, out var ligOrdinal, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        // Both parallel arrays ride their own coverage's sort.
         return MarkPosTableCompiler.TryCreateLig(markCoverage!.Glyphs,
-            sub.Marks.ToArray(), ligCoverage!.Glyphs, sub.Ligatures.ToArray(),
-            outputGlyphs, out rebuilt, out diagnostic, location: at,
-            coverageFormat: sub.MarkCoverage.Format);
+            Permute(sub.Marks.ToArray(), markOrdinal), ligCoverage!.Glyphs,
+            Permute(sub.Ligatures, ligOrdinal), outputGlyphs, out rebuilt,
+            out diagnostic, location: at, coverageFormat: sub.MarkCoverage.Format);
     }
 
     private static ReadStatus RebuildMarkMarkLeaf(DataLocation at,
@@ -3113,14 +3152,14 @@ out var rewrittenLeaf, out diagnostic);
     {
         rebuilt = null;
         ReadStatus status = RebuildCoverage(at, sub.MarkCoverage, map,
-            outputGlyphs, out var markCoverage, out diagnostic);
+            outputGlyphs, out var markCoverage, out var markOrdinal, out diagnostic);
         if (status != ReadStatus.Done)
         {
             rebuilt = null;
             return status;
         }
         status = RebuildCoverage(at, sub.Mark2Coverage, map, outputGlyphs,
-            out var mark2Coverage, out diagnostic);
+            out var mark2Coverage, out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
         var mark2Cells = new AnchorTable?[sub.Mark2Count * sub.ClassCount];
         for (int m = 0; m < sub.Mark2Count; m++)
@@ -3130,8 +3169,8 @@ out var rewrittenLeaf, out diagnostic);
                 mark2Cells[m * sub.ClassCount + c] = row[c];
         }
         return MarkPosTableCompiler.TryCreateMark(markCoverage!.Glyphs,
-            sub.Marks.ToArray(), mark2Coverage!.Glyphs, mark2Cells,
-            sub.ClassCount, outputGlyphs, out rebuilt, out diagnostic,
+            Permute(sub.Marks.ToArray(), markOrdinal), mark2Coverage!.Glyphs,
+            mark2Cells, sub.ClassCount, outputGlyphs, out rebuilt, out diagnostic,
             location: at, coverageFormat: sub.MarkCoverage.Format);
     }
 
