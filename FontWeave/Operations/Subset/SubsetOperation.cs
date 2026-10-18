@@ -876,7 +876,13 @@ public static partial class SubsetOperation
             throw new ArgumentOutOfRangeException(nameof(request), "Unknown root kind.");
         if (root.Kind == SubsetRootKind.ExplicitGlyphSet)
         {
-            if (root.Gids is null || root.Codepoints is not null)
+            // Exactly one form is populated (SubsetContracts.cs SubsetGlyphRoot): the
+            // Text member and the three form-(c) scope dimensions are form-(c) data,
+            // so their presence here is the same pollution as a foreign root shape —
+            // refusing keeps Text from being silently ignored while the GIDs publish.
+            if (root.Gids is null || root.Codepoints is not null || root.Text is not null ||
+                root.ScriptTags is not null || root.LanguageTags is not null ||
+                root.FeatureTags is not null)
             {
                 diagnostic = new(DiagnosticCode.InvalidValue, request.Face.Location);
                 return false;
@@ -884,7 +890,10 @@ public static partial class SubsetOperation
         }
         else if (root.Kind == SubsetRootKind.UnicodeCodepoints)
         {
-            if (root.Codepoints is null || root.Gids is not null)
+            // The same one-form guard as form (a) above.
+            if (root.Codepoints is null || root.Gids is not null || root.Text is not null ||
+                root.ScriptTags is not null || root.LanguageTags is not null ||
+                root.FeatureTags is not null)
             {
                 diagnostic = new(DiagnosticCode.InvalidValue, request.Face.Location);
                 return false;
@@ -922,7 +931,10 @@ public static partial class SubsetOperation
                 return false;
             }
             // R4 (SR card §2.2): an unpaired surrogate refuses as a request-shape
-            // violation before any table work — a UTF-16 walk, no decode yet.
+            // violation before any table work — a UTF-16 walk, no decode yet. A high
+            // surrogate with a following low consumes both code units; the low arm is
+            // therefore reached only by an unpaired low (its high either refused or
+            // consumed it), so the pair offsets stay the violation positions.
             for (int i = 0; i < root.Text.Length; i++)
             {
                 char unit = root.Text[i];
@@ -930,7 +942,12 @@ public static partial class SubsetOperation
                 bool low = unit >= '\uDC00' && unit <= '\uDFFF';
                 bool pairFollows = i + 1 < root.Text.Length &&
                     root.Text[i + 1] >= '\uDC00' && root.Text[i + 1] <= '\uDFFF';
-                if (!low && !(high && !pairFollows)) continue;
+                if (high && pairFollows)
+                {
+                    i++;
+                    continue;
+                }
+                if (!low && !high) continue;
                 diagnostic = new(DiagnosticCode.InvalidUtf16,
                     request.Face.Location.At(DataField.Payload, (ulong)i));
                 return false;

@@ -262,6 +262,50 @@ public sealed class SubsetRootResolutionTests
     }
 
     [Fact]
+    public void MappedVariationSelectorStillRefuses()
+    {
+        // The explicit posture-6 arm: a legacy Unicode record that happens to map a
+        // VS code point is never consulted — the mapped face refuses exactly like
+        // the unmapped twin above, because the third state does not exist.
+        var status = SubsetOperation.TryPrepare(
+            CodepointRequest(RebuildFace((0x41, 1), (0xFE00, 2)), [0xFE00]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+        Assert.Equal(0xFE00UL, diagnostic.Detail);
+        Assert.Equal(DataField.CharCode, diagnostic.Location.Field);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void IdeographicVariationSelectorRefusesEvenWhenMapped()
+    {
+        // The E0100..E01EF arm over the format 12 record: the same no-third-state
+        // refusal at the code point's own CharCode position.
+        var status = SubsetOperation.TryPrepare(
+            CodepointRequest(RebuildFace((0x41, 1), (0xE0100, 2)), [0xE0100]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+        Assert.Equal(0xE0100UL, diagnostic.Detail);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void VariationSelectorInTextRefuses()
+    {
+        // The text form shares the posture-6 arm: the VS character decodes to one
+        // scalar and refuses before any GID is seeded, on a face that maps it.
+        var status = SubsetOperation.TryPrepare(
+            TextRequest(RebuildFace((0x41, 1), (0xFE00, 2)), "A\uFE00"),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+        Assert.Equal(0xFE00UL, diagnostic.Detail);
+        Assert.Null(result);
+    }
+
+    [Fact]
     public void CodepointSequenceViolationsRefuseAtStep1()
     {
         // R3: the explicit codepoint list is a precise input contract — strictly
@@ -281,6 +325,36 @@ public sealed class SubsetRootResolutionTests
                 out var diagnostic);
             Assert.Equal(ReadStatus.UnsupportedFormat, status);
             Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+            Assert.Null(result);
+        }
+    }
+
+    [Fact]
+    public void ForeignMembersOnFormsAAndBRefuseAtStep1()
+    {
+        // The one-form contract (SubsetGlyphRoot): Text and the three form-(c) scope
+        // dimensions on forms (a)/(b) are pollution — the request refuses instead of
+        // silently ignoring the foreign member and publishing the rest (W1 §1.2).
+        var face = RebuildFace((0x41, 1));
+        foreach (var root in new[]
+                 {
+                     new SubsetGlyphRoot { Kind = SubsetRootKind.ExplicitGlyphSet,
+                         Gids = [1], Text = "B" },
+                     new SubsetGlyphRoot { Kind = SubsetRootKind.UnicodeCodepoints,
+                         Codepoints = [0x41], Text = "B" },
+                     new SubsetGlyphRoot { Kind = SubsetRootKind.ExplicitGlyphSet,
+                         Gids = [1], ScriptTags = [TagDflt] },
+                     new SubsetGlyphRoot { Kind = SubsetRootKind.UnicodeCodepoints,
+                         Codepoints = [0x41], FeatureTags = [TagA] }
+                 })
+        {
+            var status = SubsetOperation.TryPrepare(
+                new SubsetRequest { Face = face, Root = root,
+                    Mode = SubsetMode.RetainGids, Options = NoLayout() },
+                out var result, out _, out var diagnostic);
+            Assert.Equal(ReadStatus.UnsupportedFormat, status);
+            Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+            Assert.Equal(face.Location, diagnostic.Location);
             Assert.Null(result);
         }
     }
@@ -355,6 +429,66 @@ public sealed class SubsetRootResolutionTests
             TextRequest(face, "\u00E9"), out var result, out _, out _);
         Assert.Equal(ReadStatus.Done, precomposed);
         Assert.NotNull(result);
+    }
+
+    [Fact]
+    public void SurrogatePairTextResolvesThroughTheAstralMapping()
+    {
+        // A legal pair is one scalar: the step-1 walk consumes both code units, so
+        // the text root resolves like the equal codepoint list — the astral mapping
+        // rides the canonical cmap's format 12 record (format 4 cannot carry it).
+        var face = RebuildFace((0x1F600, 1));
+        var status = SubsetOperation.TryPrepare(TextRequest(face, "\U0001F600"),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+        Assert.Equal(2, result!.Report.UnselectedSlotCount); // {0,1} of 4 retained
+        // The pair decodes to the single scalar the codepoint form names.
+        var twin = SubsetOperation.TryPrepare(
+            CodepointRequest(face, [0x1F600]), out var twinResult, out _, out _);
+        Assert.Equal(ReadStatus.Done, twin);
+        Assert.NotNull(twinResult);
+        Assert.Equal(OutputBytes(result), OutputBytes(twinResult!));
+    }
+
+    [Fact]
+    public void BmpTextAfterAPairResumesTheWalk()
+    {
+        // The pair's two consumed units do not desync the walk: the BMP letter after
+        // the pair is still walked (and would refuse a following lone surrogate).
+        var face = RebuildFace((0x41, 1), (0x1F600, 2));
+        var status = SubsetOperation.TryPrepare(TextRequest(face, "\U0001F600A"),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+        Assert.Equal(1, report!.UnselectedSlotCount); // {0,1,2} of 4 retained
+    }
+
+    [Theory]
+    [InlineData(0)] // lone high before a BMP letter, not at the end
+    [InlineData(1)] // unpaired low ahead of a legal pair
+    [InlineData(2)] // lone low trailing a legal pair
+    public void UnpairedSurrogatesRefuseAtTheirOwnOffset(int form)
+    {
+        // Pairing never moves a refusal onto a pair's low half, and the consumption
+        // leaves any further lone unit exposed at its own offset. The strings are
+        // built in the body: theory serialization cannot carry lone surrogates.
+        string text = form switch
+        {
+            0 => new string(new[] { (char)0xD83D, 'a' }),
+            1 => new string(new[] { (char)0xDC00, '\uD83D', '\uDE00' }),
+            _ => "\U0001F600" + new string((char)0xDC00, 1)
+        };
+        var status = SubsetOperation.TryPrepare(
+            TextRequest(RebuildFace((0x41, 1)), text),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Equal(DiagnosticCode.InvalidUtf16, diagnostic.Code);
+        Assert.Equal(DataField.Payload, diagnostic.Location.Field);
+        Assert.Equal(form == 2 ? 2UL : 0UL, diagnostic.Location.Offset);
+        Assert.Null(result);
     }
 
     // ---- derived-scope pins (SR card §2.3, the S2c face) ------------------------

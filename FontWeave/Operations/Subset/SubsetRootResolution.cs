@@ -15,8 +15,10 @@ namespace FontWeave.Operations.Subset;
 ///
 /// Every failure is a finite refusal and never produces a partial GID set (W1 §1.2):
 /// a code point with no Unicode-semantic mapping (including the GID-0 resolutions the
-/// typed read reports as unmapped, and variation-selector values on a face whose
-/// format 14 was already refused at admission) refuses (R1); a code point with two
+/// typed read reports as unmapped) refuses (R1); a variation-selector value refuses
+/// outright — posture 6 has no third state, and the format-14 admission gate already
+/// removed UVS semantics, so a legacy record's incidental mapping of a VS code point
+/// is never consulted; a code point with two
 /// distinct mappings across the Unicode-semantic records refuses (R2 — the caller's
 /// input set is not well-defined; the rebuild's first-wins rule adjudicates only the
 /// code points the root did not commit, SR card §7.2); a text with an unpaired
@@ -109,6 +111,17 @@ public static partial class SubsetOperation
         for (int s = 0; s < scalars.Length; s++)
         {
             uint code = scalars[s];
+            // Posture 6, the explicit arm: variation selectors have no third state.
+            // A face carrying format 14 was refused at the admission gate, so a VS
+            // value here can never resolve through UVS semantics — and a legacy
+            // Unicode record that happens to map the code point (the R1 hole this
+            // arm closes) is still the posture-2 refusal, checked before any query.
+            if (code is >= 0xFE00 and <= 0xFE0F || code is >= 0xE0100 and <= 0xE01EF)
+            {
+                diagnostic = new(DiagnosticCode.InvalidValue,
+                    cmapAt.At(DataField.CharCode, code), code);
+                return ReadStatus.InvalidFormat;
+            }
             ushort? mapped = null;
             for (int i = 0; i < records.Length; i++)
             {
@@ -141,10 +154,10 @@ public static partial class SubsetOperation
             }
             if (mapped is not { } gid)
             {
-                // R1: no Unicode-semantic mapping — including variation-selector
-                // values on a face whose format 14 the admission gate refused and
-                // code points resolving to GID 0. Both dispositions are the same
-                // refusal (SR card §2.1 posture 6, OQ-S0-9's rejected semantics).
+                // R1: no Unicode-semantic mapping — including code points resolving
+                // to GID 0, which the typed read reports as unmapped. Both
+                // dispositions are the same refusal (SR card §2.1 posture 4;
+                // posture 6's VS arm runs above, before the query).
                 diagnostic = new(DiagnosticCode.InvalidValue,
                     cmapAt.At(DataField.CharCode, code), code);
                 return ReadStatus.InvalidFormat;
