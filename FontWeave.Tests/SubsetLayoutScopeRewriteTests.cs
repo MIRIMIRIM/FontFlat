@@ -35,10 +35,10 @@ public sealed class SubsetLayoutScopeRewriteTests
         Assert.Equal(DiagnosticCode.None, diagnostic.Code);
     }
 
-    // lookup0: contextual fmt1 over coverage {4}, input glyph 5, one record whose
-    // target is lookup2 — the nested edge crossing a cut ordinal. lookup1: the
-    // plain single {1}→{2} behind feature TagB (the cut witness). lookup2: the
-    // orphan single {6}→{7} no feature names (reachable only through the record).
+    // lookup0: the caller's contextual/chaining witness (the shared three-lookup
+    // tail rides the same shape for every contextual format). lookup1: the plain
+    // single {1}→{2} behind feature TagB (the cut witness). lookup2: the orphan
+    // single {6}→{7} no feature names (reachable only through the record).
     // Declaring FeatureTags=[TagA] keeps {0, 2}: lookup2's new index is 1, so the
     // surviving record must re-answer 2→1 against the real new count.
     private static LayoutListsTable RemapModel()
@@ -59,8 +59,16 @@ public sealed class SubsetLayoutScopeRewriteTests
         Ok(LookupTableCompiler.TryCreateContextualSubst(NumGlyphs, [contextual!],
             0, null, null, out var contextualLookup, out diagnostic));
         NoDiagnostic(diagnostic);
+        return ThreeLookupModel(contextualLookup!);
+    }
+
+    // The shared three-lookup tail: `first` rides lookup index 0 behind feature
+    // TagA, the plain and orphan singles fill indices 1/2, one DFLT script and
+    // the two features close the lists.
+    private static LayoutListsTable ThreeLookupModel(LookupTable first)
+    {
         Ok(SingleSubstTableCompiler.TryCreate(stackalloc ushort[] { 1 },
-            stackalloc ushort[] { 2 }, NumGlyphs, 1, out var plainSingle, out diagnostic));
+            stackalloc ushort[] { 2 }, NumGlyphs, 1, out var plainSingle, out var diagnostic));
         NoDiagnostic(diagnostic);
         Ok(LookupTableCompiler.TryCreateSingleSubst(NumGlyphs, [plainSingle!],
             0, null, null, out var plainLookup, out diagnostic));
@@ -85,10 +93,66 @@ public sealed class SubsetLayoutScopeRewriteTests
         NoDiagnostic(diagnostic);
         Ok(LayoutListsTableCompiler.TryCreate(LayoutListsLayout.Version10, 0,
             [script!], [featureA!, featureB!],
-            [contextualLookup!, plainLookup!, orphanLookup!], NumGlyphs,
+            [first, plainLookup!, orphanLookup!], NumGlyphs,
             LayoutLookupKind.Gsub, out var model, out diagnostic));
         NoDiagnostic(diagnostic);
         return model!;
+    }
+
+    // The format-2 witness lookup: contextual (GSUB 5 fmt 2) over coverage {4} —
+    // glyph 4 carries class 0, the one class-0 rule set's rule (stored input class
+    // sequence [0]) targets lookup2. Class values never renumber, so only the
+    // record's target moves under the scope cut (card §5.1 step 2).
+    private static LookupTable ContextualClassLookup()
+    {
+        Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 4 }, NumGlyphs, 1,
+            out var classCoverage, out var diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ClassDefTableCompiler.TryCreate([new ClassDefRange(4, 4, 0)], NumGlyphs, 2,
+            out var classDef, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ContextualSubstTableCompiler.TryCreateRule(stackalloc ushort[] { 0 },
+            [new SequenceLookupRecord(0, 2)], 3, out var rule, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ContextualSubstTableCompiler.TryCreateRuleSet([rule!], out var ruleSet,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ContextualSubstTableCompiler.TryCreate(classCoverage!, classDef!,
+            new ContextualRuleSet?[] { ruleSet }, NumGlyphs, out var contextual,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(LookupTableCompiler.TryCreateContextualSubst(NumGlyphs, [contextual!],
+            0, null, null, out var lookup, out diagnostic));
+        NoDiagnostic(diagnostic);
+        return lookup!;
+    }
+
+    // The chaining analog: GSUB 6 fmt 2 over coverage {4} with the three class
+    // definitions sharing one body (glyph 4 → class 0), the rule carrying empty
+    // backtrack/lookahead and the lookup2-targeting record.
+    private static LookupTable ChainingClassLookup()
+    {
+        Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 4 }, NumGlyphs, 1,
+            out var classCoverage, out var diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ClassDefTableCompiler.TryCreate([new ClassDefRange(4, 4, 0)], NumGlyphs, 2,
+            out var classDef, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ChainingSubstTableCompiler.TryCreateRule(stackalloc ushort[] { },
+            stackalloc ushort[] { 0 }, stackalloc ushort[] { },
+            [new SequenceLookupRecord(0, 2)], 3, out var rule, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ChainingSubstTableCompiler.TryCreateRuleSet([rule!], out var ruleSet,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ChainingSubstTableCompiler.TryCreate(classCoverage!, classDef!, classDef!,
+            classDef!, new ChainingRuleSet?[] { ruleSet }, NumGlyphs, out var chaining,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(LookupTableCompiler.TryCreateChainingSubst(NumGlyphs, [chaining!],
+            0, null, null, out var lookup, out diagnostic));
+        NoDiagnostic(diagnostic);
+        return lookup!;
     }
 
     /// <summary>A valid empty JSTF 1.0 (zero scripts) — enough to put the table on
@@ -266,6 +330,63 @@ public sealed class SubsetLayoutScopeRewriteTests
         Assert.Equal(4, orphan.SingleSubstitutions![0].Coverage.Glyphs[0]);
         var scopeRow = Assert.Single(report!.LayoutScopeCensus);
         Assert.Equal(2, scopeRow.SurvivingLookupCount);
+    }
+
+    // The format-2 record remap (card §5.1 step 2): the class-valued rule bodies
+    // re-answer their records too — the surviving record's target re-indexes to
+    // the cut subset (2→1), the class values and the rule-set array ride.
+    [Fact]
+    public void ScopedRetainRemapsContextualFormat2Records()
+    {
+        var status = SubsetOperation.TryPrepare(
+            Request(Face(GsubBytes(ThreeLookupModel(ContextualClassLookup()))), [1],
+                SubsetMode.RetainGids,
+                Scoped(new SubsetLayoutScope { FeatureTags = [TagA] })),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        NoDiagnostic(diagnostic);
+        Assert.NotNull(result);
+        var model = ReadBack(OutputBytes(result!));
+        Assert.Equal(2, model.Lookups.Length);
+        Assert.Equal(1, model.Features.Length);
+        var contextual = model.Lookups[0];
+        Assert.NotNull(contextual.Contextuals);
+        Assert.Equal(2, contextual.Contextuals![0].Format);
+        // The class domain kept glyph 4's class-0 entry and the rule-set array
+        // (class-value keyed) kept its one row; the record re-answered 2→1 —
+        // a stale 2 would refuse the read chain against the new count.
+        var ranges = contextual.Contextuals![0].ClassDef!.Ranges.ToArray();
+        Assert.Equal(new ClassDefRange(4, 4, 0), Assert.Single(ranges));
+        var rule = contextual.Contextuals![0].RuleSets![0]!.Rules[0];
+        var record = Assert.Single(rule.LookupRecords.ToArray());
+        Assert.Equal(1, record.LookupListIndex);
+        var scopeRow = Assert.Single(report!.LayoutScopeCensus);
+        Assert.Equal(2, scopeRow.SurvivingLookupCount);
+    }
+
+    // The chaining format-2 analog: the class-valued chaining rule's record
+    // re-answers identically (the class sequences never move — class values are
+    // the untouched dimension).
+    [Fact]
+    public void ScopedRetainRemapsChainingFormat2Records()
+    {
+        var status = SubsetOperation.TryPrepare(
+            Request(Face(GsubBytes(ThreeLookupModel(ChainingClassLookup()))), [1],
+                SubsetMode.RetainGids,
+                Scoped(new SubsetLayoutScope { FeatureTags = [TagA] })),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        NoDiagnostic(diagnostic);
+        Assert.NotNull(result);
+        var model = ReadBack(OutputBytes(result!));
+        Assert.Equal(2, model.Lookups.Length);
+        var chaining = model.Lookups[0];
+        Assert.NotNull(chaining.Chainings);
+        Assert.Equal(2, chaining.Chainings![0].Format);
+        var rule = chaining.Chainings![0].RuleSets![0]!.Rules[0];
+        Assert.Equal(new ushort[] { 0 }, rule.InputSequence.ToArray());
+        var record = Assert.Single(rule.LookupRecords.ToArray());
+        Assert.Equal(1, record.LookupListIndex);
     }
 
     // The script tier: cutting every script prunes the tree and leaves the legal

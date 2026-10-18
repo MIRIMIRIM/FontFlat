@@ -1152,10 +1152,21 @@ public static partial class SubsetOperation
         ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
             out var ordinalOf, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        // The value rows ride their coverage ordinals (format 2's per-key rows;
-        // format 1's single row permutes trivially).
-        var ordered = new StaticValueRecord[sub.Values.Length];
-        for (int v = 0; v < ordered.Length; v++) ordered[v] = sub.Values[ordinalOf[v]];
+        // The value rows ride their coverage ordinals (format 2's per-key rows);
+        // format 1 keeps the single shared physical row — the model stores one row
+        // regardless of the coverage size (SinglePosTable.ValueAt's convention), so
+        // the ordinal domain never indexes it under a non-monotone map.
+        StaticValueRecord[] ordered;
+        if (sub.Format == 1)
+        {
+            ordered = new StaticValueRecord[1];
+            ordered[0] = sub.Values[0];
+        }
+        else
+        {
+            ordered = new StaticValueRecord[sub.Values.Length];
+            for (int v = 0; v < ordered.Length; v++) ordered[v] = sub.Values[ordinalOf[v]];
+        }
         return SinglePosTableCompiler.TryCreate(coverage!.Glyphs, ordered,
             map.OutputGlyphCount, sub.Format, sub.ValueFormat, out rewritten,
             out diagnostic, budget, sub.Location, coverage.Format);
@@ -1347,9 +1358,20 @@ public static partial class SubsetOperation
             status = RewriteClassDef(sub.ClassDef, map, budget, out var classDef,
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
-            // The rule sets index by class value — untouched (identical values).
+            // The rule sets index by class value — the array order and the null
+            // slots ride (identical values); the S2c remap form re-answers each
+            // rule's records (card §5.1 step 2, the format-1 remap over the
+            // class-valued bodies).
+            IReadOnlyList<ContextualRuleSet?> ruleSets = sub.RuleSets!;
+            if (lookupRemap is not null)
+            {
+                status = RemapContextualClassRuleSets(ruleSets, lookupRemap, budget,
+                    out var remappedSets, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                ruleSets = remappedSets;
+            }
             return ContextualSubstTableCompiler.TryCreate(2, coverage!, classDef!,
-                sub.RuleSets!, map.OutputGlyphCount, out rewritten, out diagnostic,
+                ruleSets, map.OutputGlyphCount, out rewritten, out diagnostic,
                 budget, sub.Location);
         }
         status = RewriteContextualRuleSets(sub.RuleSets!, ordinalOf, map, budget,
@@ -1367,7 +1389,8 @@ public static partial class SubsetOperation
         ordered = new ContextualRuleSet?[ruleSets.Count];
         for (int newIndex = 0; newIndex < ordered.Length; newIndex++)
         {
-            ContextualRuleSet source = ruleSets[ordinalOf[newIndex]]!;
+            ContextualRuleSet? source = ruleSets[ordinalOf[newIndex]];
+            if (source is null) continue; // the spec-NULL slot permutes with its coverage ordinal
             var rules = new ContextualRule[source.RuleCount];
             for (int r = 0; r < rules.Length; r++)
             {
@@ -1408,6 +1431,38 @@ public static partial class SubsetOperation
             ContextualRuleSetLayout.OffsetStride * rules.Length;
         foreach (var rule in rules) consumed += rule.ConsumedLength;
         return new(rules, location, (int)consumed);
+    }
+
+    /// <summary>Format 2's rule-set rows re-answer their records only (S2c card
+    /// §5.1 step 2): the class values never renumber, so the set array's order and
+    /// the null slots ride unchanged while every rule's SequenceLookupRecords take
+    /// the surviving-subset remap — TryCreateRule's domain check re-fires per
+    /// record against the real new count.</summary>
+    private static ReadStatus RemapContextualClassRuleSets(
+        IReadOnlyList<ContextualRuleSet?> ruleSets, LayoutLookupRemap remap,
+        BuildBudget budget, out ContextualRuleSet?[] ordered, out FontDiagnostic diagnostic)
+    {
+        ordered = new ContextualRuleSet?[ruleSets.Count];
+        for (int i = 0; i < ordered.Length; i++)
+        {
+            if (ruleSets[i] is not { } source) continue; // the spec-NULL slot keeps its slot
+            var rules = new ContextualRule[source.RuleCount];
+            for (int r = 0; r < rules.Length; r++)
+            {
+                ContextualRule rule = source.Rules[r];
+                ReadStatus status = RemapLookupRecords(rule.LookupRecords, remap,
+                    rule.Location, out var records, out int lookupCount, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = ContextualSubstTableCompiler.TryCreateRule(rule.InputSequence,
+                    records, lookupCount, out var rebuilt, out diagnostic, budget,
+                    rule.Location);
+                rules[r] = rebuilt!;
+                if (status != ReadStatus.Done) return status;
+            }
+            ordered[i] = AssembleContextualRuleSet(rules, source.Location);
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
     }
 
     /// <summary>One chaining subtable (GSUB 6 / GPOS 8 shared model): format 1 remaps
@@ -1451,8 +1506,20 @@ public static partial class SubsetOperation
             status = RewriteClassDef(sub.LookaheadClassDef, map, budget,
                 out var lookaheadDef, out diagnostic);
             if (status != ReadStatus.Done) return status;
+            // The rule sets index by class value — the array order and the null
+            // slots ride (identical values); the S2c remap form re-answers each
+            // rule's records (card §5.1 step 2, the format-1 remap over the
+            // class-valued bodies).
+            IReadOnlyList<ChainingRuleSet?> ruleSets = sub.RuleSets!;
+            if (lookupRemap is not null)
+            {
+                status = RemapChainingClassRuleSets(ruleSets, lookupRemap, budget,
+                    out var remappedSets, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                ruleSets = remappedSets;
+            }
             return ChainingSubstTableCompiler.TryCreate(2, coverage!, backtrackDef!,
-                inputDef!, lookaheadDef!, sub.RuleSets!, map.OutputGlyphCount,
+                inputDef!, lookaheadDef!, ruleSets, map.OutputGlyphCount,
                 out rewritten, out diagnostic, budget, sub.Location);
         }
         status = RewriteChainingRuleSets(sub.RuleSets!, ordinalOf, map, budget,
@@ -1471,7 +1538,8 @@ public static partial class SubsetOperation
         ordered = new ChainingRuleSet?[ruleSets.Count];
         for (int newIndex = 0; newIndex < ordered.Length; newIndex++)
         {
-            ChainingRuleSet source = ruleSets[ordinalOf[newIndex]]!;
+            ChainingRuleSet? source = ruleSets[ordinalOf[newIndex]];
+            if (source is null) continue; // the spec-NULL slot permutes with its coverage ordinal
             var rules = new ChainingRule[source.RuleCount];
             for (int r = 0; r < rules.Length; r++)
             {
@@ -1500,6 +1568,42 @@ public static partial class SubsetOperation
                 ContextualRuleSetLayout.OffsetStride * rules.Length;
             foreach (var rule in rules) consumed += rule.ConsumedLength;
             ordered[newIndex] = new(rules, source.Location, (int)consumed);
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Format 2's rule-set rows re-answer their records only (S2c card
+    /// §5.1 step 2): the class values never renumber, so the set array's order,
+    /// the null slots and every rule's class sequences ride unchanged while the
+    /// SequenceLookupRecords take the surviving-subset remap — TryCreateRule's
+    /// domain check re-fires per record against the real new count.</summary>
+    private static ReadStatus RemapChainingClassRuleSets(
+        IReadOnlyList<ChainingRuleSet?> ruleSets, LayoutLookupRemap remap,
+        BuildBudget budget, out ChainingRuleSet?[] ordered, out FontDiagnostic diagnostic)
+    {
+        ordered = new ChainingRuleSet?[ruleSets.Count];
+        for (int i = 0; i < ordered.Length; i++)
+        {
+            if (ruleSets[i] is not { } source) continue; // the spec-NULL slot keeps its slot
+            var rules = new ChainingRule[source.RuleCount];
+            for (int r = 0; r < rules.Length; r++)
+            {
+                ChainingRule rule = source.Rules[r];
+                ReadStatus status = RemapLookupRecords(rule.LookupRecords, remap,
+                    rule.Location, out var records, out int lookupCount, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = ChainingSubstTableCompiler.TryCreateRule(
+                    rule.BacktrackSequence, rule.InputSequence,
+                    rule.LookaheadSequence, records, lookupCount, out var rebuilt,
+                    out diagnostic, budget, rule.Location);
+                rules[r] = rebuilt!;
+                if (status != ReadStatus.Done) return status;
+            }
+            long consumed = ContextualRuleSetLayout.HeaderLength +
+                ContextualRuleSetLayout.OffsetStride * rules.Length;
+            foreach (var rule in rules) consumed += rule.ConsumedLength;
+            ordered[i] = new(rules, source.Location, (int)consumed);
         }
         diagnostic = default;
         return ReadStatus.Done;

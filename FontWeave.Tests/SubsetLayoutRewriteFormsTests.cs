@@ -434,6 +434,158 @@ public sealed class SubsetLayoutRewriteFormsTests
         Assert.Equal(7, cell1.XAdvance);
     }
 
+    // ---- GSUB 5/6 format 1: the spec-NULL rule-set slot permutes with its
+    // coverage ordinal and survives (the read chain materializes NULL offsets as
+    // null rows — the rewrite never dereferences one).
+    [Fact]
+    public void ContextualFormat1KeepsTheNullRuleSetSlot()
+    {
+        Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 1 }, NumGlyphs, 1,
+            out var coverage, out var diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ContextualSubstTableCompiler.TryCreate(coverage!,
+            new ContextualRuleSet?[] { null }, NumGlyphs, out var contextual,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(LookupTableCompiler.TryCreateContextualSubst(NumGlyphs, [contextual!], 0,
+            null, null, out var lookup, out diagnostic));
+        NoDiagnostic(diagnostic);
+        byte[] gsub = Compiled(LayoutLookupKind.Gsub, lookup!);
+        var result = Run(Face(LayoutLookupKind.Gsub, gsub), [1]);
+        var output = OutputLists(result, LayoutLookupKind.Gsub, 2);
+        var outContextual = Assert.Single(One(output.Lookups).Contextuals!);
+        var sets = outContextual.RuleSets!;
+        Assert.Single(sets);
+        Assert.Null(sets[0]);
+    }
+
+    [Fact]
+    public void ChainingFormat1KeepsTheNullRuleSetSlot()
+    {
+        Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 1 }, NumGlyphs, 1,
+            out var coverage, out var diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ChainingSubstTableCompiler.TryCreate(coverage!,
+            new ChainingRuleSet?[] { null }, NumGlyphs, out var chaining,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(LookupTableCompiler.TryCreateChainingSubst(NumGlyphs, [chaining!], 0, null,
+            null, out var lookup, out diagnostic));
+        NoDiagnostic(diagnostic);
+        byte[] gsub = Compiled(LayoutLookupKind.Gsub, lookup!);
+        var result = Run(Face(LayoutLookupKind.Gsub, gsub), [1]);
+        var output = OutputLists(result, LayoutLookupKind.Gsub, 2);
+        var outChaining = Assert.Single(One(output.Lookups).Chainings!);
+        var sets = outChaining.RuleSets!;
+        Assert.Single(sets);
+        Assert.Null(sets[0]);
+    }
+
+    // ---- GPOS 1 format 1 over a non-monotone map: the CFF charset SIDs [0, 2, 1]
+    // permute the output order (gid1→2, gid2→1), so the coverage {1, 2} sort would
+    // index the one-row Values column past its end — format 1 keeps the single
+    // shared physical row, format 2 is the per-key permutation (SinglePosTable's
+    // one-row-per-format convention).
+    [Fact]
+    public void SinglePosFormat1KeepsTheSharedRowOverANonMonotoneMap()
+    {
+        // The CFF face's own glyph count bounds every GPOS model (the maxp/CFF
+        // admission agreement).
+        const int cffGlyphs = 3;
+        Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 1, 2 }, cffGlyphs, 1,
+            out var coverage, out var diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(SinglePosTableCompiler.TryCreate(coverage!.Glyphs,
+            new StaticValueRecord[] { new(0, 0, 15) }, cffGlyphs, 1, 0x0004,
+            out var single, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(LookupTableCompiler.TryCreateSinglePos(cffGlyphs, [single!], 0, null,
+            null, out var lookup, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(GposTableCompiler.TryCreate(LayoutListsLayout.Version10, 0, [], [],
+            [lookup!], cffGlyphs, out var gposRoot, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(GposTableCompiler.TryCompile(gposRoot!, null, out var gpos, out diagnostic));
+        NoDiagnostic(diagnostic);
+        var face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp05(cffGlyphs)),
+            (SubsetFontFixture.CffTag, NameKeyedCff([0, 2, 1])),
+            (SubsetFontFixture.GposTag, gpos!));
+        var result = Run(face, [1, 2]);
+        // The retained set {0, 1, 2} rides the ascending-SID order: gid0→0,
+        // gid2→1, gid1→2 — the permutation ordinalOf = [1, 0] over the coverage.
+        var output = OutputLists(result, LayoutLookupKind.Gpos, cffGlyphs);
+        var outSingle = Assert.Single(One(output.Lookups).SinglePositions!);
+        Assert.Equal(1, outSingle.Format);
+        Assert.Equal(new ushort[] { 1, 2 }, outSingle.Coverage.Glyphs.ToArray());
+        Assert.Equal(15, outSingle.Values[0].XAdvance);
+    }
+
+    /// <summary>The minimal name-keyed CFF1 over the given charset SID column
+    /// (the SubsetSubrPruneTests fixture shape: predefined encoding, one Private
+    /// DICT, endchar-only charstrings, the strict tiling with the Top INDEX pinned
+    /// to 28 bytes).</summary>
+    private static byte[] NameKeyedCff(int[] sids)
+    {
+        static byte[] Index(params byte[][] items)
+        {
+            if (items.Length == 0) return [0x00, 0x00];
+            var offsets = new List<int> { 1 };
+            foreach (var item in items) offsets.Add(offsets[^1] + item.Length);
+            int width = 1;
+            while (offsets[^1] >= (1 << (8 * width))) width++;
+            var bytes = new List<byte>
+            {
+                (byte)(items.Length >> 8), (byte)(items.Length & 0xFF), (byte)width
+            };
+            foreach (int offset in offsets)
+                for (int i = width - 1; i >= 0; i--)
+                    bytes.Add((byte)((offset >> (8 * i)) & 0xFF));
+            foreach (var item in items) bytes.AddRange(item);
+            return [.. bytes];
+        }
+        byte[] header = [0x01, 0x00, 0x04, 0x01];
+        byte[] name = Index("S2bSynthetic"u8.ToArray());
+        byte[] strings = Index();
+        byte[] globalIndex = Index();
+        byte[] charset = [(byte)0, .. sids.Skip(1).SelectMany(s =>
+            new[] { (byte)((s >> 8) & 0xFF), (byte)(s & 0xFF) })];
+        byte[] charstrings = Index(Enumerable.Range(0, sids.Length)
+            .Select(_ => new byte[] { 0x8b, 0x0e }).ToArray()); // "0 endchar"
+        byte[] privateDict = [0x8b, 0x14];
+        int privateSize = privateDict.Length;
+        int at = header.Length + name.Length + 28 + strings.Length + globalIndex.Length;
+        int charsetAt = at;
+        int charStringsAt = charsetAt + charset.Length;
+        int privateAt = charStringsAt + charstrings.Length;
+        var top = new List<byte>();
+        void Entry(int op, int value)
+        {
+            top.AddRange([29, (byte)((value >> 24) & 0xFF), (byte)((value >> 16) & 0xFF),
+                (byte)((value >> 8) & 0xFF), (byte)(value & 0xFF), (byte)op]);
+        }
+        Entry(17, charStringsAt);
+        Entry(15, charsetAt);
+        top.AddRange([29, (byte)((privateSize >> 24) & 0xFF),
+            (byte)((privateSize >> 16) & 0xFF), (byte)((privateSize >> 8) & 0xFF),
+            (byte)privateSize,
+            29, (byte)((privateAt >> 24) & 0xFF), (byte)((privateAt >> 16) & 0xFF),
+            (byte)((privateAt >> 8) & 0xFF), (byte)privateAt, 18]);
+        byte[] topIndex = Index([.. top]);
+        Assert.Equal(28, topIndex.Length);
+        var bytes = new List<byte>();
+        bytes.AddRange(header);
+        bytes.AddRange(name);
+        bytes.AddRange(topIndex);
+        bytes.AddRange(strings);
+        bytes.AddRange(globalIndex);
+        bytes.AddRange(charset);
+        bytes.AddRange(charstrings);
+        bytes.AddRange(privateDict);
+        return [.. bytes];
+    }
+
     private static byte[] TableBytes(byte[] sfnt, uint tag)
     {
         int numTables = (sfnt[4] << 8) | sfnt[5];
