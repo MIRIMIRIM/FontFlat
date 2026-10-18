@@ -1626,6 +1626,59 @@ public sealed class SchemaContractsTests
             """));
     }
 
+    // Spec 3.1: a reference Length may name a derived or computed value, not only a
+    // scalar; emission resolves the member through one lookup (CS8785 crash otherwise)
+    // and the window cuts with the evaluated value like a scalar Length.
+    [Fact]
+    public void ReferenceWindowLengthAcceptsDerivedAndComputedValues()
+    {
+        Assert.Equal("Done|True|2," +
+            "InvalidOffset|False|RangeOutsideSource|None|0|2|1," +
+            "Done|True|2", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x33333333, 0, ContractVersion = 1)]
+            public readonly ref partial struct EmptyView { }
+            [BinaryTable(0x74657374, 2, ContractVersion = 1)]
+            [BinaryScalar("At", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
+            [BinaryDerived("Span", Constant = 2)]
+            [BinaryReference("Piece", "At", typeof(EmptyView), Length = "Span")]
+            public readonly ref partial struct DerivedWindowView { }
+            [BinaryTable(0x45678912, 2, ContractVersion = 1)]
+            [BinaryScalar("Gate", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
+            [BinaryComputed("CSpan", "SpanOf", Maximum = 1024ul)]
+            [BinaryReference("CPiece", "Gate", typeof(EmptyView), Length = "CSpan")]
+            public readonly ref partial struct ComputedWindowView
+            {
+                private static ReadStatus SpanOf(DataLocation diagnosticLocation, out ulong value, out FontDiagnostic diagnostic)
+                { value = 2; diagnostic = default; return ReadStatus.Done; }
+            }
+            public static class Entry
+            {
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    byte[] derived = { 0, 2, 0xAA, 0xBB };
+                    DerivedWindowView.TryOpen(derived, out var derivedView, out _);
+                    ReadStatus piece = derivedView.TryOpenPiece(out var pieceChild, out var piecePresent, out _);
+                    results.Add($"{piece}|{piecePresent}|{pieceChild.RawBytes.Length}");
+                    byte[] overlong = { 0, 2, 0xAA };
+                    DerivedWindowView.TryOpen(overlong, out var overlongView, out _);
+                    ReadStatus refused = overlongView.TryOpenPiece(out _, out var refusedPresent, out var refusedDiagnostic);
+                    results.Add($"{refused}|{refusedPresent}|{refusedDiagnostic.Code}|{refusedDiagnostic.Location.Field}|{refusedDiagnostic.Location.Offset}|{refusedDiagnostic.Detail}|{refusedDiagnostic.Expected}");
+                    byte[] computed = { 0, 2, 0xCC, 0xDD };
+                    ComputedWindowView.TryOpen(computed, out var computedView, out _);
+                    ReadStatus hooked = computedView.TryOpenCPiece(out var hookedChild, out var hookedPresent, out _);
+                    results.Add($"{hooked}|{hookedPresent}|{hookedChild.RawBytes.Length}");
+                    return string.Join(",", results);
+                }
+            }
+            """));
+    }
+
     // GA3 (V1-02 via card 1.2-b): the three null policies stay separate — Optional absence
     // succeeds without evaluating Minimum, a malformed present child is never swallowed,
     // and ZeroIsAddress opens base+0 like any present target.

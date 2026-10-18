@@ -1470,24 +1470,20 @@ internal static class ViewEmitter
         string window;
         if (reference.Length is { } lengthName)
         {
-            string lengthField;
+            string lengthLocation;
             if (array is not null)
             {
                 writer.Line($"ulong windowLength = (ulong)record.{lengthName};");
                 ScalarModel lengthElement = FindArrayField(array, lengthName);
-                lengthField = $"(global::FontWeave.Core.DataField){lengthElement.FieldId}";
+                lengthLocation = $"Location.AtLocal((global::FontWeave.Core.DataField){lengthElement.FieldId}, {fieldPosition} - {U(offset.Position.Constant)} + {U(lengthElement.Position.Constant)}, {ordinalArgument})";
             }
             else
             {
                 writer.Line($"status = TryGet{lengthName}(out var lengthRaw, out diagnostic);");
                 writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
                 writer.Line("ulong windowLength = (ulong)lengthRaw;");
-                ScalarModel lengthScalar = FindScalar(model, lengthName);
-                lengthField = $"(global::FontWeave.Core.DataField){lengthScalar.FieldId}";
+                lengthLocation = EmitReferenceLengthLocation(writer, model, lengthName, reference.Name);
             }
-            string lengthLocation = array is null
-                ? $"Location.AtLocal({lengthField}, {U(FindScalar(model, lengthName).Position.Constant)})"
-                : $"Location.AtLocal({lengthField}, {fieldPosition} - {U(offset.Position.Constant)} + {U(FindArrayField(array, lengthName).Position.Constant)}, {ordinalArgument})";
             writer.Line("if (windowLength > (ulong)_data.Length - target)");
             writer.Line("{");
             writer.Indent++;
@@ -2400,8 +2396,7 @@ internal static class ViewEmitter
                     writer.Line($"status = TryGet{lengthName}(out var rawRefLength{tag}, out diagnostic);");
                     writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
                     writer.Line($"ulong refWindowLength{tag} = rawRefLength{tag};");
-                    var lengthScalar = FindScalar(model, lengthName);
-                    lengthLocation = $"Location.AtLocal((global::FontWeave.Core.DataField){lengthScalar.FieldId}, {U(lengthScalar.Position.Constant)})";
+                    lengthLocation = EmitReferenceLengthLocation(writer, model, lengthName, tag);
                 }
                 writer.Line($"if (refWindowLength{tag} > (ulong)_data.Length - target{tag})");
                 writer.Line("{");
@@ -2789,6 +2784,35 @@ internal static class ViewEmitter
         writer.Line($"status = TryEvaluateScalar{raw.Name}Position(out ulong countPosition, out diagnostic);");
         writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
         return $"Location.AtLocal((global::FontWeave.Core.DataField){raw.FieldId}, countPosition{tail}";
+    }
+
+    // Spec 3.1: an owner-scoped reference Length may name a scalar, derived or computed
+    // value; only a scalar owns a wire position, so derived/computed locate like counts do
+    // (EmitCountLocation conventions: a derived's raw scalar source, a computed's declared
+    // DiagnosticSource position). scalar.Length keeps the constant inline; the runtime
+    // forms emit their position evaluation ahead of the caller's check. localSuffix keeps
+    // the emitted local unique across one scan core's branches.
+    private static string EmitReferenceLengthLocation(CodeWriter writer, TableModel model,
+        string lengthName, string localSuffix)
+    {
+        if (FindScalarOrNull(model, lengthName) is { } scalar)
+            return $"Location.AtLocal((global::FontWeave.Core.DataField){scalar.FieldId}, {U(scalar.Position.Constant)})";
+        if (FindComputed(model, lengthName) is { } computed)
+        {
+            if (computed.DiagnosticSource is { } source)
+            {
+                writer.Line($"status = TryEvaluateScalar{source}Position(out ulong lengthPosition{localSuffix}, out diagnostic);");
+                writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+                return $"Location.AtLocal((global::FontWeave.Core.DataField){computed.DiagnosticFieldId}, lengthPosition{localSuffix})";
+            }
+            return $"Location.AtLocal((global::FontWeave.Core.DataField){computed.DiagnosticFieldId}, 0)";
+        }
+        var derived = model.Derived.First(d => d.Name == lengthName);
+        if (FindScalarOrNull(model, derived.Expression.Count ?? "") is not { } raw)
+            return "Location.AtLocal(global::FontWeave.Core.DataField.None, 0)";
+        writer.Line($"status = TryEvaluateScalar{raw.Name}Position(out ulong lengthPosition{localSuffix}, out diagnostic);");
+        writer.Line("if (status != global::FontWeave.Core.ReadStatus.Done) return status;");
+        return $"Location.AtLocal((global::FontWeave.Core.DataField){raw.FieldId}, lengthPosition{localSuffix})";
     }
 
     private static ArrayModel FindArray(TableModel model, string name)
