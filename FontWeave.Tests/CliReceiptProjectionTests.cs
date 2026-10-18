@@ -9,7 +9,13 @@
 // pipeline tests. The expected JSON shape is produced with the same serializer options
 // the CLI's single emission site uses, so the assertions read the exact receipt bytes
 // an auditor sees (member order included).
+//
+// The two members the constructor route cannot exercise — a non-empty diagnostics
+// array (a refusal freezes its diagnostic into the report) and the top-level
+// decisions projection (private to the CLI) — run through Program.Execute over a
+// real wire fixture, so the assertions read both outcome paths' actual receipts.
 using System.Text.Json;
+using FontWeave.Core;
 using FontWeave.Operations;
 using FontWeave.Operations.Subset;
 using FontWeave.Tables;
@@ -135,6 +141,88 @@ public sealed class CliReceiptProjectionTests
         Assert.Equal(0, receipt.GetProperty("subrPrunedLocalByFd").GetArrayLength());
     }
 
+    // The refusal path's diagnostics projection: an undeclared out-of-catalogue tag
+    // refuses after the wire-order decisions ahead of it formed, and the receipt
+    // freezes both — the diagnostic carries its code pair, the tag-bearing location
+    // and the tag as the detail word.
+    [Fact]
+    public void RefusedSubsetCarriesTheDiagnosticProjection()
+    {
+        (string input, string output) = TempSubsettableFont();
+        try
+        {
+            var receipt = Json(FontWeave.Cli.Program.Execute(
+                ["subset", input, "--mode", "compact", "--gids", "1", "--output", output],
+                out int exitCode));
+            Assert.Equal(1, exitCode);
+            JsonElement diagnostic = receipt.GetProperty("report")
+                .GetProperty("diagnostics")[0];
+            Assert.Equal((int)DiagnosticCode.UnknownTable,
+                diagnostic.GetProperty("code").GetInt32());
+            Assert.Equal("UnknownTable", diagnostic.GetProperty("codeName").GetString());
+            JsonElement location = diagnostic.GetProperty("location");
+            Assert.Equal(ZzzzTag, location.GetProperty("tableTag").GetUInt32());
+            Assert.Equal((int)OffsetBasis.Table, location.GetProperty("basis").GetInt32());
+            Assert.Equal("Table", location.GetProperty("basisName").GetString());
+            Assert.Equal(ZzzzTag, diagnostic.GetProperty("detail").GetUInt64());
+            // The decisions formed before the refusing row travel at the top level
+            // on the refusal path too (the same projection both outcomes read).
+            JsonElement decisions = receipt.GetProperty("decisions");
+            Assert.Equal(5, decisions.GetArrayLength());
+            Assert.Equal(WireOrderKnownTags, decisions.EnumerateArray()
+                .Select(row => row.GetProperty("tag").GetUInt32()).ToArray());
+        }
+        finally { Cleanup(input, output); }
+    }
+
+    // The success path's decisions projection: every row carries the full 8-key
+    // decision set (tag/tagText/action/actionName/policy/policyName/origin/
+    // originName) with each enum's wire value and projected name consistent, and a
+    // compact run over a rebuilt-and-preserved table set exercises both actions.
+    [Fact]
+    public void SuccessfulCompactCarriesTheDecisionProjection()
+    {
+        (string input, string output) = TempSubsettableFont();
+        try
+        {
+            var receipt = Json(FontWeave.Cli.Program.Execute(
+                ["subset", input, "--mode", "compact", "--gids", "1",
+                 "--unknown-table", "zzzz=preserve", "--output", output],
+                out int exitCode));
+            Assert.Equal(0, exitCode);
+            Assert.Equal("Done", receipt.GetProperty("statusName").GetString());
+            Assert.Equal(0, receipt.GetProperty("report")
+                .GetProperty("diagnostics").GetArrayLength());
+            bool rebuild = false, preserve = false;
+            foreach (JsonElement row in receipt.GetProperty("decisions").EnumerateArray())
+            {
+                Assert.Equal(ExpectedDecisionKeys, row.EnumerateObject()
+                    .Select(property => property.Name).OrderBy(name => name).ToArray());
+                int action = row.GetProperty("action").GetInt32();
+                Assert.Equal(ActionNames[action], row.GetProperty("actionName").GetString());
+                int policy = row.GetProperty("policy").GetInt32();
+                Assert.Equal(PolicyNames[policy], row.GetProperty("policyName").GetString());
+                int origin = row.GetProperty("origin").GetInt32();
+                Assert.Equal(OriginNames[origin], row.GetProperty("originName").GetString());
+                rebuild |= action == (int)TableAction.Rebuild;
+                preserve |= action == (int)TableAction.Preserve;
+            }
+            Assert.True(rebuild, "no Rebuild decision");
+            Assert.True(preserve, "no Preserve decision");
+            JsonElement zzzz = receipt.GetProperty("decisions").EnumerateArray()
+                .Single(row => row.GetProperty("tag").GetUInt32() == ZzzzTag);
+            Assert.Equal("zzzz", zzzz.GetProperty("tagText").GetString());
+            Assert.Equal((int)TableAction.Preserve, zzzz.GetProperty("action").GetInt32());
+            Assert.Equal("Preserve", zzzz.GetProperty("actionName").GetString());
+            Assert.Equal((int)SubsetPolicy.RetainRaw, zzzz.GetProperty("policy").GetInt32());
+            Assert.Equal("RetainRaw", zzzz.GetProperty("policyName").GetString());
+            Assert.Equal((int)SubsetDecisionOrigin.RequestOption,
+                zzzz.GetProperty("origin").GetInt32());
+            Assert.Equal("RequestOption", zzzz.GetProperty("originName").GetString());
+        }
+        finally { Cleanup(input, output); }
+    }
+
     private static SubsetReport PopulatedReport() => new(
         SubsetMode.CompactRemap,
         [new SubsetTableDecision(Gsub, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
@@ -164,6 +252,66 @@ public sealed class CliReceiptProjectionTests
         JsonSerializer.SerializeToElement(FontWeave.Cli.Program.SubsetReportProjection(report),
             ReceiptJsonOptions);
 
+    private static JsonElement Json(Dictionary<string, object?> receipt) =>
+        JsonSerializer.SerializeToElement(receipt);
+
     private static int[] Ints(JsonElement array) =>
         array.EnumerateArray().Select(value => value.GetInt32()).ToArray();
+
+    // ---- the real-path fixtures (a subsettable TrueType face plus one
+    // out-of-catalogue "zzzz" table, the receipt tests' refusal/preserve lever) ----
+
+    private const uint ZzzzTag = 0x7A7A7A7A; // "zzzz", sorts after every known tag
+
+    private static readonly uint[] WireOrderKnownTags =
+        [0x636D6170, 0x676C7966, 0x68656164, 0x6C6F6361, 0x6D617870];
+
+    private static readonly string[] ExpectedDecisionKeys =
+        ["action", "actionName", "origin", "originName", "policy", "policyName",
+         "tag", "tagText"];
+
+    private static readonly IReadOnlyDictionary<int, string> ActionNames =
+        new Dictionary<int, string>
+        { [(int)TableAction.Preserve] = "Preserve", [(int)TableAction.Rebuild] = "Rebuild",
+          [(int)TableAction.Drop] = "Drop" };
+
+    private static readonly IReadOnlyDictionary<int, string> PolicyNames =
+        new Dictionary<int, string>
+        { [(int)SubsetPolicy.RetainRaw] = "RetainRaw",
+          [(int)SubsetPolicy.RebuildTyped] = "RebuildTyped",
+          [(int)SubsetPolicy.Delete] = "Delete" };
+
+    private static readonly IReadOnlyDictionary<int, string> OriginNames =
+        new Dictionary<int, string>
+        { [(int)SubsetDecisionOrigin.MatrixRow] = "MatrixRow",
+          [(int)SubsetDecisionOrigin.RequestOption] = "RequestOption",
+          [(int)SubsetDecisionOrigin.ModeCoupling] = "ModeCoupling" };
+
+    private static (string Input, string Output) TempSubsettableFont()
+    {
+        string input = Path.Combine(Path.GetTempPath(),
+            $"fontweave-receipt-{Guid.NewGuid():N}.ttf");
+        File.WriteAllBytes(input, SubsetFontFixture.Sfnt(false,
+            (SubsetFontFixture.HeadTag, CliTtcFixture.ValidHead(indexToLocFormat: 1)),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(4)),
+            (SubsetFontFixture.GlyfTag,
+            [
+                .. SubsetFontFixture.InstructedSimpleGlyph(),   // glyph 0, 18 bytes
+                .. GlyfImages.CompositeRecord(2),               // glyph 1 → 2
+                .. GlyfImages.NoContourGlyphRecord(),           // glyph 2
+                .. GlyfImages.NoContourGlyphRecord()            // glyph 3
+            ]),
+            (SubsetFontFixture.LocaTag, GlyfImages.LongLoca([0, 18, 34, 46, 58])),
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41, 1))),
+            (ZzzzTag, SubsetFontFixture.Dummy(8))));
+        string output = Path.Combine(Path.GetTempPath(),
+            $"fontweave-receipt-{Guid.NewGuid():N}.out");
+        return (input, output);
+    }
+
+    private static void Cleanup(string input, string output)
+    {
+        File.Delete(input);
+        if (File.Exists(output)) File.Delete(output);
+    }
 }
