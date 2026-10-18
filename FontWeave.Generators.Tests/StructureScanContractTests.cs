@@ -658,6 +658,75 @@ public sealed class StructureScanContractTests
             "|UnsupportedFormat|0|UnsupportedOperation|None|0|3|0|0|0", result);
     }
 
+    // Spec 3.1 on the scan edge: a Follow window's Length may name a derived or
+    // computed value (the same member resolution the typed opener path uses), the
+    // core cuts the envelope with the evaluated value, and an overlong window is
+    // refused at the value's declared source (derived: the raw count scalar;
+    // computed: the declared DiagnosticField/DiagnosticSource position).
+    [Fact]
+    public void ScanWindowLengthFollowsDerivedAndComputedValues()
+    {
+        string result = SchemaProbeDriver.Execute($$"""
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            {{ScanLeafSchema}}
+            [BinaryTable(0x57564431, 4, ContractVersion = 1, GenerateStructureScan = true)]
+            [BinaryScalar("At", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
+            [BinaryScalar("Span", WireType.UInt16, 2, DataField.Length)]
+            [BinaryDerived("Window", Constant = 1, Count = "Span")]
+            [BinaryReference("Piece", "At", typeof(ScanLeafView), Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required, Length = "Window", Scan = ReferenceScan.Follow)]
+            public readonly ref partial struct DerivedWindowRootView { }
+            [BinaryTable(0x57564432, 4, ContractVersion = 1, GenerateStructureScan = true)]
+            [BinaryScalar("At", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table)]
+            [BinaryScalar("Span", WireType.UInt16, 2, DataField.Length)]
+            [BinaryComputed("Hooked", "EvalWindow", DiagnosticField = DataField.Length, DiagnosticSource = "Span", Maximum = 1024ul)]
+            [BinaryReference("Piece", "At", typeof(ScanLeafView), Origin = ReferenceOrigin.ViewStart, NullPolicy = ReferenceNullPolicy.Required, Length = "Hooked", Scan = ReferenceScan.Follow)]
+            public readonly ref partial struct ComputedWindowRootView
+            {
+                public static ulong HookValue;
+                private static ReadStatus EvalWindow(DataLocation diagnosticLocation, out ulong value, out FontDiagnostic diagnostic)
+                { value = HookValue; diagnostic = default; return ReadStatus.Done; }
+            }
+            public static class Entry
+            {
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    // At=6 puts the leaf at [6,10); the evaluated window is the only
+                    // thing deciding whether the envelope reaches to the wire end.
+                    byte[] wire = { 0, 6, 0, 3, 0, 0, 0xAA, 0xBB, 0xCC, 0xDD };
+                    DerivedWindowRootView.TryOpen(wire, out var derivedView, out _);
+                    var fit = new BuildBudget(new BuildLimits());
+                    var fitStatus = derivedView.TryScanStructure(fit, out var fitCoverage, out _);
+                    var fitUsage = fit.Usage;
+                    results.Add($"{fitStatus}|{(int)fitCoverage}|{fitUsage.WorkUnits}|{fitUsage.TemporaryBytes}");
+                    byte[] overlong = { 0, 6, 0, 5, 0, 0, 0xAA, 0xBB, 0xCC, 0xDD };
+                    DerivedWindowRootView.TryOpen(overlong, out var overView, out _);
+                    var over = new BuildBudget(new BuildLimits());
+                    var overStatus = overView.TryScanStructure(over, out var overCoverage, out var overDiagnostic);
+                    results.Add($"{overStatus}|{(int)overCoverage}|{overDiagnostic.Code}|{overDiagnostic.Location.Field}|{overDiagnostic.Location.Offset}|{overDiagnostic.Detail}|{overDiagnostic.Expected}");
+                    ComputedWindowRootView.TryOpen(wire, out var computedView, out _);
+                    ComputedWindowRootView.HookValue = 4;
+                    var hooked = new BuildBudget(new BuildLimits());
+                    var hookedStatus = computedView.TryScanStructure(hooked, out var hookedCoverage, out _);
+                    var hookedUsage = hooked.Usage;
+                    results.Add($"{hookedStatus}|{(int)hookedCoverage}|{hookedUsage.WorkUnits}|{hookedUsage.TemporaryBytes}");
+                    ComputedWindowRootView.HookValue = 9;
+                    var hookedOver = new BuildBudget(new BuildLimits());
+                    var hookedOverStatus = computedView.TryScanStructure(hookedOver, out var hookedOverCoverage, out var hookedOverDiagnostic);
+                    results.Add($"{hookedOverStatus}|{(int)hookedOverCoverage}|{hookedOverDiagnostic.Code}|{hookedOverDiagnostic.Location.Field}|{hookedOverDiagnostic.Location.Offset}|{hookedOverDiagnostic.Detail}|{hookedOverDiagnostic.Expected}");
+                    return string.Join(",", results);
+                }
+            }
+            """);
+        Assert.Equal("Done|1|13|40," +
+            "InvalidOffset|0|RangeOutsideSource|Length|2|6|4," +
+            "Done|1|13|40," +
+            "InvalidOffset|0|RangeOutsideSource|Length|2|9|4", result);
+    }
+
     private static string[] EmittedReasons(GeneratorDriver driver, string hintName) =>
         driver.GetRunResult().Results.Single().TrackedSteps["EmittedTables"]
             .SelectMany(static s => s.Outputs)
