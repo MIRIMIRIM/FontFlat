@@ -1,9 +1,11 @@
 // TTC-face CLI alignment tests: the per-face library chains (FontFile.Parse → GetFace →
 // NameTable.Parse → NameEditor.Replace → SfntWriter.Prepare, and FontInspection.TryInspect)
 // already admit collection faces, so the CLI routes inspect/--table inspect/edit-rebuild
-// through them, while validate and subset keep their declared limited refusal. The refusal
-// diagnostics are pinned verbatim (UnsupportedFormat/UnsupportedVersion with the ttcf
-// detail word) to prove the alignment added no new admission policy.
+// through them; validate and subset serve collection faces through the face-domain
+// directory admission (validate aggregates the whole container when --face is absent).
+// The edit-rebuild head-edit refusal is pinned verbatim (UnsupportedFormat/
+// UnsupportedVersion with the ttcf detail word) to prove the operations without a
+// collection contract keep their standalone-only admission.
 //
 // The verbs run through Program.Execute (the same dictionary the process serializes), so
 // the assertions read the exact receipt members an auditor sees.
@@ -53,10 +55,10 @@ public sealed class CliCollectionFaceTests
     }
 
     // The typed --table inspect keeps its receipt shape, but on a collection face it
-    // claims only raw inspection: the container status stays honestly UnsupportedFormat
-    // (ttcf) and no per-table validation status is asserted.
+    // claims only raw inspection: the face-domain container status is Done and no
+    // per-table validation status is asserted.
     [Fact]
-    public void TableInspectOnTtcFaceRunsRawInspectionWithHonestContainerStatus()
+    public void TableInspectOnTtcFaceRunsRawInspectionWithTheFaceDomainContainerStatus()
     {
         (string input, _) = TempFont();
         try
@@ -67,9 +69,8 @@ public sealed class CliCollectionFaceTests
             Assert.Equal(1, receipt.GetProperty("status").GetByte());
             Assert.Equal("Done", receipt.GetProperty("statusName").GetString());
             var report = receipt.GetProperty("report");
-            Assert.Equal("UnsupportedFormat", report.GetProperty("containerValidationStatusName").GetString());
-            Assert.Equal("UnsupportedVersion", report.GetProperty("containerDiagnostic").GetProperty("codeName").GetString());
-            Assert.Equal(Ttcf, report.GetProperty("containerDiagnostic").GetProperty("detail").GetUInt64());
+            Assert.Equal("Done", report.GetProperty("containerValidationStatusName").GetString());
+            Assert.Equal("None", report.GetProperty("containerDiagnostic").GetProperty("codeName").GetString());
             var rows = report.GetProperty("tables").EnumerateArray()
                 .Where(row => row.GetProperty("tagText").GetString() == "name").ToArray();
             JsonElement nameRow = Assert.Single(rows);
@@ -172,39 +173,146 @@ public sealed class CliCollectionFaceTests
         finally { Cleanup(input, output); }
     }
 
+    // validate --face N serves one collection face through the same face-domain typed
+    // admission a standalone face gets: the container status is Done and every table's
+    // strict validation ran.
     [Fact]
-    public void ValidateStillRefusesTtcFacesWithTheFrozenDiagnostic()
+    public void ValidateServesEachTtcFaceThroughTheFaceDomainDirectory()
     {
-        (string input, _) = TempFont();
+        for (int faceIndex = 0; faceIndex < 2; faceIndex++)
+        {
+            (string input, _) = TempValidatableFont();
+            try
+            {
+                var receipt = Json(FontWeave.Cli.Program.Execute(
+                    ["validate", input, "--face", faceIndex.ToString()], out int exitCode));
+                Assert.Equal(0, exitCode);
+                Assert.Equal("Done", receipt.GetProperty("statusName").GetString());
+                Assert.Equal(faceIndex, receipt.GetProperty("faceIndex").GetInt32());
+                var report = receipt.GetProperty("report");
+                Assert.Equal("Done", report.GetProperty("containerValidationStatusName").GetString());
+                Assert.True(report.GetProperty("isCollection").GetBoolean());
+                foreach (var row in report.GetProperty("tables").EnumerateArray())
+                    Assert.Equal("Done", row.GetProperty("validationStatusName").GetString());
+            }
+            finally { File.Delete(input); }
+        }
+    }
+
+    // validate without --face over a TTC aggregates every face into one receipt: per-face
+    // reports listed under faces, the aggregate succeeds only when every face does.
+    [Fact]
+    public void ValidateWithoutFaceAggregatesEveryTtcFace()
+    {
+        (string input, _) = TempValidatableFont();
+        try
+        {
+            var receipt = Json(FontWeave.Cli.Program.Execute(["validate", input], out int exitCode));
+            Assert.Equal(0, exitCode);
+            Assert.Equal("Done", receipt.GetProperty("statusName").GetString());
+            Assert.Equal(JsonValueKind.Null, receipt.GetProperty("faceIndex").ValueKind);
+            Assert.Equal(2, receipt.GetProperty("faceCount").GetInt32());
+            var faces = receipt.GetProperty("faces").EnumerateArray().ToArray();
+            Assert.Equal(2, faces.Length);
+            for (int i = 0; i < 2; i++)
+            {
+                Assert.Equal(i, faces[i].GetProperty("faceIndex").GetInt32());
+                Assert.Equal("Done", faces[i].GetProperty("statusName").GetString());
+                Assert.Equal(i, faces[i].GetProperty("report").GetProperty("faceIndex").GetInt32());
+            }
+        }
+        finally { File.Delete(input); }
+    }
+
+    // A face directory that declares a table beyond the input fails only that face: the
+    // aggregate refuses with the failure's diagnostic, whose location carries the face
+    // index, and the surviving face's Done report stays listed beside it.
+    [Fact]
+    public void ValidateAggregateLocatesABrokenFaceDirectoryByFaceIndex()
+    {
+        byte[] corrupt = CliTtcFixture.ValidatableTwoFaceTtc();
+        int faceOne = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(corrupt.AsSpan(16));
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(
+            corrupt.AsSpan(faceOne + 12 + 8), 0xFFFFFFF0);
+        (string input, _) = TempValidatableFont(corrupt);
         try
         {
             var receipt = Json(FontWeave.Cli.Program.Execute(["validate", input], out int exitCode));
             Assert.Equal(1, exitCode);
-            Assert.Equal("UnsupportedFormat", receipt.GetProperty("statusName").GetString());
-            Assert.Equal("UnsupportedVersion", receipt.GetProperty("diagnostic").GetProperty("codeName").GetString());
-            Assert.Equal(Ttcf, receipt.GetProperty("diagnostic").GetProperty("detail").GetUInt64());
-            // The admitted raw rows stay visible; only the strict container claim is refused.
-            Assert.Equal("UnsupportedFormat", receipt.GetProperty("report")
-                .GetProperty("containerValidationStatusName").GetString());
+            Assert.Equal("InvalidOffset", receipt.GetProperty("statusName").GetString());
+            Assert.Equal(1, receipt.GetProperty("diagnostic").GetProperty("location")
+                .GetProperty("faceIndex").GetInt32());
+            var faces = receipt.GetProperty("faces").EnumerateArray().ToArray();
+            Assert.Equal(2, faces.Length);
+            Assert.Equal("Done", faces[0].GetProperty("statusName").GetString());
+            Assert.Equal("InvalidOffset", faces[1].GetProperty("statusName").GetString());
+            Assert.Equal(1, faces[1].GetProperty("report").GetProperty("faceIndex").GetInt32());
         }
         finally { File.Delete(input); }
     }
 
     [Fact]
-    public void SubsetStillRefusesTtcFacesWithTheFrozenDiagnostic()
+    public void ValidateWithFaceServesTheBrokenFaceDiagnostic()
     {
-        (string input, string output) = TempFont();
+        byte[] corrupt = CliTtcFixture.ValidatableTwoFaceTtc();
+        int faceOne = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(corrupt.AsSpan(16));
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(
+            corrupt.AsSpan(faceOne + 12 + 8), 0xFFFFFFF0);
+        (string input, _) = TempValidatableFont(corrupt);
+        try
+        {
+            var receipt = Json(FontWeave.Cli.Program.Execute(
+                ["validate", input, "--face", "1"], out int exitCode));
+            Assert.Equal(1, exitCode);
+            Assert.Equal("InvalidOffset", receipt.GetProperty("statusName").GetString());
+            Assert.Equal(1, receipt.GetProperty("faceIndex").GetInt32());
+            Assert.Equal(1, receipt.GetProperty("diagnostic").GetProperty("location")
+                .GetProperty("faceIndex").GetInt32());
+        }
+        finally { File.Delete(input); }
+    }
+
+    // The standalone single-face receipt keeps its shape: one report at the top level,
+    // no faces array, through the same face-domain admission.
+    [Fact]
+    public void StandaloneValidateKeepsItsSingleFaceReceipt()
+    {
+        (string input, _) = TempStandaloneFont();
+        try
+        {
+            var receipt = Json(FontWeave.Cli.Program.Execute(["validate", input], out int exitCode));
+            Assert.Equal(0, exitCode);
+            Assert.Equal("Done", receipt.GetProperty("statusName").GetString());
+            Assert.Equal(0, receipt.GetProperty("faceIndex").GetInt32());
+            Assert.Equal("Done", receipt.GetProperty("report")
+                .GetProperty("containerValidationStatusName").GetString());
+            Assert.False(receipt.GetProperty("report").GetProperty("isCollection").GetBoolean());
+            Assert.DoesNotContain(receipt.EnumerateObject(), property => property.Name == "faces");
+        }
+        finally { File.Delete(input); }
+    }
+
+    [Fact]
+    public void SubsetEmitsTheSelectedTtcFaceAsAStandaloneSfnt()
+    {
+        (string input, string output) = TempValidatableFont();
         try
         {
             var receipt = Json(FontWeave.Cli.Program.Execute(
                 ["subset", input, "--mode", "retain", "--gids", "0", "--output", output],
                 out int exitCode));
-            Assert.Equal(1, exitCode);
-            Assert.Equal("UnsupportedFormat", receipt.GetProperty("statusName").GetString());
-            Assert.Equal("UnsupportedVersion", receipt.GetProperty("diagnostic").GetProperty("codeName").GetString());
-            Assert.Equal(Ttcf, receipt.GetProperty("diagnostic").GetProperty("detail").GetUInt64());
-            Assert.False(receipt.GetProperty("outputWritten").GetBoolean());
-            Assert.False(File.Exists(output));
+            Assert.Equal(0, exitCode);
+            Assert.Equal("Done", receipt.GetProperty("statusName").GetString());
+            Assert.True(receipt.GetProperty("outputWritten").GetBoolean());
+
+            byte[] written = File.ReadAllBytes(output);
+            Assert.NotEqual(Ttcf, (ulong)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(written));
+            FontFile repacked = FontFile.Parse(written);
+            Assert.False(repacked.IsCollection);
+            // The output holds exactly the selected face's tables: face 1's VORG stays
+            // behind in the container.
+            Assert.Equal(new[] { "head", "maxp", "name" }, repacked.GetFace(0).Tables
+                .Select(table => table.Tag).ToArray());
         }
         finally { Cleanup(input, output); }
     }
@@ -217,6 +325,25 @@ public sealed class CliCollectionFaceTests
         string input = Path.Combine(Path.GetTempPath(), $"fontweave-ttc-{Guid.NewGuid():N}.ttc");
         File.WriteAllBytes(input, CliTtcFixture.TwoFaceTtc());
         string output = Path.Combine(Path.GetTempPath(), $"fontweave-ttc-{Guid.NewGuid():N}.out");
+        return (input, output);
+    }
+
+    private static (string Input, string Output) TempValidatableFont(byte[]? bytes = null)
+    {
+        string input = Path.Combine(Path.GetTempPath(), $"fontweave-ttc-{Guid.NewGuid():N}.ttc");
+        File.WriteAllBytes(input, bytes ?? CliTtcFixture.ValidatableTwoFaceTtc());
+        string output = Path.Combine(Path.GetTempPath(), $"fontweave-ttc-{Guid.NewGuid():N}.out");
+        return (input, output);
+    }
+
+    private static (string Input, string Output) TempStandaloneFont()
+    {
+        string input = Path.Combine(Path.GetTempPath(), $"fontweave-sfnt-{Guid.NewGuid():N}.ttf");
+        File.WriteAllBytes(input, SubsetFontFixture.Sfnt(false,
+            (SubsetFontFixture.HeadTag, CliTtcFixture.ValidHead()),
+            (SubsetFontFixture.MaxpTag, CliTtcFixture.Maxp()),
+            (SubsetFontFixture.NameTag, CliTtcFixture.Name(CliTtcFixture.FaceZeroNameRecords))));
+        string output = Path.Combine(Path.GetTempPath(), $"fontweave-sfnt-{Guid.NewGuid():N}.out");
         return (input, output);
     }
 

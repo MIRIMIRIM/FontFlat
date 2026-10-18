@@ -122,4 +122,34 @@ internal static class CliTtcFixture
     }
 
     internal static byte[] Dummy(int length) => new byte[length];
+
+    // ---- strictly validatable table builders (validate/subset TTC faces) ----------
+
+    /// <summary>A head table that passes the strict HeadView domain: 54 bytes exactly,
+    /// the required magic number, unitsPerEm 1000, indexToLocFormat in domain.</summary>
+    internal static byte[] ValidHead(short indexToLocFormat = 0)
+    {
+        var bytes = new byte[54];
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0), 0x00010000);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(12), 0x5F0F3CF5);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(18), 1000);
+        BinaryPrimitives.WriteInt16BigEndian(bytes.AsSpan(50), indexToLocFormat);
+        return bytes;
+    }
+
+    /// <summary>A VORG 1.0 header with zero records: the strict validator's exact
+    /// expected length, count within any maxp domain.</summary>
+    internal static byte[] ValidVorg()
+    {
+        var bytes = new byte[8];
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0), 0x00010000);
+        return bytes;
+    }
+
+    /// <summary>The two-face container whose every table passes its official strict
+    /// validator, so validate --face N and the whole-container aggregate succeed.</summary>
+    internal static byte[] ValidatableTwoFaceTtc() => Ttc(
+        new[] { (HeadTag, ValidHead()), (MaxpTag, Maxp()), (NameTag, Name(FaceZeroNameRecords)) },
+        new[] { (HeadTag, ValidHead()), (MaxpTag, Maxp()), (NameTag, Name(FaceOneNameRecords)),
+            (VorgTag, ValidVorg()) });
 }

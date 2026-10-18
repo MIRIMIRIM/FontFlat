@@ -54,6 +54,8 @@ public static partial class MetadataEditOperation
         var budget = new BuildBudget(limits);
         ReadStatus status = face.TryOpenDirectory(out var directory, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        status = face.RequireStandaloneFace(out diagnostic);
+        if (status != ReadStatus.Done) return status;
         if (!budget.Input(directory.SourceByteLength, face.Location, out diagnostic) ||
             !budget.Work(32L * directory.DeclaredCount, face.Location, out diagnostic))
             return ReadStatus.ResourceLimit;

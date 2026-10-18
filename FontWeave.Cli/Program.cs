@@ -41,6 +41,8 @@ internal static class Program
                 "name-delete INPUT --record N --output OUTPUT\n" +
                 "copy-original INPUT --output OUTPUT (byte copy, no format validation)\n" +
                 "Edits also accept --face N, --drop-signature, --unknown-tables fail|drop|preserve.\n" +
+                "On a TTC, validate without --face validates every face and aggregates (any face failure fails the\n" +
+                "whole input, per-face reports listed under faces); subset --face N emits a standalone sfnt.\n" +
                 "Legacy name-* commands accept --hex HEX instead of --text/--encoding.\n" +
                 "edit-rebuild uses strict UTF-16BE; head revision is raw signed 16.16, modified is OpenType seconds.\n" +
                 "TAG is four ASCII characters or 0xXXXXXXXX. Typed commands accept --max-temporary-bytes and --max-work-units.\n" +
@@ -235,12 +237,14 @@ internal static class Program
         status = actualSource.TryGetFace(faceIndex, out FontFaceRef face, out diagnostic);
         if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
 
-        // The typed admission (SfntDirectoryView.Validate) refuses collection faces by
-        // contract, so a TTC face routes to the per-face library chains that already
-        // admit it: raw inspection for --table inspect, the FontFile/NameEditor/
-        // SfntWriter repack for edit-rebuild. validate and subset keep their declared
-        // limited refusal in the typed path below, and edit-rebuild head edits have no
-        // per-face collection chain, so they fall through to the same typed refusal.
+        // Collection faces walk the same typed admission as standalone faces since the
+        // directory view validates the face domain: --table inspect reports raw rows,
+        // edit-rebuild without head edits repacks through the per-face library chain, and
+        // validate either aggregates every face or serves the selected one. edit-rebuild
+        // head edits have no per-face collection chain, so the head-edit read refuses at
+        // the standalone-only admission (the metadata operation carries the same guard).
+        if (command == "validate" && face.IsCollection && !options.ContainsKey("face"))
+            return ExecuteCollectionValidate(result, actualSource, requestedTag, limits, out exitCode);
         if (face.IsCollection && command == "inspect")
         {
             status = FontInspection.TryInspect(face, out FontInspectionReport? collectionReport,
@@ -360,6 +364,46 @@ internal static class Program
         result["diagnostics"] = plan.Diagnostics;
         result["preservedTables"] = plan.PreservedTables;
         return SetOutcome(result, ReadStatus.Done, default, out exitCode);
+    }
+
+    // validate over a whole collection: every face walks the same strict typed admission
+    // the single-face path uses, independent checks continue past a failure, and the
+    // aggregate refuses when any face refuses. The first failure's diagnostic carries the
+    // face index through its location; each face's report rides the faces array, so one
+    // receipt holds the whole container's evidence.
+    private static Dictionary<string, object?> ExecuteCollectionValidate(
+        Dictionary<string, object?> result, FontSource source, uint? requestedTag,
+        BuildLimits limits, out int exitCode)
+    {
+        result["faceIndex"] = null;
+        var faces = new List<object?>();
+        ReadStatus aggregate = ReadStatus.Done;
+        FontDiagnostic aggregateDiagnostic = default;
+        int faceCount = 0;
+        for (int index = 0; ; index++)
+        {
+            ReadStatus status = source.TryGetFace(index, out FontFaceRef face, out var getDiagnostic);
+            if (status != ReadStatus.Done)
+            {
+                // A collection header that admits no face at all is itself the failure.
+                if (index == 0) { aggregate = status; aggregateDiagnostic = getDiagnostic; }
+                break;
+            }
+            faceCount++;
+            status = FontInspection.TryValidate(face, out var report, out var diagnostic,
+                requestedTag, limits);
+            faces.Add(new
+            {
+                faceIndex = face.FaceIndex,
+                status = (byte)status, statusName = status.ToString(),
+                report = report is null ? null : InspectionReport(report)
+            });
+            if (aggregate == ReadStatus.Done && status != ReadStatus.Done)
+            { aggregate = status; aggregateDiagnostic = diagnostic; }
+        }
+        result["faceCount"] = faceCount;
+        result["faces"] = faces;
+        return SetOutcome(result, aggregate, aggregateDiagnostic, out exitCode);
     }
 
     private static Dictionary<string, object?> ExecuteSubset(string input, string output,
@@ -723,6 +767,8 @@ internal static class Program
         }
         ReadStatus status = face.TryOpenDirectory(out var directory, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        status = RefuseCollectionFace(face, out diagnostic);
+        if (status != ReadStatus.Done) return status;
         status = directory.Validate(out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = directory.TryFindUniqueTable(0x68656164, out int ordinal, out diagnostic);
@@ -735,6 +781,18 @@ internal static class Program
         if (status != ReadStatus.Done) return status;
         edit = new(revision ?? model!.Values.FontRevisionRaw, modified ?? model!.Values.ModifiedSeconds);
         return ReadStatus.Done;
+    }
+
+    // The same standalone-only refusal the edit operations' admission carries: head edits
+    // have no per-face collection chain, so the ttcf diagnostic predates any face-domain
+    // read here.
+    private static ReadStatus RefuseCollectionFace(FontFaceRef face, out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        if (!face.IsCollection) return ReadStatus.Done;
+        diagnostic = new(DiagnosticCode.UnsupportedVersion,
+            face.Location.At(DataField.Version, face.DirectoryFileOffset), 0x74746366u);
+        return ReadStatus.UnsupportedFormat;
     }
 
     private static ReadStatus TryReadTypedInput(string input, int maximum, out byte[]? bytes,

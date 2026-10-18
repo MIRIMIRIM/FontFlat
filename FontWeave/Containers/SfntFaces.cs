@@ -47,6 +47,17 @@ public static class SfntFaces
         return ReadStatus.Done;
     }
 
+    // The edit operations keep the standalone-only admission the directory view's former
+    // container refusal gave them; validate, inspect and subset admit collection faces
+    // through the face-domain directory validation instead.
+    internal static ReadStatus RequireStandaloneFace(this FontFaceRef face, out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        if (!face.IsCollection) return ReadStatus.Done;
+        return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+            face.Location.At(DataField.Version, face.DirectoryFileOffset), out diagnostic, 0x74746366u);
+    }
+
     public static ReadStatus TryOpenDirectory(this FontFaceRef face, out SfntDirectoryView view,
         out FontDiagnostic diagnostic)
     {

@@ -90,18 +90,19 @@ public readonly ref struct SfntDirectoryView
         return ReadStatus.Done;
     }
 
-    /// <summary>Standalone directory preflight, not full-font or operation-policy validation.
-    /// TTC strict validation stays with M1 until the cross-face contract is migrated.</summary>
+    /// <summary>Face-domain directory preflight, not full-font or operation-policy validation.
+    /// A collection face validates its own directory and this face's table ranges inside the
+    /// shared source; container-level structure (TTC header fields, cross-face directory and
+    /// table overlap) stays with FontFile.Parse.</summary>
     public ReadStatus Validate(out FontDiagnostic diagnostic, int maxTables = 4095)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(maxTables);
         diagnostic = default;
         if (!IsBound)
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView, _face.Location, out diagnostic);
-        if (_face.IsCollection || Version is not (0x00010000 or 0x4F54544F))
+        if (Version is not (0x00010000 or 0x4F54544F))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
-                _face.Location.At(DataField.Version, _face.DirectoryFileOffset), out diagnostic,
-                _face.IsCollection ? 0x74746366u : Version);
+                _face.Location.At(DataField.Version, _face.DirectoryFileOffset), out diagnostic, Version);
         if (DeclaredCount == 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 _face.Location.At(DataField.Count, (ulong)_face.DirectoryFileOffset + 4), out diagnostic, 0, 1);
