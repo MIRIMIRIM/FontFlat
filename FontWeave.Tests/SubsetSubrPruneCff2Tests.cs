@@ -363,6 +363,111 @@ public sealed class SubsetSubrPruneCff2Tests
         Assert.Equal(diagnostic, retained);
     }
 
+    // ---- the ambiguous-entry guard narrowed to selector-sensitive bodies ----------
+
+    // Two glyphs call the same blend-FREE body under two different entry
+    // selectors (the FD default, and an explicit vsindex 1 before the call).
+    // The body's parse never consults the entry — no blend, nothing else reads
+    // k — so the multi-valued entry set is innocent and both entries' bytes
+    // re-emit verbatim; a body-keyed refusal here refused a legal face.
+    [Fact]
+    public void TwoEntrySelectorsIntoABlendFreeBodyRewrite()
+    {
+        var builder = new Cff2PruneBuilder(fdCount: 1, numGlyphs: 3);
+        builder.SetStore(regions: 2, regionIndexCounts: [1, 2]);
+        builder.SetLocals(0, [0x8b], [0x8b]);              // local 1 unreferenced: prunes
+        builder.SetGlyphProgram(0, [], fd: 0);
+        builder.SetGlyphProgram(1, [.. Num(-107), 10], fd: 0);           // the FD default's selector
+        builder.SetGlyphProgram(2, [0x8c, 15, .. Num(-107), 10], fd: 0); // vsindex 1, then call
+        var status = SubsetOperation.TryPrepare(Request(builder.Build(), [1, 2]),
+            out var result, out var report, out var diagnostic);
+        Assert.True(status == ReadStatus.Done,
+            $"status={status} code={diagnostic.Code} detail={diagnostic.Detail} expected={diagnostic.Expected}");
+        Assert.NotNull(result);
+        Assert.Equal([1], report!.SubrPrunedLocalByFd);
+        var cff2 = OutputCff2(result!, 3, fvarAxisCount: 1);
+        Assert.Equal([0x8b], cff2.FontDicts[0].Private!.LocalSubrs[0].ToArray());
+        Assert.Equal([.. Num(-107), 10], cff2.CharStrings[1].ToArray());
+        Assert.Equal([0x8c, 15, .. Num(-107), 10], cff2.CharStrings[2].ToArray());
+    }
+
+    // The same two-entry shape into a body whose own vsindex operator runs
+    // BEFORE its blend: the blend's k is the body's armed selector from there
+    // on (TN5171 §5), the entry never reaches it, and the face rewrites — the
+    // guard's refusal stays with the selector-sensitive bodies, the shape the
+    // TwoEntrySelectorsIntoOneBlendBodyRefuse pin keeps refusing.
+    [Fact]
+    public void OwnVsindexBeforeTheBlendMakesTheEntryIrrelevant()
+    {
+        var builder = new Cff2PruneBuilder(fdCount: 1, numGlyphs: 3);
+        builder.SetStore(regions: 2, regionIndexCounts: [1, 2]);
+        byte[] blendBody = [0x8c, 15, .. BlendBlock(), 19, 0xFF]; // vsindex 1 first
+        builder.SetLocals(0, blendBody, [0x8b]);                  // local 1 unreferenced: prunes
+        builder.SetGlyphProgram(0, [], fd: 0);
+        builder.SetGlyphProgram(1, [.. Num(-107), 10], fd: 0);           // the FD default's selector
+        builder.SetGlyphProgram(2, [0x8c, 15, .. Num(-107), 10], fd: 0); // vsindex 1, then call
+        var status = SubsetOperation.TryPrepare(Request(builder.Build(), [1, 2]),
+            out var result, out var report, out var diagnostic);
+        Assert.True(status == ReadStatus.Done,
+            $"status={status} code={diagnostic.Code} detail={diagnostic.Detail} expected={diagnostic.Expected}");
+        Assert.NotNull(result);
+        Assert.Equal([1], report!.SubrPrunedLocalByFd);
+        var cff2 = OutputCff2(result!, 3, fvarAxisCount: 1);
+        // The body's blend arithmetic rode its own armed selector on both sides,
+        // so no token moved even though the two entries disagree.
+        Assert.Equal(blendBody, cff2.FontDicts[0].Private!.LocalSubrs[0].ToArray());
+        Assert.Equal([.. Num(-107), 10], cff2.CharStrings[1].ToArray());
+        Assert.Equal([0x8c, 15, .. Num(-107), 10], cff2.CharStrings[2].ToArray());
+    }
+
+    // The global-body leg of the narrowed guard: two entries into a blend-free
+    // global body parse identically and rewrite byte-faithfully.
+    [Fact]
+    public void TwoEntrySelectorsIntoABlendFreeGlobalBodyRewrite()
+    {
+        var builder = new Cff2PruneBuilder(fdCount: 1, numGlyphs: 3);
+        builder.SetStore(regions: 2, regionIndexCounts: [1, 2]);
+        builder.SetGlobals([0x8b], [0x8b]);                // global 1 unreferenced: prunes
+        builder.SetGlyphProgram(0, [], fd: 0);
+        builder.SetGlyphProgram(1, [.. Num(-107), 29], fd: 0);           // the FD default's selector
+        builder.SetGlyphProgram(2, [0x8c, 15, .. Num(-107), 29], fd: 0); // vsindex 1, then call
+        var status = SubsetOperation.TryPrepare(Request(builder.Build(), [1, 2]),
+            out var result, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal(1, report!.SubrPrunedGlobal);
+        var cff2 = OutputCff2(result!, 3, fvarAxisCount: 1);
+        _ = Assert.Single(cff2.GlobalSubrs);
+        Assert.Equal([0x8b], cff2.GlobalSubrs[0].ToArray());
+        Assert.Equal([0x8c, 15, .. Num(-107), 29], cff2.CharStrings[2].ToArray());
+    }
+
+    // The global leg across FD contexts: a global blend-free body reached under
+    // two entries from two DIFFERENT FDs — its sensitivity fact is FD-free (its
+    // tokens and the face-wide store fix it), so the multi-valued set stays
+    // innocent whatever context scanned it first.
+    [Fact]
+    public void TwoEntrySelectorsFromTwoFdsIntoABlendFreeGlobalBodyRewrite()
+    {
+        var builder = new Cff2PruneBuilder(fdCount: 2, numGlyphs: 3);
+        builder.SetStore(regions: 2, regionIndexCounts: [1, 2]);
+        builder.SetGlobals([0x8b]);
+        builder.SetLocals(0);
+        builder.SetLocals(1);
+        builder.SetGlyphProgram(0, [], fd: 0);
+        builder.SetGlyphProgram(1, [.. Num(-107), 29], fd: 0);           // entry 0 via FD0
+        builder.SetGlyphProgram(2, [0x8c, 15, .. Num(-107), 29], fd: 1); // entry 1 via FD1
+        var status = SubsetOperation.TryPrepare(Request(builder.Build(), [1, 2]),
+            out var result, out var report, out var diagnostic);
+        Assert.True(status == ReadStatus.Done,
+            $"status={status} code={diagnostic.Code} detail={diagnostic.Detail} expected={diagnostic.Expected}");
+        Assert.NotNull(result);
+        var cff2 = OutputCff2(result!, 3, fvarAxisCount: 1);
+        Assert.Equal([0x8b], cff2.GlobalSubrs[0].ToArray());
+        Assert.Equal([.. Num(-107), 29], cff2.CharStrings[1].ToArray());
+        Assert.Equal([0x8c, 15, .. Num(-107), 29], cff2.CharStrings[2].ToArray());
+    }
+
     /// <summary>A CFF2 wire builder (TN5171) with local-subr injection, the strict
     /// canonical tiling header(5)|TopDICT|GlobalSubrs|CharStrings|FDArray|FDSelect|
     /// private₀+local₀|…|VarStore: every DICT offset operand rides the fixed 29

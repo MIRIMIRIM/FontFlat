@@ -124,6 +124,14 @@ public static partial class SubsetOperation
         internal readonly Dictionary<int, HashSet<int>> GlobalEntryVsindex = [];
         internal readonly Dictionary<int, Dictionary<int, HashSet<int>>> LocalEntryVsindex = [];
 
+        /// <summary>The bodies whose blend arithmetic reads the ENTRY selector: a
+        /// blend of the body's own tokens ran before the body's own vsindex
+        /// operator armed one (TN5171 section 5 — the blend's k is the armed
+        /// selector's region count). A body without such a blend parses
+        /// identically under every entry; only these carry an ambiguity the
+        /// single-rewrite guard can refuse on.</summary>
+        internal readonly HashSet<(int Kind, int Fd, int Index)> SelectorSensitive = [];
+
         internal HashSet<int> LocalSet(int fd)
         {
             if (!LocalReach.TryGetValue(fd, out var set))
@@ -164,9 +172,10 @@ public static partial class SubsetOperation
 
         /// <summary>Records the walk's current vsindex as one call-site entry context
         /// of the called body (TN5171 §5: a blend without its own vsindex operator
-        /// reads the selector the caller armed). Sets only grow; the plan-time guard
-        /// refuses any body whose entries hold more than one distinct value — its
-        /// runtime blend interpretation would be path-dependent.</summary>
+        /// reads the selector the caller armed). Sets only grow; the plan-time
+        /// guard refuses a multi-valued set only for a selector-sensitive body —
+        /// an insensitive body's parse never consults the entry value, so any one
+        /// of them seeds a faithful rewrite.</summary>
         internal void MarkEntryVsindex(int kind, int fd, int index, int vsindex)
         {
             if (kind == SubrWalk.KindGlobal)
@@ -189,6 +198,18 @@ public static partial class SubsetOperation
                 set.Add(vsindex);
             }
         }
+
+        /// <summary>Marks the body selector-sensitive: one of its own blends ran
+        /// before the body's own vsindex operator, so its blend arithmetic reads
+        /// the selector the caller armed at the entry. A global body's fact is
+        /// FD-free — its tokens and the face-wide variation store fix it — so the
+        /// key normalizes the scanning FD away, matching the guard's lookup.</summary>
+        internal void MarkSelectorSensitive(int kind, int fd, int index) =>
+            SelectorSensitive.Add((kind, kind == SubrWalk.KindGlobal ? 0 : fd, index));
+
+        internal bool IsSelectorSensitive(int kind, int fd, int index) =>
+            SelectorSensitive.Contains((kind, kind == SubrWalk.KindGlobal ? 0 : fd,
+                index));
 
         internal SubrPrunePlan ToPlan(SubrIndexPlan? global, SubrIndexPlan?[] localByFd)
         {
@@ -356,29 +377,35 @@ public static partial class SubsetOperation
 
     /// <summary>The per-context vsindex guard (§4 A3, the rewrite's scope): a body
     /// whose recorded call-site entries hold more than one distinct selector has a
-    /// path-dependent runtime interpretation — its blends read a different region
-    /// count per entry — so no single rewritten product is semantically faithful
-    /// to both, and the shape refuses. It runs only where a plan will park: the
-    /// identity face's verbatim path keeps such a face byte-faithful, the
-    /// ambiguity is the rewrite's to refuse, not the copy's. Detail names the
-    /// body (a global index, or the local index within its FD — the plan's
-    /// single-number convention), Expected the distinct entry count the single
-    /// rewrite cannot serve.</summary>
+    /// path-dependent runtime interpretation only where its own blends read the
+    /// entry selector — a blend of the body's tokens ran before the body's own
+    /// vsindex operator (TN5171 §5; elsewhere the k the mask widths read would
+    /// change per entry). Such a sensitive body refuses: no single rewritten
+    /// product is semantically faithful to both entries. An insensitive body's
+    /// parse never consults the entry, so its multi-valued set is innocent and
+    /// any one value seeds a byte-faithful rewrite frame. It runs only where a
+    /// plan will park: the identity face's verbatim path keeps such a face
+    /// byte-faithful, the ambiguity is the rewrite's to refuse, not the copy's.
+    /// Detail names the body (a global index, or the local index within its FD —
+    /// the plan's single-number convention), Expected the distinct entry count
+    /// the single rewrite cannot serve.</summary>
     private static ReadStatus RefuseAmbiguousEntryVsindex(SubrAnalysis analysis,
         DataLocation modelAt, out FontDiagnostic diagnostic)
     {
         foreach ((int index, var set) in analysis.GlobalEntryVsindex)
         {
-            if (set.Count <= 1) continue;
+            if (set.Count <= 1 || !analysis.IsSelectorSensitive(SubrWalk.KindGlobal,
+                    0, index)) continue;
             diagnostic = new(DiagnosticCode.UnsupportedOperation,
                 modelAt, (uint)index, (uint)set.Count);
             return ReadStatus.UnsupportedFormat;
         }
-        foreach ((int _, var map) in analysis.LocalEntryVsindex)
+        foreach ((int fd, var map) in analysis.LocalEntryVsindex)
         {
             foreach ((int index, var set) in map)
             {
-                if (set.Count <= 1) continue;
+                if (set.Count <= 1 || !analysis.IsSelectorSensitive(SubrWalk.KindLocal,
+                        fd, index)) continue;
                 diagnostic = new(DiagnosticCode.UnsupportedOperation,
                     modelAt, (uint)index, (uint)set.Count);
                 return ReadStatus.UnsupportedFormat;
@@ -863,6 +890,12 @@ public static partial class SubsetOperation
             }
             int hintsBefore = _hints;
             bool ended = false;
+
+            // The body's own vsindex operator (TN5171 §5): once its token ran in
+            // this frame, later blends read the body's armed selector and no
+            // longer depend on the entry's. A blend met before that token is
+            // what makes the body selector-sensitive.
+            bool ownVsindexArmed = false;
             int i = 0, n = program.Length;
             while (i < n)
             {
@@ -970,12 +1003,20 @@ public static partial class SubsetOperation
                 }
                 if (_cff2 && b == 15)
                 {
+                    ownVsindexArmed = true;
                     ReadStatus status = ApplyVsindex(out diagnostic);
                     if (status != ReadStatus.Done) return status;
                     continue;
                 }
                 if (_cff2 && b == 16)
                 {
+                    if (_analysis is not null && kind != KindGlyph && !ownVsindexArmed)
+                    {
+                        // The blend's region count k is the entry selector's until
+                        // this body arms its own (TN5171 §5): the ambiguity the
+                        // plan-time guard refuses is exactly this shape's.
+                        _analysis.MarkSelectorSensitive(kind, _fd, index);
+                    }
                     ReadStatus status = ApplyBlend(out diagnostic);
                     if (status != ReadStatus.Done) return status;
                     continue;
