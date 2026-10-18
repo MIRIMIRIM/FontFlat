@@ -10,6 +10,7 @@
 // no public factory (GSUB 4's ligature sets, GPOS 3/4/5/6's anchors, GPOS 9's
 // type-9 lookup) exercise on the real corpus in the FontWeave.S2b1 gate (roboto
 // carries GSUB T4, GPOS T4/ext and GPOS 9 chains; opensans carries GPOS T5).
+using System.Buffers.Binary;
 using FontWeave.Containers;
 using FontWeave.Core;
 using FontWeave.Operations;
@@ -226,9 +227,10 @@ public sealed class SubsetLayoutRewriteFormsTests
         Ok(ContextualSubstTableCompiler.TryCreateRuleSet([rule!], out var ruleSet,
             out diagnostic));
         NoDiagnostic(diagnostic);
-        // One coverage key (glyph 1, class 1): the rule-set array carries one entry.
+        // One coverage key (glyph 1, class 1); the class domain {0,1,2} owns three
+        // rule-set slots — 0 and 2 stay spec-NULL.
         Ok(ContextualSubstTableCompiler.TryCreate(coverage!, classDef!,
-            new ContextualRuleSet?[] { ruleSet }, NumGlyphs, out var contextual,
+            new ContextualRuleSet?[] { null, ruleSet, null }, NumGlyphs, out var contextual,
             out diagnostic));
         NoDiagnostic(diagnostic);
         Ok(LookupTableCompiler.TryCreateContextualSubst(NumGlyphs, [contextual!], 0,
@@ -244,13 +246,116 @@ public sealed class SubsetLayoutRewriteFormsTests
         var ranges = outContextual.ClassDef!.Ranges.ToArray();
         Assert.Single(ranges);
         Assert.Equal(new ClassDefRange(1, 1, 1), ranges[0]);
-        // The rule-set array (class-value keyed) is structurally identical, and the
-        // rule's seqLookup record kept its indices byte-stable.
+        // The rule-set array (class-value keyed) rides structurally identical, and
+        // the rule's seqLookup record kept its indices byte-stable.
         var sets = outContextual.RuleSets!;
-        Assert.Single(sets);
-        Assert.Equal(1, sets[0]!.RuleCount);
-        var outRule = sets[0]!.Rules[0];
+        Assert.Equal(3, sets.Count);
+        Assert.Null(sets[0]);
+        Assert.Equal(1, sets[1]!.RuleCount);
+        var outRule = sets[1]!.Rules[0];
         Assert.Equal(new SequenceLookupRecord(0, 0), outRule.LookupRecords[0]);
+        Assert.Null(sets[2]);
+    }
+
+    // Re-reads one freshly compiled lookup straight off its table bytes (no subset
+    // leg): the typed read-back for compiler-level wire shapes.
+    private static LayoutListsTable ReadTable(LayoutLookupKind kind, LookupTable lookup)
+    {
+        byte[] table = Compiled(kind, lookup);
+        Ok(LayoutListsView.TryOpen(table, out var view, out var diagnostic,
+            DataLocation.Anonymous(kind == LayoutLookupKind.Gsub
+                ? SubsetFontFixture.GsubTag
+                : SubsetFontFixture.GposTag)));
+        NoDiagnostic(diagnostic);
+        Ok(view!.TryReadTable(NumGlyphs, kind, null, out var model, out diagnostic));
+        NoDiagnostic(diagnostic);
+        return model!;
+    }
+
+    // ---- GSUB 5 format 2: the rule-set domain is the class count, never the
+    // coverage length — three class values over one coverage key, the two unused
+    // class slots staying spec-NULL on the wire and in the typed read-back.
+    [Fact]
+    public void ContextualFormat2SizesTheRuleSetDomainByTheClassCountAboveCoverage()
+    {
+        Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 1 }, NumGlyphs, 1,
+            out var coverage, out var diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ClassDefTableCompiler.TryCreate(
+            [new ClassDefRange(1, 1, 1), new ClassDefRange(3, 3, 2)], NumGlyphs, 2,
+            out var classDef, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ContextualSubstTableCompiler.TryCreateRule(stackalloc ushort[] { 1 },
+            [new SequenceLookupRecord(0, 0)], 1, out var rule, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ContextualSubstTableCompiler.TryCreateRuleSet([rule!], out var ruleSet,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ContextualSubstTableCompiler.TryCreate(coverage!, classDef!,
+            new ContextualRuleSet?[] { null, ruleSet, null }, NumGlyphs, out var contextual,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ContextualSubstTableCompiler.TryCompile(contextual!, out var subtable,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        // The wire's ClassSeqRuleSetCount carries the class bound 3 (coverage holds
+        // a single key), and the class-1 record points past the three offset rows.
+        Assert.Equal(2, BinaryPrimitives.ReadUInt16BigEndian(subtable.AsSpan(0, 2)));
+        Assert.Equal(3, BinaryPrimitives.ReadUInt16BigEndian(subtable.AsSpan(6, 2)));
+        Assert.Equal(0, BinaryPrimitives.ReadUInt16BigEndian(subtable.AsSpan(8, 2)));
+        var record = BinaryPrimitives.ReadUInt16BigEndian(subtable.AsSpan(10, 2));
+        Assert.Equal(ContextualSubstLayout.Format2ArrayAt + 2 * 3, record);
+        Ok(LookupTableCompiler.TryCreateContextualSubst(NumGlyphs, [contextual!], 0,
+            null, null, out var lookup, out diagnostic));
+        NoDiagnostic(diagnostic);
+        var read = Assert.Single(
+            One(ReadTable(LayoutLookupKind.Gsub, lookup!).Lookups).Contextuals!);
+        Assert.Equal(2, read.Format);
+        var sets = read.RuleSets!;
+        Assert.Equal(3, sets.Count);
+        Assert.Null(sets[0]);
+        Assert.Equal(1, sets[1]!.RuleCount);
+        Assert.Equal(new SequenceLookupRecord(0, 0), sets[1]!.Rules[0].LookupRecords[0]);
+        Assert.Null(sets[2]);
+    }
+
+    // The other direction: one class value spread over a three-key coverage keeps a
+    // two-slot domain (class 0 NULL), so the count stays below the coverage length.
+    [Fact]
+    public void ContextualFormat2SizesTheRuleSetDomainByTheClassCountBelowCoverage()
+    {
+        Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 1, 2, 3 }, NumGlyphs, 1,
+            out var coverage, out var diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ClassDefTableCompiler.TryCreate([new ClassDefRange(1, 3, 1)], NumGlyphs, 2,
+            out var classDef, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ContextualSubstTableCompiler.TryCreateRule(stackalloc ushort[] { 1 },
+            [new SequenceLookupRecord(0, 0)], 1, out var rule, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ContextualSubstTableCompiler.TryCreateRuleSet([rule!], out var ruleSet,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ContextualSubstTableCompiler.TryCreate(coverage!, classDef!,
+            new ContextualRuleSet?[] { null, ruleSet }, NumGlyphs, out var contextual,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ContextualSubstTableCompiler.TryCompile(contextual!, out var subtable,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Assert.Equal(2, BinaryPrimitives.ReadUInt16BigEndian(subtable.AsSpan(6, 2)));
+        Ok(LookupTableCompiler.TryCreateContextualSubst(NumGlyphs, [contextual!], 0,
+            null, null, out var lookup, out diagnostic));
+        NoDiagnostic(diagnostic);
+        var read = Assert.Single(
+            One(ReadTable(LayoutLookupKind.Gsub, lookup!).Lookups).Contextuals!);
+        Assert.Equal(2, read.Format);
+        Assert.Equal(new ushort[] { 1, 2, 3 }, read.Coverage.Glyphs.ToArray());
+        var sets = read.RuleSets!;
+        Assert.Equal(2, sets.Count);
+        Assert.Null(sets[0]);
+        Assert.Equal(1, sets[1]!.RuleCount);
+        Assert.Equal(new SequenceLookupRecord(0, 0), sets[1]!.Rules[0].LookupRecords[0]);
     }
 
     // ---- GSUB 6 format 3: the three coverage chains remap in declared order.
@@ -285,6 +390,62 @@ public sealed class SubsetLayoutRewriteFormsTests
         Assert.Equal(new ushort[] { 3 },
             outChaining.LookaheadCoverages![0].Glyphs.ToArray());
         Assert.Equal(new SequenceLookupRecord(0, 0), outChaining.LookupRecords![0]);
+    }
+
+    // ---- GSUB 6 format 2: the rule-set domain indexes by the input class value —
+    // three input classes over one coverage key, while the backtrack def carries a
+    // class value above the count (backtrack/lookahead defs never index this array).
+    [Fact]
+    public void ChainingFormat2SizesTheRuleSetDomainByTheInputClassCount()
+    {
+        Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 2 }, NumGlyphs, 1,
+            out var coverage, out var diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ClassDefTableCompiler.TryCreate([new ClassDefRange(2, 2, 4)], NumGlyphs, 2,
+            out var backtrackDef, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ClassDefTableCompiler.TryCreate(
+            [new ClassDefRange(2, 2, 1), new ClassDefRange(5, 5, 2)], NumGlyphs, 2,
+            out var inputDef, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ClassDefTableCompiler.TryCreate([new ClassDefRange(2, 2, 5)], NumGlyphs, 2,
+            out var lookaheadDef, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ChainingSubstTableCompiler.TryCreateRule([],
+            stackalloc ushort[] { 1 }, [], [new SequenceLookupRecord(0, 0)], 1,
+            out var rule, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ChainingSubstTableCompiler.TryCreateRuleSet([rule!], out var ruleSet,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ChainingSubstTableCompiler.TryCreate(coverage!, backtrackDef!, inputDef!,
+            lookaheadDef!, new ChainingRuleSet?[] { null, ruleSet, null }, NumGlyphs,
+            out var chaining, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(ChainingSubstTableCompiler.TryCompile(chaining!, out var subtable,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        // The wire's ClassSeqRuleSetCount carries the input-class bound 3; the
+        // backtrack/lookahead class values 4/5 ride their own defs untouched.
+        Assert.Equal(2, BinaryPrimitives.ReadUInt16BigEndian(subtable.AsSpan(0, 2)));
+        Assert.Equal(3, BinaryPrimitives.ReadUInt16BigEndian(subtable.AsSpan(10, 2)));
+        Ok(LookupTableCompiler.TryCreateChainingSubst(NumGlyphs, [chaining!], 0, null,
+            null, out var lookup, out diagnostic));
+        NoDiagnostic(diagnostic);
+        var read = Assert.Single(
+            One(ReadTable(LayoutLookupKind.Gsub, lookup!).Lookups).Chainings!);
+        Assert.Equal(2, read.Format);
+        Assert.Equal(new ClassDefRange(2, 2, 4),
+            read.BacktrackClassDef!.Ranges.ToArray()[0]);
+        Assert.Equal(new ClassDefRange(2, 2, 1), read.InputClassDef!.Ranges.ToArray()[0]);
+        Assert.Equal(new ClassDefRange(2, 2, 5),
+            read.LookaheadClassDef!.Ranges.ToArray()[0]);
+        var sets = read.RuleSets!;
+        Assert.Equal(3, sets.Count);
+        Assert.Null(sets[0]);
+        Assert.Equal(1, sets[1]!.RuleCount);
+        Assert.Equal(new SequenceLookupRecord(0, 0), sets[1]!.Rules[0].LookupRecords[0]);
+        Assert.Null(sets[2]);
     }
 
     // ---- GSUB 7: the extension wrapper keeps its type and rewrites the leaf.

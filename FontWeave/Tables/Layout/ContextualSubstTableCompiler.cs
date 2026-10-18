@@ -130,10 +130,29 @@ public static class ContextualSubstTableCompiler
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 location.AtLocal(DataField.Count, 4), out diagnostic,
                 (ulong)ruleSets.Count, (ulong)ushort.MaxValue);
-        if (ruleSets.Count != coverage.Glyphs.Length)
-            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                location.AtLocal(DataField.Count, 4), out diagnostic,
-                (ulong)ruleSets.Count, (ulong)coverage.Glyphs.Length);
+        if (format == 1)
+        {
+            if (ruleSets.Count != coverage.Glyphs.Length)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.AtLocal(DataField.Count, 4), out diagnostic,
+                    (ulong)ruleSets.Count, (ulong)coverage.Glyphs.Length);
+        }
+        else if (classDef is not null)
+        {
+            // Format 2's rule-set array indexes by class value: the count is the
+            // class bound the wire's ClassSeqRuleSetCount declares (independent of
+            // the coverage length), so every class value the ClassDef assigns must
+            // land inside it (the read face's CheckClassDomain direction).
+            if (!budget.Work(classDef.Ranges.Length, location, out diagnostic))
+                return ReadStatus.ResourceLimit;
+            for (int i = 0; i < classDef.Ranges.Length; i++)
+            {
+                if (classDef.Ranges[i].ClassValue >= ruleSets.Count)
+                    return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                        location.AtLocal(DataField.Payload, 0, i), out diagnostic,
+                        classDef.Ranges[i].ClassValue, (ulong)ruleSets.Count);
+            }
+        }
         if (!budget.Work(ruleSets.Count, location, out diagnostic)) return ReadStatus.ResourceLimit;
         if (!budget.Buffer(8L * ruleSets.Count, location, out diagnostic)) return ReadStatus.ResourceLimit;
         var copy = new ContextualRuleSet?[ruleSets.Count];

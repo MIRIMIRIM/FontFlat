@@ -136,10 +136,30 @@ public static class ChainingSubstTableCompiler
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 location.AtLocal(DataField.Count, 4), out diagnostic,
                 (ulong)ruleSets.Count, (ulong)ushort.MaxValue);
-        if (ruleSets.Count != coverage.Glyphs.Length)
-            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                location.AtLocal(DataField.Count, 4), out diagnostic,
-                (ulong)ruleSets.Count, (ulong)coverage.Glyphs.Length);
+        if (format == 1)
+        {
+            if (ruleSets.Count != coverage.Glyphs.Length)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.AtLocal(DataField.Count, 4), out diagnostic,
+                    (ulong)ruleSets.Count, (ulong)coverage.Glyphs.Length);
+        }
+        else if (inputClassDef is not null)
+        {
+            // Format 2's rule-set array indexes by the input class value: the count
+            // is the class bound the wire's ClassSeqRuleSetCount declares
+            // (independent of the coverage length), so every class value the input
+            // ClassDef assigns must land inside it — the backtrack/lookahead defs
+            // never index this array (the read face checks the input def only).
+            if (!budget.Work(inputClassDef.Ranges.Length, location, out diagnostic))
+                return ReadStatus.ResourceLimit;
+            for (int i = 0; i < inputClassDef.Ranges.Length; i++)
+            {
+                if (inputClassDef.Ranges[i].ClassValue >= ruleSets.Count)
+                    return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                        location.AtLocal(DataField.Payload, 0, i), out diagnostic,
+                        inputClassDef.Ranges[i].ClassValue, (ulong)ruleSets.Count);
+            }
+        }
         if (!budget.Work(ruleSets.Count, location, out diagnostic)) return ReadStatus.ResourceLimit;
         if (!budget.Buffer(8L * ruleSets.Count, location, out diagnostic)) return ReadStatus.ResourceLimit;
         var copy = new ChainingRuleSet?[ruleSets.Count];
