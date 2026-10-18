@@ -439,7 +439,7 @@ public readonly ref partial struct ChainingSubstView
                 }
                 if (classForm)
                 {
-                    status = OpenClassDefModels(numGlyphs, budget, out var backtrackDef,
+                    status = OpenClassDefModels(numGlyphs, setCount, budget, out var backtrackDef,
                         out var inputDef, out var lookaheadDef, out diagnostic);
                     if (status != ReadStatus.Done) return status;
                     status = TryOpenClassCoverage(out var classCoverage, out bool coveragePresent, out diagnostic);
@@ -524,7 +524,7 @@ public readonly ref partial struct ChainingSubstView
         }
     }
 
-    private ReadStatus OpenClassDefModels(int numGlyphs, BuildBudget budget,
+    private ReadStatus OpenClassDefModels(int numGlyphs, int classSetCount, BuildBudget budget,
         out ClassDefTable? backtrackDef, out ClassDefTable? inputDef, out ClassDefTable? lookaheadDef,
         out FontDiagnostic diagnostic)
     {
@@ -539,6 +539,12 @@ public readonly ref partial struct ChainingSubstView
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 Location.AtLocal(DataField.Offset, ChainingSubstLayout.ClassDefOffsetField),
                 out diagnostic, 0UL, 1UL);
+        // The owned model obeys the Inspect path's OQ-3 chained direction: the input
+        // definition's class values own the rule-set index domain (the backtrack/
+        // lookahead defs never index it), so a corrupted wire never materializes an
+        // out-of-domain model.
+        status = CheckClassDomain(input!, classSetCount, budget, out diagnostic);
+        if (status != ReadStatus.Done) return status;
         status = input!.TryRead(numGlyphs, out inputDef, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         if (btPresent)

@@ -362,6 +362,12 @@ public readonly ref partial struct ContextualSubstView
                     status = TryOpenClassDef(out var classDef, out bool defPresent, out diagnostic);
                     if (status != ReadStatus.Done) return status;
                     if (!defPresent) return MissingReference(4, out diagnostic);
+                    // The owned model obeys the Inspect path's OQ-3 class-value
+                    // direction: every assigned class value must index an existing
+                    // rule-set slot, so a corrupted wire never materializes an
+                    // out-of-domain model.
+                    status = CheckClassDomain(classDef!, setCount, budget, out diagnostic);
+                    if (status != ReadStatus.Done) return status;
                     status = classDef!.TryRead(numGlyphs, out var classDefModel, out diagnostic, budget);
                     if (status != ReadStatus.Done) return status;
                     if (!budget.Buffer(16, Location, out diagnostic)) return ReadStatus.ResourceLimit;
