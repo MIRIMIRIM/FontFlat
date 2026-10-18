@@ -40,6 +40,8 @@ internal static class Program
                 "name-add INPUT --platform N --encoding-id N --language N --name-id N --text TEXT --encoding utf16be --output OUTPUT\n" +
                 "name-delete INPUT --record N --output OUTPUT\n" +
                 "copy-original INPUT --output OUTPUT (byte copy, no format validation)\n" +
+                "ttc-merge INPUT... --output OUTPUT (every input face lands in the collection independently;\n" +
+                "    identical-bytes sharing across faces is not performed; sfnt and TTC inputs both accepted)\n" +
                 "Edits also accept --face N, --drop-signature, --unknown-tables fail|drop|preserve.\n" +
                 "On a TTC, validate without --face validates every face and aggregates (any face failure fails the\n" +
                 "whole input, per-face reports listed under faces); subset --face N emits a standalone sfnt.\n" +
@@ -93,9 +95,20 @@ internal static class Program
         string command = args[0];
         bool edit = command is "name-replace" or "name-add" or "name-delete" or "edit-rebuild";
         bool copy = command == "copy-original";
-        if (!edit && !copy && command is not ("inspect" or "names" or "validate" or "subset"))
+        if (!edit && !copy && command is not ("inspect" or "names" or "validate" or "subset" or "ttc-merge"))
             throw new CliException("Usage", $"Unknown command '{command}'.");
-        var options = ParseOptions(args.AsSpan(2));
+        List<string>? mergeInputs = null;
+        Dictionary<string, string?> options;
+        if (command == "ttc-merge")
+        {
+            // The merge verb takes a positional input list instead of one input path.
+            mergeInputs = [];
+            options = ParseOptions(args.AsSpan(1), mergeInputs);
+            if (mergeInputs.Count == 0)
+                throw new CliException("Usage", "ttc-merge requires at least one input font.");
+        }
+        else
+            options = ParseOptions(args.AsSpan(2));
         ValidateOptions(command, options);
         int faceIndex = Integer(options, "face", 0);
         var limits = new FontLimits
@@ -104,6 +117,13 @@ internal static class Program
             MaxOutputBytes = Integer(options, "max-output-bytes", 64 * 1024 * 1024)
         };
         limits.Validate();
+        if (command == "ttc-merge")
+        {
+            string mergeOutput = Path.GetFullPath(Required(options, "output"));
+            var inputs = mergeInputs!.Select(Path.GetFullPath).ToList();
+            foreach (string mergeInput in inputs) CheckOutputPath(mergeInput, mergeOutput);
+            return ExecuteTtcMerge(inputs, mergeOutput, limits, out exitCode);
+        }
         string input = Path.GetFullPath(args[1]);
         string? output = edit || copy || command == "subset"
             ? Path.GetFullPath(Required(options, "output")) : null;
@@ -404,6 +424,52 @@ internal static class Program
         result["faceCount"] = faceCount;
         result["faces"] = faces;
         return SetOutcome(result, aggregate, aggregateDiagnostic, out exitCode);
+    }
+
+    // ttc-merge: every input face (a standalone sfnt contributes one, a TTC all of its
+    // faces) lands in the output collection independently. The receipt keeps the minimal
+    // fact set — per-face provenance and table counts, output bytes, usage — over the
+    // typed outcome shape the other write verbs use.
+    private static Dictionary<string, object?> ExecuteTtcMerge(List<string> inputs,
+        string output, FontLimits fileLimits, out int exitCode)
+    {
+        var limits = new BuildLimits
+        {
+            MaxInputBytes = fileLimits.MaxInputBytes,
+            MaxOutputBytes = fileLimits.MaxOutputBytes
+        };
+        var result = new Dictionary<string, object?>
+        {
+            ["operation"] = "ttc-merge", ["inputs"] = inputs, ["faceCount"] = 0,
+            ["faces"] = Array.Empty<object?>(), ["output"] = output,
+            ["outputLength"] = null, ["written"] = 0, ["outputWritten"] = false,
+            ["usage"] = null
+        };
+        var faces = new List<FontFace>();
+        var faceFacts = new List<object?>();
+        foreach (string input in inputs)
+        {
+            byte[] bytes = ReadInput(input, fileLimits.MaxInputBytes);
+            FontFile file = FontFile.Parse(bytes, fileLimits);
+            for (int i = 0; i < file.FaceCount; i++)
+            {
+                FontFace face = file.GetFace(i);
+                faces.Add(face);
+                faceFacts.Add(new { input, faceIndex = i, tableCount = face.Tables.Count });
+            }
+        }
+        result["faceCount"] = faces.Count;
+        result["faces"] = faceFacts;
+        ReadStatus status = SfntCollectionWriter.TryPrepare(faces, out FontCollectionWritePlan? plan,
+            out FontDiagnostic diagnostic, limits);
+        if (status != ReadStatus.Done || plan is null)
+            return SetOutcome(result, status, diagnostic, out exitCode);
+        WriteNewFile(output, plan.ToArray());
+        result["outputLength"] = plan.OutputLength;
+        result["written"] = plan.OutputLength;
+        result["outputWritten"] = true;
+        result["usage"] = UsageReport(plan.Usage);
+        return SetOutcome(result, ReadStatus.Done, default, out exitCode);
     }
 
     private static Dictionary<string, object?> ExecuteSubset(string input, string output,
@@ -1096,13 +1162,19 @@ internal static class Program
         }
     }
 
-    private static Dictionary<string, string?> ParseOptions(ReadOnlySpan<string> args)
+    private static Dictionary<string, string?> ParseOptions(ReadOnlySpan<string> args,
+        List<string>? positionals = null)
     {
         var result = new Dictionary<string, string?>(StringComparer.Ordinal);
         for (int i = 0; i < args.Length; i++)
         {
             if (!args[i].StartsWith("--", StringComparison.Ordinal))
-                throw new CliException("Usage", $"Unexpected argument '{args[i]}'.");
+            {
+                if (positionals is null)
+                    throw new CliException("Usage", $"Unexpected argument '{args[i]}'.");
+                positionals.Add(args[i]);
+                continue;
+            }
             string name = args[i][2..];
             string? value = null;
             if (name is not ("drop-signature" or "show-raw" or "json"
@@ -1120,7 +1192,7 @@ internal static class Program
     private static void ValidateOptions(string command, Dictionary<string, string?> options)
     {
         var allowed = new HashSet<string>(StringComparer.Ordinal) { "face", "json", "max-input-bytes", "max-output-bytes" };
-        if (command == "copy-original")
+        if (command == "copy-original" || command == "ttc-merge")
         {
             allowed.Remove("face");
             allowed.Add("output");
