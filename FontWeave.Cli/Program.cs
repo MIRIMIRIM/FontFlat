@@ -235,6 +235,26 @@ internal static class Program
         status = actualSource.TryGetFace(faceIndex, out FontFaceRef face, out diagnostic);
         if (status != ReadStatus.Done) return SetOutcome(result, status, diagnostic, out exitCode);
 
+        // The typed admission (SfntDirectoryView.Validate) refuses collection faces by
+        // contract, so a TTC face routes to the per-face library chains that already
+        // admit it: raw inspection for --table inspect, the FontFile/NameEditor/
+        // SfntWriter repack for edit-rebuild. validate and subset keep their declared
+        // limited refusal in the typed path below, and edit-rebuild head edits have no
+        // per-face collection chain, so they fall through to the same typed refusal.
+        if (face.IsCollection && command == "inspect")
+        {
+            status = FontInspection.TryInspect(face, out FontInspectionReport? collectionReport,
+                out diagnostic, requestedTag, limits);
+            if (collectionReport is not null) result["report"] = InspectionReport(collectionReport);
+            if (options.ContainsKey("show-raw") && collectionReport is not null)
+                status = AppendRawInspection(result, face, requestedTag, rawLimit, status, ref diagnostic);
+            return SetOutcome(result, status, diagnostic, out exitCode);
+        }
+        if (face.IsCollection && command == "edit-rebuild" &&
+            !options.ContainsKey("head-revision") && !options.ContainsKey("head-modified"))
+            return ExecuteCollectionEditRebuild(result, inputBytes!, faceIndex, options, output!,
+                fileLimits, out exitCode);
+
         if (command == "edit-rebuild")
         {
             int ordinal = Integer(options, "record");
@@ -285,17 +305,61 @@ internal static class Program
         status = FontInspection.TryValidate(face, out report, out diagnostic, requestedTag, limits);
         if (report is not null) result["report"] = InspectionReport(report);
         if (command == "inspect" && options.ContainsKey("show-raw") && report is not null)
-        {
-            ReadStatus rawStatus = ReadRawTable(face, requestedTag!.Value, rawLimit,
-                out object raw, out FontDiagnostic rawDiagnostic);
-            result["raw"] = raw;
-            if (status == ReadStatus.Done && rawStatus != ReadStatus.Done)
-            {
-                status = rawStatus;
-                diagnostic = rawDiagnostic;
-            }
-        }
+            status = AppendRawInspection(result, face, requestedTag, rawLimit, status, ref diagnostic);
         return SetOutcome(result, status, diagnostic, out exitCode);
+    }
+
+    private static ReadStatus AppendRawInspection(Dictionary<string, object?> result, FontFaceRef face,
+        uint? requestedTag, int rawLimit, ReadStatus status, ref FontDiagnostic diagnostic)
+    {
+        ReadStatus rawStatus = ReadRawTable(face, requestedTag!.Value, rawLimit,
+            out object raw, out FontDiagnostic rawDiagnostic);
+        result["raw"] = raw;
+        if (status == ReadStatus.Done && rawStatus != ReadStatus.Done)
+        {
+            diagnostic = rawDiagnostic;
+            return rawStatus;
+        }
+        return status;
+    }
+
+    // edit-rebuild on a TTC face: the per-face library chain (FontFile.Parse → GetFace →
+    // NameTable.Parse → NameEditor.Replace → SfntWriter.Prepare) repacks the selected
+    // face as an independent sfnt whose directory holds only this face's tables. The
+    // typed receipt's budget and decision members have no collection counterpart and
+    // stay null; the repack record rides the plan diagnostics instead.
+    private static Dictionary<string, object?> ExecuteCollectionEditRebuild(
+        Dictionary<string, object?> result, byte[] inputBytes, int faceIndex,
+        Dictionary<string, string?> options, string output, FontLimits limits, out int exitCode)
+    {
+        FontFile file = FontFile.Parse(inputBytes, limits);
+        FontFace face = file.GetFace(faceIndex);
+        NameTable names = NameTable.Parse(face.GetTable("name").Data, limits);
+        int ordinal = Integer(options, "record");
+        byte[] newName = NameEditor.Replace(names, ordinal, Utf16Be.GetBytes(Required(options, "text")));
+        var writeOptions = new FontWriteOptions
+        {
+            DropSignature = options.ContainsKey("drop-signature"),
+            UnknownTablePolicy = (options.GetValueOrDefault("unknown-tables") ?? "fail") switch
+            {
+                "fail" => UnknownTablePolicy.Fail,
+                "drop" => UnknownTablePolicy.Drop,
+                "preserve" => UnknownTablePolicy.PreserveExplicit,
+                _ => throw new CliException("Usage", "--unknown-tables must be fail, drop or preserve.")
+            }
+        };
+        FontWritePlan plan = SfntWriter.Prepare(face, newName, writeOptions);
+        WriteNewFile(output, plan.ToArray());
+        result["outputLength"] = plan.OutputLength;
+        result["written"] = plan.OutputLength;
+        result["outputWritten"] = true;
+        result["recordOrdinal"] = ordinal;
+        result["textEncoding"] = "utf16be";
+        result["nameFormat"] = names.Format;
+        result["recordCount"] = names.Records.Count;
+        result["diagnostics"] = plan.Diagnostics;
+        result["preservedTables"] = plan.PreservedTables;
+        return SetOutcome(result, ReadStatus.Done, default, out exitCode);
     }
 
     private static Dictionary<string, object?> ExecuteSubset(string input, string output,
