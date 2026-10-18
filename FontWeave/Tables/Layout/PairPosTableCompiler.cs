@@ -8,12 +8,17 @@ namespace FontWeave.Tables.Layout;
 // (OQ-T4-05-9), so an Offset16-unreachable layout is a finite refusal and multi
 // -subtable models remain caller-driven key-disjoint sharding. Canonical order:
 // header, offset records, pair-set/class-matrix bodies, ClassDefs, Coverage, Device
-// leaves last.
+// leaves last. A format-2 subtable whose subtable-relative offsets overflow the
+// canonical order re-plans once with the compact profile — Coverage and the Device
+// region pulled ahead of the matrix (CoverageTarget/MatrixTarget move with them) —
+// the GsubTableCompiler two-candidate precedent; format 1's set-relative deltas
+// keep the single canonical profile.
 internal sealed record PairPosPartPlan(int Format, int Length, int CoverageTarget,
     ushort CoverageFormat, int CoverageRangeCount, int[] SetBases,
     int ClassDef1Target, int ClassDef2Target,
     PairPosTableCompiler.DeviceLeaf[] Devices,
-    Dictionary<StaticDeviceTable, int> DeviceTargets, long EmissionWork);
+    Dictionary<StaticDeviceTable, int> DeviceTargets, long EmissionWork,
+    int MatrixTarget = PairPosLayout.Format2Header);
 
 public static class PairPosTableCompiler
 {
@@ -242,7 +247,14 @@ public static class PairPosTableCompiler
         if (status != ReadStatus.Done) return status;
         if (model.Format == 1)
             return PlanFormat1(model, out plans, out diagnostic, budget);
-        return PlanFormat2(model, out plans, out diagnostic, budget);
+        status = PlanFormat2(model, compactProfile: false, out plans, out diagnostic, budget);
+        if (status == ReadStatus.Done || status != ReadStatus.UnsupportedFormat) return status;
+        // The canonical order's subtable-relative offsets overflowed (the rebuilt
+        // ClassDefs can scatter wider than the source's under the output remap); the
+        // one alternate profile pulls Coverage and the Device region ahead of the
+        // class matrix (a refused candidate's Work stays charged, the second's
+        // refusal stands).
+        return PlanFormat2(model, compactProfile: true, out plans, out diagnostic, budget);
     }
 
     private static ReadStatus PlanFormat1(PairPosTable model, out PairPosPartPlan[]? plans,
@@ -270,18 +282,19 @@ public static class PairPosTableCompiler
             if (status != ReadStatus.Done) return status;
             cursor += 2 + (long)model.PairSets![i].PairValueCount * stride;
         }
-        status = CollectDevices(model, model.EnumerateDevices(),
-            coverageAt + CoverageTableCompiler.Measure(model.Coverage), budget,
-            out var devices, out var deviceTargets, out long leafBytes, out long deltaWork, out diagnostic);
+        status = CollectDevices(model, model.EnumerateDevices(), budget,
+            out var devices, out long leafBytes, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        PlaceDevices(devices, coverageAt + CoverageTableCompiler.Measure(model.Coverage));
+        var deviceTargets = DeviceTargets(devices);
         status = PreflightFormat1Deltas(model, deviceTargets, setBases, stride, out diagnostic);
         if (status != ReadStatus.Done) return status;
         int length = coverageAt + CoverageTableCompiler.Measure(model.Coverage) + (int)leafBytes;
-        long emission = EmissionWork(model, devices, length);
+        long emission = EmissionWork(model, [.. devices], length);
         if (!budget.Work(emission, model.Location, out diagnostic) ||
             !budget.Output(length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         plans = [new PairPosPartPlan(1, length, coverageAt, model.Coverage.Format,
-            model.Coverage.RangeCount, setBases, 0, 0, devices, deviceTargets, emission)];
+            model.Coverage.RangeCount, setBases, 0, 0, [.. devices], deviceTargets, emission)];
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -321,22 +334,48 @@ public static class PairPosTableCompiler
         return ReadStatus.Done;
     }
 
-    private static ReadStatus PlanFormat2(PairPosTable model, out PairPosPartPlan[]? plans,
-        out FontDiagnostic diagnostic, BuildBudget budget)
+    private static ReadStatus PlanFormat2(PairPosTable model, bool compactProfile,
+        out PairPosPartPlan[]? plans, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         plans = null;
         long cells = (long)model.Class1Count * model.Class2Count;
         if (!budget.Work(32L * cells + 1, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         int stride = PairPosLayout.WordStride * (BitOperations.PopCount((uint)model.ValueFormat1)
             + BitOperations.PopCount((uint)model.ValueFormat2));
-        int matrixEnd = PairPosLayout.Format2Header + (int)(cells * stride);
+        // The Device leaves' identity first (no placement); the two profiles differ
+        // only in where the subtable-relative small regions land — canonical: matrix,
+        // ClassDefs, Coverage, Devices; compact: Coverage, Devices, matrix, ClassDefs.
+        List<DeviceLeaf> leaves;
+        long leafBytes;
+        ReadStatus status = CollectDevices(model, model.EnumerateDevices(), budget,
+            out leaves, out leafBytes, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int matrixAt;
+        long cursor = PairPosLayout.Format2Header;
+        int coverageAt;
+        if (compactProfile)
+        {
+            coverageAt = (int)cursor;
+            cursor += CoverageTableCompiler.Measure(model.Coverage);
+            PlaceDevices(leaves, cursor);
+            cursor += leafBytes;
+        }
+        else coverageAt = 0;
+        matrixAt = (int)cursor;
+        cursor += cells * stride;
         bool shared = ReferenceEquals(model.ClassDef1, model.ClassDef2);
-        int cd1At = matrixEnd;
-        int cd2At = cd1At + (shared ? 0 : ClassDefTableCompiler.Measure(model.ClassDef1!));
-        int coverageAt = shared
-            ? cd1At + ClassDefTableCompiler.Measure(model.ClassDef1!)
-            : cd2At + ClassDefTableCompiler.Measure(model.ClassDef2!);
-        ReadStatus status = PairPosView.TryGetCoverageOffsetValue(present: true, origin: 0UL,
+        int cd1At = (int)cursor;
+        cursor += ClassDefTableCompiler.Measure(model.ClassDef1!);
+        int cd2At = (int)cursor;
+        if (!shared) cursor += ClassDefTableCompiler.Measure(model.ClassDef2!);
+        if (!compactProfile)
+        {
+            coverageAt = (int)cursor;
+            cursor += CoverageTableCompiler.Measure(model.Coverage);
+            PlaceDevices(leaves, cursor);
+            cursor += leafBytes;
+        }
+        status = PairPosView.TryGetCoverageOffsetValue(present: true, origin: 0UL,
             target: (ulong)coverageAt, out ushort coverageOffset, out diagnostic,
             model.Location.AtLocal(DataField.Offset, PairPosLayout.CoverageField));
         if (status != ReadStatus.Done) return status;
@@ -348,23 +387,22 @@ public static class PairPosTableCompiler
             target: (ulong)(shared ? cd1At : cd2At), out _, out diagnostic,
             model.Location.AtLocal(DataField.Offset, PairPosLayout.Format2HeaderField + 2));
         if (status != ReadStatus.Done) return status;
-        status = CollectDevices(model, model.EnumerateDevices(), coverageAt +
-            CoverageTableCompiler.Measure(model.Coverage), budget,
-            out var devices, out var deviceTargets, out long leafBytes, out long deltaWork, out diagnostic);
-        if (status != ReadStatus.Done) return status;
         // Format-2 Device offsets are subtable-relative, so the placed leaf targets
-        // themselves are the deltas the 16-bit field must hold.
-        foreach (var leaf in devices)
+        // themselves are the deltas the 16-bit field must hold. The compact profile
+        // placed them at the header, so only the canonical order can refuse here.
+        foreach (var leaf in leaves)
             if (leaf.Position > ushort.MaxValue)
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                     model.Location.AtLocal(DataField.Offset, PairPosLayout.Format2HeaderField),
                     out diagnostic, (ulong)leaf.Position, ushort.MaxValue);
-        int length = (int)(coverageAt + CoverageTableCompiler.Measure(model.Coverage) + leafBytes);
-        long emission = EmissionWork(model, devices, length);
+        var targets = DeviceTargets(leaves);
+        int length = (int)cursor;
+        long emission = EmissionWork(model, [.. leaves], length);
         if (!budget.Work(emission, model.Location, out diagnostic) ||
             !budget.Output(length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         plans = [new PairPosPartPlan(2, length, coverageAt, model.Coverage.Format,
-            model.Coverage.RangeCount, [], cd1At, cd2At, devices, deviceTargets, emission)];
+            model.Coverage.RangeCount, [], cd1At, cd2At, [.. leaves], targets, emission,
+            matrixAt)];
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -377,38 +415,48 @@ public static class PairPosTableCompiler
         return work;
     }
 
-    // One device leaf per unique model instance; leaves place after every declared
-    // body, so a too-narrow set-relative or subtable-relative delta is the finite
-    // overflow refusal with no split candidate (OQ-T4-05-9).
+    // One device leaf per unique model instance; the two placement profiles assign
+    // the positions — canonical = after every declared body, compact (format 2
+    // only) = directly after the Coverage. Identity-shared leaves are never
+    // address-deduped (W12's shared ClassDef analog), so a too-narrow set-relative
+    // or subtable-relative delta stays the finite overflow refusal after both
+    // profiles refuse (OQ-T4-05-9, amended 2026-10-18 by the compact+preserve
+    // acceptance on the source-serif probe: the format-2 subtable's subtable-
+    // relative regions re-plan once, the GsubTableCompiler two-candidate precedent).
     private static ReadStatus CollectDevices(PairPosTable model, IEnumerable<StaticDeviceTable?> slots,
-        long start, BuildBudget budget, out PairPosTableCompiler.DeviceLeaf[] devices,
-        out Dictionary<StaticDeviceTable, int> targets, out long leafBytes, out long deltaWork,
+        BuildBudget budget, out List<DeviceLeaf> leaves, out long leafBytes,
         out FontDiagnostic diagnostic)
     {
-        devices = [];
-        targets = new Dictionary<StaticDeviceTable, int>(ReferenceEqualityComparer.Instance);
-        leafBytes = deltaWork = 0;
-        var leaves = new List<DeviceLeaf>();
+        leaves = [];
+        leafBytes = 0;
+        var seen = new HashSet<StaticDeviceTable>(ReferenceEqualityComparer.Instance);
         foreach (var slot in slots)
         {
-            if (slot is not StaticDeviceTable device || targets.ContainsKey(device)) continue;
+            if (slot is not StaticDeviceTable device || !seen.Add(device)) continue;
             if (!budget.Buffer(16, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
             int length = StaticDeviceTableCompiler.Measure(device);
-            targets.Add(device, 0);
             leaves.Add(new(device, 0));
             leafBytes += length;
-            deltaWork += StaticDeviceTableCompiler.EmissionWork(device) - length;
         }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static void PlaceDevices(List<DeviceLeaf> leaves, long start)
+    {
         long cursor = start;
         for (int i = 0; i < leaves.Count; i++)
         {
             leaves[i].Position = (int)cursor;
-            targets[leaves[i].Model] = (int)cursor;
             cursor += StaticDeviceTableCompiler.Measure(leaves[i].Model);
         }
-        devices = leaves.ToArray();
-        diagnostic = default;
-        return ReadStatus.Done;
+    }
+
+    private static Dictionary<StaticDeviceTable, int> DeviceTargets(List<DeviceLeaf> leaves)
+    {
+        var targets = new Dictionary<StaticDeviceTable, int>(ReferenceEqualityComparer.Instance);
+        foreach (var leaf in leaves) targets.Add(leaf.Model, leaf.Position);
+        return targets;
     }
 
     // Emission into the caller's final destination: deterministic from the model and
@@ -475,7 +523,7 @@ public static class PairPosTableCompiler
         {
             for (int class2 = 0; class2 < model.Class2Count; class2++)
             {
-                int at = PairPosLayout.Format2Header + (class1 * model.Class2Count + class2) * stride;
+                int at = plan.MatrixTarget + (class1 * model.Class2Count + class2) * stride;
                 int ordinal = class1 * model.Class2Count + class2;
                 var value1 = model.GetMatrixValue1(class1, class2);
                 var value2 = model.GetMatrixValue2(class1, class2);

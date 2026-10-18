@@ -56,7 +56,7 @@ public static partial class LayoutListsTableCompiler
 
     internal static ReadStatus TryCreateFeature(uint tag, ushort paramsOffsetRaw, ReadOnlySpan<ushort> lookupIndices,
         int lookupCount, out LayoutFeature? model, out FontDiagnostic diagnostic, BuildBudget budget,
-        DataLocation location = default)
+        DataLocation location = default, byte[]? paramsPayload = null)
     {
         model = null;
         ReadStatus status = CheckTagEncoding(tag, location.AtLocal(DataField.Tag, 0), out diagnostic);
@@ -70,7 +70,8 @@ public static partial class LayoutListsTableCompiler
         if (status != ReadStatus.Done) return status;
         if (!budget.Buffer(2L * lookupIndices.Length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         model = new(tag, paramsOffsetRaw, lookupIndices.ToArray(), location,
-            LayoutFeatureLayout.HeaderLength + LayoutFeatureLayout.IndexStride * lookupIndices.Length);
+            LayoutFeatureLayout.HeaderLength + LayoutFeatureLayout.IndexStride * lookupIndices.Length,
+            paramsPayload: paramsPayload);
         diagnostic = default; return ReadStatus.Done;
     }
 
@@ -287,7 +288,11 @@ public static partial class LayoutListsTableCompiler
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     feature.RecordLocation, out diagnostic, feature.Tag, previous);
             previous = feature.Tag;
-            if (writing && feature.ParamsOffsetRaw != 0)
+            // The emission face can re-emit only a materialized payload: the spec's
+            // two families (SsParameters/CvParameters) carry one from the typed read,
+            // so a nonzero raw without one is the unchanged conservative refusal —
+            // the raw travels in Detail at the feature's own params slot.
+            if (writing && feature.ParamsOffsetRaw != 0 && feature.ParamsPayload is null)
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                     feature.Location.AtLocal(DataField.Offset, 0), out diagnostic, feature.ParamsOffsetRaw, 0);
             if (!budget.Work(feature.LookupIndices.Length, feature.Location, out diagnostic)) return ReadStatus.ResourceLimit;

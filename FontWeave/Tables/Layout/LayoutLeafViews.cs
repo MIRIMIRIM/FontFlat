@@ -126,11 +126,29 @@ public readonly ref partial struct LayoutFeatureView
             if (status != ReadStatus.Done) return status;
             if (indices is not null) indices[i] = index;
         }
-        // FeatureParams has no supported decoder here: even a huge raw offset is
-        // an observation, not a traversed or range-validated payload.
+        // FeatureParams (OpenType spec §6.2): only three tag families define
+        // parameters — 'ss01'-'ss20' SsParameters (4 bytes, version word 0),
+        // 'cv01'-'cv20' CvParameters (14 + 2·charCount, version word 0) and 'size'
+        // FeatureParamsSize (10 bytes, unversioned). All are GID-free UI/metric
+        // payloads. The materialized read is the payload's only traversal face: it
+        // byte-copies the block so the layout rewrite can re-emit it (a
+        // compact/scoped source with styled or size features must not lose the
+        // parameters); validate mode and every other family keep the
+        // raw-observation contract, and the writer's nonzero-raw refusal still
+        // covers those. Version word 0 and in-window bounds are this traversal's
+        // strict checks.
+        byte[]? paramsPayload = null;
+        if (indices is not null && ParamsOffsetRaw != 0)
+        {
+            status = TryReadParamsPayload(tag, out paramsPayload, out diagnostic, budget);
+            if (status != ReadStatus.Done) return status;
+            if (paramsPayload is not null)
+                consumed = Math.Max(consumed, ParamsOffsetRaw + paramsPayload.Length);
+        }
         if (indices is not null)
         {
-            model = new(tag, ParamsOffsetRaw, indices, Location, consumed, null, listLocation, recordLocation);
+            model = new(tag, ParamsOffsetRaw, indices, Location, consumed, null, listLocation,
+                recordLocation, paramsPayload);
             status = LayoutReadState.Store(state.Features, position, model, Location, budget, out diagnostic);
             if (status != ReadStatus.Done) { model = null; return status; }
         }
@@ -140,6 +158,51 @@ public readonly ref partial struct LayoutFeatureView
             status = state.PublishFeatureFact(position, state.At(position), budget, out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private ReadStatus TryReadParamsPayload(uint tag, out byte[]? payload,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        payload = null;
+        ulong at = ParamsOffsetRaw;
+        ushort family = (ushort)(tag >> 16);
+        bool versioned = true;
+        int length;
+        switch (tag, family)
+        {
+            case (0x73697A65, _): // 'size' — FeatureParamsSize, unversioned 10 bytes
+                versioned = false;
+                length = 10;
+                break;
+            case (_, 0x7373): // 'ss' — SsParameters
+                length = 4;
+                break;
+            case (_, 0x6376): // 'cv' — CvParameters, charCount-sized
+                length = 14;
+                break;
+            default:
+                diagnostic = default;
+                return ReadStatus.Done; // an undefined family keeps the raw only
+        }
+        if (at + (ulong)length > (ulong)_data.Length)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                Location.AtLocal(DataField.Offset, 0), out diagnostic, at, (ulong)_data.Length);
+        if (versioned)
+        {
+            ushort version = ReadWire.U16(_data, (int)at);
+            if (version != 0)
+                return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
+                    Location.AtLocal(DataField.Offset, 0), out diagnostic, version, 0);
+            if (family == 0x6376)
+                length += 2 * ReadWire.U16(_data, (int)at + 12);
+        }
+        if (at + (ulong)length > (ulong)_data.Length)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                Location.AtLocal(DataField.Offset, 0), out diagnostic, at, (ulong)_data.Length);
+        if (!budget.Buffer(length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        payload = _data.Slice((int)at, length).ToArray();
         diagnostic = default;
         return ReadStatus.Done;
     }

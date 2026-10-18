@@ -72,17 +72,24 @@ public sealed class LayoutFeature
 
     internal LayoutFeature(uint tag, ushort paramsOffsetRaw, ushort[] lookups, DataLocation location,
         int consumedLength, LayoutFeature? payloadOwner = null, DataLocation listLocation = default,
-        DataLocation recordLocation = default)
+        DataLocation recordLocation = default, byte[]? paramsPayload = null)
     {
         Tag = tag; ParamsOffsetRaw = paramsOffsetRaw; _lookups = lookups;
         Location = location; ConsumedLength = consumedLength; PayloadOwner = payloadOwner ?? this;
         ListLocation = listLocation == default ? location : listLocation;
         RecordLocation = recordLocation == default ? location.AtLocal(DataField.Tag, 0) : recordLocation;
+        ParamsPayload = paramsPayload;
     }
 
     public uint Tag { get; }
-    /// <summary>Raw observation only; nonzero parameters are not decoded or typed-writable.</summary>
+    /// <summary>Source raw observation. The two defined families (SsParameters,
+    /// CvParameters) also materialize <see cref="ParamsPayload"/>; other nonzero
+    /// values stay observations and keep the writer's refusal.</summary>
     public ushort ParamsOffsetRaw { get; }
+    /// <summary>The byte-preserving FeatureParams block for the spec-defined
+    /// families — GID-free UI-name payload, so the re-emission never remaps it;
+    /// null = no parameters or an undecoded raw (the writer refuses the latter).</summary>
+    internal byte[]? ParamsPayload { get; }
     public ReadOnlySpan<ushort> LookupIndices => _lookups;
     public DataLocation Location { get; }
     public int ConsumedLength { get; }
@@ -92,12 +99,12 @@ public sealed class LayoutFeature
 
     internal LayoutFeature AtRecord(uint tag, DataLocation listLocation, DataLocation recordLocation) =>
         tag == Tag ? this : new(tag, ParamsOffsetRaw, _lookups, Location, ConsumedLength,
-            PayloadOwner, listLocation, recordLocation);
+            PayloadOwner, listLocation, recordLocation, ParamsPayload);
 
     public ReadStatus TryWithLookups(ReadOnlySpan<ushort> lookupIndices, int lookupCount,
         out LayoutFeature? updated, out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
         LayoutListsTableCompiler.TryCreateFeature(Tag, ParamsOffsetRaw, lookupIndices, lookupCount,
-            out updated, out diagnostic, limits, Location);
+            out updated, out diagnostic, new BuildBudget(limits), Location, ParamsPayload);
 }
 
 /// <summary>The static list relationships in GSUB/GPOS, not a complete layout-table model.

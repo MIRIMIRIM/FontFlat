@@ -16,8 +16,9 @@ public static partial class LayoutListsTableCompiler
     internal sealed record ScriptPlan(LayoutScript[] Records, int[] Targets, ScriptBlock[] Blocks,
         LanguageBlock[] Languages, int Length, DataLocation Location);
     internal sealed record FeatureBlock(LayoutFeature Model, int Position);
+    internal sealed record ParamsBlock(byte[] Payload, int Position);
     internal sealed record FeaturePlan(LayoutFeature[] Records, int[] Targets, FeatureBlock[] Blocks,
-        int Length, DataLocation Location);
+        int Length, DataLocation Location, ParamsBlock[] Params);
 
     public static ReadStatus TryCompileScripts(ReadOnlySpan<LayoutScript> scripts, int featureCount,
         out byte[]? output, out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
@@ -263,8 +264,37 @@ public static partial class LayoutListsTableCompiler
             if (status != ReadStatus.Done) return status;
             leaves.Add(block); shared.Add(feature.PayloadOwner, block);
         }
+        // The FeatureParams blocks close the fragment: byte-preserving re-emissions
+        // placed after every feature table (the source's own interleaved shape has no
+        // order contract), deduped by payload instance — a shared body is one cached
+        // model, so alias rows land on one block. Each feature's params slot is
+        // FeatureList-relative like the feature offset itself, so the 16-bit window
+        // guards both distances and the cursor.
+        var paramsBlocks = new List<ParamsBlock>();
+        var placed = new Dictionary<byte[], int>();
+        foreach (var block in leaves)
+        {
+            if (block.Model.ParamsPayload is not { } payload) continue;
+            if (!placed.TryGetValue(payload, out var paramsPosition))
+            {
+                if (cursor > ushort.MaxValue)
+                    return Width(cursor, block.Model.Location.AtLocal(DataField.Offset, 0), out diagnostic);
+                paramsPosition = cursor;
+                status = Advance(ref cursor, payload.Length, block.Model.Location, budget, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                placed.Add(payload, paramsPosition);
+                paramsBlocks.Add(new(payload, paramsPosition));
+            }
+        }
+        foreach (var block in leaves)
+        {
+            if (block.Model.ParamsPayload is not { } payload) continue;
+            int distance = placed[payload] - block.Position;
+            if (distance > ushort.MaxValue)
+                return Width(distance, block.Model.Location.AtLocal(DataField.Offset, 0), out diagnostic);
+        }
         if (!budget.Buffer(8L * leaves.Count, at, out diagnostic)) return ReadStatus.ResourceLimit;
-        plan = new(records, targets, leaves.ToArray(), cursor, at);
+        plan = new(records, targets, leaves.ToArray(), cursor, at, paramsBlocks.ToArray());
         diagnostic = default; return ReadStatus.Done;
     }
 
@@ -275,16 +305,23 @@ public static partial class LayoutListsTableCompiler
             CoverageTableCompiler.RequireWritten(LayoutTagListView.TryWriteTagRecord(destination,
                 (ulong)plan.Records.Length,
                 new LayoutTagListView.TagRecordData(i, plan.Records[i].Tag, (ushort)plan.Targets[i]), out _, plan.Location));
+        var paramsAt = new Dictionary<byte[], int>();
+        foreach (var block in plan.Params) paramsAt.Add(block.Payload, block.Position);
         foreach (var block in plan.Blocks)
         {
             Span<byte> bytes = destination.Slice(block.Position);
-            CoverageTableCompiler.RequireWritten(LayoutFeatureView.TryWriteParamsOffsetRaw(bytes, 0, out _, block.Model.Location));
+            ushort paramsOffset = block.Model.ParamsPayload is { } payload
+                ? (ushort)(paramsAt[payload] - block.Position)
+                : (ushort)0;
+            CoverageTableCompiler.RequireWritten(LayoutFeatureView.TryWriteParamsOffsetRaw(bytes, paramsOffset, out _, block.Model.Location));
             CoverageTableCompiler.RequireWritten(LayoutFeatureView.TryWriteLookupCount(bytes, (ushort)block.Model.LookupIndices.Length, out _, block.Model.Location));
             for (int i = 0; i < block.Model.LookupIndices.Length; i++)
                 CoverageTableCompiler.RequireWritten(LayoutFeatureView.TryWriteLookupIndexAt(bytes,
                     LayoutFeatureLayout.HeaderLength + (ulong)i * LayoutFeatureLayout.IndexStride,
                     new LayoutFeatureView.LookupIndexData(i, block.Model.LookupIndices[i]), out _, block.Model.Location));
         }
+        foreach (var paramsBlock in plan.Params)
+            paramsBlock.Payload.CopyTo(destination.Slice(paramsBlock.Position));
     }
 
     private static int ScriptHeaderLength(LayoutScript model) =>
