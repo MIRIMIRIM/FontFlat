@@ -743,9 +743,45 @@ public sealed class SubsetSubrPruneTests
         Assert.Equal(
             [.. Num(100), .. Num(100), 21, .. Num(-107), 10, 14],
             cid.CharStrings[1].ToArray());
-        Assert.Equal(
-            [.. Num(100), .. Num(100), 21, .. Num(-107), 10, 14],
-            cid.CharStrings[2].ToArray());
+            Assert.Equal(
+                [.. Num(100), .. Num(100), 21, .. Num(-107), 10, 14],
+                cid.CharStrings[2].ToArray());
+    }
+
+    [Fact]
+    public void CidLocalSurvivorsRewriteUnderTheirOwnFdContext()
+    {
+        // The multi-FD context face: FD1's local 1 calls FD1's local 0 while
+        // FD1's INDEX prunes one unreferenced body, and FD0's INDEX prunes all
+        // (no retained glyph binds it). Rewriting FD1's survivors over the
+        // zero-filled context column read FD0's pruned map and refused glyph 1's
+        // first legal site with its operand in Detail; each body's own FD is the
+        // context, and FD0's Subrs key goes with its emptied INDEX.
+        var builder = new CidPruneBuilder(fdCount: 2, numGlyphs: 2);
+        builder.SetLocals(fd: 0, [0x0b]);
+        builder.SetLocals(fd: 1, [0x0b], [0x20, 0x0a, 0x0b], [0x0b]);
+        builder.SetGlyphProgram(0, [14], fd: 0);
+        builder.SetGlyphProgram(1, [0x21, 0x0a, 0x0e], fd: 1);
+        var face = builder.Build();
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out var report, out var cidDiagnostic);
+        Assert.True(status == ReadStatus.Done,
+            $"status={status} code={cidDiagnostic.Code} detail={cidDiagnostic.Detail} expected={cidDiagnostic.Expected}");
+        Assert.NotNull(result);
+        Assert.Equal([1, 1], report!.SubrPrunedLocalByFd);
+        var cid = OutputCidCff(result!);
+        Assert.Equal(2, cid.FdCount);
+        // FD0: the INDEX pruned to zero survivors, the Subrs key with it.
+        Assert.False(cid[0].HasLocalSubrs);
+        Assert.DoesNotContain(cid[0].PrivateEntries.ToArray(),
+            entry => entry.Operator == 19);
+        // FD1: both survivors kept under FD1's own map — the callsites' operand
+        // values are unchanged (old and new bias both the 107 tier), so the
+        // bodies re-emit byte-identical through the rewrite.
+        Assert.Equal(2, cid[1].LocalSubrCount);
+        Assert.Equal([0x0b], cid[1].LocalSubrs[0].ToArray());
+        Assert.Equal([0x20, 0x0a, 0x0b], cid[1].LocalSubrs[1].ToArray());
+        Assert.Equal([0x21, 0x0a, 0x0e], cid.CharStrings[1].ToArray());
     }
 
     /// <summary>A CID-keyed CFF1 wire builder (TN5176), the strict CID tiling:
@@ -774,6 +810,10 @@ public sealed class SubsetSubrPruneTests
         internal void AddLocals(int fd, int count) =>
             _locals[fd] = Enumerable.Range(0, count).Select(_ => (byte[])[0x8b, 0x0b])
                 .ToArray();
+
+        /// <summary>Replaces an FD's whole local INDEX with explicit bodies (the
+        /// count-based AddLocals covers the uniform-body fixtures).</summary>
+        internal void SetLocals(int fd, params byte[][] bodies) => _locals[fd] = bodies;
 
         internal void SetGlyphProgram(int gid, byte[] program, int fd)
         {

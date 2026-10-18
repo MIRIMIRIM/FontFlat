@@ -70,7 +70,9 @@ public static partial class SubsetOperation
     }
 
     /// <summary>The parked plan one compact CFF/CFF2 rebuild consumes: per-INDEX
-    /// renumbering (null = that INDEX rides verbatim), the per-body stem memo the
+    /// renumbering (null = that INDEX kept every body — its bodies still ride the
+    /// rewrite walk under the identity map, because their calls into a pruned
+    /// sibling INDEX renumber), the per-body stem memo the
     /// rewrite walk's mask widths read (the analysis's §2.1 memo), and, per reachable
     /// global body, the FD context its single scan ran under (the rewrite walk's
     /// locals table; multi-context global bodies with local calls refused at plan
@@ -407,6 +409,26 @@ public static partial class SubsetOperation
         };
     }
 
+    /// <summary>The no-prune slot's rewrite form: every body survives under the
+    /// identity map and the unchanged count's own bias pair, so a same-INDEX call
+    /// operand re-derives to its original value and keeps its bytes (the value
+    /// rule) while the cross-INDEX sites a sibling plan pruned re-encode — §3.3's
+    /// rewrite obligation runs over every surviving body, not only the slots with
+    /// prunings of their own. One array serves both columns: the identity map is
+    /// its own survivor list.</summary>
+    private static SubrIndexPlan IdentityIndexPlan(int count)
+    {
+        var identity = new int[count];
+        for (int i = 0; i < count; i++) identity[i] = i;
+        return new SubrIndexPlan
+        {
+            Survivors = identity,
+            NewIndexOfOld = identity,
+            OldBias = SubrBias(count),
+            NewBias = SubrBias(count),
+        };
+    }
+
     // ---- the payload rewriter (§3.3) ---------------------------------------------
 
     /// <summary>Rewrites the retained programs — one FD context each — under a
@@ -491,30 +513,25 @@ public static partial class SubsetOperation
             new int[inputOrder.Length], globals, fdLocals, plan, cff2: false,
             regionCounts: null, model.Location, budget, out charStrings, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (globalPlan is { } prunedGlobal)
-        {
-            status = RewriteSurvivorBodies(globals, prunedGlobal.Survivors,
-                new int[prunedGlobal.NewCount], globals, fdLocals, plan, cff2: false,
-                regionCounts: null, model.Location, budget, out globalSubrs, out diagnostic);
-            if (status != ReadStatus.Done) return status;
-        }
-        else
-        {
-            globalSubrs = globals;
-        }
-        if (localPlan is { } prunedLocal)
-        {
-            status = RewriteSurvivorBodies(locals, prunedLocal.Survivors,
-                new int[prunedLocal.NewCount], globals, fdLocals, plan, cff2: false,
-                regionCounts: null, model.Location, budget, out localSubrs, out diagnostic);
-            if (status != ReadStatus.Done) return status;
-            hasLocalSubrs = prunedLocal.NewCount > 0;
-        }
-        else
-        {
-            localSubrs = locals;
-            hasLocalSubrs = model.HasLocalSubrs;
-        }
+        // Every surviving body rides the rewrite walk once the plan is parked
+        // (§3.3): a null slot's INDEX kept every body, but those bodies' calls
+        // into a pruned sibling INDEX still renumber — the identity slot keeps
+        // its own count, so its same-INDEX operands re-derive to their original
+        // values and hold their bytes. The zero-filled context column is this
+        // face's one FD (§2.2's FD-0 form); the multi-FD rebuilds fill each
+        // body's owner instead.
+        SubrIndexPlan effectiveGlobal = globalPlan ?? IdentityIndexPlan(globals.Length);
+        status = RewriteSurvivorBodies(globals, effectiveGlobal.Survivors,
+            new int[effectiveGlobal.NewCount], globals, fdLocals, plan, cff2: false,
+            regionCounts: null, model.Location, budget, out globalSubrs, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        SubrIndexPlan effectiveLocal = localPlan ?? IdentityIndexPlan(locals.Length);
+        status = RewriteSurvivorBodies(locals, effectiveLocal.Survivors,
+            new int[effectiveLocal.NewCount], globals, fdLocals, plan, cff2: false,
+            regionCounts: null, model.Location, budget, out localSubrs, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        hasLocalSubrs = localPlan is null ? model.HasLocalSubrs
+            : effectiveLocal.NewCount > 0;
         diagnostic = default;
         return ReadStatus.Done;
     }

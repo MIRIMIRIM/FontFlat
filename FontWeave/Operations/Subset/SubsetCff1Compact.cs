@@ -258,38 +258,41 @@ public static partial class SubsetOperation
                 globals, fdLocals, prune, cff2: false, regionCounts: null,
                 model.Location, budget, out charStrings, out diagnostic);
             if (pruneStatus != ReadStatus.Done) return pruneStatus;
-            if (prune.Global is { } globalPlan)
-            {
-                var contextFds = new int[globalPlan.NewCount];
-                for (int s = 0; s < globalPlan.NewCount; s++)
-                    contextFds[s] = prune.GlobalContextFd.TryGetValue(
-                        globalPlan.Survivors[s], out int ctx) ? ctx : 0;
-                pruneStatus = RewriteSurvivorBodies(globals, globalPlan.Survivors,
-                    contextFds, globals, fdLocals, prune, cff2: false,
-                    regionCounts: null, model.Location, budget, out globalSubrs,
-                    out diagnostic);
-                if (pruneStatus != ReadStatus.Done) return pruneStatus;
-            }
-            else
-            {
-                globalSubrs = globals;
-            }
+            // Every surviving body rides the rewrite once the plan is parked
+            // (§3.3): a null slot's INDEX kept every body, but its bodies' calls
+            // into a pruned sibling INDEX still renumber — the identity slot
+            // keeps its own count, so its same-INDEX operands re-derive to
+            // their original values (the value rule).
+            SubrIndexPlan effectiveGlobal = prune.Global ??
+                IdentityIndexPlan(globals.Length);
+            var contextFds = new int[effectiveGlobal.NewCount];
+            for (int s = 0; s < effectiveGlobal.NewCount; s++)
+                contextFds[s] = prune.GlobalContextFd.TryGetValue(
+                    effectiveGlobal.Survivors[s], out int ctx) ? ctx : 0;
+            pruneStatus = RewriteSurvivorBodies(globals, effectiveGlobal.Survivors,
+                contextFds, globals, fdLocals, prune, cff2: false,
+                regionCounts: null, model.Location, budget, out globalSubrs,
+                out diagnostic);
+            if (pruneStatus != ReadStatus.Done) return pruneStatus;
             fontDicts = new CidFontDict[model.FdCount];
             for (int fd = 0; fd < model.FdCount; fd++)
             {
                 var old = model[fd];
                 var localPlan = prune.LocalByFd[fd];
-                if (localPlan is null)
-                {
-                    fontDicts[fd] = old;
-                    continue;
-                }
+                // Each local body's context is its own FD: a zero-filled column
+                // would rewrite FD>0 bodies over FD0's table, plan and bias — the
+                // misfire that refused a legal cross-FD caller at its first site.
+                SubrIndexPlan effectiveLocal = localPlan ??
+                    IdentityIndexPlan(fdLocals[fd].Length);
+                var bodyFds = new int[effectiveLocal.NewCount];
+                Array.Fill(bodyFds, fd);
                 pruneStatus = RewriteSurvivorBodies(fdLocals[fd],
-                    localPlan.Survivors, new int[localPlan.NewCount], globals,
+                    effectiveLocal.Survivors, bodyFds, globals,
                     fdLocals, prune, cff2: false, regionCounts: null,
                     model.Location, budget, out var renewedLocals, out diagnostic);
                 if (pruneStatus != ReadStatus.Done) return pruneStatus;
-                bool renewedHasLocals = localPlan.NewCount > 0;
+                bool renewedHasLocals = localPlan is null ? old.HasLocalSubrs
+                    : effectiveLocal.NewCount > 0;
                 var privateEntries = renewedHasLocals || !old.HasLocalSubrs
                     ? old.PrivateEntries.ToArray()
                     : PrivateEntriesWithoutSubrs(old.PrivateEntries);
