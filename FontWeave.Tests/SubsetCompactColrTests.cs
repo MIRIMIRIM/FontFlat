@@ -104,6 +104,36 @@ public sealed class SubsetCompactColrTests
         .U8(2).U16(2).U16(0xC000)                      // solid@128
         .ToBytes();
 
+    /// <summary>The noto defect's root shape: one BGL row (glyph 5) whose root
+    /// paint IS a PaintGlyph — glyph 9's outline, palette solid underneath; no
+    /// LayerList, no ClipList. BGL@34, the row's paintOffset 10 lands the
+    /// PaintGlyph@44, its child solid@50 (55 bytes).</summary>
+    private static byte[] ColrV1RootGlyphPaint() => new ByteBuilder(55)
+        .U16(1).U16(0).U32(0).U32(0).U16(0)
+        .U32(34).U32(0).U32(0).U32(0).U32(0)   // bgl, no ll/clip/var slots
+        .U32(1)                                // BGL count
+        .U16(5).U32(10)                        // root 5 → PaintGlyph@44
+        .U8(10).U24(6).U16(9)                  // glyph@44 → solid@50, gid 9
+        .U8(2).U16(1).U16(0x4000)              // solid@50
+        .ToBytes();
+
+    /// <summary>The closure's worklist shape: two BGL rows where row 5's PaintGlyph
+    /// targets glyph 9 and row 9's own root PaintGlyph targets glyph 11 — the
+    /// re-rooting walk must reach 9's graph through 9's BGL row. BGL@34, rows'
+    /// paintOffsets 16 and 27 land the PaintGlyphs@50 and @61, solids@56 and @67
+    /// (72 bytes).</summary>
+    private static byte[] ColrV1NestedRootGlyphPaints() => new ByteBuilder(72)
+        .U16(1).U16(0).U32(0).U32(0).U16(0)
+        .U32(34).U32(0).U32(0).U32(0).U32(0)   // bgl, no ll/clip/var slots
+        .U32(2)                                // BGL count
+        .U16(5).U32(16)                        // root 5 → PaintGlyph@50
+        .U16(9).U32(27)                        // root 9 → PaintGlyph@61
+        .U8(10).U24(6).U16(9)                  // glyph@50 → solid@56, gid 9
+        .U8(2).U16(1).U16(0x4000)              // solid@56
+        .U8(10).U24(6).U16(11)                 // glyph@61 → solid@67, gid 11
+        .U8(2).U16(2).U16(0x8000)              // solid@67
+        .ToBytes();
+
     private sealed class ByteBuilder
     {
         private readonly byte[] _bytes;
@@ -317,37 +347,106 @@ public sealed class SubsetCompactColrTests
         Assert.Equal((ushort)2, model.Clips[0].EndGlyphId);
     }
 
-    // RE3: a PaintGlyph target the request did not select refuses with InvalidValue
-    // at the referencing paint, detail = the old GID (the SE pre-check, finding 4).
+    // The color closure: a PaintGlyph target the request did not select joins the
+    // retained set before the freeze (the 2026-10-18 noto defect — a codepoint
+    // root's paint graph references outlines no cmap seed carries), and the rebuilt
+    // PaintGlyph remaps onto the closed glyph's output slot.
     [Fact]
-    public void CompactColrV1DanglingPaintGlyphRefuses()
+    public void CompactColrV1PaintGlyphTargetClosesIntoMap()
     {
         var wire = ColrV1();
         BinaryPrimitives.WriteUInt16BigEndian(wire.AsSpan(109 + 4), 9); // glyph → 9
         var face = Spine(52, (ColrTag, wire));
         var status = SubsetOperation.TryPrepare(Request(face, [0, 5, 6],
             SubsetMode.CompactRemap), out var result, out _, out var diagnostic);
-        Assert.Equal(ReadStatus.InvalidFormat, status);
-        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
-        Assert.Equal(ColrTag, diagnostic.Location.TableTag);
-        Assert.Equal(9UL, diagnostic.Detail);
-        Assert.Null(result);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        // The closure pulled 9 into the frozen order: outputs {0→0, 5→1, 6→2, 9→3}
+        // (the TrueType identity order).
+        Assert.Equal([0, 5, 6, 9],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        ColrTable model = ReadColr(FontTable(result, ColrTag), 4, 4);
+        Assert.Equal(2, model.BaseGlyphPaintCount);
+        var rootLayers = Assert.IsType<ColrPaintLayers>(
+            model.Paints[model.BaseGlyphPaints[0].PaintNodeId]);
+        var glyph = Assert.IsType<ColrPaintGlyph>(
+            model.Paints[rootLayers.LayerNodeIds[0]]);
+        Assert.Equal((ushort)3, glyph.GlyphId);
+        Assert.IsType<ColrPaintSolid>(model.Paints[glyph.PaintNodeId]);
     }
 
-    // RE3: the PaintColrGlyph indirect reference answers the same face — the
-    // fixture's colrGlyph targets root 6, which the request leaves unselected (the
-    // BGL record exists, so the read walk passes and the SE pre-check refuses).
+    // The color closure's indirect face: the PaintColrGlyph target joins the
+    // retained set with its BaseGlyphList row, so the referenced base's own root
+    // graph survives and remaps (the request never selected 6; its solid travels).
     [Fact]
-    public void CompactColrV1DanglingPaintColrGlyphRefuses()
+    public void CompactColrV1PaintColrGlyphTargetClosesIntoMap()
     {
         var face = Spine(52, (ColrTag, ColrV1()));
         var status = SubsetOperation.TryPrepare(Request(face, [0, 5, 51],
             SubsetMode.CompactRemap), out var result, out _, out var diagnostic);
-        Assert.Equal(ReadStatus.InvalidFormat, status);
-        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
-        Assert.Equal(ColrTag, diagnostic.Location.TableTag);
-        Assert.Equal(6UL, diagnostic.Detail);
-        Assert.Null(result);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([0, 5, 6, 51],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        ColrTable model = ReadColr(FontTable(result, ColrTag), 4, 4);
+        Assert.Equal(2, model.BaseGlyphPaintCount);
+        Assert.Equal((ushort)1, model.BaseGlyphPaints[0].GlyphId);
+        Assert.Equal((ushort)2, model.BaseGlyphPaints[1].GlyphId);
+        var rootLayers = Assert.IsType<ColrPaintLayers>(
+            model.Paints[model.BaseGlyphPaints[0].PaintNodeId]);
+        var colrGlyph = Assert.IsType<ColrPaintColrGlyph>(
+            model.Paints[rootLayers.LayerNodeIds[1]]);
+        Assert.Equal((ushort)2, colrGlyph.GlyphId);
+        Assert.Equal(model.BaseGlyphPaints[1].PaintNodeId, colrGlyph.TargetNodeId);
+        Assert.IsType<ColrPaintSolid>(model.Paints[model.BaseGlyphPaints[1].PaintNodeId]);
+    }
+
+    // The noto defect's exact shape: a base glyph whose ROOT paint is itself a
+    // PaintGlyph (no LayerList anywhere) — a seed that selects only the base never
+    // retains the outlined glyph 9, the closure does, and the root remaps with it.
+    [Fact]
+    public void CompactColrV1RootPaintGlyphClosesItsTarget()
+    {
+        var face = Spine(16, (ColrTag, ColrV1RootGlyphPaint()));
+        var status = SubsetOperation.TryPrepare(Request(face, [5],
+            SubsetMode.CompactRemap), out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([0, 5, 9],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        ColrTable model = ReadColr(FontTable(result, ColrTag), 3, 4);
+        Assert.Equal(1, model.BaseGlyphPaintCount);
+        Assert.Equal((ushort)1, model.BaseGlyphPaints[0].GlyphId);
+        var glyph = Assert.IsType<ColrPaintGlyph>(
+            model.Paints[model.BaseGlyphPaints[0].PaintNodeId]);
+        Assert.Equal((ushort)2, glyph.GlyphId);
+        Assert.IsType<ColrPaintSolid>(model.Paints[glyph.PaintNodeId]);
+    }
+
+    // The closure's worklist face: a PaintGlyph target that carries its own BGL row
+    // contributes that root's graph too — PaintGlyph addresses an outline, not a
+    // paint node, so only the re-rooting walk reaches 9's own reference (11).
+    [Fact]
+    public void CompactColrV1ClosedGlyphWithOwnRootClosesTransitively()
+    {
+        var face = Spine(16, (ColrTag, ColrV1NestedRootGlyphPaints()));
+        var status = SubsetOperation.TryPrepare(Request(face, [5],
+            SubsetMode.CompactRemap), out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([0, 5, 9, 11],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        ColrTable model = ReadColr(FontTable(result, ColrTag), 4, 4);
+        Assert.Equal(2, model.BaseGlyphPaintCount);
+        Assert.Equal((ushort)1, model.BaseGlyphPaints[0].GlyphId);
+        Assert.Equal((ushort)2, model.BaseGlyphPaints[1].GlyphId);
+        var outer = Assert.IsType<ColrPaintGlyph>(
+            model.Paints[model.BaseGlyphPaints[0].PaintNodeId]);
+        Assert.Equal((ushort)2, outer.GlyphId);
+        var inner = Assert.IsType<ColrPaintGlyph>(
+            model.Paints[model.BaseGlyphPaints[1].PaintNodeId]);
+        Assert.Equal((ushort)3, inner.GlyphId);
+        Assert.IsType<ColrPaintSolid>(model.Paints[inner.PaintNodeId]);
     }
 
     // v1 with no surviving color graph drops the table (OQ-SE-5).

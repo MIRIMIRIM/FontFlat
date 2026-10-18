@@ -266,6 +266,22 @@ public static partial class SubsetOperation
                     out diagnostic);
         }
 
+        // Step 4.7 (compact only, the color-closure slice): the COLR v1 paint
+        // graph's glyph references join the retained set at the shared walk's fixed
+        // point — after the layout and seac families, so their additions' color
+        // graphs close too, and before the composite closure, whose worklist
+        // consumes this stage's additions. The stage parks the one COLR model for
+        // the payload rebuild. Retain-GIDs never runs it: the GID domain never
+        // moves there, so a paint reference cannot dangle.
+        if (compact)
+        {
+            status = CloseColrReferences(directory, maxp!, state, budget,
+                out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+        }
+
         // Step 5: composite dependency closure over the TrueType profile (card §3). The
         // typed read chain runs first, so graph violations surface with the reader's own
         // diagnostics; the zero-rebuild profile has no composites and skips this stage.
@@ -566,9 +582,20 @@ public static partial class SubsetOperation
             if (rebuildTags.Contains(Colr))
             {
                 // SE (card §2.1): the COLR rebuild prunes and remaps on the typed
-                // model; CPAL stays raw and supplies the palette-entry authority.
-                status = RebuildColr(directory, maxp!, map!, budget, out rebuiltColr,
-                    out bool colrDropped, out diagnostic);
+                // model the color closure parked at step 4.7 (CPAL stays raw and
+                // supplies the palette-entry authority through the same parked
+                // pair); the rebuild never re-reads the table. A missing park is a
+                // pipeline bug, never a request error (the parked-model guard shape
+                // of the variable rebuilds).
+                if (state.Colr is not { } colrModel)
+                {
+                    diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                        faceAt with { TableTag = Colr }, Colr);
+                    return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
+                        out result, out report, out diagnostic);
+                }
+                status = RebuildColr(colrModel, state.CpalPaletteEntries, map!, budget,
+                    out rebuiltColr, out bool colrDropped, out diagnostic);
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result, out report,
                         out diagnostic);
@@ -1862,6 +1889,15 @@ public static partial class SubsetOperation
             // runs after the layout union and only adds glyphs still unretained, so
             // the list stays disjoint from the layout additions by construction).
             internal List<ushort>? SeacClosureAdded;
+            // The color closure's one materialized COLR model and the CPAL
+            // palette-entry authority it read with (the SE color slice): parked once
+            // at the closure stage — after the layout and seac families, before the
+            // composite closure and the freeze — and consumed by the payload rebuild
+            // without a second read (single-parse discipline, S1c card §1.2). Null
+            // when the face carries no COLR table; the entry count is null when no
+            // CPAL backs it (the read-side OQ-T6-01-4 line).
+            internal ColrTable? Colr;
+            internal int? CpalPaletteEntries;
 
             // The SR step 3.25 pair (SR card §2.4, OQ-SR-5): the resolved roots'
             // materialized cmap model (parked once; the rebuild consumes it and never

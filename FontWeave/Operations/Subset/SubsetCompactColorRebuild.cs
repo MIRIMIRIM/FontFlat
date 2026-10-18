@@ -14,11 +14,12 @@ namespace FontWeave.Operations.Subset;
 /// entries the surviving PaintColrLayers nodes reference in their original relative
 /// order, remaps the glyph reference points and re-spans the clip rows over the
 /// surviving contiguous output runs; the variation slots travel verbatim (no
-/// GID domain). A dangling glyph
-/// reference — a PaintGlyph or PaintColrGlyph target the request did not select —
-/// is a finite refusal (RE3, OQ-SE-6); the PaintGlyph domain re-answer is this
-/// slice's pre-check because the v1 factory's owned walk does not cover it (SE
-/// card §7 finding 4). An all-empty rebuild drops the table (OQ-SE-5). The rebuilt
+/// GID domain). The paint-graph glyph references the request did not select have
+/// already joined the retained set at the color closure's fixed point (the shared
+/// walk below), so a dangling PaintGlyph or PaintColrGlyph target is a backstop
+/// refusal (RE3, OQ-SE-6) — unreachable while both consumers ride the one
+/// dispatch, kept because the v1 factory's owned walk does not cover the domain
+/// (SE card §7 finding 4). An all-empty rebuild drops the table (OQ-SE-5). The rebuilt
 /// model re-answers every structural invariant through the compiler factory; any
 /// failure refuses with nothing published. Registered canonical-form fact: the v1
 /// factory's owned construction carries the read model's v0 compat records no
@@ -27,31 +28,21 @@ namespace FontWeave.Operations.Subset;
 /// only v1 host carries no compat records either.</summary>
 public static partial class SubsetOperation
 {
-    private static ReadStatus RebuildColr(SfntDirectoryView directory, MaxpTable maxp,
+    private static ReadStatus RebuildColr(ColrTable model, int? cpalEntries,
         GlyphRemap map, BuildBudget budget, out byte[]? colrBytes, out bool dropped,
         out FontDiagnostic diagnostic)
     {
         colrBytes = null;
         dropped = false;
-        ReadStatus status = ReadTableBytes(directory, Colr, out var colrAt,
-            out var colrSource, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        // CPAL has no GID domain and stays RETAIN_RAW; its validated read supplies
-        // the palette-entry authority the COLR read and the compiler factory
-        // re-answer (SE card §2.7). Absent CPAL skips the domain (the read side's
-        // OQ-T6-01-4 line).
-        status = TryReadCpalPaletteEntries(directory, budget, out int? cpalEntries,
-            out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = ColrView.TryOpen(colrSource, out var colrView, out diagnostic, colrAt);
-        if (status != ReadStatus.Done) return status;
-        status = colrView.TryReadTable(maxp.NumGlyphs, cpalEntries, out var model,
-            out diagnostic, budget);
-        if (status != ReadStatus.Done) return status;
+        // The color closure materialized this model and read the CPAL palette-entry
+        // authority with it (the parked-model pair); the rebuild never re-opens the
+        // table (single-parse discipline, S1c card §1.2).
+        DataLocation at = model.Location;
+        ReadStatus status;
         byte[]? bytes;
-        if (model!.Version == 1)
+        if (model.Version == 1)
         {
-            status = RebuildColrV1(model, colrAt, map, budget, out var rebuiltModel,
+            status = RebuildColrV1(model, at, map, budget, out var rebuiltModel,
                 out dropped, out diagnostic);
             if (status != ReadStatus.Done || dropped) return status;
             status = ColrTableCompiler.TryCompile(rebuiltModel!, out bytes,
@@ -64,12 +55,12 @@ public static partial class SubsetOperation
             if (status != ReadStatus.Done || dropped) return status;
             status = ColrTableCompiler.TryCreate(newBase, newLayers,
                 map.OutputGlyphCount, cpalEntries, out var v0Model, out diagnostic,
-                location: colrAt);
+                location: at);
             if (status != ReadStatus.Done) return status;
             status = ColrTableCompiler.TryCompile(v0Model!, out bytes, out diagnostic);
         }
         if (status != ReadStatus.Done) return status;
-        return ChargeCompiled(budget, colrAt, bytes!, out colrBytes, out diagnostic);
+        return ChargeCompiled(budget, at, bytes!, out colrBytes, out diagnostic);
     }
 
     /// <summary>The compilers' budget hooks take limits, not the operation's running
@@ -89,31 +80,6 @@ public static partial class SubsetOperation
         }
         charged = bytes;
         diagnostic = default;
-        return ReadStatus.Done;
-    }
-
-    private static ReadStatus TryReadCpalPaletteEntries(SfntDirectoryView directory,
-        BuildBudget budget, out int? entries, out FontDiagnostic diagnostic)
-    {
-        entries = null;
-        ReadStatus status = directory.TryFindUniqueTable(Cpal, out int ordinal,
-            out diagnostic);
-        if (status is ReadStatus.NotFound or ReadStatus.MissingTable)
-        {
-            // No CPAL: the read side and the factory skip the palette domain (the
-            // container-level COLR->CPAL requirement is the joint validator's).
-            diagnostic = default;
-            return ReadStatus.Done;
-        }
-        if (status != ReadStatus.Done) return status;
-        status = directory.TryGetTableBytes(ordinal, out var cpalBytes, out diagnostic);
-        if (status != ReadStatus.Done) return status;
-        status = CpalView.TryOpen(cpalBytes, out var cpalView, out diagnostic,
-            directory.TableLocation(ordinal));
-        if (status != ReadStatus.Done) return status;
-        status = cpalView.TryReadTable(out var cpal, out diagnostic, budget);
-        if (status != ReadStatus.Done) return status;
-        entries = cpal!.NumPaletteEntries;
         return ReadStatus.Done;
     }
 
@@ -181,7 +147,10 @@ public static partial class SubsetOperation
         // Reachability pruning from the surviving roots (OQ-SE-1): the DFS preorder
         // is parents-first (a parent takes its ordinal before any child is first
         // visited), so the direct-edge forward face the factory re-answers holds by
-        // construction; dangling glyph references refuse inside the walk (RE3).
+        // construction; the walk's glyph-reference face refuses a dangling one (RE3
+        // — the color closure's fixed point has already retained every reachable
+        // reference, so the face answers Done on every live path).
+        ColrGlyphRefFace refuseDangling = RefuseUnretained;
         var rootOfGlyph = new Dictionary<ushort, int>(model.BaseGlyphPaintCount);
         foreach (var row in model.BaseGlyphPaints) rootOfGlyph[row.GlyphId] = row.PaintNodeId;
         var visitedOrder = new List<int>(model.PaintCount);
@@ -189,8 +158,8 @@ public static partial class SubsetOperation
         foreach (var row in model.BaseGlyphPaints)
         {
             if (map.OutputOf(row.GlyphId) < 0) continue;
-            ReadStatus status = VisitColrSubgraph(model, row.PaintNodeId, 0, map,
-                visited, visitedOrder, out diagnostic);
+            ReadStatus status = VisitColrSubgraph(model, row.PaintNodeId, 0,
+                refuseDangling, visited, visitedOrder, out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
         // No surviving color graph means no rebuildable content (OQ-SE-5): the
@@ -327,15 +296,45 @@ public static partial class SubsetOperation
         return ColrTableCompiler.TryCreate(newBgl, newLayerIds, newClips, paints,
             map.OutputGlyphCount, null, out rebuilt, out diagnostic, model.VarIndexMap,
             model.ItemVariationStore, location: at);
+
+        // The RE3 face (SE card §3): a paint-graph glyph reference outside the
+        // frozen map refuses with InvalidValue at the referencing paint's GlyphId,
+        // detail = the old GID (the sbix dangling-dupe precedent's shape); a
+        // retained one answers Done. The backstop consumer of the shared walk's
+        // face — the color closure retains instead of refusing.
+        ReadStatus RefuseUnretained(int nodeOrdinal, ushort glyphId,
+            out FontDiagnostic face)
+        {
+            if (map.OutputOf(glyphId) >= 0)
+            {
+                face = default;
+                return ReadStatus.Done;
+            }
+            return RefuseDanglingColrGlyphRef(model, nodeOrdinal, glyphId, out face);
+        }
     }
 
-    /// <summary>One reachability step (OQ-SE-1): the three edge classes —
-    /// PaintColrLayers slices into the LayerList, direct child edges, PaintColrGlyph
-    /// → the referenced glyph's surviving BGL root — over the validated input graph.
-    /// A dangling PaintGlyph or PaintColrGlyph target refuses here (RE3, OQ-SE-6)
-    /// with the referencing paint's source position and the old GID.</summary>
+    /// <summary>The glyph-reference face of the one paint-graph walk: the color
+    /// closure RETAINS the reference (the fixed point that keeps the frozen map
+    /// carrying every reachable paint-graph GID), the rebuild refuses an unretained
+    /// one (the RE3 backstop). The two faces are the only difference between the
+    /// walk's two consumers.</summary>
+    private delegate ReadStatus ColrGlyphRefFace(int nodeOrdinal, ushort glyphId,
+        out FontDiagnostic diagnostic);
+
+    /// <summary>One reachability step of the ONE paint-graph walk (OQ-SE-1): the
+    /// three edge classes — PaintColrLayers slices into the LayerList, direct child
+    /// edges, PaintColrGlyph → the referenced glyph's surviving BGL root — over the
+    /// validated input graph. The color closure and this rebuild are its only two
+    /// consumers and differ only in the glyph-reference face, so a new paint node
+    /// or edge class MUST land in this one switch: a class the closure misses but
+    /// the rebuild walks re-opens the dual-implementation drift this sharing
+    /// forecloses (the SE-era PaintComposite/Transform omissions, SESSION-RULES
+    /// writing discipline 2). A dangling glyph reference answers through the face
+    /// (RE3, OQ-SE-6) with the referencing paint's source position and the old
+    /// GID.</summary>
     private static ReadStatus VisitColrSubgraph(ColrTable model, int nodeId, int depth,
-        GlyphRemap map, HashSet<int> visited, List<int> visitedOrder,
+        ColrGlyphRefFace glyphRef, HashSet<int> visited, List<int> visitedOrder,
         out FontDiagnostic diagnostic)
     {
         if (depth > ColrView.MaxPaintGraphDepth)
@@ -360,41 +359,39 @@ public static partial class SubsetOperation
                 {
                     status = VisitColrSubgraph(model,
                         model.LayerPaintNodeIds[(int)layers.FirstLayerIndex + k], depth + 1,
-                        map, visited, visitedOrder, out diagnostic);
+                        glyphRef, visited, visitedOrder, out diagnostic);
                     if (status != ReadStatus.Done) return status;
                 }
                 break;
             case ColrPaintGlyph glyph:
-                if (map.OutputOf(glyph.GlyphId) < 0)
-                    return RefuseDanglingColrGlyphRef(model, glyph.Id, glyph.GlyphId,
-                        out diagnostic);
-                status = VisitColrSubgraph(model, glyph.PaintNodeId, depth + 1, map,
+                status = glyphRef(glyph.Id, glyph.GlyphId, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                status = VisitColrSubgraph(model, glyph.PaintNodeId, depth + 1, glyphRef,
                     visited, visitedOrder, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 break;
             case ColrPaintColrGlyph colrGlyph:
-                if (map.OutputOf(colrGlyph.GlyphId) < 0)
-                    return RefuseDanglingColrGlyphRef(model, colrGlyph.Id,
-                        colrGlyph.GlyphId, out diagnostic);
+                status = glyphRef(colrGlyph.Id, colrGlyph.GlyphId, out diagnostic);
+                if (status != ReadStatus.Done) return status;
                 status = VisitColrSubgraph(model, colrGlyph.TargetNodeId, depth + 1,
-                    map, visited, visitedOrder, out diagnostic);
+                    glyphRef, visited, visitedOrder, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 break;
             case ColrPaintComposite composite:
                 // Both children are direct edges the read validated; they must join
                 // the visited set or their renumbering collapses onto ordinal 0.
                 status = VisitColrSubgraph(model, composite.SourceNodeId, depth + 1,
-                    map, visited, visitedOrder, out diagnostic);
+                    glyphRef, visited, visitedOrder, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 status = VisitColrSubgraph(model, composite.BackdropNodeId, depth + 1,
-                    map, visited, visitedOrder, out diagnostic);
+                    glyphRef, visited, visitedOrder, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 break;
             default:
                 if (HasColrChild(model.Paints[nodeId]))
                 {
                     status = VisitColrSubgraph(model, ChildOf(model.Paints[nodeId]),
-                        depth + 1, map, visited, visitedOrder, out diagnostic);
+                        depth + 1, glyphRef, visited, visitedOrder, out diagnostic);
                     if (status != ReadStatus.Done) return status;
                 }
                 break;
@@ -403,9 +400,9 @@ public static partial class SubsetOperation
         return ReadStatus.Done;
     }
 
-    /// <summary>The RE3 face (SE card §3): a dangling glyph reference refuses with
-    /// InvalidValue at the referencing paint's GlyphId, detail = the old GID (the
-    /// sbix dangling-dupe precedent's shape).</summary>
+    /// <summary>The RE3 wire shape (SE card §3): the refusal fires with InvalidValue
+    /// at the referencing paint's GlyphId, detail = the old GID (the sbix
+    /// dangling-dupe precedent's shape).</summary>
     private static ReadStatus RefuseDanglingColrGlyphRef(ColrTable model, int nodeOrdinal,
         ushort oldGlyphId, out FontDiagnostic diagnostic) =>
         ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
