@@ -19,6 +19,8 @@ public sealed class SubsetLayoutScopeFamiliesTests
     private const uint TagA = 0x41424344; // 'ABCD' — the contextual feature
     private const uint TagB = 0x42434445; // 'BCDE' — the plain feature
     private const uint TagDflt = 0x44464C54; // 'DFLT'
+    private const uint TagEng = 0x454E4720; // 'ENG '
+    private const uint TagFra = 0x46524120; // 'FRA '
     private const uint JstfTag = 0x4A535446; // 'JSTF'
     private static readonly uint[] LayoutTags =
         { 0x6B65726E, 0x47535542, 0x47504F53, 0x47444546, 0x42415345, 0x4A535446,
@@ -134,6 +136,35 @@ public sealed class SubsetLayoutScopeFamiliesTests
         NoDiagnostic(diagnostic);
         Ok(JstfTableCompiler.TryCreate(null, langSys!, [], out var script,
             out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(JstfTableCompiler.TryCreate(JstfLayout.Version10, NumGlyphs, 3, 0, null,
+            [new JstfScriptRecord(TagDflt, script!)], out var model, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(JstfTableCompiler.TryCompile(model!, out var bytes, out diagnostic));
+        NoDiagnostic(diagnostic);
+        return bytes!;
+    }
+
+    /// <summary>The tagged-language JSTF fixture: the JstfBytes script with two
+    /// tagged LangSys rows — 'ENG ' then 'FRA ' — over the same mod-carrying
+    /// priority shape, the language-only cut's witness tree.</summary>
+    private static byte[] JstfLanguageBytes()
+    {
+        Ok(JstfTableCompiler.TryCreate(JstfLookupDomain.Gsub,
+            stackalloc ushort[] { 1 }, 3, out var mod, out var diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(JstfTableCompiler.TryCreate(mod!, null, null, null, null, null, null,
+            null, null, null, out var priority, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(JstfTableCompiler.TryCreate([priority!], out var engLangSys,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(JstfTableCompiler.TryCreate([priority!], out var fraLangSys,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(JstfTableCompiler.TryCreate(null, engLangSys!,
+            [new JstfLangSysRecord(TagEng, engLangSys!), new JstfLangSysRecord(TagFra, fraLangSys!)],
+            out var script, out diagnostic));
         NoDiagnostic(diagnostic);
         Ok(JstfTableCompiler.TryCreate(JstfLayout.Version10, NumGlyphs, 3, 0, null,
             [new JstfScriptRecord(TagDflt, script!)], out var model, out diagnostic));
@@ -301,6 +332,45 @@ public sealed class SubsetLayoutScopeFamiliesTests
         NoDiagnostic(diagnostic);
         Assert.NotNull(model);
         Assert.Equal(0, model!.ScriptCount);
+    }
+
+    // The JSTF language-only cut: the script trees and the mod domains are whole,
+    // so the language dimension alone moves — the verdict is a true cut (S2c card
+    // §5.2 with §2.1's language MUST) and the scoped producer drops the excluded
+    // 'FRA ' row while the GSUB neighbor (no tagged languages) rides the no-op.
+    [Fact]
+    public void JstfLanguageOnlyCutPrunesTheExcludedLangSysRow()
+    {
+        var status = SubsetOperation.TryPrepare(
+            Request(Face(GsubBytes(RemapModel()), withJstf: true,
+                jstf: JstfLanguageBytes()), [1], SubsetMode.RetainGids,
+                Scoped(new SubsetLayoutScope { LanguageTags = [TagEng] })),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        NoDiagnostic(diagnostic);
+        Assert.NotNull(result);
+        bool jstfRebuilt = false;
+        foreach (var decision in report!.Decisions)
+            if (decision.Tag == JstfTag)
+                jstfRebuilt = decision.Action == TableAction.Rebuild &&
+                    decision.Policy == SubsetPolicy.RebuildTyped;
+        Assert.True(jstfRebuilt);
+        byte[] jstf = TableBytes(OutputBytes(result!), JstfTag);
+        Ok(JstfView.TryOpen(jstf, out var view, out diagnostic,
+            DataLocation.Anonymous(JstfTag)));
+        NoDiagnostic(diagnostic);
+        Ok(view!.TryReadTable(NumGlyphs, 3, 0, null, out var model, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Assert.NotNull(model);
+        Assert.Equal(1, model!.ScriptCount);
+        var script = model.Scripts[0].Script;
+        // The default langsys rode the script; 'FRA ' dropped, 'ENG ' stayed with
+        // its mod list riding the identity neighbor remap (GSUB no-op → [1]).
+        Assert.NotNull(script!.DefaultLangSys);
+        Assert.Equal(1, script.LangSysCount);
+        Assert.Equal(TagEng, script.LangSys[0].Tag);
+        Assert.Equal(new ushort[] { 1 }, script.LangSys[0].LangSys.Priorities[0]
+            .GsubShrinkageEnable!.LookupIndices);
     }
 
     // ---- the transparent face close-outs (card §5.3) --------------------------

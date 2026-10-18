@@ -46,6 +46,10 @@ public static partial class SubsetOperation
         /// the surviving tagged LangSys record ordinals, ascending. A script pruned
         /// for an empty langsys tree (§5.1 step 5) never enters SurvivingScripts.</summary>
         internal List<int>[] SurvivingLanguages { get; set; } = [];
+        /// <summary>Per input script ordinal: the tagged LangSys record count the
+        /// resolution answered against — the language dimension's equality baseline
+        /// for the no-op verdict (S2c card §2.1/§4.2).</summary>
+        internal int[] InputLanguageCounts { get; set; } = [];
         internal int[] LookupNewIndex { get; private set; } = [];
         internal int[] FeatureNewIndex { get; private set; } = [];
         // OQ-S2c-7/10: per-declared-tag match counts over the input face's whole
@@ -57,13 +61,29 @@ public static partial class SubsetOperation
 
         /// <summary>The no-op verdict (S2c card §2.1 step 4): the three surviving
         /// sets equal the input sets (count and membership — the lists are built as
-        /// input-ordinals-only, so count equality is membership equality). A no-op
+        /// input-ordinals-only, so count equality is membership equality) and every
+        /// surviving script's tagged LangSys count equals its input count — a
+        /// language-only declaration (§2.1's "only the listed tagged LangSys
+        /// records survive" MUST) is a true cut, never the short circuit. A no-op
         /// table short-circuits to the undeclared decision: retain copies raw,
         /// compact rides the S2b whole-table rewrite, and the output stays
-        /// byte-identical to the same request without a declaration (§4.2).</summary>
+        /// byte-identical to the same request without a declaration (§4.2 — the
+        /// guarantee binds the declared-full-set form only).</summary>
         internal bool ListsNoOp => SurvivingScripts.Count == InputScriptCount &&
             SurvivingFeatures.Count == InputFeatureCount &&
-            SurvivingLookups.Count == InputLookupCount;
+            SurvivingLookups.Count == InputLookupCount && LanguagesNoOp;
+
+        private bool LanguagesNoOp
+        {
+            get
+            {
+                for (int s = 0; s < SurvivingScripts.Count; s++)
+                    if (SurvivingLanguages[s].Count !=
+                        InputLanguageCounts[SurvivingScripts[s]])
+                        return false;
+                return true;
+            }
+        }
 
         internal void BuildRemaps()
         {
@@ -90,6 +110,9 @@ public static partial class SubsetOperation
         internal int InputScriptCount { get; init; }
         internal List<int> SurvivingScripts { get; } = [];
         internal List<int>[] SurvivingLanguages { get; set; } = [];
+        /// <summary>Per input script ordinal: the tagged LangSys record count the
+        /// resolution answered against (the no-op verdict's language baseline).</summary>
+        internal int[] InputLanguageCounts { get; set; } = [];
         internal int DanglingModEntries { get; set; }
         internal int DeclaredScriptMatches { get; set; }
         internal int DeclaredLanguageMatches { get; set; }
@@ -102,10 +125,24 @@ public static partial class SubsetOperation
         internal bool NeighborRemapsIdentity { get; set; }
 
         /// <summary>The no-op verdict: the script trees are whole, no mod entry
-        /// dangles, and the neighbor remaps are identity — then (and only then)
-        /// the short-circuit keeps the undeclared decision byte for byte.</summary>
+        /// dangles, the neighbor remaps are identity, and every surviving script's
+        /// tagged LangSys count equals its input count (a language-only cut is a
+        /// true cut — S2c card §2.1/§5.2) — then (and only then) the short-circuit
+        /// keeps the undeclared decision byte for byte.</summary>
         internal bool ListsNoOp => SurvivingScripts.Count == InputScriptCount &&
-            DanglingModEntries == 0 && NeighborRemapsIdentity;
+            DanglingModEntries == 0 && NeighborRemapsIdentity && LanguagesNoOp;
+
+        private bool LanguagesNoOp
+        {
+            get
+            {
+                for (int s = 0; s < SurvivingScripts.Count; s++)
+                    if (SurvivingLanguages[s].Count !=
+                        InputLanguageCounts[SurvivingScripts[s]])
+                        return false;
+                return true;
+            }
+        }
     }
 
     /// <summary>The JSTF resolution (after the two list tables — the mod remaps
@@ -134,9 +171,11 @@ public static partial class SubsetOperation
             verdict.DeclaredLanguageMatches = CountListMatches(languageTags, present);
         }
         var languages = new List<List<int>>();
+        var inputLanguageCounts = new int[jstf.ScriptCount];
         for (int s = 0; s < jstf.ScriptCount; s++)
         {
             (uint tag, JstfScriptTable script) = jstf.Scripts[s];
+            inputLanguageCounts[s] = script.LangSysCount;
             if (scope.ScriptTags is { } tags && !ContainsTag(tags, tag)) continue;
             verdict.SurvivingScripts.Add(s);
             var rows = new List<int>();
@@ -147,6 +186,7 @@ public static partial class SubsetOperation
             languages.Add(rows);
         }
         verdict.SurvivingLanguages = [.. languages];
+        verdict.InputLanguageCounts = inputLanguageCounts;
         // The dangling census: every mod entry whose target lookup the GSUB/GPOS
         // scope cut. A table without a resolution (absent or no-op) contributes
         // its full count as the domain — identity remaps, nothing dangles.
@@ -334,9 +374,11 @@ public static partial class SubsetOperation
         // (§5.1 step 5: it contributes nothing; keeping it would emit a script shell
         // whose langsys records all point at deleted feature indices).
         var langsysSurvives = new List<(int Script, List<int> Languages)>();
+        var inputLanguageCounts = new int[table.Scripts.Length];
         for (int s = 0; s < table.Scripts.Length; s++)
         {
             LayoutScript script = table.Scripts[s];
+            inputLanguageCounts[s] = script.Languages.Length;
             if (scope.ScriptTags is { } tags && !ContainsTag(tags, script.Tag)) continue;
             var languages = new List<int>();
             for (int l = 0; l < script.Languages.Length; l++)
@@ -348,6 +390,7 @@ public static partial class SubsetOperation
         }
         verdict.SurvivingScripts.AddRange(langsysSurvives.Select(row => row.Script));
         verdict.SurvivingLanguages = [.. langsysSurvives.Select(row => row.Languages)];
+        verdict.InputLanguageCounts = inputLanguageCounts;
 
         // Step 2 — feature entries: the declared tags keep all of a tag's entries
         // (the global list's per-(script,langsys) eligibility copies are not carved

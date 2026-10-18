@@ -25,6 +25,8 @@ public sealed class SubsetLayoutScopeTests
     private const uint TagB = 0x42434445; // 'BCDE'
     private const uint TagDflt = 0x44464C54; // 'DFLT'
     private const uint TagLatn = 0x6C61746E; // 'latn'
+    private const uint TagEng = 0x454E4720; // 'ENG '
+    private const uint TagFra = 0x46524120; // 'FRA '
 
     private static void Ok(ReadStatus status)
     {
@@ -98,6 +100,34 @@ public sealed class SubsetLayoutScopeTests
         Ok(GsubTableCompiler.TryCompile(model, null, out var bytes, out var diagnostic));
         NoDiagnostic(diagnostic);
         return bytes!;
+    }
+
+    // The language fixture: the Model() lists with the one script carrying a
+    // default langsys plus two tagged LangSys records — 'ENG ' then 'FRA ' (the
+    // tags' strict ascent) — over the same feature domain. The feature/lookup
+    // dimensions are whole, so a language-only declaration is the verdict's lone
+    // cut dimension.
+    private static LayoutListsTable LanguageModel()
+    {
+        var model = Model();
+        Ok(LayoutListsTableCompiler.TryCreateLangSys(ushort.MaxValue,
+            stackalloc ushort[] { 0, 1 }, 2, out var engLangSys, out var diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(LayoutListsTableCompiler.TryCreateLangSys(ushort.MaxValue,
+            stackalloc ushort[] { 0, 1 }, 2, out var fraLangSys, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(LayoutListsTableCompiler.TryCreateScript(TagDflt,
+            model.Scripts[0].DefaultLanguage,
+            [new LayoutLanguage(TagEng, engLangSys!), new LayoutLanguage(TagFra, fraLangSys!)],
+            2, out var script, out diagnostic));
+        NoDiagnostic(diagnostic);
+        var features = new List<LayoutFeature>(model.Features.ToArray());
+        var lookups = new List<LookupTable>(model.Lookups.ToArray());
+        Ok(LayoutListsTableCompiler.TryCreate(LayoutListsLayout.Version10, 0,
+            [script!], [.. features], [.. lookups], NumGlyphs,
+            LayoutLookupKind.Gsub, out var languageModel, out diagnostic));
+        NoDiagnostic(diagnostic);
+        return languageModel!;
     }
 
     private static FontFaceRef Face(byte[] gsub)
@@ -454,5 +484,120 @@ public sealed class SubsetLayoutScopeTests
         NoDiagnostic(diagnostic);
         Assert.Equal(1, model!.Lookups.Length);
         Assert.Equal(1, model.Features.Length);
+    }
+
+    // ---- the language dimension of the no-op verdict (S2c card §2.1/§4.2) -----
+
+    [Fact]
+    public void LanguageOnlyCutIsNoLongerTheNoOpVerdict()
+    {
+        // The script/feature/lookup sets are whole; the tagged LangSys cut is the
+        // verdict's lone moving dimension, so the declaration is a true cut (the
+        // §2.1 "only the listed tagged LangSys records survive" MUST) — the
+        // short circuit never fires for it.
+        Ok(SubsetOperation.ResolveLayoutListsScopeForTests(LanguageModel(),
+            new SubsetLayoutScope { LanguageTags = [TagEng] },
+            out var resolution, out var diagnostic));
+        NoDiagnostic(diagnostic);
+        Assert.NotNull(resolution);
+        Assert.False(resolution!.ListsNoOp);
+        Assert.Equal([0], resolution.SurvivingScripts);
+        Assert.Equal([0], resolution.SurvivingLanguages[0]);
+        // The declared-full-set form (plus a dangling tag) stays the no-op verdict
+        // — §4.2's byte-identical guarantee keeps binding it.
+        Ok(SubsetOperation.ResolveLayoutListsScopeForTests(LanguageModel(),
+            new SubsetLayoutScope { LanguageTags = [TagEng, TagFra, 0x5A5A5A5A] },
+            out var full, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Assert.True(full!.ListsNoOp);
+        Assert.Equal(2, full.DeclaredLanguageMatches);
+    }
+
+    [Fact]
+    public void LanguageOnlyCutRetainReEmitsTheSurvivingLangSysTree()
+    {
+        var options = new SubsetOptions
+        {
+            PreserveLayout = true,
+            LayoutScope = new SubsetLayoutScope { LanguageTags = [TagEng] }
+        };
+        var status = SubsetOperation.TryPrepare(
+            Request(Face(GsubBytes(LanguageModel())), [1], options), out var result,
+            out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+        // The fifth alternate fired: the language-only cut flips GSUB to
+        // RebuildTyped (the raw retention would keep the excluded 'FRA ' row).
+        bool gsubRebuilt = false;
+        foreach (var decision in report!.Decisions)
+            if (decision.Tag == SubsetFontFixture.GsubTag)
+                gsubRebuilt = decision.Action == TableAction.Rebuild &&
+                    decision.Policy == SubsetPolicy.RebuildTyped;
+        Assert.True(gsubRebuilt);
+        // The output: the default langsys rode the script (no record tag, §1.1),
+        // 'FRA ' dropped, 'ENG ' stayed; the feature/lookup dimensions rode whole
+        // (a language-only declaration cuts no feature or lookup).
+        Ok(LayoutListsView.TryOpen(TableBytes(OutputBytes(result!),
+            SubsetFontFixture.GsubTag), out var view, out diagnostic,
+            DataLocation.Anonymous(SubsetFontFixture.GsubTag)));
+        NoDiagnostic(diagnostic);
+        Ok(view!.TryReadTable(NumGlyphs, LayoutLookupKind.Gsub, null, out var model,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Assert.NotNull(model);
+        Assert.Equal(1, model!.Scripts.Length);
+        Assert.NotNull(model.Scripts[0].DefaultLanguage);
+        Assert.Equal(1, model.Scripts[0].Languages.Length);
+        Assert.Equal(TagEng, model.Scripts[0].Languages[0].Tag);
+        Assert.Equal(2, model.Features.Length);
+        Assert.Equal(3, model.Lookups.Length);
+    }
+
+    [Fact]
+    public void LanguageOnlyCutCompactReEmitsTheSurvivingLangSysTree()
+    {
+        // The compact form: the whole-table S2b rewrite would keep the excluded
+        // language — the true-cut verdict routes the table through the scoped
+        // cascade over the frozen map, and 'FRA ' drops there too. Every lookup
+        // survived, so the closure pulled their full reference union
+        // {1, 2, 4, 5, 6, 7} → seven output glyphs.
+        var options = new SubsetOptions
+        {
+            PreserveLayout = true,
+            LayoutScope = new SubsetLayoutScope { LanguageTags = [TagEng] }
+        };
+        var status = SubsetOperation.TryPrepare(new SubsetRequest
+        {
+            Face = Face(GsubBytes(LanguageModel())),
+            Root = new SubsetGlyphRoot
+            {
+                Kind = SubsetRootKind.ExplicitGlyphSet,
+                Gids = [1]
+            },
+            Mode = SubsetMode.CompactRemap,
+            Options = options
+        }, out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+        Assert.Equal(new ushort[] { 2, 4, 5, 6, 7 }, report!.LayoutClosureAddedGids);
+        Ok(LayoutListsView.TryOpen(TableBytes(OutputBytes(result),
+            SubsetFontFixture.GsubTag), out var view, out diagnostic,
+            DataLocation.Anonymous(SubsetFontFixture.GsubTag)));
+        NoDiagnostic(diagnostic);
+        Ok(view!.TryReadTable(7, LayoutLookupKind.Gsub, null, out var model,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Assert.NotNull(model);
+        Assert.Equal(1, model!.Scripts.Length);
+        Assert.Equal(1, model.Scripts[0].Languages.Length);
+        Assert.Equal(TagEng, model.Scripts[0].Languages[0].Tag);
+        Assert.NotNull(model.Scripts[0].DefaultLanguage);
+        Assert.Equal(2, model.Features.Length);
+        Assert.Equal(3, model.Lookups.Length);
+        var scopeRow = Assert.Single(report.LayoutScopeCensus);
+        Assert.Equal(1, scopeRow.SurvivingScriptCount);
+        Assert.Equal(1, scopeRow.LanguageTagMatches);
     }
 }
