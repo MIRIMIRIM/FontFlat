@@ -73,13 +73,16 @@ public readonly ref partial struct CblcView
         return ReadStatus.Done;
     }
 
-    /// <summary>The strict version gate (the sbix shape: the refusal names the
-    /// one supported major as its expectation).</summary>
+    /// <summary>The version gate (the sbix shape: the refusal names the
+    /// supported head as its expectation). The read face is {2, 3} — 3.0 is the
+    /// structural authority and 2.0 rides as the EBLC generational alias (the
+    /// 2026-10-18 version-gate briefing lean, user-approved; OQ-T6-05-1's
+    /// strict-{3} ruling is superseded). The write face normalizes to (3, 0).</summary>
     private ReadStatus RequireVersion(out FontDiagnostic diagnostic)
     {
         ReadStatus status = TryGetMajorVersion(out ushort major, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (major != CblcLayout.MajorVersion3)
+        if (major is not (CblcLayout.MajorVersion2 or CblcLayout.MajorVersion3))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
                 Location.AtLocal(DataField.Version, 0), out diagnostic, major,
                 CblcLayout.MajorVersion3);

@@ -192,23 +192,36 @@ public sealed class CbdtCblcReadTests
 
     // ---- version gates ----
 
+    // The 2.0 word rides as the EBLC generational alias (2026-10-18
+    // version-gate briefing lean, user-approved; the OQ-T6-05-1 strict-{3}
+    // ruling and its four 2.0-host refusal witness are superseded): both
+    // tables validate and the joint typed read resolves, and the write face
+    // normalizes the re-emitted head to (3, 0).
     [Fact]
-    public void Major2RefusesAsUnsupportedVersion()
+    public void Major2ReadsAsTheGenerationalAliasAndWriteNormalizesTo3()
     {
         var (cblc, cbdt) = BuildPair(2, 0, 0, 1, [26, 26]);
         Assert.Equal(ReadStatus.Done, CbdtView.TryOpen(cbdt, out var cbdtView, out _, CbdtSource));
         Assert.Equal(ReadStatus.Done, CblcView.TryOpen(cblc, out var cblcView, out _, CblcSource));
-        // The 2.0 corpus hosts are the expected typed-refusal witness pool
-        // (OQ-T6-05-1's strict {3}).
-        Assert.Equal(ReadStatus.UnsupportedFormat,
-            cbdtView.ValidateTable(out var diagnostic));
-        Assert.Equal(DiagnosticCode.UnsupportedVersion, diagnostic.Code);
-        Assert.Equal((ulong)2, diagnostic.Detail);
-        Assert.Equal((ulong)3, diagnostic.Expected);
-        Assert.Equal(ReadStatus.UnsupportedFormat,
-            cblcView.ValidateTable(cbdt.Length, null, out diagnostic));
-        Assert.Equal(DiagnosticCode.UnsupportedVersion, diagnostic.Code);
-        Assert.Equal((ulong)3, diagnostic.Expected);
+        Assert.Equal(ReadStatus.Done, cbdtView.ValidateTable(out _));
+        Assert.Equal(ReadStatus.Done,
+            cblcView.ValidateTable(cbdt.Length, null, out var diagnostic));
+        Assert.Equal(ReadStatus.Done,
+            cbdtView.TryGetGlyphImage(cblcView, 0, 0, out var image0, out diagnostic));
+        Assert.Equal((ushort)17, image0.ImageFormat);
+        Assert.Equal(17, image0.Payload.Length);
+        // The typed models re-emit with the normalized (3, 0) head.
+        Assert.Equal(ReadStatus.Done,
+            cblcView.TryReadTable(cbdt.Length, null, out var cblcModel, out diagnostic));
+        Assert.Equal(ReadStatus.Done,
+            cbdtView.TryReadTable(cblcView, null, out var cbdtModel, out diagnostic));
+        Assert.Equal(ReadStatus.Done,
+            CblcTableCompiler.TryCompilePair(cblcModel!, cbdtModel!, out var cblcBytes,
+                out var cbdtBytes, out diagnostic));
+        Assert.Equal(3, (cblcBytes![0] << 8) | cblcBytes[1]);
+        Assert.Equal(0, (cblcBytes[2] << 8) | cblcBytes[3]);
+        Assert.Equal(3, (cbdtBytes![0] << 8) | cbdtBytes[1]);
+        Assert.Equal(0, (cbdtBytes[2] << 8) | cbdtBytes[3]);
     }
 
     [Fact]

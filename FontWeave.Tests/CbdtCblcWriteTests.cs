@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using FontWeave.Core;
 using FontWeave.Tables;
 using Xunit;
@@ -244,13 +245,20 @@ public sealed class CbdtCblcWriteTests
             cblcView.TryReadTable(cbdt.Length, null, out var cblcModel, out _));
         Assert.Equal(ReadStatus.Done,
             cbdtView.TryReadTable(cblcView, null, out var cbdtModel, out _));
-        // The version write has no surface: the strict {3} gate re-answers.
-        Assert.Equal(ReadStatus.UnsupportedFormat,
+        // APPROVED_FLIP 2026-10-18 (version-gate briefing lean, user-approved):
+        // the 2.0 word is an alias - the write face normalizes it to (3, 0)
+        // instead of refusing (the OQ-T6-05-1 strict-{3} write refusal is
+        // superseded; the emitted header is always the 3.0 authority).
+        Assert.Equal(ReadStatus.Done,
             CblcTableCompiler.TryCreate(2, 0, cblcModel!.Sizes, cbdtModel!,
+                out var normalized, out _));
+        Assert.Equal(ReadStatus.Done,
+            CblcTableCompiler.TryCompile(normalized!, out var normalizedBytes, out _));
+        // The emitted head is the 3.0 authority even for a 2.0-sourced model.
+        Assert.Equal(3, BinaryPrimitives.ReadUInt16BigEndian(normalizedBytes!));
+        Assert.Equal(ReadStatus.Done,
+            CblcTableCompiler.TryCreate(3, 0, cblcModel!.Sizes, cbdtModel!,
                 out _, out var diagnostic));
-        Assert.Equal(DiagnosticCode.UnsupportedVersion, diagnostic.Code);
-        Assert.Equal(ReadStatus.UnsupportedFormat,
-            CbdtTableCompiler.TryCreate(2, 0, cbdtModel!.Images, out _, out _));
         // The locator declares inherited format 1 while the paired pool still
         // contains PNG format 17. Activating format 1 does not make these match.
         var inherited = new CblcStrike(56, 28, 0, new byte[12], new byte[12], 0, 0,

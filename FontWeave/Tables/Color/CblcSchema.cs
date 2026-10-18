@@ -10,12 +10,15 @@ namespace FontWeave.Tables;
 internal static class CblcLayout
 {
     internal const uint Tag = 0x43424C43; // 'CBLC'
-    // "The first version of the CBLC table is version 3.0" (C L48): the version
-    // words are the major/minor u16 pair and 3 is the only defined major (the
-    // OQ-T6-05-1 ruling: strict {3}; the four 2.0 corpus hosts are the expected
-    // typed-refusal witness pool, no 2.0 definition text exists to invent a
-    // support face from).
-    internal const ushort MajorVersion3 = 3;
+    // The version words are the major/minor u16 pair. 3.0 is the defined head
+    // ("The first version of the CBLC table is version 3.0", C L48) and the
+    // authority for every structural check; the 2.0 word is accepted alongside
+    // it as an alias (2026-10-18 version-gate briefing lean, user-approved:
+    // the word is the EBLC generational continuation and no structural
+    // difference against 3.0 is known — the former strict-{3} ruling
+    // OQ-T6-05-1 and its 2.0 refusal-witness pool are superseded). The write
+    // face always emits (3, 0).
+    internal const ushort MajorVersion3 = 3, MajorVersion2 = 2;
     // The header is the fixed 8-byte face: u16 majorVersion + u16 minorVersion
     // ("= 0", C L44 - the CFF2 OQ-T5-05-2 family hard face) + u32 numSizes.
     internal const int HeaderLength = 8;
@@ -122,7 +125,7 @@ internal static class CblcLayout
 // so the partial owns that walk and no BinaryReference/GenerateStructureScan
 // face exists (the tables carry no typed subtable DAG, OQ-T6-05-15).
 [BinaryTable(CblcLayout.Tag, CblcLayout.HeaderLength, ContractVersion = 1,
-    VersionField = "MajorVersion", SupportedVersions = new uint[] { CblcLayout.MajorVersion3 })]
+    VersionField = "MajorVersion", SupportedVersions = new uint[] { CblcLayout.MajorVersion2, CblcLayout.MajorVersion3 })]
 [BinaryScalar("MajorVersion", WireType.UInt16, 0, DataField.Version)]
 [BinaryScalar("MinorVersion", WireType.UInt16, 2, DataField.Payload)]
 [BinaryScalar("NumSizes", WireType.UInt32, 4, DataField.Count, Semantic = NumberSemantic.Count)]

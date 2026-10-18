@@ -8,9 +8,11 @@ namespace FontWeave.Tables;
 internal static class CbdtLayout
 {
     internal const uint Tag = 0x43424454; // 'CBDT'
-    // "The first version of the CBDT table is version 3.0" (D L48): the same
-    // strict major/minor face as CBLC (OQ-T6-05-1's ruling rides both gates).
-    internal const ushort MajorVersion3 = 3;
+    // The same major/minor face as CBLC: 3.0 is the defined head (D L48) and
+    // the structural authority; the 2.0 word rides as an alias (2026-10-18
+    // version-gate briefing lean, user-approved — the OQ-T6-05-1 strict-{3}
+    // ruling is superseded, the write face always emits (3, 0)).
+    internal const ushort MajorVersion3 = 3, MajorVersion2 = 2;
     // The header is the fixed 4-byte face: u16 majorVersion + u16 minorVersion
     // ("= 0", D L46). "The rest of the CBDT table is a collection of bitmap
     // data" (D L50) - there is no bitmapGlyphs wrapper: past the header the
@@ -48,7 +50,7 @@ internal static class CbdtLayout
 // one-View-per-table-layout line; the joint glyph-image read holds both
 // bounded views explicitly, OQ-T6-05-12).
 [BinaryTable(CbdtLayout.Tag, CbdtLayout.HeaderLength, ContractVersion = 1,
-    VersionField = "MajorVersion", SupportedVersions = new uint[] { CbdtLayout.MajorVersion3 })]
+    VersionField = "MajorVersion", SupportedVersions = new uint[] { CbdtLayout.MajorVersion2, CbdtLayout.MajorVersion3 })]
 [BinaryScalar("MajorVersion", WireType.UInt16, 0, DataField.Version)]
 [BinaryScalar("MinorVersion", WireType.UInt16, 2, DataField.Payload)]
 public readonly ref partial struct CbdtView { }

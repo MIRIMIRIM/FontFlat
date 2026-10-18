@@ -242,9 +242,13 @@ public static class CblcTableCompiler
             !budget.Output(length, model.Location, out diagnostic))
             return ReadStatus.ResourceLimit;
         var output = new byte[length];
-        RequireWritten(CblcView.TryWriteMajorVersion(output, model.MajorVersion,
+        // The emitted head is always (3, 0): the version word is the EBLC
+        // generational alias with no known structural difference, so the write
+        // face normalizes a 2.0-sourced model (the T6-08 head-promotion
+        // precedent; 2026-10-18 version-gate briefing lean, user-approved).
+        RequireWritten(CblcView.TryWriteMajorVersion(output, CblcLayout.MajorVersion3,
             out _, model.Location));
-        RequireWritten(CblcView.TryWriteMinorVersion(output, model.MinorVersion,
+        RequireWritten(CblcView.TryWriteMinorVersion(output, 0,
             out _, model.Location));
         RequireWritten(CblcView.TryWriteNumSizes(output, (uint)model.SizeCount,
             out _, model.Location));
@@ -724,7 +728,10 @@ public static class CblcTableCompiler
     private static ReadStatus RequireVersion(ushort majorVersion, ushort minorVersion,
         DataLocation location, out FontDiagnostic diagnostic)
     {
-        if (majorVersion != CblcLayout.MajorVersion3)
+        // The model domain is the read face {2, 3} — a 2.0-sourced model
+        // compiles and the write sites normalize the emitted head to (3, 0)
+        // (the 2026-10-18 version-gate briefing lean, user-approved).
+        if (majorVersion is not (CblcLayout.MajorVersion2 or CblcLayout.MajorVersion3))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
                 location.AtLocal(DataField.Version, 0), out diagnostic, majorVersion,
                 CblcLayout.MajorVersion3);

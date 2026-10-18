@@ -27,11 +27,14 @@ public readonly ref partial struct CbdtView
 
     internal ReadStatus ValidateTable(out FontDiagnostic diagnostic, BuildBudget budget)
     {
-        // The strict version gate, the sbix shape: major {3} names its
-        // expectation; minor 0 is the CFF2-family face (D L45-46/48).
+        // The version gate, the sbix shape: the read face is {2, 3} — 3.0 names
+        // its expectation and 2.0 rides as the EBLC generational alias (the
+        // 2026-10-18 version-gate briefing lean, user-approved; the OQ-T6-05-1
+        // strict-{3} ruling is superseded); minor 0 is the CFF2-family face
+        // (D L45-46/48). The write face normalizes to (3, 0).
         ReadStatus status = TryGetMajorVersion(out ushort major, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (major != CbdtLayout.MajorVersion3)
+        if (major is not (CbdtLayout.MajorVersion2 or CbdtLayout.MajorVersion3))
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
                 Location.AtLocal(DataField.Version, 0), out diagnostic, major,
                 CbdtLayout.MajorVersion3);
