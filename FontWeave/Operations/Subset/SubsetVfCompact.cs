@@ -303,6 +303,11 @@ public static partial class SubsetOperation
         // into a pruned sibling INDEX still renumber — the identity slot
         // keeps its own count, so its same-INDEX operands re-derive to
         // their original values (the value rule).
+        // Every surviving body's rewrite frame seeds its blend selector from the
+        // plan's per-body entry memo — the selector its callers armed at the call
+        // site (TN5171 §5), which an explicit vsindex before the call diverges
+        // from the FD default the glyph frames keep. A multi-valued entry set
+        // never parks: the plan-time guard refused the face.
         SubrIndexPlan effectiveGlobal = prune.Global ??
             IdentityIndexPlan(globals.Length);
         var contextFds = new int[effectiveGlobal.NewCount];
@@ -311,7 +316,8 @@ public static partial class SubsetOperation
                 effectiveGlobal.Survivors[s], out int ctx) ? ctx : 0;
         pruneStatus = RewriteSurvivorBodies(globals, effectiveGlobal.Survivors,
             contextFds, globals, fdLocals, prune, cff2: true,
-            RegionCountsByVsindex(model.Store), vsindexByFd, model.Location,
+            RegionCountsByVsindex(model.Store), vsindexByFd,
+            prune.GlobalEntryVsindex, model.Location,
             budget, out globalSubrs, out diagnostic);
         if (pruneStatus != ReadStatus.Done) return pruneStatus;
         fontDicts = new Tables.Cff2FontDict[fdCount];
@@ -345,10 +351,13 @@ public static partial class SubsetOperation
                 IdentityIndexPlan(fdLocals[fd].Length);
             var bodyFds = new int[effectiveLocal.NewCount];
             Array.Fill(bodyFds, fd);
+            // This FD's entry-selector column; an FD no call site ever entered
+            // has no survivors to seed, so the null slot stays unconsulted.
+            prune.LocalEntryVsindex.TryGetValue(fd, out var entryByOld);
             pruneStatus = RewriteSurvivorBodies(fdLocals[fd], effectiveLocal.Survivors,
                 bodyFds, globals, fdLocals, prune, cff2: true,
-                RegionCountsByVsindex(model.Store), vsindexByFd, model.Location,
-                budget, out var renewedLocals, out diagnostic);
+                RegionCountsByVsindex(model.Store), vsindexByFd, entryByOld,
+                model.Location, budget, out var renewedLocals, out diagnostic);
             if (pruneStatus != ReadStatus.Done) return pruneStatus;
             bool renewedHasLocals = localPlan is null ? privateDict.HasLocalSubrs
                 : effectiveLocal.NewCount > 0;

@@ -271,8 +271,8 @@ public static partial class SubsetOperation
                     effectiveGlobal.Survivors[s], out int ctx) ? ctx : 0;
             pruneStatus = RewriteSurvivorBodies(globals, effectiveGlobal.Survivors,
                 contextFds, globals, fdLocals, prune, cff2: false,
-                regionCounts: null, vsindexByFd: null, model.Location, budget,
-                out globalSubrs, out diagnostic);
+                regionCounts: null, vsindexByFd: null, entryVsindexByOld: null,
+                model.Location, budget, out globalSubrs, out diagnostic);
             if (pruneStatus != ReadStatus.Done) return pruneStatus;
             fontDicts = new CidFontDict[model.FdCount];
             for (int fd = 0; fd < model.FdCount; fd++)
@@ -289,8 +289,8 @@ public static partial class SubsetOperation
                 pruneStatus = RewriteSurvivorBodies(fdLocals[fd],
                     effectiveLocal.Survivors, bodyFds, globals,
                     fdLocals, prune, cff2: false, regionCounts: null,
-                    vsindexByFd: null, model.Location, budget,
-                    out var renewedLocals, out diagnostic);
+                    vsindexByFd: null, entryVsindexByOld: null, model.Location,
+                    budget, out var renewedLocals, out diagnostic);
                 if (pruneStatus != ReadStatus.Done) return pruneStatus;
                 bool renewedHasLocals = localPlan is null ? old.HasLocalSubrs
                     : effectiveLocal.NewCount > 0;

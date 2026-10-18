@@ -296,6 +296,73 @@ public sealed class SubsetSubrPruneCff2Tests
         Assert.Equal(1, cff2.FontDicts[0].Private!.VsindexValue);
     }
 
+    // ---- the caller-switched selector (TN5171 §5's path-dependent context) ----------
+
+    // A glyph arms vsindex 1 (IVD 1, RegionIndexCount 2) BEFORE calling a local
+    // body whose blend carries no vsindex of its own: the body's runtime
+    // selector is the caller's armed value, so the FD-default seed mis-sized
+    // the rewrite frame (k=1 kept 8 values, the vstemhm added 4 hints, and the
+    // mask skip ran past the body — the A3 mis-refusal of a legal face). The
+    // per-context entry memo seeds the rewrite with the recorded entry
+    // selector instead, and every non-call byte survives verbatim.
+    [Fact]
+    public void CallerSwitchedVsindexSeedsTheCalledBodyRewrite()
+    {
+        var builder = new Cff2PruneBuilder(fdCount: 1, numGlyphs: 2);
+        builder.SetStore(regions: 2, regionIndexCounts: [1, 2]);
+        byte[] blendBody = [.. BlendBlock(), 19, 0xFF];    // hintmask: one mask byte
+        builder.SetLocals(0, blendBody, [0x8b]);           // local 1 unreferenced: prunes
+        builder.SetGlyphProgram(0, [], fd: 0);
+        builder.SetGlyphProgram(1, [0x8c, 15, .. Num(-107), 10], fd: 0); // vsindex 1; callsubr 0
+        var status = SubsetOperation.TryPrepare(Request(builder.Build(), [1]),
+            out var result, out var report, out var diagnostic);
+        Assert.True(status == ReadStatus.Done,
+            $"status={status} code={diagnostic.Code} detail={diagnostic.Detail} expected={diagnostic.Expected}");
+        Assert.NotNull(result);
+        Assert.Equal([1], report!.SubrPrunedLocalByFd);
+        var cff2 = OutputCff2(result!, 2, fvarAxisCount: 1);
+        // The body's bytes ride the rewrite untouched: the blend/vstemhm/hintmask
+        // arithmetic over the caller-armed k=2 matches the reach walk's, so no
+        // token moved.
+        Assert.Equal(blendBody, cff2.FontDicts[0].Private!.LocalSubrs[0]);
+        Assert.Equal([0x8c, 15, .. Num(-107), 10], cff2.CharStrings[1].ToArray());
+        Assert.NotNull(cff2.Store);
+        Assert.Equal(2, cff2.Store!.DataCount);
+        Assert.Equal(2, cff2.Store.Data[1]!.RegionIndexCount);
+    }
+
+    // Two glyphs call the same blend body under two different entry selectors —
+    // glyph 1 through the FD default (selector 0), glyph 2 after an explicit
+    // vsindex 1. The body's runtime blend interpretation is path-dependent
+    // (k=1 keeps 4 values, k=2 keeps 2), so no single rewritten product is
+    // semantically faithful to both entries and the plan refuses (A3): Detail
+    // names the body, Expected the distinct entry count.
+    [Fact]
+    public void TwoEntrySelectorsIntoOneBlendBodyRefuse()
+    {
+        var builder = new Cff2PruneBuilder(fdCount: 1, numGlyphs: 3);
+        builder.SetStore(regions: 2, regionIndexCounts: [1, 2]);
+        // Six values, count 2, blend, vstemhm: the blend parses under both
+        // selectors and no mask rides the count, so only the entry-memo guard
+        // can refuse the face.
+        byte[] body = [0x8b, 0x8b, 0x8b, 0x8b, 0x8b, 0x8b, 0x8d, 16, 3];
+        builder.SetLocals(0, body, [0x8b]);                // local 1 unreferenced: prunes
+        builder.SetGlyphProgram(0, [], fd: 0);
+        builder.SetGlyphProgram(1, [.. Num(-107), 10], fd: 0);           // the FD default's selector
+        builder.SetGlyphProgram(2, [0x8c, 15, .. Num(-107), 10], fd: 0); // vsindex 1, then call
+        var status = SubsetOperation.TryPrepare(Request(builder.Build(), [1, 2]),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
+        Assert.Equal(0UL, diagnostic.Detail);    // local body 0
+        Assert.Equal(2UL, diagnostic.Expected);  // the two distinct entry selectors
+        Assert.Null(result);
+        // The refusal's report retains the same diagnostic (the failure shape).
+        Assert.NotNull(report);
+        FontDiagnostic retained = Assert.Single(report!.Diagnostics);
+        Assert.Equal(diagnostic, retained);
+    }
+
     /// <summary>A CFF2 wire builder (TN5171) with local-subr injection, the strict
     /// canonical tiling header(5)|TopDICT|GlobalSubrs|CharStrings|FDArray|FDSelect|
     /// private₀+local₀|…|VarStore: every DICT offset operand rides the fixed 29

@@ -92,6 +92,16 @@ public static partial class SubsetOperation
 
         internal required IReadOnlyDictionary<int, int> GlobalContextFd { get; init; }
 
+        /// <summary>Each reached body's single call-site entry selector — the
+        /// rewrite frame's blend seed (TN5171 §5: a body's runtime selector is the
+        /// one its callers armed at the call site, not the FD default). Global
+        /// bodies by index, local bodies nested by FD then index (the LocalStems
+        /// shape). The plan-time guard refused any multi-valued entry set, so
+        /// every value here is the unique context the body's rewrite serves.</summary>
+        internal required IReadOnlyDictionary<int, int> GlobalEntryVsindex { get; init; }
+
+        internal required IReadOnlyDictionary<int, IReadOnlyDictionary<int, int>> LocalEntryVsindex { get; init; }
+
         internal int PrunedGlobalCount => Global is { } global ? global.OldCount - global.NewCount : 0;
 
         internal int PrunedLocalCount(int fd) =>
@@ -102,7 +112,10 @@ public static partial class SubsetOperation
     /// frozen map's output order: the face-wide global body set, every FD's local
     /// body bucket, the per-body stem memo (global bodies keyed by their scanning FD
     /// context — their callsubr targets, and therefore their stem contribution, are
-    /// the caller's FD's), and the facts the multi-FD divergence guard reads.</summary>
+    /// the caller's FD's), the per-body call-site vsindex entry sets (the CFF2
+    /// rewrite frames' selector seeds; on the CFF1 forms the walks carry the
+    /// constant 0, so the sets stay singletons and the memo is dead weight), and
+    /// the facts the multi-FD divergence guard reads.</summary>
     private sealed class SubrAnalysis
     {
         internal readonly HashSet<int> GlobalReach = [];
@@ -111,6 +124,8 @@ public static partial class SubsetOperation
         internal readonly HashSet<int> GlobalLocalCall = [];
         internal readonly Dictionary<int, HashSet<int>> LocalReach = [];
         internal readonly Dictionary<int, Dictionary<int, int>> LocalStems = [];
+        internal readonly Dictionary<int, HashSet<int>> GlobalEntryVsindex = [];
+        internal readonly Dictionary<int, Dictionary<int, HashSet<int>>> LocalEntryVsindex = [];
 
         internal HashSet<int> LocalSet(int fd)
         {
@@ -132,6 +147,16 @@ public static partial class SubsetOperation
             return map;
         }
 
+        private Dictionary<int, HashSet<int>> LocalEntryMap(int fd)
+        {
+            if (!LocalEntryVsindex.TryGetValue(fd, out var map))
+            {
+                map = [];
+                LocalEntryVsindex[fd] = map;
+            }
+            return map;
+        }
+
         internal void Mark(int kind, int fd, int index)
         {
             if (kind == SubrWalk.KindGlobal)
@@ -147,6 +172,34 @@ public static partial class SubsetOperation
             else
             {
                 LocalSet(fd).Add(index);
+            }
+        }
+
+        /// <summary>Records the walk's current vsindex as one call-site entry context
+        /// of the called body (TN5171 §5: a blend without its own vsindex operator
+        /// reads the selector the caller armed). Sets only grow; the plan-time guard
+        /// refuses any body whose entries hold more than one distinct value — its
+        /// runtime blend interpretation would be path-dependent.</summary>
+        internal void MarkEntryVsindex(int kind, int fd, int index, int vsindex)
+        {
+            if (kind == SubrWalk.KindGlobal)
+            {
+                if (!GlobalEntryVsindex.TryGetValue(index, out var set))
+                {
+                    set = [];
+                    GlobalEntryVsindex[index] = set;
+                }
+                set.Add(vsindex);
+            }
+            else
+            {
+                var map = LocalEntryMap(fd);
+                if (!map.TryGetValue(index, out var set))
+                {
+                    set = [];
+                    map[index] = set;
+                }
+                set.Add(vsindex);
             }
         }
 
@@ -177,6 +230,20 @@ public static partial class SubsetOperation
             var contextFd = new Dictionary<int, int>();
             foreach ((int index, var fds) in GlobalBodyFds)
                 contextFd[index] = fds.First();
+            // Every set resolves to its single entry value: the CFF2 caller runs
+            // RefuseAmbiguousEntryVsindex before parking, and the CFF1 walks only
+            // ever record the constant 0.
+            var globalEntries = new Dictionary<int, int>();
+            foreach ((int index, var set) in GlobalEntryVsindex)
+                globalEntries[index] = set.First();
+            var localEntries = new Dictionary<int, IReadOnlyDictionary<int, int>>();
+            foreach ((int fd, var map) in LocalEntryVsindex)
+            {
+                var resolved = new Dictionary<int, int>();
+                foreach ((int index, var set) in map)
+                    resolved[index] = set.First();
+                localEntries[fd] = resolved;
+            }
             return new SubrPrunePlan
             {
                 Global = global,
@@ -184,6 +251,8 @@ public static partial class SubsetOperation
                 GlobalStems = GlobalStems,
                 LocalStems = localStems,
                 GlobalContextFd = contextFd,
+                GlobalEntryVsindex = globalEntries,
+                LocalEntryVsindex = localEntries,
             };
         }
     }
@@ -314,7 +383,44 @@ public static partial class SubsetOperation
             diagnostic = default;
             return ReadStatus.Done;
         }
+        ReadStatus ambiguous = RefuseAmbiguousEntryVsindex(analysis, model.Location,
+            out diagnostic);
+        if (ambiguous != ReadStatus.Done) return ambiguous;
         plan = analysis.ToPlan(globalPlan, localPlans);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The per-context vsindex guard (§4 A3, the rewrite's scope): a body
+    /// whose recorded call-site entries hold more than one distinct selector has a
+    /// path-dependent runtime interpretation — its blends read a different region
+    /// count per entry — so no single rewritten product is semantically faithful
+    /// to both, and the shape refuses. It runs only where a plan will park: the
+    /// identity face's verbatim path keeps such a face byte-faithful, the
+    /// ambiguity is the rewrite's to refuse, not the copy's. Detail names the
+    /// body (a global index, or the local index within its FD — the plan's
+    /// single-number convention), Expected the distinct entry count the single
+    /// rewrite cannot serve.</summary>
+    private static ReadStatus RefuseAmbiguousEntryVsindex(SubrAnalysis analysis,
+        DataLocation modelAt, out FontDiagnostic diagnostic)
+    {
+        foreach ((int index, var set) in analysis.GlobalEntryVsindex)
+        {
+            if (set.Count <= 1) continue;
+            diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                modelAt, (uint)index, (uint)set.Count);
+            return ReadStatus.UnsupportedFormat;
+        }
+        foreach ((int _, var map) in analysis.LocalEntryVsindex)
+        {
+            foreach ((int index, var set) in map)
+            {
+                if (set.Count <= 1) continue;
+                diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                    modelAt, (uint)index, (uint)set.Count);
+                return ReadStatus.UnsupportedFormat;
+            }
+        }
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -471,10 +577,15 @@ public static partial class SubsetOperation
 
     /// <summary>Rewrites one pruned INDEX's surviving bodies in survivor order, each
     /// under the FD context its mask widths read the memo under (global bodies: their
-    /// single scanning context from the plan; local bodies: their own FD).</summary>
+    /// single scanning context from the plan; local bodies: their own FD). The CFF2
+    /// form's <paramref name="entryVsindexByOld"/> column seeds each body's blend
+    /// selector from the plan's per-body entry memo — the context its callers armed
+    /// at the call site, not the FD default (null on the CFF1 forms, where the
+    /// FD-default channel stands and no blend exists).</summary>
     private static ReadStatus RewriteSurvivorBodies(byte[][] bodies, int[] survivorOld,
         int[] bodyFds, byte[][] globals, byte[][][] fdLocals, SubrPrunePlan plan,
-        bool cff2, int[]? regionCounts, int[]? vsindexByFd, DataLocation modelAt,
+        bool cff2, int[]? regionCounts, int[]? vsindexByFd,
+        IReadOnlyDictionary<int, int>? entryVsindexByOld, DataLocation modelAt,
         BuildBudget budget, out byte[][] rewritten, out FontDiagnostic diagnostic)
     {
         rewritten = new byte[survivorOld.Length][];
@@ -482,10 +593,24 @@ public static partial class SubsetOperation
         {
             int old = survivorOld[s];
             int fd = bodyFds[s];
+            int initialVsindex;
+            if (entryVsindexByOld is null)
+                initialVsindex = vsindexByFd?[fd] ?? 0;
+            else if (entryVsindexByOld.TryGetValue(old, out int entry))
+                initialVsindex = entry;
+            else
+            {
+                // A survivor is a reached body and every reached body recorded
+                // its call-site entry selector; a miss is a pipeline bug the
+                // refusal surfaces, never a silent FD-default seed.
+                diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                    modelAt.At(DataField.GlyphId, 0, old), (uint)old, 0UL);
+                return ReadStatus.UnsupportedFormat;
+            }
             var rewrite = new RewriteState(plan, fd, plan.LocalByFd[fd], plan.Global);
             var walk = new SubrWalk(budget, modelAt.At(DataField.GlyphId, 0, old),
                 fdLocals[fd], globals, cff2, seac: false, analysis: null, fd,
-                rewrite: rewrite, regionCounts, vsindexByFd?[fd] ?? 0);
+                rewrite: rewrite, regionCounts, initialVsindex);
             ReadStatus status = walk.RunRewrite(bodies[old], out diagnostic);
             if (status != ReadStatus.Done) return status;
             rewritten[s] = [.. rewrite.Output];
@@ -532,14 +657,14 @@ public static partial class SubsetOperation
         SubrIndexPlan effectiveGlobal = globalPlan ?? IdentityIndexPlan(globals.Length);
         status = RewriteSurvivorBodies(globals, effectiveGlobal.Survivors,
             new int[effectiveGlobal.NewCount], globals, fdLocals, plan, cff2: false,
-            regionCounts: null, vsindexByFd: null, model.Location, budget,
-            out globalSubrs, out diagnostic);
+            regionCounts: null, vsindexByFd: null, entryVsindexByOld: null,
+            model.Location, budget, out globalSubrs, out diagnostic);
         if (status != ReadStatus.Done) return status;
         SubrIndexPlan effectiveLocal = localPlan ?? IdentityIndexPlan(locals.Length);
         status = RewriteSurvivorBodies(locals, effectiveLocal.Survivors,
             new int[effectiveLocal.NewCount], globals, fdLocals, plan, cff2: false,
-            regionCounts: null, vsindexByFd: null, model.Location, budget,
-            out localSubrs, out diagnostic);
+            regionCounts: null, vsindexByFd: null, entryVsindexByOld: null,
+            model.Location, budget, out localSubrs, out diagnostic);
         if (status != ReadStatus.Done) return status;
         hasLocalSubrs = localPlan is null ? model.HasLocalSubrs
             : effectiveLocal.NewCount > 0;
@@ -1000,6 +1125,13 @@ public static partial class SubsetOperation
                     return ReadStatus.Done; // the S3 scanner: no body to scan
                 }
                 _analysis?.Mark(kind, _fd, idx);
+                // The call site's selector context (TN5171 §5): the body's blends
+                // read the walk's current vsindex at this entry — recorded per
+                // body so the rewrite frames seed the callers' actual context,
+                // not the FD default a caller may have switched away from (≥2
+                // distinct entries refuse at plan time; the memo-hit and cycle
+                // branches still see the record, the runtime does execute them).
+                _analysis?.MarkEntryVsindex(kind, _fd, idx, _vsindex);
                 return ScanBody(kind, idx, table[idx], out diagnostic);
             }
             if (!_seac)
