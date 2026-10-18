@@ -728,27 +728,44 @@ public static partial class SubsetOperation
         if (!budget.Work(map.OutputGlyphCount, svgAt, out diagnostic))
             return ReadStatus.ResourceLimit;
         var survivors = SortedSurvivors(map);
-        var newRecords = new List<SvgDocumentRecord>();
-        var newDocuments = new List<byte[]>();
-        var documentIndex = new Dictionary<int, int>();
+        // The span pass collects one surviving output span per input row — that
+        // query is order-independent, but the rows' own order is not: the wire
+        // contract (the DocumentRecords' strict ascent, V L84) binds the output
+        // table, and the surviving rows' output order is the map permutation's,
+        // not the input rows'. The rows sort by their output start before the
+        // factory re-answers the ascent; on the monotone orders the sort is the
+        // identity, so the traversal — the document dedup below included —
+        // replays the input order and the emission stays byte-identical.
+        var spans = new List<(ushort Start, ushort End, int PayloadIndex)>();
         foreach (var record in svg!.Records)
         {
             if (!TrySurvivingSpan(map, survivors, record.StartGlyphID,
                     record.EndGlyphID, out ushort firstOutput, out ushort lastOutput))
                 continue;
-            if (!documentIndex.TryGetValue(record.PayloadIndex, out int newIndex))
-            {
-                newIndex = newDocuments.Count;
-                documentIndex[record.PayloadIndex] = newIndex;
-                newDocuments.Add(svg.Documents[record.PayloadIndex]);
-            }
-            newRecords.Add(new(firstOutput, lastOutput, newIndex));
+            spans.Add((firstOutput, lastOutput, record.PayloadIndex));
         }
-        if (newRecords.Count == 0)
+        if (spans.Count == 0)
         {
             dropped = true;
             diagnostic = default;
             return ReadStatus.Done;
+        }
+        // The document table rebuilds over the sorted traversal's first-reference
+        // order: each distinct payload keeps exactly one entry, and every index the
+        // sorted records carry resolves into it.
+        var newRecords = new List<SvgDocumentRecord>(spans.Count);
+        var newDocuments = new List<byte[]>();
+        var documentIndex = new Dictionary<int, int>();
+        foreach (var (start, end, payloadIndex) in
+            spans.OrderBy(static span => span.Start))
+        {
+            if (!documentIndex.TryGetValue(payloadIndex, out int newIndex))
+            {
+                newIndex = newDocuments.Count;
+                documentIndex[payloadIndex] = newIndex;
+                newDocuments.Add(svg.Documents[payloadIndex]);
+            }
+            newRecords.Add(new(start, end, newIndex));
         }
         status = SvgTableCompiler.TryCreate(svg.Version, 0, newRecords, newDocuments,
             out var newSvg, out diagnostic, location: svgAt);

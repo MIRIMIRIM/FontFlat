@@ -221,6 +221,90 @@ public sealed class SubsetCompactNonMonotoneTests
         Assert.Equal(2, svgOut.DocumentCount);
     }
 
+    // The row-order defect: two single-glyph records whose input rows ascend but
+    // whose mapped outputs invert (charset [0, 2, 1] sends input 1 to output 2 and
+    // input 2 to output 1). The wire contract — the DocumentRecords' strict ascent —
+    // is over the output domain and independent of the input rows' order, so the
+    // rows re-emerge in the output order and each keeps its own payload by content.
+    [Fact]
+    public void CompactSvgRowOrderFollowsTheOutputDomain()
+    {
+        byte[] docA = [0x61, 0x41];
+        byte[] docB = [0x62, 0x42];
+        var svg = SvgWire([(1, 1, 0), (2, 2, 1)], [docA, docB]);
+        var face = CffFace([0, 2, 1], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 1, 2]),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([0, 2, 1],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        Assert.Equal(TableAction.Rebuild,
+            report!.Decisions.Single(d => d.Tag == SvgTag).Action);
+        _ = SvgView.TryOpen(OutputTable(result, SvgTag), out var svgView,
+            out _, DataLocation.Anonymous(SvgLayout.Tag));
+        Assert.Equal(ReadStatus.Done, svgView.TryReadTable(out var svgOut, out _));
+        Assert.Equal(2, svgOut!.RecordCount);
+        // The rows sit in the output domain's ascent, and each row's payload is the
+        // one its own input row carried (asserted by content, not by index).
+        Assert.Equal(((ushort)1, (ushort)1),
+            (svgOut.Records[0].StartGlyphID, svgOut.Records[0].EndGlyphID));
+        Assert.Equal(docB, svgOut.Documents[svgOut.Records[0].PayloadIndex]);
+        Assert.Equal(((ushort)2, (ushort)2),
+            (svgOut.Records[1].StartGlyphID, svgOut.Records[1].EndGlyphID));
+        Assert.Equal(docA, svgOut.Documents[svgOut.Records[1].PayloadIndex]);
+        // The document table follows the sorted traversal's first-reference order.
+        Assert.Equal(2, svgOut.DocumentCount);
+        Assert.Equal(docB, svgOut.Documents[0]);
+        Assert.Equal(docA, svgOut.Documents[1]);
+    }
+
+    // The same inverted shape with both rows sharing one payload: the dedup runs
+    // over the sorted traversal, so one document survives and both records carry
+    // its index.
+    [Fact]
+    public void CompactSvgSharedDocumentStaysOneEntryUnderInversion()
+    {
+        byte[] doc = [0x61, 0x41];
+        var svg = SvgWire([(1, 1, 0), (2, 2, 0)], [doc]);
+        var face = CffFace([0, 2, 1], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 1, 2]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        _ = SvgView.TryOpen(OutputTable(result!, SvgTag), out var svgView,
+            out _, DataLocation.Anonymous(SvgLayout.Tag));
+        Assert.Equal(ReadStatus.Done, svgView.TryReadTable(out var svgOut, out _));
+        Assert.Equal(2, svgOut!.RecordCount);
+        Assert.Equal(((ushort)1, (ushort)1),
+            (svgOut.Records[0].StartGlyphID, svgOut.Records[0].EndGlyphID));
+        Assert.Equal(((ushort)2, (ushort)2),
+            (svgOut.Records[1].StartGlyphID, svgOut.Records[1].EndGlyphID));
+        Assert.Equal(1, svgOut.DocumentCount);
+        Assert.Equal(doc, svgOut.Documents[0]);
+        Assert.Equal(0, svgOut.Records[0].PayloadIndex);
+        Assert.Equal(0, svgOut.Records[1].PayloadIndex);
+    }
+
+    // The monotone control: on an identity-ordered charset the sort is the identity
+    // and the dedup replays the input traversal, so the rebuilt table re-emits the
+    // input wire byte-for-byte.
+    [Fact]
+    public void CompactSvgMonotoneOrderReemitsByteIdentical()
+    {
+        byte[] docA = [0x61, 0x41];
+        byte[] docB = [0x62, 0x42];
+        var svg = SvgWire([(1, 1, 0), (2, 2, 1)], [docA, docB]);
+        var face = CffFace([0, 1, 2], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 1, 2]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([0, 1, 2],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        Assert.Equal(svg, OutputTable(result, SvgTag));
+    }
+
     // COLR v1 ClipList over the non-monotone map: the probe fixture's clip [10, 20]
     // keeps two survivors whose outputs invert (input 10 rides the last output
     // slot), so the row bounds are the survivors' output extrema [3, 5] — the
@@ -253,5 +337,51 @@ public sealed class SubsetCompactNonMonotoneTests
         Assert.Equal(2, colrOut.BaseGlyphPaintCount);
         Assert.Equal((ushort)1, colrOut.BaseGlyphPaints[0].GlyphId);
         Assert.Equal((ushort)2, colrOut.BaseGlyphPaints[1].GlyphId);
+    }
+
+    // The ClipList row-order defect: the probe fixture's two clip rows ascend in the
+    // input ([5, 6] then [10, 20]), but a SID column that freezes the retained set
+    // as [0, 10, 20, 5, 6, 51] maps row [5, 6] onto (3, 4) and row [10, 20] onto
+    // (1, 2) — the input-row order now descends. The ClipList's strict ascent is the
+    // output domain's contract, so the rows re-emerge sorted and each keeps its own
+    // box (asserted by content).
+    [Fact]
+    public void CompactColrClipRowsSortToTheOutputDomain()
+    {
+        int[] sids = new int[52];
+        sids[0] = 0;
+        sids[10] = 1;
+        sids[20] = 2;
+        sids[5] = 3;
+        sids[6] = 4;
+        sids[51] = 5;
+        int next = 6;
+        for (int gid = 1; gid < sids.Length; gid++)
+            if (sids[gid] == 0) sids[gid] = next++;
+        var face = CffFace(sids, (ColrTag, SubsetCompactColrTests.ColrV1WireForProbe()));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 5, 6, 10, 20, 51]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([0, 10, 20, 5, 6, 51],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        _ = ColrView.TryOpen(OutputTable(result, ColrTag), out var colrView,
+            out _, DataLocation.Anonymous(ColrLayout.Tag));
+        Assert.Equal(ReadStatus.Done, colrView.TryReadTable(6, null,
+            out var colrOut, out _));
+        Assert.NotNull(colrOut!);
+        Assert.Equal(2, colrOut.ClipCount);
+        // Row (1, 2) is input clip [10, 20] — its box is the second wire box
+        // (0, 0, 4, 4); row (3, 4) is input clip [5, 6] — the first (-10..10).
+        Assert.Equal(((ushort)1, (ushort)2),
+            (colrOut.Clips[0].StartGlyphId, colrOut.Clips[0].EndGlyphId));
+        Assert.Equal((0, 0, 4, 4),
+            (colrOut.Clips[0].Box.XMin, colrOut.Clips[0].Box.YMin,
+                colrOut.Clips[0].Box.XMax, colrOut.Clips[0].Box.YMax));
+        Assert.Equal(((ushort)3, (ushort)4),
+            (colrOut.Clips[1].StartGlyphId, colrOut.Clips[1].EndGlyphId));
+        Assert.Equal((-10, -10, 10, 10),
+            (colrOut.Clips[1].Box.XMin, colrOut.Clips[1].Box.YMin,
+                colrOut.Clips[1].Box.XMax, colrOut.Clips[1].Box.YMax));
     }
 }

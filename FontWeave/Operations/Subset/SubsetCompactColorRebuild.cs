@@ -303,6 +303,12 @@ public static partial class SubsetOperation
                 continue;
             newClips.Add(new(firstOutput, lastOutput, clip.Box));
         }
+        // The rows' own order is a wire contract too (the ClipList's strict
+        // ascent), and the surviving rows' output order is the map permutation's,
+        // not the input rows' — the freeze can invert them. They sort by their
+        // output start before the factory re-answers the ascent; on the monotone
+        // orders the sort is the identity and the emission stays byte-identical.
+        newClips = newClips.OrderBy(static clip => clip.StartGlyphId).ToList();
         var newBgl = new List<ColrBaseGlyphPaint>(visitedOrder.Count);
         foreach (var row in model.BaseGlyphPaints)
         {
