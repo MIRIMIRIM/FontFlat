@@ -1579,6 +1579,53 @@ public sealed class SchemaContractsTests
             """));
     }
 
+    // A1 (spec 3.2): a target past the source is refused at the ref field before the
+    // window check evaluates `owner.Length - target`. The probe harness compiles checked
+    // (checkOverflow: true, like the FontWeave.csproj consumer), so a late window check
+    // would underflow into OverflowException instead of this diagnostic.
+    [Fact]
+    public void ReferenceTargetBeyondSourceIsRefusedBeforeItsWindow()
+    {
+        Assert.Equal("InvalidOffset|False|RangeOutsideSource|Offset|4|9|8," +
+            "InvalidOffset|False|RangeOutsideSource|Offset|0|9|4", Execute($$"""
+            using System;
+            using System.Collections.Generic;
+            using FontWeave.Core;
+            using FontWeave.Schema;
+            namespace Probe;
+            [BinaryTable(0x33333333, 0, ContractVersion = 1)]
+            public readonly ref partial struct EmptyView { }
+            [BinaryTable(0x74657374, 4, ContractVersion = 1)]
+            [BinaryScalar("RowCount", WireType.UInt16, 0, DataField.Count, Semantic = NumberSemantic.Count)]
+            [BinaryArray("Row", "RowCount", 4, 4)]
+            [BinaryElement("Row", "At", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryElement("Row", "Span", WireType.UInt16, 2, DataField.Length, Semantic = NumberSemantic.Count)]
+            [BinaryReference("Piece", "At", typeof(EmptyView), Array = "Row", Length = "Span", AllowTargetAtEnd = true)]
+            public readonly ref partial struct WindowView { }
+            [BinaryTable(0x45678913, 4, ContractVersion = 1)]
+            [BinaryScalar("SAt", WireType.UInt16, 0, DataField.Offset, Semantic = NumberSemantic.Offset, Origin = WireOrigin.Table, ZeroAllowed = false)]
+            [BinaryScalar("SSpan", WireType.UInt16, 2, DataField.Length, Semantic = NumberSemantic.Count)]
+            [BinaryReference("SPiece", "SAt", typeof(EmptyView), Length = "SSpan")]
+            public readonly ref partial struct SourcedWindowView { }
+            public static class Entry
+            {
+                public static string Run()
+                {
+                    var results = new List<string>();
+                    byte[] beyond = { 0, 1, 0, 0, 0, 9, 0, 0 };
+                    WindowView.TryOpen(beyond, out var windowView, out _);
+                    ReadStatus row = windowView.TryOpenPiece(0, out _, out var rowPresent, out var rowDiagnostic);
+                    results.Add($"{row}|{rowPresent}|{rowDiagnostic.Code}|{rowDiagnostic.Location.Field}|{rowDiagnostic.Location.Offset}|{rowDiagnostic.Detail}|{rowDiagnostic.Expected}");
+                    byte[] scalarBeyond = { 0, 9, 0, 0 };
+                    SourcedWindowView.TryOpen(scalarBeyond, out var sourcedView, out _);
+                    ReadStatus sourced = sourcedView.TryOpenSPiece(out _, out var sourcedPresent, out var sourcedDiagnostic);
+                    results.Add($"{sourced}|{sourcedPresent}|{sourcedDiagnostic.Code}|{sourcedDiagnostic.Location.Field}|{sourcedDiagnostic.Location.Offset}|{sourcedDiagnostic.Detail}|{sourcedDiagnostic.Expected}");
+                    return string.Join(",", results);
+                }
+            }
+            """));
+    }
+
     // GA3 (V1-02 via card 1.2-b): the three null policies stay separate — Optional absence
     // succeeds without evaluating Minimum, a malformed present child is never swallowed,
     // and ZeroIsAddress opens base+0 like any present target.

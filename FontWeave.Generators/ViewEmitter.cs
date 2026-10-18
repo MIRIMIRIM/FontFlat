@@ -1452,6 +1452,21 @@ internal static class ViewEmitter
             writer.Line("}");
         }
 
+        // Spec 3.2: the target bound is refused at the ref field before any Length value is
+        // evaluated, so the window check's `owner.Length - target` subtraction is only ever
+        // reached with target <= owner.Length; consumer builds compile checked
+        // (CheckForOverflowUnderflow) and a target past the source would otherwise throw
+        // past the InvalidOffset/RangeOutsideSource contract.
+        writer.Line($"if (target {(reference.AllowTargetAtEnd ? ">" : ">=")} (ulong)_data.Length)");
+        writer.Line("{");
+        writer.Indent++;
+        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+        writer.Indent++;
+        writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+        writer.Line($"{refLocation}, out diagnostic, target, (ulong)_data.Length);");
+        writer.Indent -= 2;
+        writer.Line("}");
+
         string window;
         if (reference.Length is { } lengthName)
         {
@@ -1486,16 +1501,6 @@ internal static class ViewEmitter
         }
         else
             window = "_data.Slice((int)target)";
-
-        writer.Line($"if (target {(reference.AllowTargetAtEnd ? ">" : ">=")} (ulong)_data.Length)");
-        writer.Line("{");
-        writer.Indent++;
-        writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
-        writer.Indent++;
-        writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
-        writer.Line($"{refLocation}, out diagnostic, target, (ulong)_data.Length);");
-        writer.Indent -= 2;
-        writer.Line("}");
 
         writer.Line($"status = {targetView}.TryOpen({window}, out child, out diagnostic,");
         writer.Indent++;
@@ -2367,6 +2372,20 @@ internal static class ViewEmitter
                 writer.Indent -= 2;
                 writer.Line("}");
             }
+            // Spec 3.2: the target bound is refused at the ref field before any Length value
+            // is evaluated, so the window check's `owner.Length - target` subtraction is only
+            // ever reached with target <= owner.Length; consumer builds compile checked
+            // (CheckForOverflowUnderflow) and a target past the source would otherwise throw
+            // past the InvalidOffset/RangeOutsideSource contract.
+            writer.Line($"if (target{tag} {(reference.AllowTargetAtEnd ? ">" : ">=")} (ulong)_data.Length)");
+            writer.Line("{");
+            writer.Indent++;
+            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
+            writer.Indent++;
+            writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
+            writer.Line($"{refLocation}, out diagnostic, target{tag}, (ulong)_data.Length);");
+            writer.Indent -= 2;
+            writer.Line("}");
             if (reference.Length is { } lengthName)
             {
                 string lengthLocation;
@@ -2397,15 +2416,6 @@ internal static class ViewEmitter
             }
             else
                 windowLength = $"_data.Length - (int)target{tag}";
-            writer.Line($"if (target{tag} {(reference.AllowTargetAtEnd ? ">" : ">=")} (ulong)_data.Length)");
-            writer.Line("{");
-            writer.Indent++;
-            writer.Line("return Fail(global::FontWeave.Core.ReadStatus.InvalidOffset,");
-            writer.Indent++;
-            writer.Line("global::FontWeave.Core.DiagnosticCode.RangeOutsideSource,");
-            writer.Line($"{refLocation}, out diagnostic, target{tag}, (ulong)_data.Length);");
-            writer.Indent -= 2;
-            writer.Line("}");
 
             switch (mode)
             {
