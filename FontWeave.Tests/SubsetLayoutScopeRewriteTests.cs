@@ -174,7 +174,8 @@ public sealed class SubsetLayoutScopeRewriteTests
         return bytes!;
     }
 
-    private static FontFaceRef Face(byte[] gsub, bool withJstf = false)
+    private static FontFaceRef Face(byte[] gsub, bool withJstf = false,
+        params (uint Tag, byte[] Bytes)[] extra)
     {
         var glyphs = new List<byte>();
         var loca = new List<uint> { 0 };
@@ -193,7 +194,38 @@ public sealed class SubsetLayoutScopeRewriteTests
             (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41, 1)))
         };
         if (withJstf) tables.Add((JstfTag, JstfBytes()));
+        tables.AddRange(extra);
         return SubsetFontFixture.Face([.. tables]);
+    }
+
+    private const uint BaseTag = 0x42415345;
+
+    // One DFLT script carrying one fmt2 coord over referenceGlyph — the scope
+    // combo's BASE witness (the scope-transparent row, OQ-S2c-9).
+    private static byte[] BaseBytes(ushort referenceGlyph)
+    {
+        Ok(BaseAxisTableCompiler.TryCreate(new[] { 0x64736372u }, out var tagList,
+            out var diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(BaseCoordTableCompiler.TryCreate(2, -100, referenceGlyph, 0, null,
+            NumGlyphs, out var coord, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(BaseAxisTableCompiler.TryCreate(0, new[] { coord! }, out var values,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(BaseAxisTableCompiler.TryCreate(values, null,
+            Array.Empty<BaseLangSysRecord>(), out var script, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(BaseAxisTableCompiler.TryCreate(tagList,
+            new[] { new BaseScriptRecord(TagDflt, script!) }, out var axis,
+            out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(BaseTableCompiler.TryCreate(BaseLayout.Version10, NumGlyphs, axis, null,
+            null, out var baseModel, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Ok(BaseTableCompiler.TryCompile(baseModel!, out var bytes, out diagnostic));
+        NoDiagnostic(diagnostic);
+        return bytes!;
     }
 
     private static SubsetRequest Request(FontFaceRef face, IReadOnlyList<ushort> gids,
@@ -330,6 +362,54 @@ public sealed class SubsetLayoutScopeRewriteTests
         Assert.Equal(4, orphan.SingleSubstitutions![0].Coverage.Glyphs[0]);
         var scopeRow = Assert.Single(report!.LayoutScopeCensus);
         Assert.Equal(2, scopeRow.SurvivingLookupCount);
+    }
+
+    // The scope-transparent row's compact face (OQ-S2c-9 with the OQ-S2b-6
+    // upgrade): a declared feature scope truly cuts the GSUB lists while the
+    // fmt2-bearing BASE rebuilds its whole axis tree — the scope never prunes
+    // the BASE script tree, and the fmt2 reference rides the same frozen map
+    // the scoped GSUB saw (the closure merged it beyond the seed).
+    [Fact]
+    public void ScopedCompactRebuildsTheWholeBaseTreeAndRemapsFormat2()
+    {
+        var status = SubsetOperation.TryPrepare(
+            Request(Face(GsubBytes(RemapModel()),
+                extra: [(BaseTag, BaseBytes(9))]), [1], SubsetMode.CompactRemap,
+                Scoped(new SubsetLayoutScope { FeatureTags = [TagA] })),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        NoDiagnostic(diagnostic);
+        Assert.NotNull(result);
+        // The closure union: the surviving GSUB lookups' {4, 5, 6, 7} plus the
+        // BASE fmt2 reference 9 (the cut plain lookup pulls nothing new beyond
+        // the seed's 1). The retained set {0, 1, 4, 5, 6, 7, 9} renumbers to
+        // seven glyphs, so the fmt2 reference 9 rides to output 6.
+        Assert.Equal(new ushort[] { 4, 5, 6, 7, 9 }, report!.LayoutClosureAddedGids);
+        var decision = Assert.Single(report.Decisions, d => d.Tag == BaseTag);
+        Assert.Equal(TableAction.Rebuild, decision.Action);
+        Assert.Equal(SubsetPolicy.RebuildTyped, decision.Policy);
+        // The scoped GSUB: two lookups over the new count; the BASE: the whole
+        // tree (one script — unpruned), the reference at its mapped image.
+        var model = ReadBack(OutputBytes(result!), 7);
+        Assert.Equal(2, model.Lookups.Length);
+        Assert.Equal(1, model.Features.Length);
+        byte[] basePayload = TableBytes(OutputBytes(result!), BaseTag);
+        Ok(BaseView.TryOpen(basePayload, out var baseView, out diagnostic,
+            DataLocation.Anonymous(BaseTag)));
+        NoDiagnostic(diagnostic);
+        Ok(baseView!.TryReadTable(7, 0, out var baseModel, out diagnostic));
+        NoDiagnostic(diagnostic);
+        Assert.Equal(1, baseModel!.HorizAxis!.ScriptCount);
+        var coord = baseModel.HorizAxis.Scripts[0].Script.BaseValues!.Coords[0];
+        Assert.Equal(2, coord.Format);
+        Assert.Equal(6, coord.ReferenceGlyph);
+        Assert.Equal(-100, coord.Coordinate);
+        // The rewrite census: the scoped GSUB row reads in≠out legally, the
+        // BASE row keeps its zero-slot-loss in==out fact.
+        var baseRow = Assert.Single(report.LayoutRewriteCensus, r => r.Tag == BaseTag);
+        Assert.Equal(1, baseRow.InputSubtableCount);
+        Assert.Equal(1, baseRow.OutputSubtableCount);
+        Assert.True(baseRow.CountsInvarianceHeld);
     }
 
     // The format-2 record remap (card §5.1 step 2): the class-valued rule bodies

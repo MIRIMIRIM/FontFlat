@@ -371,7 +371,8 @@ public static partial class SubsetOperation
             rebuiltEblc = null, rebuiltEbsc = null, rebuiltMerg = null;
         byte[]? rebuiltGdefLayout = null, rebuiltGsubLayout = null,
             rebuiltGposLayout = null;
-        byte[]? rebuiltKern = null, rebuiltJstf = null, rebuiltMath = null;
+        byte[]? rebuiltKern = null, rebuiltJstf = null, rebuiltMath = null,
+            rebuiltBase = null;
         var rebuildTags = new HashSet<uint>(
             state.Decisions.Where(d => d.Action == TableAction.Rebuild).Select(d => d.Tag));
         if (trueType)
@@ -747,6 +748,26 @@ public static partial class SubsetOperation
                     return Refuse(state, status, diagnostic, out result,
                         out report, out diagnostic);
             }
+            if (rebuildTags.Contains(Base))
+            {
+                // The S2b registered upgrade delivered (OQ-S2b-6): the fmt2
+                // referenceGlyph set remaps through the frozen map and the axis
+                // trees re-emit through the existing BASE compilers; the decide
+                // stage only sends this row when the closure-merged fmt2 census
+                // is non-zero, so the producer never runs for the RETAIN_RAW row.
+                if (state.Base is not { } baseModel)
+                {
+                    diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                        faceAt with { TableTag = Base }, Base);
+                    return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic,
+                        out result, out report, out diagnostic);
+                }
+                status = RebuildBase(baseModel, map!, budget, rewrites,
+                    out rebuiltBase, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result,
+                        out report, out diagnostic);
+            }
         }
         // S2c (card §4/§5.1, the fifth alternate's retain execution face): a
         // truly-cut layout list re-emits its surviving subset over the identity
@@ -807,6 +828,7 @@ public static partial class SubsetOperation
                     Kern => rebuiltKern,
                     Jstf => rebuiltJstf,
                     Math => rebuiltMath,
+                    Base => rebuiltBase,
                     _ => null
                 };
                 if (rebuilt is null && state.PayloadDropped.Contains(decision.Tag))
@@ -1528,28 +1550,28 @@ public static partial class SubsetOperation
                 diagnostic = state.Diagnostic;
                 return false;
             }
-            if (tag == Base && state.BaseCoordFormat2Count > 0)
+            // The S2b-2 refusal row's upgrade (OQ-S2b-6): a BaseCoordFormat2.
+            // referenceGlyph is a real GID reference, so a fmt2-bearing BASE can
+            // no longer ride raw over the changed GID domain — the compact row
+            // now executes REBUILD_TYPED (the registered future upgrade: the
+            // producer substitutes every referenceGlyph through the frozen map,
+            // the closure having merged each one in both modes). The fmt1-only
+            // form keeps its byte-identical pre-S2b shape: RETAIN_RAW with zero
+            // references (the post-version row's conditional shape). RF-S2b-4's
+            // keyword contract retires with the refusal it named.
+            if (tag == Base)
             {
-                // S2b-2 (card §2.4, OQ-S2b-6): a BaseCoordFormat2.referenceGlyph is
-                // a real GID reference, so the compact rewrite cannot keep the
-                // table raw over the changed GID domain — the request refuses
-                // (RF-S2b-4) instead of growing a whole-axis-tree rebuild for one
-                // u16 field (the full reconstruction stays the registered future
-                // upgrade). RF-S2b-4's keyword contract: "base" /
-                // "BaseCoordFormat2" / "referenceGlyph"; the first reference GID
-                // rides in Detail.
-                state.Diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
-                    directory.TableLocation(ordinal).At(DataField.Payload,
-                        (ulong)BaseCoordLayout.Format2HeaderField),
-                    state.BaseFirstFmt2Reference);
-                diagnostic = state.Diagnostic;
-                return false;
+                decision = state.BaseCoordFormat2Count > 0
+                    ? new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+                        SubsetDecisionOrigin.MatrixRow)
+                    : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
+                        SubsetDecisionOrigin.MatrixRow);
             }
-            decision = tag == Base
-                ? new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
-                    SubsetDecisionOrigin.MatrixRow)
-                : new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
+            else
+            {
+                decision = new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
                     SubsetDecisionOrigin.MatrixRow);
+            }
         }
         else if (tag is Kern or Gsub or Gpos or Gdef or Base or Jstf or Math)
         {
@@ -1837,7 +1859,6 @@ public static partial class SubsetOperation
             // conditional and the closure merges the references in both modes.
             internal BaseTable? Base;
             internal int BaseCoordFormat2Count;
-            internal ushort BaseFirstFmt2Reference;
             // The layout union's additions (L \ (seed ∪ {0}), ascending — the merge
             // happened before the composite closure, so the two addition lists stay
             // disjoint by construction) and the per-table reference census (OQ-S2a-4).

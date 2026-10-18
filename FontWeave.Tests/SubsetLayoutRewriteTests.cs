@@ -834,13 +834,14 @@ public sealed class SubsetLayoutRewriteTests
             rebuiltPriority.GposShrinkageEnable!.LookupIndices.ToArray());
     }
 
-    // ---- commit 7: BASE (OQ-S2b-6) — the conditional row and the enumerator
-    // correction. A fmt1-only BASE stays RETAIN_RAW under compact+PreserveLayout
-    // (byte-identical payload, zero references), a fmt2 coord refuses (its
-    // referenceGlyph is a real GID reference), and the retain-mode closure merges
-    // the fmt2 reference in both modes (the conservative superset). ----
+    // ---- commit 7: BASE (OQ-S2b-6) — the conditional row, the enumerator
+    // correction and the registered upgrade's delivery. A fmt1-only BASE stays
+    // RETAIN_RAW under compact+PreserveLayout (byte-identical payload, zero
+    // references); a fmt2 coord rebuilds — the closure merges its referenceGlyph
+    // in both modes and the producer substitutes it over the frozen map — and
+    // the retain-mode closure pins the same conservative superset. ----
 
-    private static byte[] BaseBytes(bool fmt2)
+    private static byte[] BaseBytes(bool fmt2, ushort reference = 2)
     {
         // The axis carries a tag list: the writer's tagList-null slot has the
         // registered write-face gap at a non-zero axis position (the S2b-2 report
@@ -849,7 +850,7 @@ public sealed class SubsetLayoutRewriteTests
             out var tagList, out var diagnostic));
         Assert.Equal(DiagnosticCode.None, diagnostic.Code);
         Ok(BaseCoordTableCompiler.TryCreate(fmt2 ? (ushort)2 : (ushort)1, -100,
-            fmt2 ? (ushort)2 : (ushort)0, 0, null, NumGlyphs, out var coord,
+            fmt2 ? reference : (ushort)0, 0, null, NumGlyphs, out var coord,
             out diagnostic));
         Assert.Equal(DiagnosticCode.None, diagnostic.Code);
         Ok(BaseAxisTableCompiler.TryCreate(0, new[] { coord! }, out var values,
@@ -896,18 +897,65 @@ public sealed class SubsetLayoutRewriteTests
     }
 
     [Fact]
-    public void CompactPreserveBaseWithFormat2Refuses()
+    public void CompactPreserveBaseWithFormat2RebuildsAndRemaps()
     {
+        // The registered upgrade (OQ-S2b-6): the fmt2 face that refused under
+        // S2b now executes REBUILD_TYPED. Seeding glyph 3 only, the closure
+        // merges the fmt2 reference 2, and the ascending compact map renumbers
+        // {0, 2, 3} → {0, 1, 2} — the reference's image is 1, the coordinate
+        // word rides, and the typed read answers over the output domain.
         FontFaceRef face = FaceWithExtras(BaseTag, BaseBytes(fmt2: true), null);
-        var status = SubsetOperation.TryPrepare(CompactPreserve(face, [1]),
+        var status = SubsetOperation.TryPrepare(CompactPreserve(face, [3]),
             out var result, out var report, out var diagnostic);
-        Assert.Equal(ReadStatus.UnsupportedFormat, status);
-        Assert.Null(result);
-        Assert.Equal(DiagnosticCode.LayoutFamilyUnsupported, diagnostic.Code);
-        Assert.Equal(BaseTag, diagnostic.Location.TableTag);
-        Assert.Equal(DataField.Payload, diagnostic.Location.Field);
-        Assert.Equal(2UL, diagnostic.Detail);
-        Assert.DoesNotContain(DecisionsOf(report!), d => d.Tag == BaseTag);
+        Ok(status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+        SubsetTableDecision decision = DecisionsOf(report!).Single(d => d.Tag == BaseTag);
+        Assert.Equal(TableAction.Rebuild, decision.Action);
+        Assert.Equal(SubsetPolicy.RebuildTyped, decision.Policy);
+        Assert.Equal(SubsetDecisionOrigin.MatrixRow, decision.Origin);
+        // The closure pulled the reference beyond the seed; the reference census
+        // and the rewrite census state the fmt2 leaf's in==out fact.
+        Assert.Equal(new ushort[] { 2 }, report!.LayoutClosureAddedGids);
+        var referenceCensus = report.LayoutReferenceCensus.Single(c => c.Tag == BaseTag);
+        Assert.Equal(1, referenceCensus.ReferencedGidCount);
+        var rewriteRow = Assert.Single(report.LayoutRewriteCensus,
+            r => r.Tag == BaseTag);
+        Assert.Equal(1, rewriteRow.InputSubtableCount);
+        Assert.Equal(1, rewriteRow.OutputSubtableCount);
+        Assert.True(rewriteRow.CountsInvarianceHeld);
+        // The typed read back: one whole script (the scope-transparent tree),
+        // the fmt2 reference at its mapped image, the coordinate verbatim.
+        byte[] payload = OutputTablePayload(result!, BaseTag);
+        Ok(BaseView.TryOpen(payload, out var view, out diagnostic,
+            DataLocation.Anonymous(BaseTag)));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(view!.TryReadTable(3, 0, out var model, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.Equal(1, model!.HorizAxis!.ScriptCount);
+        var coord = model.HorizAxis.Scripts[0].Script.BaseValues!.Coords[0];
+        Assert.Equal(2, coord.Format);
+        Assert.Equal(1, coord.ReferenceGlyph);
+        Assert.Equal(-100, coord.Coordinate);
+    }
+
+    [Fact]
+    public void CompactPreserveBaseFormat2IdentityMapIsByteIdentical()
+    {
+        // The identity tier (the S2b card §7.2 caliber): the full-GID seed keeps
+        // the map identity, so the canonical re-emission is a fixed point — the
+        // rebuilt BASE payload is byte-identical to the input.
+        byte[] baseBytes = BaseBytes(fmt2: true);
+        FontFaceRef face = FaceWithExtras(BaseTag, baseBytes, null);
+        var status = SubsetOperation.TryPrepare(CompactPreserve(face,
+            [.. Enumerable.Range(0, NumGlyphs).Select(i => (ushort)i)]),
+            out var result, out var report, out var diagnostic);
+        Ok(status);
+        Assert.NotNull(result);
+        Assert.Equal(TableAction.Rebuild,
+            DecisionsOf(report!).Single(d => d.Tag == BaseTag).Action);
+        Assert.True(OutputTablePayload(result!, BaseTag).AsSpan()
+            .SequenceEqual(baseBytes));
     }
 
     [Fact]

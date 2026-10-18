@@ -192,13 +192,8 @@ public static partial class SubsetOperation
             if (status != ReadStatus.Done) return status;
             state.Base = baseModel;
             state.BaseCoordFormat2Count = 0;
-            state.BaseFirstFmt2Reference = 0;
-            foreach (ushort reference in CollectBaseCoordReferences(baseModel!))
-            {
-                if (state.BaseCoordFormat2Count == 0)
-                    state.BaseFirstFmt2Reference = reference;
+            foreach (ushort _ in CollectBaseCoordReferences(baseModel!))
                 state.BaseCoordFormat2Count++;
-            }
         }
         diagnostic = default;
         return ReadStatus.Done;

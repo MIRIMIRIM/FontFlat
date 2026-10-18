@@ -2424,6 +2424,12 @@ out var rewrittenLeaf, out diagnostic);
             new BuildBudget(new BuildLimits()), rewrites ?? [], out jstfBytes,
             out diagnostic);
 
+    internal static ReadStatus RebuildBaseForTests(BaseTable baseModel, GlyphRemap map,
+        out byte[]? baseBytes, out FontDiagnostic diagnostic,
+        List<LayoutRewriteCensusRow>? rewrites = null) =>
+        RebuildBase(baseModel, map, new BuildBudget(new BuildLimits()),
+            rewrites ?? [], out baseBytes, out diagnostic);
+
     // ---------------------------------------------------------------------
     // MATH (S2b card §2.5, commit ⑥): the six coverage faces and the hard
     // per-glyph references remap; the constants body, the kern values and every
@@ -2655,6 +2661,255 @@ out var rewrittenLeaf, out diagnostic);
         return permuted;
     }
 
+
+    // ---------------------------------------------------------------------
+    // BASE (the S2b-2 registered upgrade delivered, OQ-S2b-6): the fmt2 coord's
+    // referenceGlyph is the table's one GID-reference face and the closure already
+    // merges every one of them in both modes (CollectBaseReferences), so the
+    // compact rewrite only substitutes those leaves and re-emits the surviving
+    // axis trees through the existing BaseTableCompiler. The fmt1/fmt3 leaves,
+    // the tag lists and the v1.1 item variation store carry no GID and ride as
+    // the admission model's own instances (the shared-identity rule — reusing
+    // them keeps the dedupe facts the read materialized, and SameBody re-derives
+    // the source wire's shared placements). An aggregate node whose every
+    // descendant kept its instance keeps its own, so the rebuild touches only
+    // the chains a fmt2 leaf roots. S2c's script cut never reaches here: BASE is
+    // a scope-transparent row (OQ-S2c-9) and the decide stage sends the whole
+    // tree, both axes, unpruned.
+    // ---------------------------------------------------------------------
+
+    /// <summary>Compact BASE rewrite: every BaseCoordFormat2's referenceGlyph
+    /// remaps over the frozen map (the closure merged each one before the map
+    /// froze, so a miss is the RF-S2b-2 refusal, never a silent strand), the
+    /// coordinate/point words and every non-fmt2 leaf travel verbatim, and the
+    /// coord factory re-answers each substituted reference against the output
+    /// numGlyphs. The census row counts the table's GID-bearing leaves — the
+    /// fmt2 coord slots — which are structure-identical in and out: the rewrite
+    /// moves reference words, never slots (the zero-slot-loss assertion).</summary>
+    private static ReadStatus RebuildBase(BaseTable baseModel, GlyphRemap map,
+        BuildBudget budget, List<LayoutRewriteCensusRow> rewrites,
+        out byte[]? baseBytes, out FontDiagnostic diagnostic)
+    {
+        baseBytes = null;
+        int inputCoords = BaseFormat2CoordCount(baseModel);
+        var outputMap = LayoutOutputMap.Frozen(map);
+        int outputGlyphs = map.OutputGlyphCount;
+        var coordMemo = new Dictionary<BaseCoordTable, BaseCoordTable>();
+        ReadStatus status = RebuildBaseAxis(baseModel.HorizAxis, outputMap,
+            outputGlyphs, coordMemo, out var horiz, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = RebuildBaseAxis(baseModel.VertAxis, outputMap, outputGlyphs,
+            coordMemo, out var vert, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = BaseTableCompiler.TryCreate(baseModel.Version, outputGlyphs,
+            horiz, vert, baseModel.ItemVariationStore, out BaseTable? model,
+            out diagnostic, location: baseModel.Location);
+        if (status != ReadStatus.Done) return status;
+        int outputCoords = BaseFormat2CoordCount(model!);
+        if (outputCoords != inputCoords)
+            return RewriteInvariantRefusal(
+                baseModel.Location.At(DataField.Count, (ulong)inputCoords),
+                (ulong)outputCoords, out diagnostic);
+        status = BaseTableCompiler.TryCompile(model!, out var bytes, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        rewrites.Add(RewriteCensusRow(BaseLayout.Tag, inputCoords, outputCoords,
+            baseModel.ConsumedLength, bytes!.Length));
+        return ChargeCompiled(budget, baseModel.Location, bytes, out baseBytes,
+            out diagnostic);
+    }
+
+    // Bottom-up subtree rebuild over one memo: a node whose every descendant
+    // kept its instance keeps its own (the R7 shared-body facts ride reference
+    // identity into the root's SameSource walk), and one remapped fmt2 leaf
+    // re-roots exactly its own chain. The memo is shared across both axes, so a
+    // coord shared horiz→vert stays one instance after the substitution.
+    private static ReadStatus RebuildBaseAxis(BaseAxisTable? axis, LayoutOutputMap map,
+        int outputGlyphs, Dictionary<BaseCoordTable, BaseCoordTable> coordMemo,
+        out BaseAxisTable? rebuilt, out FontDiagnostic diagnostic)
+    {
+        rebuilt = axis;
+        if (axis is null)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        var scripts = new BaseScriptRecord[axis.ScriptCount];
+        bool changed = false;
+        for (int i = 0; i < axis.ScriptCount; i++)
+        {
+            (uint tag, BaseScriptTable script) = axis.Scripts[i];
+            ReadStatus status = RebuildBaseScript(script, map, outputGlyphs,
+                coordMemo, out var rebuiltScript, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            scripts[i] = new(tag, rebuiltScript!);
+            changed |= !ReferenceEquals(script, rebuiltScript);
+        }
+        if (!changed)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        rebuilt = new(axis.TagList, scripts, axis.Location, axis.ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus RebuildBaseScript(BaseScriptTable script,
+        LayoutOutputMap map, int outputGlyphs,
+        Dictionary<BaseCoordTable, BaseCoordTable> coordMemo,
+        out BaseScriptTable? rebuilt, out FontDiagnostic diagnostic)
+    {
+        rebuilt = null;
+        ReadStatus status = RebuildBaseValues(script.BaseValues, map, outputGlyphs,
+            coordMemo, out var values, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = RebuildBaseMinMax(script.DefaultMinMax, map, outputGlyphs,
+            coordMemo, out var defaultMinMax, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var langSys = new BaseLangSysRecord[script.BaseLangSysCount];
+        bool changed = !ReferenceEquals(values, script.BaseValues) ||
+            !ReferenceEquals(defaultMinMax, script.DefaultMinMax);
+        for (int i = 0; i < script.BaseLangSysCount; i++)
+        {
+            (uint tag, BaseMinMaxTable minMax) = script.LangSys[i];
+            status = RebuildBaseMinMax(minMax, map, outputGlyphs, coordMemo,
+                out var rebuiltMinMax, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            langSys[i] = new(tag, rebuiltMinMax!);
+            changed |= !ReferenceEquals(minMax, rebuiltMinMax);
+        }
+        if (!changed)
+        {
+            rebuilt = script;
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        rebuilt = new(values, defaultMinMax, langSys, script.Location,
+            script.ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus RebuildBaseMinMax(BaseMinMaxTable? minMax,
+        LayoutOutputMap map, int outputGlyphs,
+        Dictionary<BaseCoordTable, BaseCoordTable> coordMemo,
+        out BaseMinMaxTable? rebuilt, out FontDiagnostic diagnostic)
+    {
+        rebuilt = minMax;
+        if (minMax is null)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        ReadStatus status = RebuildBaseCoord(minMax.MinCoord, map, outputGlyphs,
+            coordMemo, out var minCoord, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = RebuildBaseCoord(minMax.MaxCoord, map, outputGlyphs, coordMemo,
+            out var maxCoord, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        var featMinMax = new FeatMinMaxRecord[minMax.FeatMinMaxCount];
+        bool changed = !ReferenceEquals(minCoord, minMax.MinCoord) ||
+            !ReferenceEquals(maxCoord, minMax.MaxCoord);
+        for (int i = 0; i < minMax.FeatMinMaxCount; i++)
+        {
+            FeatMinMaxRecord record = minMax.FeatMinMax[i];
+            status = RebuildBaseCoord(record.MinCoord, map, outputGlyphs,
+                coordMemo, out var recordMin, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            status = RebuildBaseCoord(record.MaxCoord, map, outputGlyphs,
+                coordMemo, out var recordMax, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            featMinMax[i] = new(record.Tag, recordMin, recordMax);
+            changed |= !ReferenceEquals(record.MinCoord, recordMin) ||
+                !ReferenceEquals(record.MaxCoord, recordMax);
+        }
+        if (!changed)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        rebuilt = new(minCoord, maxCoord, featMinMax, minMax.Location,
+            minMax.ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus RebuildBaseValues(BaseValuesTable? values,
+        LayoutOutputMap map, int outputGlyphs,
+        Dictionary<BaseCoordTable, BaseCoordTable> coordMemo,
+        out BaseValuesTable? rebuilt, out FontDiagnostic diagnostic)
+    {
+        rebuilt = values;
+        if (values is null)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        var coords = new BaseCoordTable[values.CoordCount];
+        bool changed = false;
+        for (int i = 0; i < values.CoordCount; i++)
+        {
+            ReadStatus status = RebuildBaseCoord(values.Coords[i], map,
+                outputGlyphs, coordMemo, out var coord, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            coords[i] = coord!;
+            changed |= !ReferenceEquals(values.Coords[i], coord);
+        }
+        if (!changed)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        rebuilt = new(values.DefaultBaselineIndex, coords, values.Location,
+            values.ConsumedLength);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>One coord slot: a fmt2 leaf substitutes its referenceGlyph and
+    /// re-answers the output domain at the coord factory (the slot's other words
+    /// and its Device ride verbatim); the fmt1/fmt3 leaves carry no GID and keep
+    /// the shared instance. The memo absorbs the R7 shapes — one source coord
+    /// referenced from several slots substitutes once.</summary>
+    private static ReadStatus RebuildBaseCoord(BaseCoordTable? coord,
+        LayoutOutputMap map, int outputGlyphs,
+        Dictionary<BaseCoordTable, BaseCoordTable> coordMemo,
+        out BaseCoordTable? rebuilt, out FontDiagnostic diagnostic)
+    {
+        rebuilt = coord;
+        if (coord is null || coord.Format != 2)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        if (coordMemo.TryGetValue(coord, out var hit))
+        {
+            rebuilt = hit;
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        ReadStatus status = RemapGlyphId(coord.Location, coord.ReferenceGlyph, map,
+            out ushort glyph, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = BaseCoordTableCompiler.TryCreate(coord.Format, coord.Coordinate,
+            glyph, coord.BaseCoordPoint, coord.Device, outputGlyphs, out var model,
+            out diagnostic, location: coord.Location);
+        if (status != ReadStatus.Done) return status;
+        coordMemo.Add(coord, model!);
+        rebuilt = model;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The fmt2 coord slot count over both axis trees (wire order) —
+    /// the census row's in/out pair and the decide stage's fmt2 census agree on
+    /// this walk (CollectBaseCoordReferences).</summary>
+    private static int BaseFormat2CoordCount(BaseTable baseModel)
+    {
+        int count = 0;
+        foreach (ushort _ in CollectBaseCoordReferences(baseModel)) count++;
+        return count;
+    }
 
     // ---------------------------------------------------------------------
     // JSTF (S2b card §2.5, commit ⑥): the extender lists and the JstfMax inline
