@@ -821,7 +821,12 @@ public static partial class SubsetOperation
                 }
                 if (b is 19 or 20)
                 {
-                    // (cntr)mask: pop the optional width, skip the hint mask bytes.
+                    // (cntr)mask: the pairs still on the stack are the implicit
+                    // vstems the hstemhm form may leave undeclared (TN5177 §4.3;
+                    // the Microsoft CFF2 spec's hintmask section — the mask covers
+                    // h and v stems together), the floor absorbing the odd
+                    // optional width. Then the mask's byte count skips.
+                    _hints += _stack.Count / 2;
                     _stack.Clear();
                     int skip = (_hints + 7) >> 3;
                     if (i + skip > n)
@@ -1113,12 +1118,44 @@ public static partial class SubsetOperation
                     if (_stack.Count >= 2)
                         (_stack[^1], _stack[^2]) = (_stack[^2], _stack[^1]);
                     break;
-                case 31:                 // roll: pops its two control values
-                    Pop(2);
+                case 31:                 // roll: rotate the top n by j (TN5177)
+                    RollStack();
                     break;
                 default:                 // unmodeled: assume no effect
                     break;
             }
+        }
+
+        /// <summary>roll (12 31): pops the control pair n, j and rotates the top n
+        /// values by j — TN5177's worked form "4 2 roll" turns [65, 194, 66, 193]
+        /// into [66, 193, 65, 194] (the top j of the n values move below the
+        /// block's remainder). A control pair the remaining stack cannot serve
+        /// (unknown, n < 0, n past the depth, the degenerate zero-count-nonzero-j)
+        /// poisons the frame's values instead: a guessed roll would let the later
+        /// call operands decide from a stack shape the program never had.</summary>
+        private void RollStack()
+        {
+            Slot nControl = _stack.Count > 0 ? _stack[^2] : default;
+            Slot jControl = _stack.Count > 0 ? _stack[^1] : default;
+            Pop(2);
+            if (nControl.Known && jControl.Known &&
+                (uint)nControl.Value <= (uint)_stack.Count)
+            {
+                int count = nControl.Value;
+                int by = count > 0 ? jControl.Value % count : jControl.Value;
+                if (count > 1 && by != 0)
+                {
+                    int from = _stack.Count - count;
+                    var rolled = new Slot[count];
+                    for (int k = 0; k < count; k++)
+                        rolled[k] = _stack[from + ((k - by + count) % count)];
+                    for (int k = 0; k < count; k++)
+                        _stack[from + k] = rolled[k];
+                    return;
+                }
+                if (count > 0 || by == 0) return; // the defined no-op forms
+            }
+            for (int k = 0; k < _stack.Count; k++) _stack[k] = default;
         }
 
         private void Pop(int count)
@@ -1206,6 +1243,11 @@ public static partial class SubsetOperation
                 }
                 else if (b is 19 or 20)
                 {
+                    // Implicit vstems again (TN5177 §4.3; the Microsoft CFF2
+                    // hintmask section): the rewrite must count the stack's
+                    // pairs exactly as the scan did or the copied mask bytes
+                    // span a different program region.
+                    _hints += _stack.Count / 2;
                     _stack.Clear();
                     int skip = (_hints + 7) >> 3;
                     if (i + skip > n) return FailDerail(i + skip, n, out diagnostic);
@@ -1280,7 +1322,9 @@ public static partial class SubsetOperation
                 int raw = value & 0xFFFF;
                 output.Add((byte)28);
                 output.Add((byte)(raw >> 8));
-                output.Add((byte)raw);
+                // The low byte rides the mask too: raw spans the full 16 bits and
+                // the checked builds throw on the bare cast at 1132 and beyond.
+                output.Add((byte)(raw & 0xFF));
             }
             else
             {

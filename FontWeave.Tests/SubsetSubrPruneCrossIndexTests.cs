@@ -245,4 +245,206 @@ public sealed class SubsetSubrPruneCrossIndexTests
         // The glyph's same-INDEX site keeps its bytes (the value rule).
         Assert.Equal(glyph, cff.CharStrings[1].ToArray());
     }
+
+    // ---- the shortint emitter's full byte domain (the re-encode overflow) ---------
+
+    [Fact]
+    public void RecodedSitePastTheTwoByteCeilingSurvivesTheShortintLowByte()
+    {
+        // 2265 one-byte global bodies (the 1131 tier); the glyph calls 1..2264
+        // through Num's 28 shortint form (operand = index − 1131). Global 0
+        // prunes and the survivor count 2264 stays on the 1131 tier, so the
+        // last site re-encodes 1133 -> 1132 — one past the two-byte positive
+        // ceiling, the first site the emitter serves from the shortint branch,
+        // whose low byte the checked builds narrowed with a bare cast.
+        byte[][] globals = Enumerable.Range(0, 2265).Select(_ => (byte[])[0x0b])
+            .ToArray();
+        var glyph = new List<byte>();
+        for (int index = 1; index <= 2264; index++)
+        {
+            glyph.AddRange(Num(index - 1131));
+            glyph.Add(29);
+        }
+        glyph.Add(14);
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(2)),
+            (SubsetFontFixture.CffTag, NameKeyedCff([0, 34],
+                [[14], [.. glyph]], globals: globals)));
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out var report, out var diagnostic);
+        Assert.True(status == ReadStatus.Done,
+            $"status={status} code={diagnostic.Code} detail={diagnostic.Detail} expected={diagnostic.Expected} field={diagnostic.Location.Field} off={diagnostic.Location.Offset} ord={diagnostic.Location.RecordOrdinal}");
+        Assert.NotNull(result);
+        Assert.Equal(1, report!.SubrPrunedGlobal);
+        var cff = OutputCff(result!);
+        Assert.Equal(2264, cff.GlobalSubrCount);
+        // Every site re-encodes over the 1131 tier onto the independent form
+        // table; the whole-program comparison sweeps the four push forms and
+        // pins the 1132 tail — the overflow site itself.
+        var expected = new List<byte>();
+        for (int index = 1; index <= 2264; index++)
+        {
+            expected.AddRange(Minimal(index - 1132));
+            expected.Add(29);
+        }
+        expected.Add(14);
+        Assert.Equal(expected, cff.CharStrings[1].ToArray());
+        // The boundary sites at their own output offsets: the two-byte form's
+        // low-byte seam (255/256), its positive ceiling (1131) and the first
+        // shortint value (1132).
+        byte[] program = cff.CharStrings[1].ToArray();
+        int OperandAt(int index)
+        {
+            int at = 0;
+            for (int k = 1; k < index; k++) at += Minimal(k - 1132).Length + 1;
+            return at;
+        }
+        foreach (int index in new[] { 1387, 1388, 2263, 2264 })
+        {
+            int at = OperandAt(index);
+            byte[] form = Minimal(index - 1132);
+            Assert.Equal(form, program[at..(at + form.Length)]);
+        }
+        Assert.Equal([0xF7, 0x93], Minimal(255));
+        Assert.Equal([0xF7, 0x94], Minimal(256));
+        Assert.Equal([0xFA, 0xFF], Minimal(1131));
+        Assert.Equal([0x1C, 0x04, 0x6C], Minimal(1132));
+    }
+
+    [Fact]
+    public void RecodedSitesCrossThe255LowByteSeamInTwoByteForm()
+    {
+        // 400 local bodies (the 107 tier); the glyph calls 1..399, body 0
+        // prunes, and the survivor count 399 stays on the 107 tier: sites 363
+        // and 364 re-encode to new operands 255 and 256 — the two-byte positive
+        // form's low byte carrying across its seam.
+        byte[][] locals = Enumerable.Range(0, 400).Select(_ => (byte[])[0x0b])
+            .ToArray();
+        var glyph = new List<byte>();
+        for (int index = 1; index <= 399; index++)
+        {
+            glyph.AddRange(Num(index - 107));
+            glyph.Add(10);
+        }
+        glyph.Add(14);
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(2)),
+            (SubsetFontFixture.CffTag, NameKeyedCff([0, 34],
+                [[14], [.. glyph]], locals: locals)));
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([1], report!.SubrPrunedLocalByFd);
+        var cff = OutputCff(result!);
+        Assert.Equal(399, cff.LocalSubrCount);
+        var expected = new List<byte>();
+        for (int index = 1; index <= 399; index++)
+        {
+            expected.AddRange(Minimal(index - 108));
+            expected.Add(10);
+        }
+        expected.Add(14);
+        Assert.Equal(expected, cff.CharStrings[1].ToArray());
+    }
+
+    [Fact]
+    public void RecodedSiteLandsOnTheTwoBytePositiveCeiling()
+    {
+        // 1240 local bodies (the 1131 tier); the glyph calls 1..1239, body 0
+        // prunes, and the survivor count 1239 drops to the 107 tier: the last
+        // site re-encodes to new operand 1131 — the two-byte positive ceiling.
+        byte[][] locals = Enumerable.Range(0, 1240).Select(_ => (byte[])[0x0b])
+            .ToArray();
+        var glyph = new List<byte>();
+        for (int index = 1; index <= 1239; index++)
+        {
+            glyph.AddRange(Num(index - 1131));
+            glyph.Add(10);
+        }
+        glyph.Add(14);
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(2)),
+            (SubsetFontFixture.CffTag, NameKeyedCff([0, 34],
+                [[14], [.. glyph]], locals: locals)));
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([1], report!.SubrPrunedLocalByFd);
+        var cff = OutputCff(result!);
+        Assert.Equal(1239, cff.LocalSubrCount);
+        var expected = new List<byte>();
+        for (int index = 1; index <= 1239; index++)
+        {
+            expected.AddRange(Minimal(index - 108));
+            expected.Add(10);
+        }
+        expected.Add(14);
+        Assert.Equal(expected, cff.CharStrings[1].ToArray());
+    }
+
+    // ---- the walker's roll (TN5177's stack tool) -----------------------------------
+
+    [Fact]
+    public void RollRotatesTheTopNByJBeforeTheSeacFormReads()
+    {
+        // TN5177's "4 2 roll" turns [65, 194, 66, 193] into [66, 193, 65, 194].
+        // The walker only popped the control pair before, so the endchar seac
+        // form read bchar/achar off the unrotated top — B + grave, SIDs 35/124 —
+        // and the closure published the wrong components. The rotated top is
+        // 65/194: A + acute, SIDs 34/125, the additions the frozen order takes.
+        int[] sids = [0, 34, 125, 35, 124, 171];
+        byte[] rollSeac = [.. Num(65), .. Num(194), .. Num(66), .. Num(193),
+            .. Num(4), .. Num(2), 0x0c, 0x1f, 0x0e];
+        var programs = new byte[6][];
+        for (int gid = 0; gid < 5; gid++) programs[gid] = [14];
+        programs[5] = rollSeac;
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(6)),
+            (SubsetFontFixture.CffTag, NameKeyedCff(sids, programs)));
+        var status = SubsetOperation.TryPrepare(Request(face, [5],
+            SubsetMode.CompactRemap), out var result, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([1, 2], report!.SeacClosureAddedGids);
+        var cff = OutputCff(result!);
+        Assert.Equal(4, cff.NumGlyphs);
+        // The additions' SIDs ride the output charset; Aacute's program copies
+        // verbatim (no subrs on the face, the plan is null).
+        Assert.Equal([0, 34, 125, 171], cff.CharsetSids.ToArray());
+        Assert.Equal(rollSeac, cff.CharStrings[3].ToArray());
+    }
+
+    // ---- the implicit vstems the mask widths must count (TN5177 §4.3) --------------
+
+    [Fact]
+    public void HintmaskCountsTheImplicitVstemsLeftOnTheStack()
+    {
+        // Eight declared hstem pairs, then sixteen stem arguments left standing
+        // on the stack when hintmask runs — the implicit-vstem form the spec
+        // allows after hstemhm. The mask covers h and v stems together: two
+        // bytes. The walk that wiped the stack uncounted read width 1 and
+        // parsed the second mask byte (0x0A) as callsubr over an empty stack —
+        // refusing a legal glyph.
+        var stems = new List<byte>();
+        for (int i = 0; i < 16; i++) stems.AddRange(Num(50));
+        byte[] glyph = [.. stems, (byte)18, .. stems, (byte)19, 0xFF, 0x0A,
+            .. Num(0), .. Num(0), (byte)21, 14];
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(2)),
+            (SubsetFontFixture.CffTag, NameKeyedCff([0, 34], [[14], glyph])));
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out _, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        // Nothing prunes (no subrs on the face): the program rides verbatim.
+        var cff = OutputCff(result!);
+        Assert.Equal(glyph, cff.CharStrings[1].ToArray());
+    }
 }
