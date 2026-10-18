@@ -43,11 +43,14 @@ public static partial class SubsetOperation
         ReadStatus status;
 
         // The scalar input: the form (b) sequence arrives step-1-validated (strictly
-        // ascending scalar values); the form (c) text decodes once into its set.
-        uint[] scalars;
+        // ascending scalar values); the form (c) text decodes once into its set. The
+        // caller's codepoint list is consumed by index alone, so it is iterated in
+        // place — the operation budget covers array payloads this operation allocates,
+        // and this stage then allocates none for form (b).
+        IReadOnlyList<uint> scalars;
         if (root.Kind == SubsetRootKind.UnicodeCodepoints)
         {
-            scalars = [.. root.Codepoints!];
+            scalars = root.Codepoints!;
         }
         else
         {
@@ -75,7 +78,7 @@ public static partial class SubsetOperation
         // scalar set needs no model — it resolves to the empty GID set on any face,
         // including the cmap-less zero-rebuild profile (the empty-explicit-list twin);
         // a non-empty set with no cmap has nothing to resolve through and refuses.
-        if (scalars.Length == 0 && !profile.HasCmap)
+        if (scalars.Count == 0 && !profile.HasCmap)
         {
             state.ResolvedRootGids = [];
             diagnostic = default;
@@ -108,7 +111,7 @@ public static partial class SubsetOperation
         // membership stays the seeder's alone (posture 4).
         var resolved = new SortedSet<ushort>();
         var records = model!.Records;
-        for (int s = 0; s < scalars.Length; s++)
+        for (int s = 0; s < scalars.Count; s++)
         {
             uint code = scalars[s];
             // Posture 6, the explicit arm: variation selectors have no third state.
@@ -175,6 +178,12 @@ public static partial class SubsetOperation
                 maxp.Location.At(DataField.GlyphId, 4), gid, (ulong)numGlyphs);
             return ReadStatus.InvalidFormat;
         }
+        // The resolved array is a temporary payload this operation allocates, charged
+        // before the spread (ARCHITECTURE operation budget: collected array payloads
+        // are charged before allocation; the sorted set itself is a container,
+        // excluded from the count).
+        if (!state.Budget.Buffer(2L * resolved.Count, cmapAt, out diagnostic))
+            return ReadStatus.ResourceLimit;
         state.ResolvedRootGids = [.. resolved];
         diagnostic = default;
         return ReadStatus.Done;
@@ -185,11 +194,15 @@ public static partial class SubsetOperation
     /// distinct set. Text is a set-semantics entry — deduplication and ordering are the
     /// form's definition, not a normalization of a precise input contract (the form (b)
     /// sequence refuses what the text absorbs). Zero normalization beyond the decode.
-    /// One rune is one Work unit.</summary>
+    /// One rune is one Work unit, and the final array's payload is charged up front at
+    /// its worst case — one uint per code unit, since a surrogate pair spends two units
+    /// on one scalar — so the decode allocates nothing beyond the charge.</summary>
     private static ReadStatus DecodeTextScalars(string text, DataLocation at,
-        BuildBudget budget, out uint[] scalars, out FontDiagnostic diagnostic)
+        BuildBudget budget, out IReadOnlyList<uint> scalars, out FontDiagnostic diagnostic)
     {
         scalars = [];
+        if (!budget.Buffer(4L * text.Length, at, out diagnostic))
+            return ReadStatus.ResourceLimit;
         var set = new SortedSet<uint>();
         int cursor = 0;
         while (cursor < text.Length)

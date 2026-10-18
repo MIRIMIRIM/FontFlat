@@ -750,4 +750,57 @@ public sealed class SubsetRootResolutionTests
 
     private static ReadStatus PrepareStatus(SubsetRequest request, BuildLimits limits) =>
         SubsetOperation.TryPrepare(request, out _, out _, out _, limits);
+
+    [Fact]
+    public void RootResolutionArraysAreChargedToTheTemporaryBudget()
+    {
+        // R9 over the stage's own payloads: the decode's final array and the resolved
+        // GID array are charged before allocation (the codepoint list is consumed in
+        // place — no copy), so the resolved roots cost measurably more than the
+        // byte-identical explicit root and a cap one byte under the need refuses
+        // finitely with no partial state.
+        var face = RebuildFace((0x41, 1), (0x42, 2));
+        Assert.Equal(ReadStatus.Done, SubsetOperation.TryPrepare(
+            ExplicitRequest(face, [1, 2]), out var explicitResult, out _, out _,
+            new BuildLimits()));
+        long explicitBytes = explicitResult!.Font.Usage.TemporaryBytes;
+
+        var codepoints = CodepointRequest(face, [0x41, 0x42]);
+        Assert.Equal(ReadStatus.Done, SubsetOperation.TryPrepare(codepoints,
+            out var codepointResult, out _, out _, new BuildLimits()));
+        long codepointBytes = codepointResult!.Font.Usage.TemporaryBytes;
+        // The resolved {1,2} array is charged at two bytes per GID over the explicit
+        // twin; everything else the pipeline charges is identical.
+        Assert.Equal(explicitBytes + 2L * 2, codepointBytes);
+
+        var text = TextRequest(face, "AB");
+        Assert.Equal(ReadStatus.Done, SubsetOperation.TryPrepare(text,
+            out var textResult, out _, out _, new BuildLimits()));
+        long textBytes = textResult!.Font.Usage.TemporaryBytes;
+        // The decode's array is charged at its worst case, one uint per code unit:
+        // four bytes per character over the codepoint twin.
+        Assert.Equal(codepointBytes + 4L * 2, textBytes);
+
+        // A cap one byte under the resolved root's need refuses at TemporaryBytes —
+        // the increment over the admitted explicit twin is exactly the new array —
+        // with no result and the budget diagnostic retained on the report.
+        var refused = SubsetOperation.TryPrepare(codepoints, out var refusedResult,
+            out var refusedReport, out var diagnostic,
+            new BuildLimits { MaxTemporaryBytes = codepointBytes - 1 });
+        Assert.Equal(ReadStatus.ResourceLimit, refused);
+        Assert.Equal(DiagnosticCode.BudgetExceeded, diagnostic.Code);
+        Assert.Equal(DataField.TemporaryBytes, diagnostic.Location.Field);
+        Assert.Null(refusedResult);
+        FontDiagnostic retained = Assert.Single(refusedReport!.Diagnostics);
+        Assert.Equal(DiagnosticCode.BudgetExceeded, retained.Code);
+        Assert.Equal(ReadStatus.Done,
+            PrepareStatus(codepoints, new BuildLimits { MaxTemporaryBytes = codepointBytes }));
+
+        // The text form's decode charge makes it the first to hit a cap sized
+        // between the two twins, and the exact need is admitted.
+        Assert.Equal(ReadStatus.ResourceLimit,
+            PrepareStatus(text, new BuildLimits { MaxTemporaryBytes = textBytes - 1 }));
+        Assert.Equal(ReadStatus.Done,
+            PrepareStatus(text, new BuildLimits { MaxTemporaryBytes = textBytes }));
+    }
 }
