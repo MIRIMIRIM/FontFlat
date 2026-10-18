@@ -317,6 +317,112 @@ public sealed class CliCollectionFaceTests
         finally { Cleanup(input, output); }
     }
 
+    // retain --face over the subsettable container: each face splices its own glyphs
+    // (face 0's composite pulls the closure), emits an independently readable sfnt, and
+    // never carries the other face's tables — face 1's gasp stays behind in face 0 output.
+    [Fact]
+    public void SubsetRetainOnEachTtcFaceEmitsItsOwnClosureAndTables()
+    {
+        byte[] inputBytes = CliTtcFixture.SubsettableTwoFaceTtc();
+        for (int faceIndex = 0; faceIndex < 2; faceIndex++)
+        {
+            (string input, string output) = TempValidatableFont(inputBytes);
+            try
+            {
+                var receipt = Json(FontWeave.Cli.Program.Execute(
+                    ["subset", input, "--face", faceIndex.ToString(), "--mode", "retain",
+                     "--gids", faceIndex == 0 ? "1" : "2", "--output", output],
+                    out int exitCode));
+                Assert.Equal(0, exitCode);
+                Assert.Equal("Done", receipt.GetProperty("statusName").GetString());
+                Assert.Equal(faceIndex == 0 ? new[] { 2 } : Array.Empty<int>(),
+                    receipt.GetProperty("report").GetProperty("closureAddedGids").EnumerateArray()
+                        .Select(gid => gid.GetInt32()).ToArray());
+
+                byte[] written = File.ReadAllBytes(output);
+                FontFace face = FontFile.Parse(written).GetFace(0);
+                Assert.Equal(faceIndex == 0
+                        ? new[] { "cmap", "glyf", "head", "loca", "maxp" }
+                        : new[] { "cmap", "gasp", "glyf", "head", "loca", "maxp" },
+                    face.Tables.Select(table => table.Tag).ToArray());
+                Assert.True(Table(written, SubsetFontFixture.MaxpTag, out int maxpAt));
+                Assert.Equal(faceIndex == 0 ? 4 : 3, System.Buffers.Binary.BinaryPrimitives
+                    .ReadUInt16BigEndian(written.AsSpan(maxpAt + 4)));
+
+                Assert.True(Table(written, SubsetFontFixture.GlyfTag, out _, out int glyfLength));
+                Assert.True(Table(written, SubsetFontFixture.LocaTag, out int locaAt, out int locaLength));
+                if (faceIndex == 0)
+                {
+                    // Retained slots move verbatim; slot 3 becomes empty.
+                    Assert.Equal(46, glyfLength);
+                    Assert.Equal([0, 18, 34, 46, 46], LongOffsets(written, locaAt, locaLength));
+                }
+                else
+                {
+                    // Slot 1 becomes empty; the simple glyph rides slot 2 verbatim.
+                    Assert.Equal(30, glyfLength);
+                    Assert.Equal([0, 12, 12, 30], LongOffsets(written, locaAt, locaLength));
+                }
+            }
+            finally { Cleanup(input, output); }
+        }
+    }
+
+    // compact --face over the subsettable container: each face remaps over its own frozen
+    // map, publishes the map artifact, and emits a standalone sfnt on the output domain
+    // (face 1's 0x42 mapping re-slots from input 2 to output GID 1; gasp stays with its
+    // own face).
+    [Fact]
+    public void SubsetCompactOnEachTtcFaceEmitsTheRemappedFaceWithItsMap()
+    {
+        byte[] inputBytes = CliTtcFixture.SubsettableTwoFaceTtc();
+        for (int faceIndex = 0; faceIndex < 2; faceIndex++)
+        {
+            (string input, string output) = TempValidatableFont(inputBytes);
+            string map = Path.Combine(Path.GetTempPath(), $"fontweave-ttc-{Guid.NewGuid():N}.map");
+            try
+            {
+                var receipt = Json(FontWeave.Cli.Program.Execute(
+                    ["subset", input, "--face", faceIndex.ToString(), "--mode", "compact",
+                     "--gids", faceIndex == 0 ? "1" : "2", "--map", map, "--output", output],
+                    out int exitCode));
+                Assert.Equal(0, exitCode);
+                Assert.Equal("Done", receipt.GetProperty("statusName").GetString());
+                Assert.True(receipt.GetProperty("outputWritten").GetBoolean());
+                var mapReceipt = receipt.GetProperty("map");
+                Assert.Equal(faceIndex == 0 ? 3 : 2, mapReceipt.GetProperty("entryCount").GetInt32());
+                Assert.True(File.Exists(map));
+                Assert.Equal(mapReceipt.GetProperty("sha256").GetString(),
+                    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(map)))
+                        .ToLowerInvariant());
+
+                byte[] written = File.ReadAllBytes(output);
+                FontFace face = FontFile.Parse(written).GetFace(0);
+                Assert.Equal(faceIndex == 0
+                        ? new[] { "cmap", "glyf", "head", "loca", "maxp" }
+                        : new[] { "cmap", "gasp", "glyf", "head", "loca", "maxp" },
+                    face.Tables.Select(table => table.Tag).ToArray());
+                Assert.True(Table(written, SubsetFontFixture.MaxpTag, out int maxpAt));
+                Assert.Equal(faceIndex == 0 ? 3 : 2, System.Buffers.Binary.BinaryPrimitives
+                    .ReadUInt16BigEndian(written.AsSpan(maxpAt + 4)));
+
+                // The rebuilt cmap's format 12 run rides the output domain: face 0 keeps
+                // 0x41 → 1; face 1's 0x42 mapping re-slots from input 2 to output 1.
+                Assert.True(Table(written, SubsetFontFixture.CmapTag, out int cmapAt, out int cmapLength));
+                (uint start, uint gid) = faceIndex == 0 ? (0x41u, 1u) : (0x42u, 1u);
+                Assert.Equal(start, System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(
+                    written.AsSpan(cmapAt + cmapLength - 12)));
+                Assert.Equal(gid, System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(
+                    written.AsSpan(cmapAt + cmapLength - 4)));
+            }
+            finally
+            {
+                Cleanup(input, output);
+                File.Delete(map);
+            }
+        }
+    }
+
     private static JsonElement Json(Dictionary<string, object?> receipt) =>
         JsonSerializer.SerializeToElement(receipt);
 
@@ -345,6 +451,34 @@ public sealed class CliCollectionFaceTests
             (SubsetFontFixture.NameTag, CliTtcFixture.Name(CliTtcFixture.FaceZeroNameRecords))));
         string output = Path.Combine(Path.GetTempPath(), $"fontweave-sfnt-{Guid.NewGuid():N}.out");
         return (input, output);
+    }
+
+    private static bool Table(byte[] sfnt, uint tag, out int offset) =>
+        Table(sfnt, tag, out offset, out _);
+
+    private static bool Table(byte[] sfnt, uint tag, out int offset, out int length)
+    {
+        offset = 0;
+        length = 0;
+        ushort count = System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(sfnt.AsSpan(4));
+        for (int i = 0; i < count; i++)
+        {
+            int record = 12 + 16 * i;
+            if (System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(sfnt.AsSpan(record)) != tag) continue;
+            offset = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(sfnt.AsSpan(record + 8));
+            length = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(sfnt.AsSpan(record + 12));
+            return true;
+        }
+        return false;
+    }
+
+    private static int[] LongOffsets(byte[] sfnt, int offset, int length)
+    {
+        var offsets = new int[length / 4];
+        for (int i = 0; i < offsets.Length; i++)
+            offsets[i] = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(
+                sfnt.AsSpan(offset + 4 * i));
+        return offsets;
     }
 
     private static void Cleanup(string input, string output)

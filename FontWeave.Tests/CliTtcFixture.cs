@@ -152,4 +152,42 @@ internal static class CliTtcFixture
         new[] { (HeadTag, ValidHead()), (MaxpTag, Maxp()), (NameTag, Name(FaceZeroNameRecords)) },
         new[] { (HeadTag, ValidHead()), (MaxpTag, Maxp()), (NameTag, Name(FaceOneNameRecords)),
             (VorgTag, ValidVorg()) });
+
+    // ---- subsettable TrueType faces (subset --face over a TTC) --------------------
+
+    /// <summary>A two-face container of real TrueType faces with disjoint glyph sets:
+    /// face 0 maps 0x41 to a composite whose child pulls the retain closure, face 1 maps
+    /// 0x42 and carries the gasp table face 0 lacks, so a face 0 output that contained
+    /// gasp would be cross-face pollution.</summary>
+    internal static byte[] SubsettableTwoFaceTtc() => Ttc(
+        new (uint Tag, byte[] Bytes)[]
+        {
+            (HeadTag, ValidHead(indexToLocFormat: 1)),
+            (MaxpTag, SubsetFontFixture.Maxp(4)),
+            (SubsetFontFixture.GlyfTag,
+            [
+                .. SubsetFontFixture.InstructedSimpleGlyph(),   // glyph 0, 18 bytes
+                .. GlyfImages.CompositeRecord(2),               // glyph 1 → 2, 16 bytes
+                .. GlyfImages.NoContourGlyphRecord(),           // glyph 2, 12 bytes
+                .. GlyfImages.NoContourGlyphRecord()            // glyph 3, 12 bytes
+            ]),
+            (SubsetFontFixture.LocaTag, GlyfImages.LongLoca([0, 18, 34, 46, 58])),
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41, 1)))
+        },
+        new (uint Tag, byte[] Bytes)[]
+        {
+            (HeadTag, ValidHead(indexToLocFormat: 1)),
+            (MaxpTag, SubsetFontFixture.Maxp(3)),
+            (SubsetFontFixture.GlyfTag,
+            [
+                .. GlyfImages.NoContourGlyphRecord(),           // glyph 0, 12 bytes
+                .. GlyfImages.NoContourGlyphRecord(),           // glyph 1, 12 bytes
+                .. SubsetFontFixture.InstructedSimpleGlyph()    // glyph 2, 18 bytes
+            ]),
+            (SubsetFontFixture.LocaTag, GlyfImages.LongLoca([0, 12, 24, 42])),
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x42, 2))),
+            (GaspTag, SubsetFontFixture.Dummy(8))
+        });
+
+    internal const uint GaspTag = 0x67617370;
 }
