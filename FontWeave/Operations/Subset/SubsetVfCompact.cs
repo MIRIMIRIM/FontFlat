@@ -275,6 +275,12 @@ public static partial class SubsetOperation
         var fdLocals = new byte[fdCount][][];
         for (int fd = 0; fd < fdCount; fd++)
             fdLocals[fd] = model.FontDictsInternal[fd].Private?.LocalSubrs ?? [];
+        // The per-FD Private vsindex column (TN5171 §5): every rewrite walk seeds
+        // its blend selector from the owning DICT, the same default the reach
+        // walk read — a fresh body frame inherits its FD's DICT, not slot 0.
+        var vsindexByFd = new int[fdCount];
+        for (int fd = 0; fd < fdCount; fd++)
+            vsindexByFd[fd] = model.FontDictsInternal[fd].Private?.VsindexValue ?? 0;
         var programFds = new int[outputCount];
         charStrings = new byte[outputCount][];
         var selected = new byte[outputCount][];
@@ -286,7 +292,7 @@ public static partial class SubsetOperation
         }
         ReadStatus pruneStatus = RewritePrograms(selected, programFds,
             globals, fdLocals, prune, cff2: true,
-            RegionCountsByVsindex(model.Store), model.Location, budget,
+            RegionCountsByVsindex(model.Store), vsindexByFd, model.Location, budget,
             out charStrings, out diagnostic);
         if (pruneStatus != ReadStatus.Done) return pruneStatus;
         var fdIndexPruned = new int[outputCount];
@@ -305,8 +311,8 @@ public static partial class SubsetOperation
                 effectiveGlobal.Survivors[s], out int ctx) ? ctx : 0;
         pruneStatus = RewriteSurvivorBodies(globals, effectiveGlobal.Survivors,
             contextFds, globals, fdLocals, prune, cff2: true,
-            RegionCountsByVsindex(model.Store), model.Location, budget,
-            out globalSubrs, out diagnostic);
+            RegionCountsByVsindex(model.Store), vsindexByFd, model.Location,
+            budget, out globalSubrs, out diagnostic);
         if (pruneStatus != ReadStatus.Done) return pruneStatus;
         fontDicts = new Tables.Cff2FontDict[fdCount];
         for (int fd = 0; fd < fdCount; fd++)
@@ -341,8 +347,8 @@ public static partial class SubsetOperation
             Array.Fill(bodyFds, fd);
             pruneStatus = RewriteSurvivorBodies(fdLocals[fd], effectiveLocal.Survivors,
                 bodyFds, globals, fdLocals, prune, cff2: true,
-                RegionCountsByVsindex(model.Store), model.Location, budget,
-                out var renewedLocals, out diagnostic);
+                RegionCountsByVsindex(model.Store), vsindexByFd, model.Location,
+                budget, out var renewedLocals, out diagnostic);
             if (pruneStatus != ReadStatus.Done) return pruneStatus;
             bool renewedHasLocals = localPlan is null ? privateDict.HasLocalSubrs
                 : effectiveLocal.NewCount > 0;

@@ -256,7 +256,7 @@ public static partial class SubsetOperation
             }
             ReadStatus pruneStatus = RewritePrograms(selected, programFds,
                 globals, fdLocals, prune, cff2: false, regionCounts: null,
-                model.Location, budget, out charStrings, out diagnostic);
+                vsindexByFd: null, model.Location, budget, out charStrings, out diagnostic);
             if (pruneStatus != ReadStatus.Done) return pruneStatus;
             // Every surviving body rides the rewrite once the plan is parked
             // (§3.3): a null slot's INDEX kept every body, but its bodies' calls
@@ -271,8 +271,8 @@ public static partial class SubsetOperation
                     effectiveGlobal.Survivors[s], out int ctx) ? ctx : 0;
             pruneStatus = RewriteSurvivorBodies(globals, effectiveGlobal.Survivors,
                 contextFds, globals, fdLocals, prune, cff2: false,
-                regionCounts: null, model.Location, budget, out globalSubrs,
-                out diagnostic);
+                regionCounts: null, vsindexByFd: null, model.Location, budget,
+                out globalSubrs, out diagnostic);
             if (pruneStatus != ReadStatus.Done) return pruneStatus;
             fontDicts = new CidFontDict[model.FdCount];
             for (int fd = 0; fd < model.FdCount; fd++)
@@ -289,7 +289,8 @@ public static partial class SubsetOperation
                 pruneStatus = RewriteSurvivorBodies(fdLocals[fd],
                     effectiveLocal.Survivors, bodyFds, globals,
                     fdLocals, prune, cff2: false, regionCounts: null,
-                    model.Location, budget, out var renewedLocals, out diagnostic);
+                    vsindexByFd: null, model.Location, budget,
+                    out var renewedLocals, out diagnostic);
                 if (pruneStatus != ReadStatus.Done) return pruneStatus;
                 bool renewedHasLocals = localPlan is null ? old.HasLocalSubrs
                     : effectiveLocal.NewCount > 0;

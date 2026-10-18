@@ -212,6 +212,90 @@ public sealed class SubsetSubrPruneCff2Tests
         Assert.Equal([.. Num(-107), 29], cff2.CharStrings[2].ToArray());
     }
 
+    // ---- the Private-vsindex blend faces (TN5171 §5's inherited selector) ------------
+
+    /// <summary>A four-result blend block: 4 defaults, 4·k deltas, the count 4 and
+    /// blend. Over the FD's Private vsindex 1 (RegionIndexCount 2) the walker
+    /// keeps 4 values; the vstemhm adds 2 hints to the 6 declared hstems, so the
+    /// mask width is one byte. A walker that reads IVD 0 instead (RegionIndexCount
+    /// 1) keeps 8 values, adds 4 hints, and skips two mask bytes — one past the
+    /// program that ends at the mask.</summary>
+    private static byte[] BlendBlock() 
+    {
+        var program = new List<byte>();
+        for (int i = 0; i < 12; i++) program.Add(0x8b);    // six hstem pairs
+        program.Add(1);                                    // hstem
+        for (int i = 0; i < 4; i++) program.Add(0x8b);    // four defaults
+        for (int i = 0; i < 8; i++) program.Add(0x8b);    // 4 · k(=2) deltas
+        program.Add(143);                                  // the result count 4
+        program.Add(16);                                   // blend
+        program.Add(3);                                    // vstemhm
+        return [.. program];
+    }
+
+    // TN5171 §5: a blend with no explicit vsindex operator reads the
+    // ItemVariationData the glyph's Private DICT vsindex names — the walk must
+    // seed its selector from there, not from slot 0. The glyph's mask width is
+    // the observer: the correct k=2 keeps the skip at one byte; the k=1 mis-model
+    // reads IVD 0 and derails at the mask (the reach walk refuses a legal font).
+    [Fact]
+    public void PrivateVsindexDefaultsTheGlyphBlendStackModel()
+    {
+        var builder = new Cff2PruneBuilder(fdCount: 1, numGlyphs: 2);
+        builder.SetStore(regions: 2, regionIndexCounts: [1, 2]);
+        builder.SetPrivateVsindex(0, 1);                   // the blend's k is IVD 1's 2
+        builder.SetLocals(0, [0x8b], [0x8b]);              // local 1 unreferenced: prunes
+        builder.SetGlyphProgram(0, [], fd: 0);
+        List<byte> glyph = [.. BlendBlock()];
+        glyph.AddRange(Num(-107));                         // callsubr 0
+        glyph.Add(10);
+        glyph.Add(19);                                     // hintmask: the mask byte is last
+        glyph.Add(0xFF);
+        builder.SetGlyphProgram(1, [.. glyph], fd: 0);
+        var status = SubsetOperation.TryPrepare(Request(builder.Build(), [1]),
+            out var result, out var report, out var diagnostic);
+        Assert.True(status == ReadStatus.Done,
+            $"status={status} code={diagnostic.Code} detail={diagnostic.Detail} expected={diagnostic.Expected}");
+        Assert.NotNull(result);
+        Assert.Equal([1], report!.SubrPrunedLocalByFd);
+        var cff2 = OutputCff2(result!, 2, fvarAxisCount: 1);
+        // The prune kept every byte: the blend-driven arithmetic rode the
+        // inherited selector on both sides (reach and rewrite), and the store
+        // with its two RegionIndexCount columns carries over verbatim.
+        Assert.Equal([.. glyph], cff2.CharStrings[1].ToArray());
+        Assert.Equal([0x8b], cff2.FontDicts[0].Private!.LocalSubrs[0]);
+        Assert.Equal(1, cff2.FontDicts[0].Private!.VsindexValue);
+        Assert.NotNull(cff2.Store);
+        Assert.Equal(2, cff2.Store!.DataCount);
+        Assert.Equal(1, cff2.Store.Data[0]!.RegionIndexCount);
+        Assert.Equal(2, cff2.Store.Data[1]!.RegionIndexCount);
+    }
+
+    // The same inheritance with the blend inside a surviving local body: the
+    // rewrite walk over that body is a fresh frame, so it must seed the Private
+    // vsindex too — the mask-width derail there refuses the rewrite side alone.
+    [Fact]
+    public void PrivateVsindexDefaultsTheLocalBodyBlendStackModel()
+    {
+        var builder = new Cff2PruneBuilder(fdCount: 1, numGlyphs: 2);
+        builder.SetStore(regions: 2, regionIndexCounts: [1, 2]);
+        builder.SetPrivateVsindex(0, 1);
+        byte[] blendBody = [.. BlendBlock(), 19, 0xFF];    // hintmask: one mask byte
+        builder.SetLocals(0, blendBody, [0x8b]);           // local 1 unreferenced: prunes
+        builder.SetGlyphProgram(0, [], fd: 0);
+        builder.SetGlyphProgram(1, [.. Num(-107), 10], fd: 0); // callsubr 0
+        var status = SubsetOperation.TryPrepare(Request(builder.Build(), [1]),
+            out var result, out var report, out var diagnostic);
+        Assert.True(status == ReadStatus.Done,
+            $"status={status} code={diagnostic.Code} detail={diagnostic.Detail} expected={diagnostic.Expected}");
+        Assert.NotNull(result);
+        Assert.Equal([1], report!.SubrPrunedLocalByFd);
+        var cff2 = OutputCff2(result!, 2, fvarAxisCount: 1);
+        Assert.Equal(blendBody, cff2.FontDicts[0].Private!.LocalSubrs[0]);
+        Assert.Equal([.. Num(-107), 10], cff2.CharStrings[1].ToArray());
+        Assert.Equal(1, cff2.FontDicts[0].Private!.VsindexValue);
+    }
+
     /// <summary>A CFF2 wire builder (TN5171) with local-subr injection, the strict
     /// canonical tiling header(5)|TopDICT|GlobalSubrs|CharStrings|FDArray|FDSelect|
     /// private₀+local₀|…|VarStore: every DICT offset operand rides the fixed 29

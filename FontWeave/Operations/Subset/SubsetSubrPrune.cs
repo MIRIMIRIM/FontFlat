@@ -286,9 +286,14 @@ public static partial class SubsetOperation
                     model.Location.At(DataField.GlyphId, 0, gid), out diagnostic,
                     (uint)fd, (uint)fdCount);
             }
+            // The walk's blend arithmetic inherits the FD's Private vsindex (TN5171
+            // §5: the DICT key is the default selector every blend reads until an
+            // explicit vsindex operator overrides it) — seeding slot 0 instead
+            // mis-sized every blend of a nonzero-selector face.
             var walk = new SubrWalk(budget, model.Location.At(DataField.GlyphId, 0, gid),
                 fdLocals[fd], globals, cff2: true, seac: false, analysis, fd,
-                rewrite: null, RegionCountsByVsindex(model.Store));
+                rewrite: null, RegionCountsByVsindex(model.Store),
+                model.FontDictsInternal[fd].Private?.VsindexValue ?? 0);
             ReadStatus status = walk.RunReach(model.CharStringsInternal[gid],
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
@@ -437,12 +442,15 @@ public static partial class SubsetOperation
     /// the minimal push form; a site whose value the renumbering leaves unchanged
     /// keeps its original operand bytes (the judgment is by value, not width). Mask
     /// skip widths read the plan's stem memo (§2.1) so the walk tracks the
-    /// runtime's hint count across call frames. Sites whose operand does not sit in
+    /// runtime's hint count across call frames. The CFF2 form's
+    /// <paramref name="vsindexByFd"/> column seeds each program's blend selector
+    /// from its FD's Private DICT (TN5171 §5; null on the CFF1 forms, where no
+    /// blend exists). Sites whose operand does not sit in
     /// the immediately preceding push token refuse (A3): their value's origin is a
     /// stack shape no single-byte rewrite can serve.</summary>
     private static ReadStatus RewritePrograms(byte[][] programs, int[] programFds,
         byte[][] globals, byte[][][] fdLocals, SubrPrunePlan plan, bool cff2,
-        int[]? regionCounts, DataLocation modelAt, BuildBudget budget,
+        int[]? regionCounts, int[]? vsindexByFd, DataLocation modelAt, BuildBudget budget,
         out byte[][] rewritten, out FontDiagnostic diagnostic)
     {
         rewritten = new byte[programs.Length][];
@@ -452,7 +460,7 @@ public static partial class SubsetOperation
             var rewrite = new RewriteState(plan, fd, plan.LocalByFd[fd], plan.Global);
             var walk = new SubrWalk(budget, modelAt.At(DataField.GlyphId, 0, i),
                 fdLocals[fd], globals, cff2, seac: false, analysis: null, fd,
-                rewrite: rewrite, regionCounts);
+                rewrite: rewrite, regionCounts, vsindexByFd?[fd] ?? 0);
             ReadStatus status = walk.RunRewrite(programs[i], out diagnostic);
             if (status != ReadStatus.Done) return status;
             rewritten[i] = [.. rewrite.Output];
@@ -466,8 +474,8 @@ public static partial class SubsetOperation
     /// single scanning context from the plan; local bodies: their own FD).</summary>
     private static ReadStatus RewriteSurvivorBodies(byte[][] bodies, int[] survivorOld,
         int[] bodyFds, byte[][] globals, byte[][][] fdLocals, SubrPrunePlan plan,
-        bool cff2, int[]? regionCounts, DataLocation modelAt, BuildBudget budget,
-        out byte[][] rewritten, out FontDiagnostic diagnostic)
+        bool cff2, int[]? regionCounts, int[]? vsindexByFd, DataLocation modelAt,
+        BuildBudget budget, out byte[][] rewritten, out FontDiagnostic diagnostic)
     {
         rewritten = new byte[survivorOld.Length][];
         for (int s = 0; s < survivorOld.Length; s++)
@@ -477,7 +485,7 @@ public static partial class SubsetOperation
             var rewrite = new RewriteState(plan, fd, plan.LocalByFd[fd], plan.Global);
             var walk = new SubrWalk(budget, modelAt.At(DataField.GlyphId, 0, old),
                 fdLocals[fd], globals, cff2, seac: false, analysis: null, fd,
-                rewrite: rewrite, regionCounts);
+                rewrite: rewrite, regionCounts, vsindexByFd?[fd] ?? 0);
             ReadStatus status = walk.RunRewrite(bodies[old], out diagnostic);
             if (status != ReadStatus.Done) return status;
             rewritten[s] = [.. rewrite.Output];
@@ -511,7 +519,8 @@ public static partial class SubsetOperation
             selected[o] = model.CharStrings[inputOrder[o]];
         ReadStatus status = RewritePrograms(selected,
             new int[inputOrder.Length], globals, fdLocals, plan, cff2: false,
-            regionCounts: null, model.Location, budget, out charStrings, out diagnostic);
+            regionCounts: null, vsindexByFd: null, model.Location, budget,
+            out charStrings, out diagnostic);
         if (status != ReadStatus.Done) return status;
         // Every surviving body rides the rewrite walk once the plan is parked
         // (§3.3): a null slot's INDEX kept every body, but those bodies' calls
@@ -523,12 +532,14 @@ public static partial class SubsetOperation
         SubrIndexPlan effectiveGlobal = globalPlan ?? IdentityIndexPlan(globals.Length);
         status = RewriteSurvivorBodies(globals, effectiveGlobal.Survivors,
             new int[effectiveGlobal.NewCount], globals, fdLocals, plan, cff2: false,
-            regionCounts: null, model.Location, budget, out globalSubrs, out diagnostic);
+            regionCounts: null, vsindexByFd: null, model.Location, budget,
+            out globalSubrs, out diagnostic);
         if (status != ReadStatus.Done) return status;
         SubrIndexPlan effectiveLocal = localPlan ?? IdentityIndexPlan(locals.Length);
         status = RewriteSurvivorBodies(locals, effectiveLocal.Survivors,
             new int[effectiveLocal.NewCount], globals, fdLocals, plan, cff2: false,
-            regionCounts: null, model.Location, budget, out localSubrs, out diagnostic);
+            regionCounts: null, vsindexByFd: null, model.Location, budget,
+            out localSubrs, out diagnostic);
         if (status != ReadStatus.Done) return status;
         hasLocalSubrs = localPlan is null ? model.HasLocalSubrs
             : effectiveLocal.NewCount > 0;
@@ -662,8 +673,10 @@ public static partial class SubsetOperation
         /// data slot read as zero regions. Null outside CFF2 mode.</summary>
         private readonly int[]? _regionCounts;
 
-        /// <summary>The current vsindex selector, or −1 once poisoned by an
-        /// unknown or out-of-domain value (the next blend refuses).</summary>
+        /// <summary>The current vsindex selector (TN5171 §5): the walk seeds it
+        /// from the entry program's Private DICT — the spec's default while no
+        /// explicit vsindex operator has run — or −1 once poisoned by an unknown
+        /// or out-of-domain value (the next blend refuses).</summary>
         private int _vsindex;
 
         private readonly List<Slot> _stack = [];
@@ -693,7 +706,7 @@ public static partial class SubsetOperation
 
         internal SubrWalk(BuildBudget budget, DataLocation at, byte[][] locals,
             byte[][] globals, bool cff2, bool seac, SubrAnalysis? analysis, int fd,
-            RewriteState? rewrite, int[]? regionCounts = null)
+            RewriteState? rewrite, int[]? regionCounts = null, int initialVsindex = 0)
         {
             _budget = budget;
             _at = at;
@@ -705,6 +718,7 @@ public static partial class SubsetOperation
             _fd = fd;
             _rewrite = rewrite;
             _regionCounts = regionCounts;
+            _vsindex = initialVsindex;
         }
 
         // ---- entries ---------------------------------------------------------
