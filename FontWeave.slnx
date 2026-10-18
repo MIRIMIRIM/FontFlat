@@ -4,4 +4,5 @@
   <Project Path="FontWeave.Cli/FontWeave.Cli.csproj" />
   <Project Path="FontWeave.Tests/FontWeave.Tests.csproj" />
   <Project Path="FontWeave.Generators.Tests/FontWeave.Generators.Tests.csproj" />
+  <Project Path="FontWeave.Benchmarks/FontWeave.Benchmarks.csproj" />
 </Solution>

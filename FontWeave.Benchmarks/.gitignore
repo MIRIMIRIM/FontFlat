@@ -1,0 +1,2 @@
+# BenchmarkDotNet writes run artifacts here; run output, never committed.
+BenchmarkDotNet.Artifacts/
