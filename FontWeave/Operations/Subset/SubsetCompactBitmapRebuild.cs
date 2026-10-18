@@ -22,9 +22,9 @@ namespace FontWeave.Operations.Subset;
 /// record survives only while its substitute ppem pair still names a surviving
 /// strike, records travel verbatim, and an all-dead record set drops the table.
 /// sbix re-slots every strike over the output domain with 'dupe' targets remapped
-/// (a dangling target refuses, RE3) and SVG re-spans the document records over each
-/// range's surviving span with only the referenced documents kept — bytes verbatim,
-/// no decompression, no recompression. Every rebuilt model re-answers through the
+/// (a dangling target refuses, RE3) and SVG re-spans the document records over
+/// each range's surviving output runs with only the referenced documents kept —
+/// bytes verbatim, no decompression, no recompression. Every rebuilt model re-answers through the
 /// compiler factories; any failure refuses with nothing published.</summary>
 public static partial class SubsetOperation
 {
@@ -728,21 +728,29 @@ public static partial class SubsetOperation
         if (!budget.Work(map.OutputGlyphCount, svgAt, out diagnostic))
             return ReadStatus.ResourceLimit;
         var survivors = SortedSurvivors(map);
-        // The span pass collects one surviving output span per input row — that
-        // query is order-independent, but the rows' own order is not: the wire
-        // contract (the DocumentRecords' strict ascent, V L84) binds the output
-        // table, and the surviving rows' output order is the map permutation's,
-        // not the input rows'. The rows sort by their output start before the
-        // factory re-answers the ascent; on the monotone orders the sort is the
-        // identity, so the traversal — the document dedup below included —
-        // replays the input order and the emission stays byte-identical.
+        var outputs = new int[survivors.Length];
+        var runs = new List<(ushort Start, ushort End)>();
+        // Each input row emits one wire row per maximal contiguous output run —
+        // the wire row is a contiguous interval (the DocumentRecords' strict
+        // ascent, V L84), so a row whose surviving outputs straddle a gap must
+        // cover itself as several rows; extrema endpoints would claim the
+        // in-between glyphs another row's survivors occupy. The runs are pairwise
+        // disjoint across the table (a row's own runs split on a gap; different
+        // rows' outputs are disjoint by the map's injectivity), but the surviving
+        // rows' output order is the map permutation's, not the input rows', so
+        // they sort by their output start before the factory re-answers the
+        // ascent. On the monotone orders every row's survivors are
+        // output-contiguous: one run per row, the sort is the identity, and the
+        // traversal — the document dedup below included — replays the input order
+        // with the emission byte-identical.
         var spans = new List<(ushort Start, ushort End, int PayloadIndex)>();
         foreach (var record in svg!.Records)
         {
-            if (!TrySurvivingSpan(map, survivors, record.StartGlyphID,
-                    record.EndGlyphID, out ushort firstOutput, out ushort lastOutput))
+            if (!TrySurvivingRuns(map, survivors, record.StartGlyphID,
+                    record.EndGlyphID, outputs, runs))
                 continue;
-            spans.Add((firstOutput, lastOutput, record.PayloadIndex));
+            foreach (var (runStart, runEnd) in runs)
+                spans.Add((runStart, runEnd, record.PayloadIndex));
         }
         if (spans.Count == 0)
         {

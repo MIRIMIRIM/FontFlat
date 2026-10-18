@@ -12,8 +12,9 @@ namespace FontWeave.Operations.Subset;
 /// surviving layer order; v1 walks the surviving BaseGlyphList roots (reachability
 /// pruning over the three edge classes, OQ-SE-1), rebuilds the LayerList from the
 /// entries the surviving PaintColrLayers nodes reference in their original relative
-/// order, remaps the glyph reference points and recomputes the clip rows' surviving
-/// spans; the variation slots travel verbatim (no GID domain). A dangling glyph
+/// order, remaps the glyph reference points and re-spans the clip rows over the
+/// surviving contiguous output runs; the variation slots travel verbatim (no
+/// GID domain). A dangling glyph
 /// reference — a PaintGlyph or PaintColrGlyph target the request did not select —
 /// is a finite refusal (RE3, OQ-SE-6); the PaintGlyph domain re-answer is this
 /// slice's pre-check because the v1 factory's owned walk does not cover it (SE
@@ -286,28 +287,34 @@ public static partial class SubsetOperation
                     break;
             }
         }
-        // The clip rows recompute over each range's surviving span; an empty span
-        // drops the row. The compact map's output order can permute the input order
-        // (the CFF1 SID/CID freeze), so the span query runs over the ascending
-        // input-GID survivor array and the row bounds are the survivors' output
-        // extrema — on the monotone TrueType order that is the endpoints' own image
-        // (SE card §2.1 ④).
+        // The clip rows recompute over each range's surviving outputs, one wire row
+        // per maximal contiguous output run; an empty range drops the row. The
+        // compact map's output order can permute the input order (the CFF1 SID/CID
+        // freeze), so the query runs over the ascending input-GID survivor array —
+        // on the monotone TrueType order every row's survivors are output-contiguous
+        // and one run per row is the endpoints' own image (SE card §2.1 ④).
         if (!budget.Work(map.OutputGlyphCount, at, out diagnostic))
             return ReadStatus.ResourceLimit;
         var survivors = SortedSurvivors(map);
+        var outputs = new int[survivors.Length];
+        var runs = new List<(ushort Start, ushort End)>();
         var newClips = new List<ColrClip>(model.ClipCount);
         foreach (var clip in model.Clips)
         {
-            if (!TrySurvivingSpan(map, survivors, clip.StartGlyphId, clip.EndGlyphId,
-                    out ushort firstOutput, out ushort lastOutput))
+            if (!TrySurvivingRuns(map, survivors, clip.StartGlyphId, clip.EndGlyphId,
+                    outputs, runs))
                 continue;
-            newClips.Add(new(firstOutput, lastOutput, clip.Box));
+            foreach (var (runStart, runEnd) in runs)
+                newClips.Add(new(runStart, runEnd, clip.Box));
         }
         // The rows' own order is a wire contract too (the ClipList's strict
         // ascent), and the surviving rows' output order is the map permutation's,
-        // not the input rows' — the freeze can invert them. They sort by their
-        // output start before the factory re-answers the ascent; on the monotone
-        // orders the sort is the identity and the emission stays byte-identical.
+        // not the input rows' — the freeze can invert them. The runs are pairwise
+        // disjoint (a row's own runs split on a gap; different rows' outputs are
+        // disjoint by the map's injectivity), so the sort by output start cannot
+        // produce an overlap before the factory re-answers the ascent; on the
+        // monotone orders the sort is the identity and the emission stays
+        // byte-identical.
         newClips = newClips.OrderBy(static clip => clip.StartGlyphId).ToList();
         var newBgl = new List<ColrBaseGlyphPaint>(visitedOrder.Count);
         foreach (var row in model.BaseGlyphPaints)
@@ -480,17 +487,23 @@ public static partial class SubsetOperation
         return sorted;
     }
 
-    /// <summary>The output span one input range's survivors occupy. The survivors
-    /// come off the ascending input-GID array (an empty range returns false) and
-    /// the emitted row bounds are their mapped extrema: on the TrueType monotone
-    /// order the survivors are contiguous in the output domain and this is exactly
-    /// the endpoints' image, while a permuting CFF1 order keeps every survivor
-    /// inside the row it survived into.</summary>
-    private static bool TrySurvivingSpan(GlyphRemap map, ushort[] survivors,
-        ushort start, ushort end, out ushort firstOutput, out ushort lastOutput)
+    /// <summary>One input range's surviving outputs as maximal contiguous output
+    /// runs, ascending: adjacent output GIDs share a run, a gap — a dead glyph or
+    /// another row's survivor — closes it. The survivors come off the ascending
+    /// input-GID array (an empty range returns false), the row's outputs arrive in
+    /// the map permutation's order, so the run split sorts them first. The runs are
+    /// pairwise disjoint across a whole rebuild: a row's own runs split on a gap by
+    /// construction, and different rows' outputs are disjoint by the map's
+    /// injectivity. This is the wire row's interval semantics made explicit — a wire
+    /// row covers one contiguous output interval, so a row whose survivors straddle
+    /// a gap must emit one row per run where the output extrema would claim the
+    /// in-between glyphs; the extrema endpoints are this split's run-count-one
+    /// special case, which every monotone order and every non-interleaving
+    /// permutation yields.</summary>
+    private static bool TrySurvivingRuns(GlyphRemap map, ushort[] survivors,
+        ushort start, ushort end, int[] outputs, List<(ushort Start, ushort End)> runs)
     {
-        firstOutput = 0;
-        lastOutput = 0;
+        runs.Clear();
         int low = 0, high = survivors.Length;
         while (low < high)
         {
@@ -498,17 +511,20 @@ public static partial class SubsetOperation
             if (survivors[mid] >= start) high = mid;
             else low = mid + 1;
         }
-        if (low >= survivors.Length || survivors[low] > end) return false;
-        int output = map.OutputOf(survivors[low]);
-        int min = output, max = output;
-        for (int i = low + 1; i < survivors.Length && survivors[i] <= end; i++)
+        int count = 0;
+        for (int i = low; i < survivors.Length && survivors[i] <= end; i++)
+            outputs[count++] = map.OutputOf(survivors[i]);
+        if (count == 0) return false;
+        Array.Sort(outputs, 0, count);
+        runs.Add(((ushort)outputs[0], (ushort)outputs[0]));
+        for (int i = 1; i < count; i++)
         {
-            output = map.OutputOf(survivors[i]);
-            if (output < min) min = output;
-            if (output > max) max = output;
+            int output = outputs[i];
+            if (output == runs[^1].End + 1)
+                runs[^1] = (runs[^1].Start, (ushort)output);
+            else
+                runs.Add(((ushort)output, (ushort)output));
         }
-        firstOutput = (ushort)min;
-        lastOutput = (ushort)max;
         return true;
     }
 }

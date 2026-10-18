@@ -307,8 +307,8 @@ public sealed class SubsetCompactNonMonotoneTests
 
     // COLR v1 ClipList over the non-monotone map: the probe fixture's clip [10, 20]
     // keeps two survivors whose outputs invert (input 10 rides the last output
-    // slot), so the row bounds are the survivors' output extrema [3, 5] — the
-    // output-order search narrowed the row to the wrong survivor [3, 3].
+    // slot), so the row bounds follow the survivors instead of the output-order
+    // search that narrowed the row to the wrong survivor [3, 3].
     [Fact]
     public void CompactColrClipsReSpanOverNonMonotoneMap()
     {
@@ -327,13 +327,16 @@ public sealed class SubsetCompactNonMonotoneTests
         Assert.Equal(ReadStatus.Done, colrView.TryReadTable(6, null,
             out var colrOut, out _));
         Assert.NotNull(colrOut!);
-        Assert.Equal(2, colrOut.ClipCount);
+        Assert.Equal(3, colrOut.ClipCount);
         // Clip [5, 6] maps to the contiguous (1, 2); clip [10, 20]'s survivors
-        // occupy outputs 3 and 5, and the row keeps every survivor inside.
+        // occupy outputs 3 and 5 and split there — output 4 is retained glyph 51,
+        // which no clip row owns, so one extrema row would claim it.
         Assert.Equal(((ushort)1, (ushort)2),
             (colrOut.Clips[0].StartGlyphId, colrOut.Clips[0].EndGlyphId));
-        Assert.Equal(((ushort)3, (ushort)5),
+        Assert.Equal(((ushort)3, (ushort)3),
             (colrOut.Clips[1].StartGlyphId, colrOut.Clips[1].EndGlyphId));
+        Assert.Equal(((ushort)5, (ushort)5),
+            (colrOut.Clips[2].StartGlyphId, colrOut.Clips[2].EndGlyphId));
         Assert.Equal(2, colrOut.BaseGlyphPaintCount);
         Assert.Equal((ushort)1, colrOut.BaseGlyphPaints[0].GlyphId);
         Assert.Equal((ushort)2, colrOut.BaseGlyphPaints[1].GlyphId);
@@ -383,5 +386,100 @@ public sealed class SubsetCompactNonMonotoneTests
         Assert.Equal((-10, -10, 10, 10),
             (colrOut.Clips[1].Box.XMin, colrOut.Clips[1].Box.YMin,
                 colrOut.Clips[1].Box.XMax, colrOut.Clips[1].Box.YMax));
+    }
+
+    // The interleaved-row residue: a strong permutation makes two rows' surviving
+    // outputs interleave (row [1,2] rides outputs {1,3}, row [3,4] rides {2,4}), so
+    // the sorted extrema rows [1,3] and [2,4] still overlapped and the factory
+    // refused. A wire row is a contiguous interval, so each row splits at the gap
+    // into one row per run: four single-glyph records, payload by content, and the
+    // document table keeps one entry per distinct payload.
+    [Fact]
+    public void CompactSvgInterleavedRowsSplitIntoContiguousRuns()
+    {
+        byte[] docA = [0x61, 0x41];
+        byte[] docB = [0x62, 0x42];
+        var svg = SvgWire([(1, 2, 0), (3, 4, 1)], [docA, docB]);
+        var face = CffFace([0, 1, 3, 2, 4], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 1, 2, 3, 4]),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        // charset [0, 1, 3, 2, 4] freezes [0, 1, 3, 2, 4]: input 2 rides output 3
+        // and input 3 rides output 2, interleaving the two rows' outputs.
+        Assert.Equal([0, 1, 3, 2, 4],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        Assert.Equal(TableAction.Rebuild,
+            report!.Decisions.Single(d => d.Tag == SvgTag).Action);
+        _ = SvgView.TryOpen(OutputTable(result, SvgTag), out var svgView,
+            out _, DataLocation.Anonymous(SvgLayout.Tag));
+        Assert.Equal(ReadStatus.Done, svgView.TryReadTable(out var svgOut, out _));
+        Assert.Equal(4, svgOut!.RecordCount);
+        Assert.Equal(((ushort)1, (ushort)1),
+            (svgOut.Records[0].StartGlyphID, svgOut.Records[0].EndGlyphID));
+        Assert.Equal(((ushort)2, (ushort)2),
+            (svgOut.Records[1].StartGlyphID, svgOut.Records[1].EndGlyphID));
+        Assert.Equal(((ushort)3, (ushort)3),
+            (svgOut.Records[2].StartGlyphID, svgOut.Records[2].EndGlyphID));
+        Assert.Equal(((ushort)4, (ushort)4),
+            (svgOut.Records[3].StartGlyphID, svgOut.Records[3].EndGlyphID));
+        // Every run keeps the payload its own input row carried (by content).
+        Assert.Equal(docA, svgOut.Documents[svgOut.Records[0].PayloadIndex]);
+        Assert.Equal(docB, svgOut.Documents[svgOut.Records[1].PayloadIndex]);
+        Assert.Equal(docA, svgOut.Documents[svgOut.Records[2].PayloadIndex]);
+        Assert.Equal(docB, svgOut.Documents[svgOut.Records[3].PayloadIndex]);
+        Assert.Equal(2, svgOut.DocumentCount);
+        Assert.Equal(docA, svgOut.Documents[0]);
+        Assert.Equal(docB, svgOut.Documents[1]);
+    }
+
+    // The ClipList mirror of the interleave: the SID column freezes the retained
+    // set as [0, 10, 5, 6, 20, 51], so clip [10, 20]'s survivors occupy outputs
+    // {1, 4} while clip [5, 6] occupies (2, 3) — the sorted extrema rows (1,4) and
+    // (2,3) overlap. The rows split on the gap: three clips, the straddling row
+    // covering its two runs and each keeping its own box (asserted by content).
+    [Fact]
+    public void CompactColrInterleavedClipRowsSplitIntoContiguousRuns()
+    {
+        int[] sids = new int[52];
+        sids[10] = 1;
+        sids[5] = 2;
+        sids[6] = 3;
+        sids[20] = 4;
+        sids[51] = 5;
+        int next = 6;
+        for (int gid = 1; gid < sids.Length; gid++)
+            if (sids[gid] == 0) sids[gid] = next++;
+        var face = CffFace(sids, (ColrTag, SubsetCompactColrTests.ColrV1WireForProbe()));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 5, 6, 10, 20, 51]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([0, 10, 5, 6, 20, 51],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        _ = ColrView.TryOpen(OutputTable(result, ColrTag), out var colrView,
+            out _, DataLocation.Anonymous(ColrLayout.Tag));
+        Assert.Equal(ReadStatus.Done, colrView.TryReadTable(6, null,
+            out var colrOut, out _));
+        Assert.NotNull(colrOut!);
+        Assert.Equal(3, colrOut.ClipCount);
+        // Clip [10, 20] splits into runs (1,1) and (4,4); clip [5, 6] covers (2,3)
+        // — the input's second row is the output's middle row.
+        Assert.Equal(((ushort)1, (ushort)1),
+            (colrOut.Clips[0].StartGlyphId, colrOut.Clips[0].EndGlyphId));
+        Assert.Equal((0, 0, 4, 4),
+            (colrOut.Clips[0].Box.XMin, colrOut.Clips[0].Box.YMin,
+                colrOut.Clips[0].Box.XMax, colrOut.Clips[0].Box.YMax));
+        Assert.Equal(((ushort)2, (ushort)3),
+            (colrOut.Clips[1].StartGlyphId, colrOut.Clips[1].EndGlyphId));
+        Assert.Equal((-10, -10, 10, 10),
+            (colrOut.Clips[1].Box.XMin, colrOut.Clips[1].Box.YMin,
+                colrOut.Clips[1].Box.XMax, colrOut.Clips[1].Box.YMax));
+        Assert.Equal(((ushort)4, (ushort)4),
+            (colrOut.Clips[2].StartGlyphId, colrOut.Clips[2].EndGlyphId));
+        Assert.Equal((0, 0, 4, 4),
+            (colrOut.Clips[2].Box.XMin, colrOut.Clips[2].Box.YMin,
+                colrOut.Clips[2].Box.XMax, colrOut.Clips[2].Box.YMax));
+        Assert.Equal(2, colrOut.BaseGlyphPaintCount);
     }
 }
