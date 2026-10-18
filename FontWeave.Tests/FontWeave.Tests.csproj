@@ -22,5 +22,8 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../FontWeave/FontWeave.csproj" />
+    <!-- The exe project reference resolves to the built FontWeave.Cli.dll, so the
+         receipt-projection tests pin the same surface the CLI process prints. -->
+    <ProjectReference Include="../FontWeave.Cli/FontWeave.Cli.csproj" />
   </ItemGroup>
 </Project>

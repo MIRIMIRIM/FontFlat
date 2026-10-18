@@ -13,4 +13,9 @@
   <ItemGroup>
     <ProjectReference Include="../FontWeave/FontWeave.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The receipt-projection tests read the internal Program members directly over
+         the exe project reference (the SDK resolves the reference to the built dll). -->
+    <InternalsVisibleTo Include="FontWeave.Tests" />
+  </ItemGroup>
 </Project>

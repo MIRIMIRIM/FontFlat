@@ -462,7 +462,7 @@ internal static class Program
         return SetOutcome(result, status, diagnostic, out exitCode);
     }
 
-    private static object SubsetReportProjection(SubsetReport report) => new
+    internal static object SubsetReportProjection(SubsetReport report) => new
     {
         mode = report.Mode.HasValue ? (int?)report.Mode.Value : null,
         modeName = report.Mode?.ToString(),
