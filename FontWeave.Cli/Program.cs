@@ -469,6 +469,9 @@ internal static class Program
         unselectedSlotCount = report.UnselectedSlotCount,
         closureAddedGids = report.ClosureAddedGids.ToArray(),
         layoutClosureAddedGids = report.LayoutClosureAddedGids.ToArray(),
+        seacClosureAddedGids = report.SeacClosureAddedGids.ToArray(),
+        subrPrunedGlobal = report.SubrPrunedGlobal,
+        subrPrunedLocalByFd = report.SubrPrunedLocalByFd.ToArray(),
         droppedTables = report.DroppedTables.ToArray(),
         optionRecords = report.OptionRecords.Select(record => new
         {

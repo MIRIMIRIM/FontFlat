@@ -578,6 +578,31 @@ public sealed class SubsetSubrPruneTests
         // prepared expectation is the S4 gate's §6.3 fixture case.
     }
 
+    // ---- the members the CLI receipt projects ---------------------------------------
+
+    [Fact]
+    public void SeacClosureAndPruneCountsRideOneCompactReport()
+    {
+        // The receipt projects the seac additions and both prune counts off one
+        // report, so a single compact request must fill all three together: the
+        // retained seac glyph pulls A and acute into the closure while the two
+        // uncalled local bodies prune (the S3/S4 members the CLI left unprojected).
+        int[] sids = [0, 34, 125, 171];
+        byte[] seac = [.. Num(0), .. Num(0), .. Num(65), .. Num(194), 14];
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(4)),
+            (SubsetFontFixture.CffTag, NameKeyedCff(sids,
+                [Endchar, Endchar, Endchar, seac],
+                locals: [[0x8b, 0x0b], [0x8b, 0x0b]])));
+        var status = SubsetOperation.TryPrepare(Request(face, [3]), out _,
+            out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal([1, 2], report!.SeacClosureAddedGids);
+        Assert.Equal(0, report.SubrPrunedGlobal);
+        Assert.Equal([2], report.SubrPrunedLocalByFd);
+    }
+
     // ---- the refusal keys (§4, §6 case 4) -------------------------------------------
 
     [Fact]
