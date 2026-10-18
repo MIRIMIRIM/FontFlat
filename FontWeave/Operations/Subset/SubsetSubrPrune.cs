@@ -14,12 +14,12 @@ namespace FontWeave.Operations.Subset;
 /// stage closes that obligation (S1c card §2.2's reopening clause): after the map
 /// freeze (the final retained set — composite, layout and seac additions included —
 /// is frozen there), a token-level reachability walk (the S3 closure's shared walker,
-/// OQ-S4-5, extended with reachability collection and a per-body stem memo) collects
+/// OQ-S4-5, extended with reachability collection) collects
 /// the bodies every retained glyph program's call graph reaches — the Global Subrs
 /// INDEX as one face-wide set, every FD's Local Subrs INDEX as its own bucket keyed by
 /// the glyph's FDSelect binding (OQ-S4-4 lean) — and parks a prune plan (survivor
-/// lists in original relative order, the OQ-S1c-6 shape, plus renumbering maps, the
-/// old/new bias pair per pruned INDEX and the stem memo) for the payload rebuilds.
+/// lists in original relative order, the OQ-S1c-6 shape, plus renumbering maps and
+/// the old/new bias pair per pruned INDEX) for the payload rebuilds.
 /// The bias semantics are the TN5177 §4.7 corrected form this slice first puts into
 /// production: bias tiers {107, 1131, 32768} over the CALLED INDEX's count, and
 /// index = operand + bias (the encoded operand = index − bias) — the same INDEX
@@ -72,12 +72,11 @@ public static partial class SubsetOperation
     /// <summary>The parked plan one compact CFF/CFF2 rebuild consumes: per-INDEX
     /// renumbering (null = that INDEX kept every body — its bodies still ride the
     /// rewrite walk under the identity map, because their calls into a pruned
-    /// sibling INDEX renumber), the per-body stem memo the
-    /// rewrite walk's mask widths read (the analysis's §2.1 memo), and, per reachable
-    /// global body, the FD context its single scan ran under (the rewrite walk's
-    /// locals table; multi-context global bodies with local calls refused at plan
-    /// time, §4 A3). Identity — nothing pruned anywhere — never parks a plan, so the
-    /// payload's verbatim path is the §3.5 byte-identity anchor.</summary>
+    /// sibling INDEX renumber) and, per reachable global body, the FD context its
+    /// single scan ran under (the rewrite walk's locals table; multi-context
+    /// global bodies with local calls refused at plan time, §4 A3). Identity —
+    /// nothing pruned anywhere — never parks a plan, so the payload's verbatim
+    /// path is the §3.5 byte-identity anchor.</summary>
     internal sealed class SubrPrunePlan
     {
         internal required SubrIndexPlan? Global { get; init; }
@@ -86,18 +85,15 @@ public static partial class SubsetOperation
         /// one Local Subrs INDEX, FD 0 by §2.2's same-method rule).</summary>
         internal required SubrIndexPlan?[] LocalByFd { get; init; }
 
-        internal required IReadOnlyDictionary<(int Fd, int Index), int> GlobalStems { get; init; }
-
-        internal required IReadOnlyDictionary<int, IReadOnlyDictionary<int, int>> LocalStems { get; init; }
-
         internal required IReadOnlyDictionary<int, int> GlobalContextFd { get; init; }
 
         /// <summary>Each reached body's single call-site entry selector — the
         /// rewrite frame's blend seed (TN5171 §5: a body's runtime selector is the
         /// one its callers armed at the call site, not the FD default). Global
-        /// bodies by index, local bodies nested by FD then index (the LocalStems
-        /// shape). The plan-time guard refused any multi-valued entry set, so
-        /// every value here is the unique context the body's rewrite serves.</summary>
+        /// bodies by index, local bodies nested by FD then index. A multi-valued
+        /// entry set refuses for a selector-sensitive body and resolves to one
+        /// recorded entry otherwise, whose reading the body's parse never
+        /// consults.</summary>
         internal required IReadOnlyDictionary<int, int> GlobalEntryVsindex { get; init; }
 
         internal required IReadOnlyDictionary<int, IReadOnlyDictionary<int, int>> LocalEntryVsindex { get; init; }
@@ -110,20 +106,21 @@ public static partial class SubsetOperation
 
     /// <summary>The reachability analysis one compact CFF face accumulates over the
     /// frozen map's output order: the face-wide global body set, every FD's local
-    /// body bucket, the per-body stem memo (global bodies keyed by their scanning FD
-    /// context — their callsubr targets, and therefore their stem contribution, are
-    /// the caller's FD's), the per-body call-site vsindex entry sets (the CFF2
-    /// rewrite frames' selector seeds; on the CFF1 forms the walks carry the
-    /// constant 0, so the sets stay singletons and the memo is dead weight), and
-    /// the facts the multi-FD divergence guard reads.</summary>
+    /// body bucket, the per-body call-site vsindex entry sets (the CFF2 rewrite
+    /// frames' selector seeds; on the CFF1 forms the walks carry the constant 0,
+    /// so the sets stay singletons and the map is dead weight), and the facts the
+    /// multi-FD divergence guard reads. No per-body scan memo rides here: the scan
+    /// walks execute every reached body fresh — a shared body's stem contribution
+    /// and stack effect depend on the caller's stack (hint-helper subrs consume
+    /// the caller's passed arguments), so no body-keyed memo can replay them
+    /// faithfully, and the rewrite keeps its frames faithful the same way, by
+    /// running its callees' tokens instead of a parked summary.</summary>
     private sealed class SubrAnalysis
     {
         internal readonly HashSet<int> GlobalReach = [];
         internal readonly Dictionary<int, HashSet<int>> GlobalBodyFds = [];
-        internal readonly Dictionary<(int Fd, int Index), int> GlobalStems = [];
         internal readonly HashSet<int> GlobalLocalCall = [];
         internal readonly Dictionary<int, HashSet<int>> LocalReach = [];
-        internal readonly Dictionary<int, Dictionary<int, int>> LocalStems = [];
         internal readonly Dictionary<int, HashSet<int>> GlobalEntryVsindex = [];
         internal readonly Dictionary<int, Dictionary<int, HashSet<int>>> LocalEntryVsindex = [];
 
@@ -135,16 +132,6 @@ public static partial class SubsetOperation
                 LocalReach[fd] = set;
             }
             return set;
-        }
-
-        private Dictionary<int, int> LocalStemMap(int fd)
-        {
-            if (!LocalStems.TryGetValue(fd, out var map))
-            {
-                map = [];
-                LocalStems[fd] = map;
-            }
-            return map;
         }
 
         private Dictionary<int, HashSet<int>> LocalEntryMap(int fd)
@@ -203,30 +190,8 @@ public static partial class SubsetOperation
             }
         }
 
-        internal bool TryGetStems(int kind, int fd, int index, out int stems)
-        {
-            if (kind == SubrWalk.KindGlobal)
-                return GlobalStems.TryGetValue((fd, index), out stems);
-            if (LocalStems.TryGetValue(fd, out var map) &&
-                map.TryGetValue(index, out stems!))
-                return true;
-            stems = 0;
-            return false;
-        }
-
-        internal void SetStems(int kind, int fd, int index, int value)
-        {
-            if (kind == SubrWalk.KindGlobal)
-                GlobalStems[(fd, index)] = value;
-            else
-                LocalStemMap(fd)[index] = value;
-        }
-
         internal SubrPrunePlan ToPlan(SubrIndexPlan? global, SubrIndexPlan?[] localByFd)
         {
-            var localStems = new Dictionary<int, IReadOnlyDictionary<int, int>>();
-            foreach ((int fd, var map) in LocalStems)
-                localStems[fd] = map;
             var contextFd = new Dictionary<int, int>();
             foreach ((int index, var fds) in GlobalBodyFds)
                 contextFd[index] = fds.First();
@@ -248,8 +213,6 @@ public static partial class SubsetOperation
             {
                 Global = global,
                 LocalByFd = localByFd,
-                GlobalStems = GlobalStems,
-                LocalStems = localStems,
                 GlobalContextFd = contextFd,
                 GlobalEntryVsindex = globalEntries,
                 LocalEntryVsindex = localEntries,
@@ -546,9 +509,11 @@ public static partial class SubsetOperation
     /// parked plan: a token-level walk that copies bytes verbatim except the
     /// callsubr/callgsubr sites, whose operand re-encodes as new index − new bias in
     /// the minimal push form; a site whose value the renumbering leaves unchanged
-    /// keeps its original operand bytes (the judgment is by value, not width). Mask
-    /// skip widths read the plan's stem memo (§2.1) so the walk tracks the
-    /// runtime's hint count across call frames. The CFF2 form's
+    /// keeps its original operand bytes (the judgment is by value, not width).
+    /// Each call's body also executes its tokens on the shared stack at the site,
+    /// so the hint count and stack depth the caller's mask widths and later
+    /// operands read stay the runtime's own (a body-keyed summary cannot: a
+    /// hint-helper subr's stems are the caller's passed arguments). The CFF2 form's
     /// <paramref name="vsindexByFd"/> column seeds each program's blend selector
     /// from its FD's Private DICT (TN5171 §5; null on the CFF1 forms, where no
     /// blend exists). Sites whose operand does not sit in
@@ -563,11 +528,12 @@ public static partial class SubsetOperation
         for (int i = 0; i < programs.Length; i++)
         {
             int fd = programFds[i];
-            var rewrite = new RewriteState(plan, fd, plan.LocalByFd[fd], plan.Global);
+            var rewrite = new RewriteState(plan.LocalByFd[fd], plan.Global);
             var walk = new SubrWalk(budget, modelAt.At(DataField.GlyphId, 0, i),
                 fdLocals[fd], globals, cff2, seac: false, analysis: null, fd,
                 rewrite: rewrite, regionCounts, vsindexByFd?[fd] ?? 0);
-            ReadStatus status = walk.RunRewrite(programs[i], out diagnostic);
+            ReadStatus status = walk.RunRewrite(programs[i], SubrWalk.KindGlyph, i,
+                out diagnostic);
             if (status != ReadStatus.Done) return status;
             rewritten[i] = [.. rewrite.Output];
         }
@@ -576,15 +542,15 @@ public static partial class SubsetOperation
     }
 
     /// <summary>Rewrites one pruned INDEX's surviving bodies in survivor order, each
-    /// under the FD context its mask widths read the memo under (global bodies: their
-    /// single scanning context from the plan; local bodies: their own FD). The CFF2
+    /// under its FD context (global bodies: their single scanning context from the
+    /// plan; local bodies: their own FD). The CFF2
     /// form's <paramref name="entryVsindexByOld"/> column seeds each body's blend
-    /// selector from the plan's per-body entry memo — the context its callers armed
+    /// selector from the plan's per-body entry column — the context its callers armed
     /// at the call site, not the FD default (null on the CFF1 forms, where the
     /// FD-default channel stands and no blend exists).</summary>
     private static ReadStatus RewriteSurvivorBodies(byte[][] bodies, int[] survivorOld,
-        int[] bodyFds, byte[][] globals, byte[][][] fdLocals, SubrPrunePlan plan,
-        bool cff2, int[]? regionCounts, int[]? vsindexByFd,
+        int frameKind, int[] bodyFds, byte[][] globals, byte[][][] fdLocals,
+        SubrPrunePlan plan, bool cff2, int[]? regionCounts, int[]? vsindexByFd,
         IReadOnlyDictionary<int, int>? entryVsindexByOld, DataLocation modelAt,
         BuildBudget budget, out byte[][] rewritten, out FontDiagnostic diagnostic)
     {
@@ -607,11 +573,12 @@ public static partial class SubsetOperation
                     modelAt.At(DataField.GlyphId, 0, old), (uint)old, 0UL);
                 return ReadStatus.UnsupportedFormat;
             }
-            var rewrite = new RewriteState(plan, fd, plan.LocalByFd[fd], plan.Global);
+            var rewrite = new RewriteState(plan.LocalByFd[fd], plan.Global);
             var walk = new SubrWalk(budget, modelAt.At(DataField.GlyphId, 0, old),
                 fdLocals[fd], globals, cff2, seac: false, analysis: null, fd,
                 rewrite: rewrite, regionCounts, initialVsindex);
-            ReadStatus status = walk.RunRewrite(bodies[old], out diagnostic);
+            ReadStatus status = walk.RunRewrite(bodies[old], frameKind, old,
+                out diagnostic);
             if (status != ReadStatus.Done) return status;
             rewritten[s] = [.. rewrite.Output];
         }
@@ -656,13 +623,15 @@ public static partial class SubsetOperation
         // body's owner instead.
         SubrIndexPlan effectiveGlobal = globalPlan ?? IdentityIndexPlan(globals.Length);
         status = RewriteSurvivorBodies(globals, effectiveGlobal.Survivors,
-            new int[effectiveGlobal.NewCount], globals, fdLocals, plan, cff2: false,
+            SubrWalk.KindGlobal, new int[effectiveGlobal.NewCount], globals,
+            fdLocals, plan, cff2: false,
             regionCounts: null, vsindexByFd: null, entryVsindexByOld: null,
             model.Location, budget, out globalSubrs, out diagnostic);
         if (status != ReadStatus.Done) return status;
         SubrIndexPlan effectiveLocal = localPlan ?? IdentityIndexPlan(locals.Length);
         status = RewriteSurvivorBodies(locals, effectiveLocal.Survivors,
-            new int[effectiveLocal.NewCount], globals, fdLocals, plan, cff2: false,
+            SubrWalk.KindLocal, new int[effectiveLocal.NewCount], globals,
+            fdLocals, plan, cff2: false,
             regionCounts: null, vsindexByFd: null, entryVsindexByOld: null,
             model.Location, budget, out localSubrs, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -696,28 +665,18 @@ public static partial class SubsetOperation
     // ---- the shared token walker (OQ-S4-5) ---------------------------------------
 
     /// <summary>Rewrite-walk per-program state: the renumbering maps and new biases
-    /// the call sites read, the plan's stem memo (with the FD context the mask
-    /// widths read it under) and the program's output bytes. A null plan slot keeps
+    /// the call sites read, and the program's output bytes. A null plan slot keeps
     /// its INDEX's own bias — the walk falls back to the called table's current
     /// bias, since an unpruned INDEX renumbers to itself (the nullable biases).</summary>
     private sealed class RewriteState
     {
-        internal RewriteState(SubrPrunePlan plan, int fd, SubrIndexPlan? localPlan,
-            SubrIndexPlan? globalPlan)
+        internal RewriteState(SubrIndexPlan? localPlan, SubrIndexPlan? globalPlan)
         {
-            Plan = plan;
-            Fd = fd;
             LocalMap = localPlan?.NewIndexOfOld;
             GlobalMap = globalPlan?.NewIndexOfOld;
             NewLocalBias = localPlan?.NewBias;
             NewGlobalBias = globalPlan?.NewBias;
         }
-
-        internal SubrPrunePlan Plan { get; }
-
-        /// <summary>The FD context the stems memo reads under (the entry glyph's FD,
-        /// or a surviving global body's single scanning context).</summary>
-        internal int Fd { get; }
 
         internal int[]? LocalMap { get; }
 
@@ -757,16 +716,18 @@ public static partial class SubsetOperation
     /// reach (the S4 analysis, card §2.1): reachable bodies collect into the
     /// analysis; an unknown or wild call operand refuses (A1/A2); a truncated
     /// token, a mask skip past the program, a body that neither returns nor ends
-    /// and nesting deeper than TN5177 appendix B's ten frames refuse (A3); the
-    /// per-body stem memo feeds re-entries without rescans. The CFF2 mode tracks
+    /// and nesting deeper than TN5177 appendix B's ten frames refuse (A3); every
+    /// reached body executes fresh — a body's stems and stack effect ride the
+    /// caller's arguments, so no per-body summary replays them. The CFF2 mode tracks
     /// the blend result count and the vsindex region counts (TN5171 §5), so the
     /// stems declared over blend results still total and the mask widths stay in
     /// sync — a blend whose count, selector or depth the walk cannot serve
     /// refuses (A3) instead of desyncing.
     ///
-    /// rewrite (the S4 payload, card §3.3): no descent — every call site re-encodes
-    /// its operand from the parked maps, mask widths read the plan's stem memo, and
-    /// bytes move verbatim except the re-encoded operands.</summary>
+    /// rewrite (the S4 payload, card §3.3): every call site re-encodes its operand
+    /// from the parked maps and executes the called body's tokens for the shared
+    /// stack and hint count, and bytes move verbatim except the re-encoded
+    /// operands.</summary>
     private sealed class SubrWalk
     {
         internal const int KindGlyph = 0, KindLocal = 1, KindGlobal = 2;
@@ -817,12 +778,10 @@ public static partial class SubsetOperation
 
         internal int AcharCode { get; private set; }
 
-        /// <summary>The rewrite walk's pending call operand (new index − new bias)
-        /// and the called body's memoized stem contribution (the frame's mask
-        /// widths read it, the §2.1 memo doing the no-descent walk's accounting).
-        /// </summary>
+        /// <summary>The rewrite walk's pending call operand (new index − new bias);
+        /// the called body's stems and stack effect ride the effect descent, not a
+        /// parked summary.</summary>
         private int _pendingOperand;
-        private int _pendingStems;
 
         /// <summary>An endchar anywhere in the call graph ends the whole program
         /// (TN5177 §4.2 Note 6): every walker frame stops, so a charstring that
@@ -868,10 +827,17 @@ public static partial class SubsetOperation
         }
 
         /// <summary>The S4 payload entry: copies the program with re-encoded call
-        /// operands into the walk's rewrite state.</summary>
-        internal ReadStatus RunRewrite(byte[] program, out FontDiagnostic diagnostic)
+        /// operands into the walk's rewrite state. The frame's key rides the call
+        /// path for the walk's duration — an effect descent that re-enters the body
+        /// being rewritten must stop at the same cycle branch the reach's scan
+        /// did, not recurse to the nesting refusal.</summary>
+        internal ReadStatus RunRewrite(byte[] program, int frameKind, int frameIndex,
+            out FontDiagnostic diagnostic)
         {
-            return RewriteBody(program, out diagnostic);
+            _path.Add((frameKind, frameIndex));
+            ReadStatus status = RewriteBody(program, out diagnostic);
+            _path.RemoveAt(_path.Count - 1);
+            return status;
         }
 
         // ---- the shared scan loop (seac + reach) ------------------------------
@@ -884,15 +850,6 @@ public static partial class SubsetOperation
             if (_path.Contains(key)) return ReadStatus.Done; // cycle branch: stop here
             if (_analysis is not null && kind != KindGlyph)
                 _analysis.Mark(kind, _fd, index);
-            if (_analysis is not null && kind != KindGlyph &&
-                _analysis.TryGetStems(kind, _fd, index, out int memoStems))
-            {
-                // Memo hit (card §2.1): the body completed once under this FD
-                // context, so its stem contribution re-applies to this frame —
-                // the caller's masks stay correctly sized — without a rescan.
-                _hints += memoStems;
-                return ReadStatus.Done;
-            }
             if (!_budget.Work(1, _at, out diagnostic)) return ReadStatus.ResourceLimit;
             _path.Add(key);
             if (!_seac && kind != KindGlyph && _path.Count - 1 > MaxSubrNesting)
@@ -1024,10 +981,13 @@ public static partial class SubsetOperation
                     continue;
                 }
                 if (b is 4 or 5 or 6 or 7 or 8 or 21 or 22 or 24 or 25 or 26 or 27
-                    or 30 or 34 or 35 or 36 or 37)
+                    or 30 or 31 or 34 or 35 or 36 or 37)
                 {
                     // Path construction: every value on the stack is this operator's
                     // operand (plus the optional width), well-formed programs included.
+                    // hvcurveto (31, TN5177 appendix A) rides this list with vhcurveto;
+                    // missing it let the operands persist into a later endchar, whose
+                    // 4-operand shape then read them as a seac form that never existed.
                     _stack.Clear();
                     continue;
                 }
@@ -1035,8 +995,6 @@ public static partial class SubsetOperation
                 // conservative direction (values persist rather than vanish).
             }
             _path.RemoveAt(_path.Count - 1);
-            if (_analysis is not null && kind != KindGlyph)
-                _analysis.SetStems(kind, _fd, index, _hints - hintsBefore);
             if (!_seac && !_cff2 && !ended && n > 0)
             {
                 // TN5177 §4.2 Note 6: a CFF1 program ends at return or at an
@@ -1052,8 +1010,8 @@ public static partial class SubsetOperation
 
         /// <summary>callsubr/callgsubr. Scan policies resolve the popped operand
         /// through the CALLED INDEX's bias and descend; the rewrite policy computes
-        /// the re-encoded operand for the loop's emission instead (no descent — its
-        /// mask widths come from the plan's stem memo).</summary>
+        /// the re-encoded operand for the loop's emission and descends as well, so
+        /// the shared stack and hint count stay the runtime's own.</summary>
         private ReadStatus Call(bool local, Slot top, out FontDiagnostic diagnostic)
         {
             diagnostic = default;
@@ -1083,23 +1041,18 @@ public static partial class SubsetOperation
                 int newBias = (local ? _rewrite.NewLocalBias : _rewrite.NewGlobalBias)
                     ?? SubrBias(table.Length);
                 _pendingOperand = newIdx - newBias;
-                // The called body's stem contribution keeps this frame's hint count
-                // runtime-faithful without descending (the analysis's memo; a miss
-                // is a pipeline bug the refusal surfaces, never a silent width).
-                int stems = local
-                    ? (_rewrite.Plan.LocalStems.TryGetValue(_rewrite.Fd,
-                            out var localMap) &&
-                        localMap.TryGetValue(old, out int localStems)
-                            ? localStems : -1)
-                    : (_rewrite.Plan.GlobalStems.TryGetValue((_rewrite.Fd, old),
-                            out int globalStems)
-                            ? globalStems : -1);
-                if (stems < 0)
-                    return ReadWire.Fail(ReadStatus.UnsupportedFormat,
-                        DiagnosticCode.UnsupportedOperation, _at, out diagnostic,
-                        (uint)old, 0UL);
-                _pendingStems = stems;
-                return ReadStatus.Done;
+                // The called body's tokens execute here — on this shared stack, so
+                // the caller's mask widths and later call operands stay
+                // runtime-faithful: a body-keyed memo cannot (a hint-helper subr's
+                // stem contribution is the caller's passed arguments, no summary
+                // replays it). The reach pass vetted the body; the rescan's
+                // verdicts are the same execution's. The descent's own sites run
+                // through this same branch and would clobber the pending value —
+                // the frame's site reclaims it before the loop's emission reads it.
+                int siteOperand = _pendingOperand;
+                ReadStatus status = ScanBody(kind, old, table[old], out diagnostic);
+                _pendingOperand = siteOperand;
+                return status;
             }
             if (local && _analysis is { } analysis && _path.Count > 0 &&
                 _path[^1].Kind == KindGlobal)
@@ -1129,8 +1082,8 @@ public static partial class SubsetOperation
                 // read the walk's current vsindex at this entry — recorded per
                 // body so the rewrite frames seed the callers' actual context,
                 // not the FD default a caller may have switched away from (≥2
-                // distinct entries refuse at plan time; the memo-hit and cycle
-                // branches still see the record, the runtime does execute them).
+                // distinct selector-sensitive entries refuse at plan time; the
+                // cycle branch still sees the record, the runtime does execute it).
                 _analysis?.MarkEntryVsindex(kind, _fd, idx, _vsindex);
                 return ScanBody(kind, idx, table[idx], out diagnostic);
             }
@@ -1224,9 +1177,14 @@ public static partial class SubsetOperation
                 DiagnosticCode.UnsupportedOperation, _at, out diagnostic,
                 (uint)at, (uint)length);
 
-        /// <summary>The 12 X escape family: arithmetic and logic produce unknown
-        /// values, random always does, and the stack tools keep their fixed arities
-        /// (TN5176 Type 2 operator table).</summary>
+        /// <summary>The 12 X escape family over the TN5177 appendix A table: arithmetic
+        /// and logic produce unknown values, random always does, put/get round-trip the
+        /// transient array as unknown slots (TN5177 §4.5), the stack tools keep their
+        /// fixed arities, and the flex family is path construction — it consumes every
+        /// stacked value. The reserved codes take the loop's unmodeled default (no
+        /// assumed effect, values persist): 12 0 is the appendix C dotsection no-op,
+        /// and 12 8/12 13 — the CFF1-era store/load — lost their operands to the
+        /// appendix D 2000 revision, so no arity remains to model them by.</summary>
         private void ApplyEscape(int op)
         {
             switch (op)
@@ -1247,35 +1205,48 @@ public static partial class SubsetOperation
                     Pop(2);
                     _stack.Add(default);
                     break;
-                case 5 or 30:            // not / index → unknown
+                case 5:                  // not → unknown
                     Pop(1);
                     _stack.Add(default);
                     break;
                 case 18:                 // drop
                     Pop(1);
                     break;
+                case 20:                 // put: the transient array absorbs val, i
+                    Pop(2);
+                    break;
+                case 21:                 // get: a stored or never-stored slot reads unknown
+                    Pop(1);
+                    _stack.Add(default);
+                    break;
                 case 23:                 // random → unknown
                     _stack.Add(default);
                     break;
-                case 28:                 // dup: the copy carries the original's state
+                case 27:                 // dup: the copy carries the original's state
                     if (_stack.Count > 0) _stack.Add(_stack[^1]);
                     break;
-                case 29:                 // exch
+                case 28:                 // exch
                     if (_stack.Count >= 2)
                         (_stack[^1], _stack[^2]) = (_stack[^2], _stack[^1]);
                     break;
-                case 31:                 // roll: rotate the top n by j (TN5177)
+                case 29:                 // index
+                    IndexStack();
+                    break;
+                case 30:                 // roll: rotate the top n by j (TN5177 §4.4)
                     RollStack();
+                    break;
+                case 34 or 35 or 36 or 37: // hflex / flex / hflex1 / flex1: path
+                    _stack.Clear();        // construction — every stacked value consumed
                     break;
                 default:                 // unmodeled: assume no effect
                     break;
             }
         }
 
-        /// <summary>roll (12 31): pops the control pair n, j and rotates the top n
-        /// values by j — TN5177's worked form "4 2 roll" turns [65, 194, 66, 193]
-        /// into [66, 193, 65, 194] (the top j of the n values move below the
-        /// block's remainder). A control pair the remaining stack cannot serve
+        /// <summary>roll (12 30): pops the control pair n, j and rotates the top n
+        /// values by j — TN5177 §4.4's worked form "4 2 roll" turns
+        /// [65, 194, 66, 193] into [66, 193, 65, 194] (the top j of the n values move
+        /// below the block's remainder). A control pair the remaining stack cannot serve
         /// (unknown, n < 0, n past the depth, the degenerate zero-count-nonzero-j)
         /// poisons the frame's values instead: a guessed roll would let the later
         /// call operands decide from a stack shape the program never had.</summary>
@@ -1300,6 +1271,30 @@ public static partial class SubsetOperation
                     return;
                 }
                 if (count > 0 || by == 0) return; // the defined no-op forms
+            }
+            for (int k = 0; k < _stack.Count; k++) _stack[k] = default;
+        }
+
+        /// <summary>index (12 29): pops the position i and pushes a copy of the
+        /// element i deep, the copy carrying the source slot's state (TN5177 §4.4;
+        /// a negative i copies the top). A position the remaining stack cannot answer —
+        /// an unknown control value, or a depth past the block, the spec's undefined
+        /// domain — poisons the frame's values instead: the runtime's copy source is a
+        /// shape the scan cannot name, and a guessed copy would let the later call
+        /// operands decide from a value the program never had.</summary>
+        private void IndexStack()
+        {
+            Slot i = _stack.Count > 0 ? _stack[^1] : default;
+            Pop(1);
+            if (i.Known)
+            {
+                int depth = i.Value < 0 ? 0 : i.Value;
+                if (depth < _stack.Count)
+                {
+                    Slot copy = _stack[_stack.Count - 1 - depth];
+                    _stack.Add(copy);
+                    return;
+                }
             }
             for (int k = 0; k < _stack.Count; k++) _stack[k] = default;
         }
@@ -1342,7 +1337,6 @@ public static partial class SubsetOperation
                     if (_stack.Count > 0) _stack.RemoveAt(_stack.Count - 1);
                     ReadStatus status = Call(b == 10, top, out diagnostic);
                     if (status != ReadStatus.Done) return status;
-                    _hints += _pendingStems; // the called body's stems executed here
                     if (freshAt < 0)
                     {
                         // The call's operand did not come from an immediately
@@ -1422,8 +1416,11 @@ public static partial class SubsetOperation
                     if (status != ReadStatus.Done) return status;
                 }
                 else if (b is 4 or 5 or 6 or 7 or 8 or 21 or 22 or 24 or 25 or 26
-                    or 27 or 30 or 34 or 35 or 36 or 37)
+                    or 27 or 30 or 31 or 34 or 35 or 36 or 37)
                 {
+                    // The scan's path-construction list (hvcurveto included): the
+                    // rewrite must consume the stack exactly as the reach walk did or
+                    // the copied mask bytes span a different program region.
                     _stack.Clear();
                 }
                 Flush(program, ref copied, i, output);

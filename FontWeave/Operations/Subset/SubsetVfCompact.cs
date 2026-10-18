@@ -315,7 +315,8 @@ public static partial class SubsetOperation
             contextFds[s] = prune.GlobalContextFd.TryGetValue(
                 effectiveGlobal.Survivors[s], out int ctx) ? ctx : 0;
         pruneStatus = RewriteSurvivorBodies(globals, effectiveGlobal.Survivors,
-            contextFds, globals, fdLocals, prune, cff2: true,
+            SubrWalk.KindGlobal, contextFds, globals, fdLocals, prune,
+            cff2: true,
             RegionCountsByVsindex(model.Store), vsindexByFd,
             prune.GlobalEntryVsindex, model.Location,
             budget, out globalSubrs, out diagnostic);
@@ -355,7 +356,7 @@ public static partial class SubsetOperation
             // has no survivors to seed, so the null slot stays unconsulted.
             prune.LocalEntryVsindex.TryGetValue(fd, out var entryByOld);
             pruneStatus = RewriteSurvivorBodies(fdLocals[fd], effectiveLocal.Survivors,
-                bodyFds, globals, fdLocals, prune, cff2: true,
+                SubrWalk.KindLocal, bodyFds, globals, fdLocals, prune, cff2: true,
                 RegionCountsByVsindex(model.Store), vsindexByFd, entryByOld,
                 model.Location, budget, out var renewedLocals, out diagnostic);
             if (pruneStatus != ReadStatus.Done) return pruneStatus;

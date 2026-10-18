@@ -410,12 +410,13 @@ public sealed class SubsetSubrPruneTests
     [Fact]
     public void MaskWidthReadsTheCalledBodyStemsAcrossTheRewrite()
     {
-        // The stem memo (§2.1): the called body declares one hint, and the glyph's
-        // hintmask width depends on that contribution — the analysis memoizes the
-        // body's stem count and the rewrite walk applies it without descending, so
-        // the mask byte is sized by the runtime count and the program re-emits
-        // byte-identical (the operand's value is unchanged too). A memo miss refuses;
-        // a miscount derails the mask skip — either way the assertions fail.
+        // The called body's stems (§2.1): the body declares one hint, and the
+        // glyph's hintmask width depends on that contribution — the rewrite walk
+        // executes the called body's tokens on the shared stack at the call site,
+        // so the mask byte is sized by the runtime count and the program re-emits
+        // byte-identical (the operand's value is unchanged too). A missed or
+        // miscounted contribution derails the mask skip — either way the
+        // assertions fail.
         byte[] stemBody = [.. Num(1), .. Num(1), 1, 11];
         byte[] glyph = [.. Num(-107), 10, 19, 0x80, .. Num(100), .. Num(100), 21, 14];
         var face = Face(
@@ -431,6 +432,67 @@ public sealed class SubsetSubrPruneTests
         var cff = OutputCff(result!);
         Assert.Equal(1, cff.LocalSubrCount);
         Assert.Equal(stemBody, cff.LocalSubrs[0].ToArray());
+        Assert.Equal(glyph, cff.CharStrings[1].ToArray());
+    }
+
+    [Fact]
+    public void HintHelperSubrCountsStemsPerCaller()
+    {
+        // A hint-helper subr (the real-font shape: a body whose hstemhm consumes
+        // the caller's passed arguments — stix-two-math's local 1039) has an
+        // entry-DEPENDENT stem contribution: the first caller's twelve arguments
+        // count six hints, the second caller's two count one. A body-keyed summary
+        // replayed the first caller's count everywhere, so the second glyph's mask
+        // skip spanned a byte that was never mask and the walk derailed on its own
+        // program; the call-site execution counts each caller's own pairs and both
+        // programs re-emit byte-identical.
+        byte[] helper = [18, .. Num(0), .. Num(0), 11]; // hstemhm; 0 0; return
+        byte[] twelveArgs = [.. Num(1), .. Num(2), .. Num(3), .. Num(4), .. Num(5),
+            .. Num(6), .. Num(7), .. Num(8), .. Num(9), .. Num(10), .. Num(11),
+            .. Num(12)];
+        // Glyph 1: six pairs ride the helper's hstemhm, the helper's own 0 0 and
+        // the glyph's 100 100 make two more pairs — hints 8, mask one byte.
+        byte[] glyph1 = [.. twelveArgs, .. Num(-107), 10, .. Num(100), .. Num(100),
+            19, 0x80, .. Num(0), .. Num(0), 21, 14];
+        // Glyph 2: one pair rides the helper, two more pairs follow — hints 3,
+        // mask one byte; the replayed six would have skipped two.
+        byte[] glyph2 = [.. Num(1), .. Num(2), .. Num(-107), 10, .. Num(20),
+            .. Num(30), 19, 0x80, .. Num(0), .. Num(0), 21, 14];
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(3)),
+            (SubsetFontFixture.CffTag, NameKeyedCff([0, 34, 35],
+                [Endchar, glyph1, glyph2], locals: [helper])));
+        var status = SubsetOperation.TryPrepare(Request(face, [1, 2]), out var result,
+            out _, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        var cff = OutputCff(result!);
+        Assert.Equal(glyph1, cff.CharStrings[1].ToArray());
+        Assert.Equal(glyph2, cff.CharStrings[2].ToArray());
+        Assert.Equal(helper, cff.LocalSubrs[0].ToArray());
+    }
+
+    [Fact]
+    public void DeadTailAfterACalledEndcharCopiesVerbatim()
+    {
+        // The called body's endchar ends the whole program (TN5177 §4.2 Note 6):
+        // the glyph's trailing bytes are dead. The scan's frames stop with the
+        // callee — no fall-off refusal on the glyph — and the rewrite preserves
+        // the dead tail verbatim without executing its tokens as live ones.
+        byte[] ender = [.. Num(1), .. Num(1), 1, 14];
+        byte[] glyph = [.. Num(-107), 10, .. Num(9), .. Num(9), 21, 14];
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(2)),
+            (SubsetFontFixture.CffTag, NameKeyedCff([0, 34],
+                [Endchar, glyph], locals: [ender])));
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out _, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        var cff = OutputCff(result!);
+        Assert.Equal(ender, cff.LocalSubrs[0].ToArray());
         Assert.Equal(glyph, cff.CharStrings[1].ToArray());
     }
 

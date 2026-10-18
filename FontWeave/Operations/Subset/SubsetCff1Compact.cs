@@ -270,7 +270,8 @@ public static partial class SubsetOperation
                 contextFds[s] = prune.GlobalContextFd.TryGetValue(
                     effectiveGlobal.Survivors[s], out int ctx) ? ctx : 0;
             pruneStatus = RewriteSurvivorBodies(globals, effectiveGlobal.Survivors,
-                contextFds, globals, fdLocals, prune, cff2: false,
+                SubrWalk.KindGlobal, contextFds, globals, fdLocals, prune,
+                cff2: false,
                 regionCounts: null, vsindexByFd: null, entryVsindexByOld: null,
                 model.Location, budget, out globalSubrs, out diagnostic);
             if (pruneStatus != ReadStatus.Done) return pruneStatus;
@@ -287,8 +288,8 @@ public static partial class SubsetOperation
                 var bodyFds = new int[effectiveLocal.NewCount];
                 Array.Fill(bodyFds, fd);
                 pruneStatus = RewriteSurvivorBodies(fdLocals[fd],
-                    effectiveLocal.Survivors, bodyFds, globals,
-                    fdLocals, prune, cff2: false, regionCounts: null,
+                    effectiveLocal.Survivors, SubrWalk.KindLocal, bodyFds,
+                    globals, fdLocals, prune, cff2: false, regionCounts: null,
                     vsindexByFd: null, entryVsindexByOld: null, model.Location,
                     budget, out var renewedLocals, out diagnostic);
                 if (pruneStatus != ReadStatus.Done) return pruneStatus;

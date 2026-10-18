@@ -392,14 +392,14 @@ public sealed class SubsetSubrPruneCrossIndexTests
     [Fact]
     public void RollRotatesTheTopNByJBeforeTheSeacFormReads()
     {
-        // TN5177's "4 2 roll" turns [65, 194, 66, 193] into [66, 193, 65, 194].
-        // The walker only popped the control pair before, so the endchar seac
-        // form read bchar/achar off the unrotated top — B + grave, SIDs 35/124 —
-        // and the closure published the wrong components. The rotated top is
-        // 65/194: A + acute, SIDs 34/125, the additions the frozen order takes.
+        // TN5177 §4.4's "4 2 roll" (12 30, appendix A) turns [65, 194, 66, 193]
+        // into [66, 193, 65, 194]. An earlier draft filed roll at the reserved
+        // escape 12 31 and left 12 30 consuming one value, so the endchar seac
+        // form read bchar/achar off a desynced stack; the rotated top is 65/194:
+        // A + acute, SIDs 34/125, the additions the frozen order takes.
         int[] sids = [0, 34, 125, 35, 124, 171];
         byte[] rollSeac = [.. Num(65), .. Num(194), .. Num(66), .. Num(193),
-            .. Num(4), .. Num(2), 0x0c, 0x1f, 0x0e];
+            .. Num(4), .. Num(2), 0x0c, 0x1e, 0x0e];
         var programs = new byte[6][];
         for (int gid = 0; gid < 5; gid++) programs[gid] = [14];
         programs[5] = rollSeac;

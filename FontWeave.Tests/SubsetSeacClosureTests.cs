@@ -384,6 +384,182 @@ public sealed class SubsetSeacClosureTests
         Assert.Null(result);
     }
 
+    // ---- the stack-tool operators the seac form rides through (TN5177 §4.4-§4.6) ----
+
+    [Fact]
+    public void RollBringsTheCodesToTheTopBeforeEndchar()
+    {
+        // 65 194 10 20 4 2 roll: the control pair rotates the top four so the
+        // codes land in the endchar's last two slots (TN5177 §4.4; the operator
+        // is the escape 12 30, appendix A — an earlier draft filed it at the
+        // reserved 12 31 and let 12 30 eat a value).
+        byte[] program = [.. Num(65), .. Num(194), .. Num(10), .. Num(20),
+            .. Num(4), .. Num(2), 0x0c, 0x1e, 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out _, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal([1, 2], report!.SeacClosureAddedGids);
+    }
+
+    [Fact]
+    public void IndexCopiesADeepSlotIntoTheSeacForm()
+    {
+        // 10 20 65 194 1 index: the copy of the element one deep rides behind the
+        // original code — endchar reads (194, 65), base acute and accent A, and
+        // both additions land.
+        byte[] program = [.. Num(10), .. Num(20), .. Num(65), .. Num(194),
+            .. Num(1), 0x0c, 0x1d, 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out _, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal([1, 2], report!.SeacClosureAddedGids);
+    }
+
+    [Fact]
+    public void ExchSwapsTheCodesIntoPlace()
+    {
+        byte[] program = [.. Num(0), .. Num(0), .. Num(194), .. Num(65),
+            0x0c, 0x1c, 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out _, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal([1, 2], report!.SeacClosureAddedGids);
+    }
+
+    [Fact]
+    public void DupFeedsBothSeacSlotsFromOnePush()
+    {
+        // 0 0 65 dup 194 endchar: the duplicate carries the original's known
+        // state; the base slot reads the copy, the accent the literal.
+        byte[] program = [.. Num(0), .. Num(0), .. Num(65), 0x0c, 0x1b,
+            .. Num(194), 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out _, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal([1, 2], report!.SeacClosureAddedGids);
+    }
+
+    [Fact]
+    public void PutGetRoundTripBelowTheCodesKeepsTheForm()
+    {
+        // 98 0 put 0 get: the transient-array round trip (TN5177 §4.5) leaves an
+        // unknown slot — harmless below the codes, the conservative slot model
+        // keeps the top two known and the form resolves.
+        byte[] program = [.. Num(98), .. Num(0), 0x0c, 0x14, .. Num(0), 0x0c, 0x15,
+            .. Num(0), .. Num(0), .. Num(65), .. Num(194), 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out _, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal([1, 2], report!.SeacClosureAddedGids);
+    }
+
+    [Fact]
+    public void GetUnknownSlotInTheCodesRefuses()
+    {
+        // The get's never-stored slot lands in the top two: the value is not
+        // statically decidable, so the seac contract refuses rather than guess
+        // (the category-3 shape the div/random pins share).
+        byte[] program = [.. Num(98), .. Num(0), 0x0c, 0x14, .. Num(10), .. Num(20),
+            .. Num(0), 0x0c, 0x15, .. Num(65), 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
+        Assert.Equal(4UL, diagnostic.Expected);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void NotResultBelowTheCodesKeepsTheForm()
+    {
+        // The logic family's unknown result is harmless below the codes: the
+        // form's top two stay literals.
+        byte[] program = [.. Num(3), 0x0c, 0x05, .. Num(0), .. Num(0),
+            .. Num(65), .. Num(194), 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out _, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal([1, 2], report!.SeacClosureAddedGids);
+    }
+
+    [Fact]
+    public void NotResultInTheCodesRefuses()
+    {
+        byte[] program = [.. Num(0), .. Num(0), .. Num(65), .. Num(1), 0x0c, 0x05, 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void IfelseResultBelowTheCodesKeepsTheForm()
+    {
+        // 3 4 1 2 ifelse leaves its unknown branch value below the codes.
+        byte[] program = [.. Num(3), .. Num(4), .. Num(1), .. Num(2), 0x0c, 0x16,
+            .. Num(0), .. Num(0), .. Num(65), .. Num(194), 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out _, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal([1, 2], report!.SeacClosureAddedGids);
+    }
+
+    [Fact]
+    public void RandomBelowTheCodesKeepsTheForm()
+    {
+        byte[] program = [0x0c, 0x17, .. Num(0), .. Num(0), .. Num(65),
+            .. Num(194), 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out _, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal([1, 2], report!.SeacClosureAddedGids);
+    }
+
+    [Fact]
+    public void FlexOperandsDoNotPoseAsSeacOperands()
+    {
+        // The flex family is path construction: hflex's seven operands are
+        // consumed, so endchar sees the two trailing values only — short of the
+        // four-operand form, nothing is added. A walker that let them persist
+        // would read depth nine and detect a seac form that never existed.
+        byte[] program = [.. Num(1), .. Num(2), .. Num(3), .. Num(4), .. Num(5),
+            .. Num(6), .. Num(7), 0x0c, 0x22, .. Num(65), .. Num(194), 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out _, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Empty(report!.SeacClosureAddedGids);
+    }
+
+    [Fact]
+    public void HvcurvetoOperandsDoNotPoseAsSeacOperands()
+    {
+        // The stix-two-math refusal shape: path operands left standing by a
+        // missing hvcurveto entry (31, TN5177 appendix A) filled the endchar's
+        // four-slot window with contour data and the closure read a seac form
+        // whose "codes" were coordinates — one of them unmapped, refusing the
+        // face. The operator consumes its operands; nothing is detected.
+        byte[] program = [.. Num(1), .. Num(2), .. Num(3), .. Num(4), 31, 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out var result, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Empty(report!.SeacClosureAddedGids);
+    }
+
+    [Fact]
+    public void ReservedEscapeLeavesTheStackUntouched()
+    {
+        // 12 31 is reserved (TN5177 appendix A) — the unmodeled default assumes
+        // no stack effect, values persist; the form behind it still resolves.
+        byte[] program = [.. Num(0), .. Num(0), .. Num(65), .. Num(194),
+            0x0c, 0x1f, 14];
+        var status = SubsetOperation.TryPrepare(Request(CompositeFace(program), [3],
+            SubsetMode.RetainGids), out _, out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal([1, 2], report!.SeacClosureAddedGids);
+    }
+
     // ---- resolution triples (the internal Standard-code accessor) ----------------
 
     [Fact]
