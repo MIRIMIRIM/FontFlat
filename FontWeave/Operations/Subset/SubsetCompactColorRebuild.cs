@@ -50,7 +50,7 @@ public static partial class SubsetOperation
         byte[]? bytes;
         if (model!.Version == 1)
         {
-            status = RebuildColrV1(model, colrAt, map, out var rebuiltModel,
+            status = RebuildColrV1(model, colrAt, map, budget, out var rebuiltModel,
                 out dropped, out diagnostic);
             if (status != ReadStatus.Done || dropped) return status;
             status = ColrTableCompiler.TryCompile(rebuiltModel!, out bytes,
@@ -172,8 +172,8 @@ public static partial class SubsetOperation
     // ---- v1: reachability pruning + renumbering on the owned graph ----
 
     private static ReadStatus RebuildColrV1(ColrTable model, DataLocation at,
-        GlyphRemap map, out ColrTable? rebuilt, out bool dropped,
-        out FontDiagnostic diagnostic)
+        GlyphRemap map, BuildBudget budget, out ColrTable? rebuilt,
+        out bool dropped, out FontDiagnostic diagnostic)
     {
         rebuilt = null;
         dropped = false;
@@ -287,16 +287,21 @@ public static partial class SubsetOperation
             }
         }
         // The clip rows recompute over each range's surviving span; an empty span
-        // drops the row, and the ascending non-overlap relations hold through the
-        // order-preserving map (SE card §2.1 ④).
+        // drops the row. The compact map's output order can permute the input order
+        // (the CFF1 SID/CID freeze), so the span query runs over the ascending
+        // input-GID survivor array and the row bounds are the survivors' output
+        // extrema — on the monotone TrueType order that is the endpoints' own image
+        // (SE card §2.1 ④).
+        if (!budget.Work(map.OutputGlyphCount, at, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var survivors = SortedSurvivors(map);
         var newClips = new List<ColrClip>(model.ClipCount);
         foreach (var clip in model.Clips)
         {
-            if (!TrySurvivingSpan(map, clip.StartGlyphId, clip.EndGlyphId,
-                    out ushort firstSurvivor, out ushort lastSurvivor))
+            if (!TrySurvivingSpan(map, survivors, clip.StartGlyphId, clip.EndGlyphId,
+                    out ushort firstOutput, out ushort lastOutput))
                 continue;
-            newClips.Add(new((ushort)map.OutputOf(firstSurvivor),
-                (ushort)map.OutputOf(lastSurvivor), clip.Box));
+            newClips.Add(new(firstOutput, lastOutput, clip.Box));
         }
         var newBgl = new List<ColrBaseGlyphPaint>(visitedOrder.Count);
         foreach (var row in model.BaseGlyphPaints)
@@ -457,35 +462,47 @@ public static partial class SubsetOperation
         }
     }
 
-    /// <summary>The first and last retained input GIDs of [start, end], via two
-    /// binary searches over the ascending output-to-input order.</summary>
-    private static bool TrySurvivingSpan(GlyphRemap map, ushort start, ushort end,
-        out ushort firstSurvivor, out ushort lastSurvivor)
+    /// <summary>The retained set in ascending input-GID order — the domain every
+    /// surviving-span query answers over. The compact map's output order is the
+    /// SID/CID identity order on a CFF1 face and can permute the input order, so
+    /// the output-to-input order itself must never answer a first/last-survivor
+    /// query; the copy is built once per table rebuild.</summary>
+    private static ushort[] SortedSurvivors(GlyphRemap map)
     {
-        firstSurvivor = 0;
-        lastSurvivor = 0;
-        var order = map.OutputToInput;
-        int low = 0, high = order.Length;
+        var sorted = map.OutputToInput.ToArray();
+        Array.Sort(sorted);
+        return sorted;
+    }
+
+    /// <summary>The output span one input range's survivors occupy. The survivors
+    /// come off the ascending input-GID array (an empty range returns false) and
+    /// the emitted row bounds are their mapped extrema: on the TrueType monotone
+    /// order the survivors are contiguous in the output domain and this is exactly
+    /// the endpoints' image, while a permuting CFF1 order keeps every survivor
+    /// inside the row it survived into.</summary>
+    private static bool TrySurvivingSpan(GlyphRemap map, ushort[] survivors,
+        ushort start, ushort end, out ushort firstOutput, out ushort lastOutput)
+    {
+        firstOutput = 0;
+        lastOutput = 0;
+        int low = 0, high = survivors.Length;
         while (low < high)
         {
             int mid = low + (high - low) / 2;
-            if (order[mid] >= start) high = mid;
+            if (survivors[mid] >= start) high = mid;
             else low = mid + 1;
         }
-        if (low >= order.Length || order[low] > end) return false;
-        firstSurvivor = order[low];
-        int inner = low, high2 = order.Length - 1;
-        while (inner <= high2)
+        if (low >= survivors.Length || survivors[low] > end) return false;
+        int output = map.OutputOf(survivors[low]);
+        int min = output, max = output;
+        for (int i = low + 1; i < survivors.Length && survivors[i] <= end; i++)
         {
-            int mid = inner + (high2 - inner) / 2;
-            if (order[mid] <= end)
-            {
-                low = mid;
-                inner = mid + 1;
-            }
-            else high2 = mid - 1;
+            output = map.OutputOf(survivors[i]);
+            if (output < min) min = output;
+            if (output > max) max = output;
         }
-        lastSurvivor = order[low];
+        firstOutput = (ushort)min;
+        lastOutput = (ushort)max;
         return true;
     }
 }

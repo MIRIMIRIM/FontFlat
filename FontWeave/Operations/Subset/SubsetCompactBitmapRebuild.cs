@@ -722,13 +722,19 @@ public static partial class SubsetOperation
         if (status != ReadStatus.Done) return status;
         status = svgView.TryReadTable(out var svg, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
+        // The span query rides the ascending input-GID survivor array: the compact
+        // map's output order can permute the input order (the CFF1 SID/CID freeze),
+        // so the output-to-input order itself must never answer a span query.
+        if (!budget.Work(map.OutputGlyphCount, svgAt, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var survivors = SortedSurvivors(map);
         var newRecords = new List<SvgDocumentRecord>();
         var newDocuments = new List<byte[]>();
         var documentIndex = new Dictionary<int, int>();
         foreach (var record in svg!.Records)
         {
-            if (!TrySurvivingSpan(map, record.StartGlyphID, record.EndGlyphID,
-                    out ushort firstSurvivor, out ushort lastSurvivor))
+            if (!TrySurvivingSpan(map, survivors, record.StartGlyphID,
+                    record.EndGlyphID, out ushort firstOutput, out ushort lastOutput))
                 continue;
             if (!documentIndex.TryGetValue(record.PayloadIndex, out int newIndex))
             {
@@ -736,8 +742,7 @@ public static partial class SubsetOperation
                 documentIndex[record.PayloadIndex] = newIndex;
                 newDocuments.Add(svg.Documents[record.PayloadIndex]);
             }
-            newRecords.Add(new((ushort)map.OutputOf(firstSurvivor),
-                (ushort)map.OutputOf(lastSurvivor), newIndex));
+            newRecords.Add(new(firstOutput, lastOutput, newIndex));
         }
         if (newRecords.Count == 0)
         {
