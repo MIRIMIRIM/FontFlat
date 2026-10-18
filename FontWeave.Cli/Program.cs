@@ -47,7 +47,10 @@ internal static class Program
                 "subset takes exactly one execution root: --gids LIST is comma-separated decimal or 0x-hexadecimal GIDs, given\n" +
                 "order preserved; --codepoints CPS is a comma-separated list of U+XXXX hexadecimal Unicode scalar values, given\n" +
                 "order preserved; --text TEXT is a literal string whose characters form a set (deduplicated, order-free, no\n" +
-                "normalization). The three roots are mutually exclusive; give exactly one. --codepoints and --text resolve\n" +
+                "normalization). Each root value also accepts @path to read it from a UTF-8 file: list files widen the\n" +
+                "separators to comma or whitespace with the same given-order, no-range token semantics, and --text takes the\n" +
+                "file content literally; a missing, oversized or unreadable file is a usage error. The three roots are\n" +
+                "mutually exclusive; give exactly one. --codepoints and --text resolve\n" +
                 "through the typed cmap read and refuse a scalar with no Unicode-semantic mapping. --scope-* with --text is\n" +
                 "the text root's derived scope declaration; with --gids/--codepoints it is the explicit layout scope.\n" +
                 "subset --scope-* TAGS lists are comma-separated four-character tags; an empty value cuts that dimension to\n" +
@@ -81,7 +84,7 @@ internal static class Program
         catch (Exception error) { return Fail("InternalError", error.ToString(), 5); }
     }
 
-    private static Dictionary<string, object?> Execute(string[] args, out int exitCode)
+    internal static Dictionary<string, object?> Execute(string[] args, out int exitCode)
     {
         exitCode = 0;
         if (args.Length < 2) throw new CliException("Usage", "A command and input path are required.");
@@ -362,7 +365,7 @@ internal static class Program
             root = new SubsetGlyphRoot
             {
                 Kind = SubsetRootKind.TextLayout,
-                Text = Required(options, "text"),
+                Text = ExpandListFile(Required(options, "text"), "text", limits.MaxInputBytes).Text,
                 ScriptTags = scriptTags,
                 LanguageTags = languageTags,
                 FeatureTags = featureTags
@@ -375,12 +378,12 @@ internal static class Program
                 ? new SubsetGlyphRoot
                 {
                     Kind = SubsetRootKind.UnicodeCodepoints,
-                    Codepoints = ParseCodepoints(Required(options, "codepoints"))
+                    Codepoints = ParseCodepoints(Required(options, "codepoints"), limits.MaxInputBytes)
                 }
                 : new SubsetGlyphRoot
                 {
                     Kind = SubsetRootKind.ExplicitGlyphSet,
-                    Gids = ParseGids(Required(options, "gids"))
+                    Gids = ParseGids(Required(options, "gids"), limits.MaxInputBytes)
                 };
             layoutScope = scriptTags is null && languageTags is null && featureTags is null
                 ? null : new SubsetLayoutScope
@@ -541,10 +544,11 @@ internal static class Program
         return result;
     }
 
-    private static ushort[] ParseGids(string value)
+    internal static ushort[] ParseGids(string value, int maximumBytes)
     {
+        ListInput list = ExpandListFile(value, "gids", maximumBytes);
         List<ushort> gids = [];
-        foreach (string token in value.Split(','))
+        foreach (string token in ListTokens(list))
         {
             if (ushort.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out ushort gid) ||
                 token.Length > 2 && token.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
@@ -558,10 +562,11 @@ internal static class Program
         return [.. gids];
     }
 
-    private static uint[] ParseCodepoints(string value)
+    internal static uint[] ParseCodepoints(string value, int maximumBytes)
     {
+        ListInput list = ExpandListFile(value, "codepoints", maximumBytes);
         List<uint> codepoints = [];
-        foreach (string token in value.Split(','))
+        foreach (string token in ListTokens(list))
         {
             if (token.Length > 2 && token.StartsWith("U+", StringComparison.OrdinalIgnoreCase) &&
                 uint.TryParse(token.AsSpan(2), NumberStyles.AllowHexSpecifier,
@@ -573,6 +578,40 @@ internal static class Program
         }
         return [.. codepoints];
     }
+
+    internal readonly record struct ListInput(string Text, bool FromFile);
+
+    // '@path' moves a root value's source from the argv text to a UTF-8 file. The read is
+    // bounded by the same budget as the font input and malformed UTF-8 is a usage error
+    // (strict decoding) so a text root never silently carries replacement characters.
+    internal static ListInput ExpandListFile(string value, string option, int maximumBytes)
+    {
+        if (!value.StartsWith('@')) return new(value, false);
+        string path = value[1..];
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length > maximumBytes)
+                throw new CliException("Usage",
+                    $"--{option} file '{path}' exceeds the {maximumBytes}-byte input budget.");
+            using var reader = new StreamReader(stream,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true),
+                detectEncodingFromByteOrderMarks: true);
+            return new(reader.ReadToEnd(), true);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException
+            or ArgumentException or NotSupportedException)
+        {
+            throw new CliException("Usage", $"--{option} file '{path}' could not be read: {error.Message}");
+        }
+    }
+
+    // Inline lists stay comma-separated exactly as frozen; only the @file form widens the
+    // separator set to whitespace because an argfile is line-oriented. Neither form
+    // reorders or deduplicates: the caller's given sequence is the contract.
+    private static string[] ListTokens(ListInput list) => list.FromFile
+        ? list.Text.Split([' ', '\t', '\n', '\r', '\f', '\v', ','], StringSplitOptions.RemoveEmptyEntries)
+        : list.Text.Split(',');
 
     private static uint[]? ParseTagList(Dictionary<string, string?> options, string key)    {
         if (!options.TryGetValue(key, out string? value) || value is null) return null;
@@ -1020,7 +1059,7 @@ internal static class Program
         return code;
     }
 
-    private sealed class CliException(string code, string message) : Exception(message)
+    internal sealed class CliException(string code, string message) : Exception(message)
     {
         public string Code { get; } = code;
     }
