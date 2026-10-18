@@ -1448,16 +1448,19 @@ public static partial class SubsetOperation
             status = view.TryGetSubtableExtent(i, out ushort format, out uint offset,
                 out _, out diagnostic);
             if (status != ReadStatus.Done) return false;
-            // {2, 8, 10, 13} sit outside the authoritative rebuild set {4, 12}; format 14
-            // carries UVS semantics this slice does not serve (OQ-S0-9; S0-RF-007..010).
-            if (format is 2 or 8 or 10 or 13 or 14)
+            // {2, 8, 10, 13} sit outside the authoritative rebuild set {4, 12}. Format
+            // 14 no longer refuses the face (OQ-F14, revising OQ-S0-9): subsetting
+            // serves no UVS semantics, and the (0,5) record drops through the rebuild's
+            // consumed-not-emitted routing, so a non-VS request over a face that
+            // carries format 14 is well-defined.
+            if (format is 2 or 8 or 10 or 13)
             {
                 state.Diagnostic = new(DiagnosticCode.CmapFormatUnsupported,
                     view.Location.AtLocal(DataField.Offset, offset, i), format);
                 diagnostic = state.Diagnostic;
                 return false;
             }
-            if (format is not (0 or 4 or 6 or 12))
+            if (format is not (0 or 4 or 6 or 12 or 14))
             {
                 // The profile gate requires every cmap subtable to be typed-readable
                 // (card §1.2); an unknown format refuses rather than passing through raw.

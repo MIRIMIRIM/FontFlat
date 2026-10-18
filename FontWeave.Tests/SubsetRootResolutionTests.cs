@@ -2,9 +2,11 @@
 //
 // Three faces drive the slice: the canonical-cmap TrueType fixture (the
 // SubsetRebuildTests shape) answers the resolution and seeding pins; a Mac-only
-// cmap proves the non-Unicode record's consumed-not-consulted stance; the S2c
-// GSUB synthetic face carries the derived-scope pins (the three code-23
-// contradictions, the census match counts, the derived no-op byte identity).
+// cmap proves the non-Unicode record's consumed-not-consulted stance, and the
+// (0,5) fmt14 synthetic face (OQ-F14) extends that stance to the
+// variation-sequence record; the S2c GSUB synthetic face carries the derived-scope
+// pins (the three code-23 contradictions, the census match counts, the derived
+// no-op byte identity).
 // Every refusal pins outcome, diagnostic code and the null-result/no-partial-set
 // shape (W1 §4.5); the identity tier compares the resolved root's bytes with the
 // equal explicit root's. The R7 belt (a resolved GID outside numGlyphs) has no
@@ -194,6 +196,36 @@ public sealed class SubsetRootResolutionTests
         Assert.Null(result);
         FontDiagnostic retained = Assert.Single(report!.Diagnostics);
         Assert.Equal(DiagnosticCode.InvalidValue, retained.Code);
+    }
+
+    // OQ-F14: the (0,5) record takes the same consumed-not-consulted stance — a normal
+    // code point resolves through the Unicode-semantic records only. Done proves the
+    // fmt14 subtable's unsupported TryMapCharacter path never ran.
+    [Fact]
+    public void Format14RecordIsNeverConsultedForScalarResolution()
+    {
+        var face = FaceOver(4, SubsetFontFixture.CmapWithUvs((0x41, 1), (0x42, 2)));
+        var status = SubsetOperation.TryPrepare(CodepointRequest(face, [0x41]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+    }
+
+    // Posture 6 with format 14 present in the face: a VS value refuses before any
+    // query — the face carrying UVS data opens no third state (OQ-F14 keeps posture 6).
+    [Theory]
+    [InlineData(0xFE00u)]
+    [InlineData(0xE0100u)]
+    public void VariationSelectorRefusesWithFormat14Present(uint selector)
+    {
+        var face = FaceOver(4, SubsetFontFixture.CmapWithUvs((0x41, 1), (0x42, 2)));
+        var status = SubsetOperation.TryPrepare(CodepointRequest(face, [selector]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+        Assert.Equal((ulong)selector, diagnostic.Detail);
+        Assert.Null(result);
     }
 
     [Fact]

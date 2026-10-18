@@ -217,6 +217,69 @@ internal static class SubsetFontFixture
         return bytes;
     }
 
+    /// <summary>One valid format 14 subtable: a single variation selector carrying the
+    /// given non-default mappings (in the given order) and no default-UVS table.
+    /// Test-side independent encoding.</summary>
+    internal static byte[] UvsSubtable(uint varSelector,
+        params (uint UnicodeValue, ushort Gid)[] nonDefault)
+    {
+        int length = 10 + 11 + 4 + 5 * nonDefault.Length;
+        var bytes = new byte[length];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(0), 14);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(2), (uint)length);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(6), 1);       // one selector
+        bytes[10] = (byte)((varSelector >> 16) & 0xFF);                  // u24 varSelector
+        bytes[11] = (byte)((varSelector >> 8) & 0xFF);
+        bytes[12] = (byte)(varSelector & 0xFF);
+        // defaultUVSOffset (13..16) stays zero; the non-default table follows the record.
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(17), 10 + 11);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(21), (uint)nonDefault.Length);
+        for (int i = 0; i < nonDefault.Length; i++)
+        {
+            bytes[25 + 5 * i] = (byte)((nonDefault[i].UnicodeValue >> 16) & 0xFF);  // u24
+            bytes[26 + 5 * i] = (byte)((nonDefault[i].UnicodeValue >> 8) & 0xFF);
+            bytes[27 + 5 * i] = (byte)(nonDefault[i].UnicodeValue & 0xFF);
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(28 + 5 * i), nonDefault[i].Gid);
+        }
+        return bytes;
+    }
+
+    /// <summary>Canonical cmap plus a (0,5) Unicode variation sequence record over one
+    /// real format 14 subtable (selector U+FE0F mapping 0x41 to glyph 3 non-default),
+    /// mirroring the record shape real corpora carry (stix/noto). Test-side independent
+    /// encoding.</summary>
+    internal static byte[] CmapWithUvs(params (uint Code, ushort Gid)[] mappings)
+    {
+        var sorted = new List<(uint Code, ushort Gid)>(mappings);
+        sorted.Sort(static (a, b) => a.Code.CompareTo(b.Code));
+        byte[] uvs = UvsSubtable(0xFE0F, (0x41, 3));
+        byte[] format4 = CanonicalFormat4([.. sorted]);
+        byte[] format12 = CanonicalFormat12([.. sorted]);
+        var bytes = new byte[4 + 8 * 3 + uvs.Length + format4.Length + format12.Length];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(2), 3);
+        WriteRecord(bytes, 4, 0, 5, 28);
+        WriteRecord(bytes, 12, 3, 1, (uint)(28 + uvs.Length));
+        WriteRecord(bytes, 20, 3, 10, (uint)(28 + uvs.Length + format4.Length));
+        uvs.CopyTo(bytes.AsSpan(28));
+        format4.CopyTo(bytes.AsSpan(28 + uvs.Length));
+        format12.CopyTo(bytes.AsSpan(28 + uvs.Length + format4.Length));
+        return bytes;
+    }
+
+    /// <summary>A one-record cmap whose only record is (0,5) over one real format 14
+    /// subtable (selector U+FE0F, one non-default 0x41 mapping): the pure-UVS cmap the
+    /// S0 freeze registered as its C5 real-corpus witness shape.</summary>
+    internal static byte[] CmapUvsOnly(ushort uvsGid)
+    {
+        byte[] uvs = UvsSubtable(0xFE0F, (0x41, uvsGid));
+        var bytes = new byte[4 + 8 + uvs.Length];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(0), 0);       // version
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(2), 1);
+        WriteRecord(bytes, 4, 0, 5, 12);
+        uvs.CopyTo(bytes.AsSpan(12));
+        return bytes;
+    }
+
     private static void WriteRecord(byte[] bytes, int at, ushort platform, ushort encoding,
         uint offset)
     {

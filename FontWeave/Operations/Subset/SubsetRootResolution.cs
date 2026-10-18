@@ -16,9 +16,9 @@ namespace FontWeave.Operations.Subset;
 /// Every failure is a finite refusal and never produces a partial GID set (W1 §1.2):
 /// a code point with no Unicode-semantic mapping (including the GID-0 resolutions the
 /// typed read reports as unmapped) refuses (R1); a variation-selector value refuses
-/// outright — posture 6 has no third state, and the format-14 admission gate already
-/// removed UVS semantics, so a legacy record's incidental mapping of a VS code point
-/// is never consulted; a code point with two
+/// outright — posture 6 has no third state, and the variation-sequence record (0,5)
+/// sits outside the queried record set (OQ-F14), so a legacy record's incidental
+/// mapping of a VS code point is never consulted; a code point with two
 /// distinct mappings across the Unicode-semantic records refuses (R2 — the caller's
 /// input set is not well-defined; the rebuild's first-wins rule adjudicates only the
 /// code points the root did not commit, SR card §7.2); a text with an unpaired
@@ -115,10 +115,11 @@ public static partial class SubsetOperation
         {
             uint code = scalars[s];
             // Posture 6, the explicit arm: variation selectors have no third state.
-            // A face carrying format 14 was refused at the admission gate, so a VS
-            // value here can never resolve through UVS semantics — and a legacy
-            // Unicode record that happens to map the code point (the R1 hole this
-            // arm closes) is still the posture-2 refusal, checked before any query.
+            // The (0,5) variation-sequence record is never queried (the rebuild's own
+            // predicate excludes it, OQ-F14), so a VS value here can never resolve
+            // through UVS semantics — and a legacy Unicode record that happens to map
+            // the code point (the R1 hole this arm closes) is still the posture-2
+            // refusal, checked before any query.
             if (code is >= 0xFE00 and <= 0xFE0F || code is >= 0xE0100 and <= 0xE01EF)
             {
                 diagnostic = new(DiagnosticCode.InvalidValue,

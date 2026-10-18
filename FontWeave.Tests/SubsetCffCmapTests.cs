@@ -202,18 +202,18 @@ public sealed class SubsetCffCmapTests
         Assert.Empty(report.ClosureAddedGids);
     }
 
-    // ---- the fmt14 gate holds on CFF faces (real-corpus witness shape) ----
+    // ---- the (0,5) fmt14 record drops on CFF faces (the former S0 freeze C5
+    //      real-corpus witness; revised by OQ-F14) ----
 
     [Fact]
-    public void CffFaceWithFormat14CmapRefuses()
+    public void CffFaceWithUvsOnlyCmapDropsTheRecord()
     {
         var tables = new List<(uint Tag, byte[] Bytes)>
         {
             (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
             (SubsetFontFixture.MaxpTag, Maxp05(3)),
             (SubsetFontFixture.CffTag, NameKeyedCff(3)),
-            (SubsetFontFixture.CmapTag,
-                SubsetFontFixture.CmapShell(14, platform: 0, encoding: 5)),
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapUvsOnly(1)),
         };
         FontFaceRef face = SubsetFontFixture.Face(true, [.. tables]);
         var status = SubsetOperation.TryPrepare(new SubsetRequest
@@ -221,10 +221,21 @@ public sealed class SubsetCffCmapTests
             Face = face,
             Root = new SubsetGlyphRoot { Kind = SubsetRootKind.ExplicitGlyphSet, Gids = [0] },
             Mode = SubsetMode.RetainGids,
-        }, out var result, out _, out var diagnostic);
-        Assert.Equal(ReadStatus.UnsupportedFormat, status);
-        Assert.Equal(DiagnosticCode.CmapFormatUnsupported, diagnostic.Code);
-        Assert.Equal(14UL, diagnostic.Detail);
-        Assert.Null(result);
+        }, out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+        // The (0,5) record was consumed as evidence and never merged; the rebuild still
+        // emits the canonical pair (OQ-F14: subsetting serves no UVS semantics).
+        var consumed = Assert.Single(report!.CmapConsumedNotEmitted);
+        Assert.Equal((0, 5), (consumed.PlatformId, consumed.EncodingId));
+        byte[] output = new byte[result!.Font.OutputLength];
+        Assert.Equal(ReadStatus.Done, result.Font.TryCopyTo(output, out _, out _));
+        byte[] cmapOut = TableOf(output, SubsetFontFixture.CmapTag);
+        Assert.Equal(2, BinaryPrimitives.ReadUInt16BigEndian(cmapOut.AsSpan(2)));
+        Assert.Equal(3, BinaryPrimitives.ReadUInt16BigEndian(cmapOut.AsSpan(4)));
+        Assert.Equal(1, BinaryPrimitives.ReadUInt16BigEndian(cmapOut.AsSpan(6)));
+        Assert.Equal(3, BinaryPrimitives.ReadUInt16BigEndian(cmapOut.AsSpan(12)));
+        Assert.Equal(10, BinaryPrimitives.ReadUInt16BigEndian(cmapOut.AsSpan(14)));
     }
 }

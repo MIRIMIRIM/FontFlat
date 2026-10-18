@@ -240,12 +240,14 @@ public sealed class SubsetRefusalTests
     }
 
     // S0-RF-007..010: each unsupported cmap format refuses with the pinned code.
+    // Format 14 left this refusal set with OQ-F14 (the (0,5) record drops through the
+    // rebuild's consumed-not-emitted routing); its disposition pins live in
+    // SubsetRebuildTests and SubsetRootResolutionTests.
     [Theory]
     [InlineData(2)]
     [InlineData(8)]
     [InlineData(10)]
     [InlineData(13)]
-    [InlineData(14)]
     public void UnsupportedCmapFormatRefuses(ushort format)
     {
         var face = SubsetFontFixture.Face(
