@@ -387,7 +387,10 @@ public sealed class SubsetReport
     public CffStaleness? Cff { get; }
 
     /// <summary>RETAIN_RAW registration facts for a VORG table on an admitted static
-    /// CFF1 face; null when the face has no VORG table or is not a CFF face (S1b §3).</summary>
+    /// CFF1 face; null when the face has no VORG table or is not a CFF face (S1b §3).
+    /// The CFF-face scope is the retain registration only: since 2026-10-18 the
+    /// compact column rebuilds VORG on any outline domain (the RC2 TT-face refusal
+    /// overturned; these staleness facts stay the retain path's raw-copy facts).</summary>
     public VorgStaleness? Vorg { get; }
 
     /// <summary>The maxp 1.0 maxima are not recomputed: retain-GIDs preserves maxp raw,

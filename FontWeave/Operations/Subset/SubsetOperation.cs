@@ -219,7 +219,7 @@ public static partial class SubsetOperation
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
             if (!TryDecideTable(directory, i, record.Tag, options, state,
-                    profile.HasCff || profile.HasCff2, out diagnostic))
+                    out diagnostic))
                 return Refuse(state, ReadStatus.UnsupportedFormat, diagnostic, out result,
                     out report, out diagnostic);
         }
@@ -1474,7 +1474,7 @@ public static partial class SubsetOperation
     // ---- per-table policy decision (card §2 step 4; matrix retainGidsPolicy column) ----
 
     private static bool TryDecideTable(SfntDirectoryView directory, int ordinal, uint tag,
-        SubsetOptions options, PrepareState state, bool cffOrCff2Face,
+        SubsetOptions options, PrepareState state,
         out FontDiagnostic diagnostic)
     {
         diagnostic = default;
@@ -1687,24 +1687,14 @@ public static partial class SubsetOperation
         }
         else if (compact && tag == Vorg)
         {
-            if (!cffOrCff2Face)
-            {
-                // RC2 (SC card §3, widened by the SV slice's OQ-SV-7 lean): on a
-                // face whose outline spine no CFF rebuild serves, the VORG compact
-                // rebuild has no execution path, so the request refuses instead of
-                // leaving per-GID records on stale GIDs. VORG is a CFF-domain
-                // per-GID table and a CFF2 face legally carries it, so the CFF2
-                // face now rides the same remap as the CFF1 face (SV card §2.7).
-                // Keyword contract: "VORG"/"compact"/"rebuild"; code
-                // UnsupportedOperation (=17), unchanged since SC.
-                state.Diagnostic = new(DiagnosticCode.UnsupportedOperation,
-                    directory.TableLocation(ordinal), tag);
-                diagnostic = state.Diagnostic;
-                return false;
-            }
-            // CFF face: VORG's per-GID records ride the same remap as the CFF rebuild
-            // (matrix "随 CFF 重建联动" coupling, S1c card §3). The payload producer is
-            // the VORG remap; the copy loop's switch refuses until it exists.
+            // VORG's per-GID records ride the frozen map's remap on any outline
+            // domain: the producer (RebuildVorg) reads only the directory, maxp and
+            // the frozen map, so it serves the TT face exactly as it served CFF1/CFF2
+            // (matrix "随 CFF 重建联动" coupling, S1c card §3). The former RC2
+            // TT-face refusal (SC card §3, OQ-SV-7 lean; the MERG precedent's
+            // sibling) is overturned 2026-10-18 — user-approved by-benefit push,
+            // probe-round acceptance: a TT face legally carries VORG, and refusing
+            // compact+Vorg left the whole request dead with no safety gain.
             decision = new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
                 SubsetDecisionOrigin.MatrixRow);
         }

@@ -9,6 +9,7 @@ using System.Buffers.Binary;
 using FontWeave.Core;
 using FontWeave.Operations;
 using FontWeave.Operations.Subset;
+using FontWeave.Tables;
 using Xunit;
 
 namespace FontWeave.Tests;
@@ -119,6 +120,53 @@ public sealed class SubsetCompactPolicyTests
         return byTag;
     }
 
+    private static void Ok(ReadStatus status)
+    {
+        Assert.Equal(ReadStatus.Done, status);
+    }
+
+    /// <summary>A canonical VORG 1.0: header plus strictly ascending origin records.</summary>
+    internal static byte[] Vorg(short defaultVertOriginY, params (ushort Glyph, short Origin)[] records)
+    {
+        var bytes = new byte[8 + 4 * records.Length];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(0), 1);
+        BinaryPrimitives.WriteInt16BigEndian(bytes.AsSpan(4), defaultVertOriginY);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6), (ushort)records.Length);
+        for (int i = 0; i < records.Length; i++)
+        {
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(8 + 4 * i), records[i].Glyph);
+            BinaryPrimitives.WriteInt16BigEndian(bytes.AsSpan(8 + 4 * i + 2), records[i].Origin);
+        }
+        return bytes;
+    }
+
+    private static byte[] OutputBytes(SubsetResult result)
+    {
+        byte[] output = new byte[result.Font.OutputLength];
+        Assert.Equal(ReadStatus.Done,
+            result.Font.TryCopyTo(output, out int written, out _));
+        Assert.Equal(output.Length, written);
+        return output;
+    }
+
+    private static byte[] TableBytes(byte[] sfnt, uint tag)
+    {
+        int numTables = (sfnt[4] << 8) | sfnt[5];
+        for (int i = 0; i < numTables; i++)
+        {
+            int at = 12 + 16 * i;
+            uint found = (uint)(sfnt[at] << 24 | sfnt[at + 1] << 16 |
+                sfnt[at + 2] << 8 | sfnt[at + 3]);
+            if (found != tag) continue;
+            int offset = (sfnt[at + 8] << 24) | (sfnt[at + 9] << 16) |
+                (sfnt[at + 10] << 8) | sfnt[at + 11];
+            int length = (sfnt[at + 12] << 24) | (sfnt[at + 13] << 16) |
+                (sfnt[at + 14] << 8) | sfnt[at + 15];
+            return sfnt[offset..(offset + length)];
+        }
+        throw new Xunit.Sdk.XunitException($"tag {tag} missing from output");
+    }
+
     // The compact decide loop reads the primaryPolicy column: the identity spine plus
     // every per-GID companion table rebuilds, the raw rows stay raw, and the layout
     // family drops under the explicit NoLayout option (MC-002 tableDecisions shape).
@@ -194,36 +242,62 @@ public sealed class SubsetCompactPolicyTests
         }
     }
 
-    // RC2: VORG's compact rebuild rides the CFF slice, so a compact request refuses
-    // while retain keeps the table raw.
+    // RC2 overturned (2026-10-18, user-approved by-benefit push; the SE migration's
+    // MERG precedent at CompactMergRowFollowsPrimaryPolicy): VORG's primaryPolicy
+    // column reads REBUILD_TYPED on any outline domain, so a TT face's compact
+    // request now executes the remap — the output VORG re-reads through the typed
+    // view with the surviving records re-sorted by output GID, the default origin
+    // kept and the record count equal to the survivors — while retain keeps the
+    // row raw.
     [Fact]
-    public void CompactVorgRefusesRetainKeepsRaw()
+    public void CompactVorgRebuildsOnTrueTypeFaceRetainKeepsRaw()
     {
-        var (loca, glyf, _) = GlyfImages.Assemble([GlyfImages.NoContourGlyphRecord()]);
-        var tables = new List<(uint, byte[])>
-        {
+        var (loca, glyf, _) = GlyfImages.Assemble(
+        [
+            GlyfImages.NoContourGlyphRecord(),
+            GlyfImages.NoContourGlyphRecord(),
+            GlyfImages.NoContourGlyphRecord(),
+            GlyfImages.NoContourGlyphRecord(),
+        ]);
+        var face = SubsetFontFixture.Face(
             (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
-            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(1)),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(4)),
             (SubsetFontFixture.GlyfTag, glyf),
             (SubsetFontFixture.LocaTag, loca),
             (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41u, 0))),
-            (VorgTag, SubsetFontFixture.Dummy(10)),
-        };
+            (VorgTag, Vorg(-880, (1, -700), (2, -500), (3, -300))));
+        var compact = SubsetOperation.TryPrepare(
+            Request(face, [0, 1], SubsetMode.CompactRemap), out var compactResult,
+            out var compactReport, out _);
+        Assert.Equal(ReadStatus.Done, compact);
+        Assert.NotNull(compactResult);
+        Assert.Equal((TableAction.Rebuild, SubsetPolicy.RebuildTyped),
+            DecisionMap(compactReport!)[VorgTag]);
+        // The retained set is {0, 1}: glyph 1's record rides to output GID 1, the
+        // dropped glyphs 2/3 lose theirs, the default origin is untouched.
+        byte[] output = OutputBytes(compactResult!);
+        Ok(VorgView.TryOpen(TableBytes(output, VorgTag), out var view, out var diagnostic,
+            DataLocation.Anonymous(VorgTag)));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(VorgContext.TryCreate(2, out var context, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Ok(view!.TryRead(context!, out var vorg, out diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(vorg);
+        Assert.Equal(-880, vorg!.DefaultVertOriginY);
+        var record = Assert.Single(vorg.Records.ToArray());
+        Assert.Equal(1, record.GlyphIndex);
+        Assert.Equal(-700, record.VertOriginY);
+
         var retain = SubsetOperation.TryPrepare(
-            Request(SubsetFontFixture.Face([.. tables]), [0], SubsetMode.RetainGids),
-            out var retainResult, out var retainReport, out _);
+            Request(face, [0, 1], SubsetMode.RetainGids), out var retainResult,
+            out var retainReport, out _);
         Assert.Equal(ReadStatus.Done, retain);
         Assert.NotNull(retainResult);
         Assert.Equal((TableAction.Preserve, SubsetPolicy.RetainRaw),
             DecisionMap(retainReport!)[VorgTag]);
-
-        var compact = SubsetOperation.TryPrepare(
-            Request(SubsetFontFixture.Face([.. tables]), [0], SubsetMode.CompactRemap),
-            out var compactResult, out _, out var compactDiagnostic);
-        Assert.Equal(ReadStatus.UnsupportedFormat, compact);
-        Assert.Equal(DiagnosticCode.UnsupportedOperation, compactDiagnostic.Code);
-        Assert.Equal(VorgTag, compactDiagnostic.Location.TableTag);
-        Assert.Null(compactResult);
+        Assert.Equal(Vorg(-880, (1, -700), (2, -500), (3, -300)),
+            TableBytes(OutputBytes(retainResult!), VorgTag));
     }
 
     // SE migration (2026-10-15, SE card §3/§7 finding 2; supersedes the SC-slice
