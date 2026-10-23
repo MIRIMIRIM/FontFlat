@@ -15,11 +15,11 @@ internal static class HvarLayout
 // domain has no 64K pressure, so the write side keeps one canonical layout and no
 // second layout candidate exists (the explicit T4-02/03/05 difference, card 7).
 // The three maps are optional in both directions: a null offset is the implicit-map
-// domain (AdvanceWidthMapping NULL = delta-set index (0, gid), spec hvar.md) and the
-// lsb/rsb NULL policy reuses the advance index (OQ-T5-01-2), so zero stays "absent"
-// and no reference is Required but possibly-null. Implicit/fallback/sentinel
-// dereference semantics are this view's hand-written face (card 3.2), not declared
-// structure.
+// domain (AdvanceWidthMapping NULL = delta-set index (0, gid), spec hvar.md); a NULL
+// lsb/rsb map means that metric carries no HVAR variation (the spec defines no
+// implicit mapping for side bearings), so zero stays "absent" and no reference is
+// Required but possibly-null. Implicit/sentinel dereference semantics are this
+// view's hand-written face (card 3.2), not declared structure.
 [BinaryTable(HvarLayout.Tag, HvarLayout.HeaderLength, ContractVersion = 1,
     VersionField = "Version", SupportedVersions = new uint[] { 0x00010000 })]
 [BinaryScalar("Version", WireType.UInt32, 0, DataField.Version)]

@@ -146,9 +146,9 @@ public static partial class SubsetOperation
         // The store's rows are (outer, inner)-keyed with no GID domain: the same
         // store model re-emits byte-identical through the T5-01 compiler. The
         // advance map re-roots (explicit remap, or the NULL implicit reading
-        // materialized, OQ-SV-6); lsb/rsb stay NULL when the source is NULL —
-        // their advance-index fallback is a read-side rule over the now
-        // output-correct advance map, not stored data.
+        // materialized, OQ-SV-6); lsb/rsb stay NULL when the source is NULL — a
+        // NULL side map is the metric's no-variation answer, so materializing one
+        // would invent data (VVAR's tsb/bsb/vOrg slots answer the same way).
         ReadStatus status = model.AdvanceWidthMapping is { } advanceSource
             ? RemapDeltaSetIndexMap(advanceSource, map, budget, out var advanceMap,
                 out diagnostic)

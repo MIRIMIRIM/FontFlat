@@ -2,10 +2,10 @@ using FontWeave.Core;
 
 namespace FontWeave.Tables.Variation;
 
-/// <summary>Which HVAR metric a delta-set index is requested for. The lsb/rsb maps are
-/// optional and a NULL map reuses the advance index (OQ-T5-01-2: the 1.8/1.9 text and
-/// the HarfBuzz behavior; the primary witnesses' side-bearing deltas only exist under
-/// this reading).</summary>
+/// <summary>Which HVAR metric a delta-set index is requested for. Only the advance-width
+/// map is optional; a NULL advance map means the implicit (0, gid) mapping. The lsb/rsb
+/// maps are optional variation data, and a NULL one means the metric carries no HVAR
+/// variation (spec hvar.md; VVAR's tsb/bsb/vOrg slots answer the same way).</summary>
 public enum HvarMetric
 {
     Advance = 0,
@@ -16,8 +16,10 @@ public enum HvarMetric
 /// <summary>Owned HVAR 1.0 table: the item variation store plus the three optional
 /// DeltaSetIndexMaps, with the spec's gid-to-delta-set-index semantics as the product
 /// face (card 3.2) - implicit (0, gid) mapping when the advance map is NULL, the
-/// last-entry fallback for gid greater or equal mapCount, the 0xFFFF/0xFFFF sentinel
-/// as the no-variation result, and lsb/rsb NULL falling back to the advance index.
+/// last-entry fallback for gid greater or equal mapCount, and the 0xFFFF/0xFFFF sentinel
+/// as the no-variation result. A NULL lsb/rsb map is the metric's no-variation answer:
+/// the spec defines the implicit mapping for advance width only, and neither side
+/// bearing carries data without its own mapping.
 /// The API is row-keyed: callers get (outer, inner) keys and delta rows; converting a
 /// delta row into an instance value (region scalars, hmtx rewriting) stays outside
 /// the product (T0 T5-01).</summary>
@@ -59,11 +61,19 @@ public sealed class HvarTable
         DeltaSetIndexMapTable? map = metric switch
         {
             HvarMetric.Advance => AdvanceWidthMapping,
-            HvarMetric.Lsb => LsbMapping ?? AdvanceWidthMapping,
-            _ => RsbMapping ?? AdvanceWidthMapping,
+            HvarMetric.Lsb => LsbMapping,
+            _ => RsbMapping,
         };
         if (map is null)
         {
+            if (metric != HvarMetric.Advance)
+            {
+                // The spec defines the implicit (0, gid) reading for advance width
+                // alone; a NULL lsb/rsb map is the metric's no-variation answer, never
+                // a fallback to the advance index.
+                diagnostic = default;
+                return ReadStatus.Done;
+            }
             // Implicit mapping: outer level zero, the glyph ID as the inner level
             // (spec hvar.md). The inner domain against VarData[0] was proven at
             // validation; the store dereference keeps its own bounds check.
