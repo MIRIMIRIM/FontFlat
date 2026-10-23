@@ -83,7 +83,8 @@ public readonly ref partial struct CmapFormat4View
         if (SearchRange != expectedSearch || EntrySelector != selector || RangeShift != expectedShift)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 Location.AtLocal(DataField.Payload, 8), out diagnostic,
-                (uint)(SearchRange | (EntrySelector << 16)), (uint)(expectedSearch | (selector << 16)));
+                (uint)SearchRange | ((uint)EntrySelector << 16),
+                (uint)expectedSearch | ((uint)selector << 16));
         int previousEnd = -1;
         long totalSpan = 0;
         for (int i = 0; i < count; i++)

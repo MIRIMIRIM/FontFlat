@@ -213,8 +213,8 @@ public readonly ref partial struct CmapView
                 (record.PlatformId == previousPlatform && record.EncodingId <= previousEncoding)))
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     Location.AtLocal(DataField.PlatformId, (ulong)(4 + 8L * i), i), out diagnostic,
-                    (uint)((record.PlatformId << 16) | record.EncodingId),
-                    (uint)((previousPlatform << 16) | previousEncoding));
+                    ((uint)record.PlatformId << 16) | record.EncodingId,
+                    ((uint)previousPlatform << 16) | (uint)previousEncoding);
             previousPlatform = record.PlatformId;
             previousEncoding = record.EncodingId;
             if (record.SubtableOffset < (ulong)recordsEnd)
