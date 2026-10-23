@@ -9,9 +9,12 @@ public static class NameEditor
 {
     private static readonly UnicodeEncoding Utf16Be = new(true, false, true);
 
-    /// <summary>Replaces one record's payload with strict UTF-16BE text. Only the strict
-    /// Unicode records the typed edit path admits stay editable: a legacy code-page
-    /// record refuses instead of silently mixing two encodings in one record.</summary>
+    /// <summary>Replaces one record's payload with strict UTF-16BE text. The typed edit
+    /// path's record rules apply unchanged: only its editable name IDs, only strict
+    /// Unicode records, and only values the name-ID semantics accept. A legacy
+    /// code-page record refuses instead of silently mixing two encodings in one
+    /// record, and a name ID the op does not cover (PostScript names included) refuses
+    /// instead of writing a value its validator rejects.</summary>
     public static byte[] ReplaceText(NameTable source, int ordinal, string text)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -20,10 +23,18 @@ public static class NameEditor
         if (ordinal < 0 || ordinal >= source.Records.Count)
             throw new FontDataException(FontError.InvalidIndex, "name record ordinal is out of range.");
         NameRecord record = source.Records[ordinal];
+        // The finite name-ID set of MetadataEditOperation: PostScript names, variation
+        // labels and other dependent identities are deliberately outside the text edit.
+        if (record.NameId is not (1 or 2 or 4 or 16 or 17))
+            throw new FontDataException(FontError.UnsupportedFormat,
+                $"name record {ordinal} has name ID {record.NameId}, which this text edit does not cover.");
         if (!NameView.IsUtf16(record.PlatformId, record.EncodingId))
             throw new FontDataException(FontError.UnsupportedFormat,
                 $"name record {ordinal} is not a UTF-16 record (platform {record.PlatformId}, " +
                 $"encoding {record.EncodingId}).");
+        if (!NameRecordSemantics.IsValid(record.NameId, text))
+            throw new FontDataException(FontError.InvalidFormat,
+                $"name record {ordinal} does not accept the requested text for name ID {record.NameId}.");
         return Replace(source, ordinal, Utf16Be.GetBytes(text));
     }
 

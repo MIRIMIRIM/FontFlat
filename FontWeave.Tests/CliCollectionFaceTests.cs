@@ -9,6 +9,7 @@
 //
 // The verbs run through Program.Execute (the same dictionary the process serializes), so
 // the assertions read the exact receipt members an auditor sees.
+using System.Text;
 using System.Text.Json;
 using FontWeave;
 using Xunit;
@@ -468,6 +469,53 @@ public sealed class CliCollectionFaceTests
                  "--output", typedOutput], out int exitCode));
             Assert.Equal(1, exitCode);
             Assert.Equal("UnsupportedFormat", receipt.GetProperty("statusName").GetString());
+            Assert.False(receipt.GetProperty("outputWritten").GetBoolean());
+            Assert.False(File.Exists(typedOutput));
+        }
+        finally
+        {
+            Cleanup(input, output);
+            Cleanup(standalone, typedOutput);
+        }
+    }
+
+    // The name-ID restriction belongs to the edit's semantics, not to the container: a
+    // PostScript-name record (name ID 6) refuses on the TTC chain exactly as it does on
+    // the standalone typed path, instead of writing a value its own validator rejects.
+    [Fact]
+    public void EditRebuildRefusesNameIdsOutsideTheTypedEditSetOnTtcFaces()
+    {
+        byte[] name = CliTtcFixture.NameRaw(
+            (3, 1, 0x409, 6, Encoding.BigEndianUnicode.GetBytes("DejaVu Sans")));
+        byte[] ttc = CliTtcFixture.Ttc(
+            new[] { (CliTtcFixture.HeadTag, CliTtcFixture.ValidHead()),
+                (CliTtcFixture.MaxpTag, CliTtcFixture.Maxp()),
+                (CliTtcFixture.NameTag, name) });
+        (string input, string output) = TempValidatableFont(ttc);
+        string standalone = Path.Combine(Path.GetTempPath(),
+            $"fontweave-sfnt-{Guid.NewGuid():N}.ttf");
+        string typedOutput = Path.Combine(Path.GetTempPath(),
+            $"fontweave-sfnt-{Guid.NewGuid():N}.out");
+        File.WriteAllBytes(standalone, SubsetFontFixture.Sfnt(false,
+            (SubsetFontFixture.HeadTag, CliTtcFixture.ValidHead()),
+            (SubsetFontFixture.MaxpTag, CliTtcFixture.Maxp()),
+            (SubsetFontFixture.NameTag, name)));
+        try
+        {
+            FontDataException collection = Assert.Throws<FontDataException>(() =>
+                FontWeave.Cli.Program.Execute(
+                    ["edit-rebuild", input, "--record", "0", "--text", "Bad Name",
+                     "--output", output], out _));
+            Assert.Equal(FontError.UnsupportedFormat, collection.Error);
+            Assert.False(File.Exists(output));
+
+            var receipt = Json(FontWeave.Cli.Program.Execute(
+                ["edit-rebuild", standalone, "--record", "0", "--text", "Bad Name",
+                 "--output", typedOutput], out int exitCode));
+            Assert.Equal(1, exitCode);
+            Assert.Equal("UnsupportedFormat", receipt.GetProperty("statusName").GetString());
+            Assert.Equal("UnsupportedOperation", receipt.GetProperty("diagnostic")
+                .GetProperty("codeName").GetString());
             Assert.False(receipt.GetProperty("outputWritten").GetBoolean());
             Assert.False(File.Exists(typedOutput));
         }
