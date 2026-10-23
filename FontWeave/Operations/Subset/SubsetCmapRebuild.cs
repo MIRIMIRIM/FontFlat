@@ -76,7 +76,7 @@ public static partial class SubsetOperation
         int at = 0;
         foreach ((uint code, ushort gid) in union) pruned[at++] = new(code, gid);
         status = CmapTableCompiler.TryBuildCanonicalPair(model, pruned, out var rebuilt,
-            out diagnostic);
+            out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         status = CmapTableCompiler.TryCompile(rebuilt!, out cmapBytes, out diagnostic,
             budget);

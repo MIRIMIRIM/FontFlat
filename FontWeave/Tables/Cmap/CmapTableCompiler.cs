@@ -32,7 +32,7 @@ public sealed record CmapEditPlan
 }
 
 /// <summary>Canonical cmap compiler. Format 0 subtables re-encode as the full 256-entry array;
-/// format 4 as delta-only maximal affine segments plus the structural sentinel; format 6 as one
+/// format 4 as byte-minimal delta/glyph-array segments plus the structural sentinel; format 6 as one
 /// trimmed window with zero-filled holes; format 2 as a full subHeader-0 array plus one explicit
 /// idDelta-0 window per leading byte (no sharing, merging or delta tricks); format 12 as maximal
 /// (cp+1, gid+1) merged groups; format 13 as constant-gid groups with adjacent equal-gid runs
@@ -227,7 +227,7 @@ public static class CmapTableCompiler
                     if (status != ReadStatus.Done) return status;
                     if (!editChanged) continue;
                     status = BuildFormat4Canonical(merged4, format4.Location,
-                        out var segments, out var glyphArray, out diagnostic);
+                        budget, out var segments, out var glyphArray, out diagnostic);
                     if (status != ReadStatus.Done) return status;
                     replacement = new CmapFormat4Subtable(format4.Language, segments, glyphArray,
                         format4.SourceOffset, format4.Location);
@@ -772,7 +772,7 @@ public static class CmapTableCompiler
     /// builders the compiler writer uses, and TryCompile re-derives the identical
     /// payloads from the returned models.</summary>
     internal static ReadStatus TryBuildCanonicalPair(CmapTable source, CmapMapping[] mappings,
-        out CmapTable? rebuilt, out FontDiagnostic diagnostic)
+        out CmapTable? rebuilt, out FontDiagnostic diagnostic, BuildBudget budget)
     {
         rebuilt = null;
         int bmpCount = 0;
@@ -783,7 +783,7 @@ public static class CmapTableCompiler
         foreach (var mapping in mappings)
             if (mapping.CharacterCode <= 0xFFFF) bmp[at++] = mapping;
         ReadStatus status = BuildFormat4Canonical(bmp, source.Location,
-            out var segments, out var glyphArray, out diagnostic);
+            budget, out var segments, out var glyphArray, out diagnostic);
         if (status != ReadStatus.Done) return status;
         var format4 = new CmapFormat4Subtable(0, segments, glyphArray, 0, source.Location);
         var runs = BuildRuns(mappings);
@@ -878,77 +878,88 @@ public static class CmapTableCompiler
         return ReadStatus.Done;
     }
 
-    /// <summary>Canonical format 4 structure: maximal contiguous mapped code runs, each encoded
-    /// as an affine delta segment when possible and otherwise through a self-relative
-    /// idRangeOffset window into one sequential glyph array, plus the structural sentinel.
+    /// <summary>Canonical format 4 structure: minimum-byte partition into affine delta segments
+    /// and explicit glyph windows with zero-filled holes, plus the structural sentinel.
     /// Shared by the compiler writer and the edited-model constructor so both agree.</summary>
     internal static ReadStatus BuildFormat4Canonical(CmapMapping[] mappings, DataLocation location,
-        out CmapFormat4Segment[] segments, out ushort[] glyphArray, out FontDiagnostic diagnostic)
+        BuildBudget budget, out CmapFormat4Segment[] segments, out ushort[] glyphArray,
+        out FontDiagnostic diagnostic)
     {
         segments = [];
         glyphArray = [];
-        var starts = new List<uint>();
-        var firstIndices = new List<int>();
-        var affineFlags = new List<bool>();
+        if (!budget.Work(16L * mappings.Length + 1, location, out diagnostic) ||
+            !budget.Buffer(8L * mappings.Length + 4, location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        var costs = new int[mappings.Length + 1];
+        var choices = new int[mappings.Length];
+        int arrayStart = 0, affineStart = 0;
         for (int i = 0; i < mappings.Length; i++)
         {
-            uint code = mappings[i].CharacterCode;
-            if (starts.Count > 0 && code == mappings[firstIndices[^1]].CharacterCode + (uint)(i - firstIndices[^1]))
+            int code = (int)mappings[i].CharacterCode;
+            if (costs[i] - 2 * code < costs[arrayStart] - 2 * (int)mappings[arrayStart].CharacterCode)
+                arrayStart = i;
+            if (i == 0 || code != mappings[i - 1].CharacterCode + 1 ||
+                mappings[i].GlyphId != mappings[i - 1].GlyphId + 1 || costs[i] < costs[affineStart])
+                affineStart = i;
+            int deltaCost = costs[affineStart] + 8;
+            int arrayCost = costs[arrayStart] + 8 +
+                2 * (code - (int)mappings[arrayStart].CharacterCode + 1);
+            if (deltaCost <= arrayCost)
             {
-                int first = firstIndices[^1];
-                if (mappings[i].GlyphId != mappings[first].GlyphId + (i - first))
-                    affineFlags[^1] = false;
+                costs[i + 1] = deltaCost;
+                choices[i] = affineStart;
             }
             else
             {
-                starts.Add(code);
-                firstIndices.Add(i);
-                affineFlags.Add(true);
+                costs[i + 1] = arrayCost;
+                choices[i] = ~arrayStart;
             }
         }
-        int runCount = starts.Count;
-        int segCount = runCount + 1;
-        long entryCount = 0;
-        var entryOffsets = new long[runCount];
-        for (int r = 0; r < runCount; r++)
+        int segCount = 1, entryCount = 0;
+        for (int end = mappings.Length; end > 0;)
         {
-            entryOffsets[r] = entryCount;
-            if (affineFlags[r]) continue;
-            int last = r + 1 < runCount ? firstIndices[r + 1] : mappings.Length;
-            entryCount += last - firstIndices[r];
+            int choice = choices[end - 1];
+            int first = choice < 0 ? ~choice : choice;
+            if (choice < 0)
+                entryCount += (int)(mappings[end - 1].CharacterCode - mappings[first].CharacterCode + 1);
+            segCount++;
+            end = first;
         }
-        long length = 16 + 8L * segCount + 2 * entryCount;
+        int length = 24 + costs[^1];
         if (segCount > MaxFormat4Segments)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 location.At(DataField.Count, 6), out diagnostic, (uint)segCount, MaxFormat4Segments);
         if (length > 0xFFFF)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 location.At(DataField.Length, 2), out diagnostic, (ulong)length, 0xFFFF);
+        if (!budget.Buffer(8L * segCount + 2L * entryCount, location, out diagnostic))
+            return ReadStatus.ResourceLimit;
         var glyphs = new ushort[entryCount];
-        segments = new CmapFormat4Segment[segCount];
-        long glyphArrayStart = 16 + 8L * segCount;
-        for (int r = 0; r < runCount; r++)
+        var result = new CmapFormat4Segment[segCount];
+        int entriesRemaining = entryCount;
+        for (int end = mappings.Length, r = segCount - 2; end > 0; r--)
         {
-            int first = firstIndices[r];
-            int last = r + 1 < runCount ? firstIndices[r + 1] : mappings.Length;
-            uint start = starts[r];
-            uint end = start + (uint)(last - first - 1);
-            if (affineFlags[r])
+            int choice = choices[end - 1];
+            int first = choice < 0 ? ~choice : choice;
+            uint startCode = mappings[first].CharacterCode;
+            uint endCode = mappings[end - 1].CharacterCode;
+            if (choice >= 0)
             {
-                segments[r] = new((ushort)start, (ushort)end,
-                    unchecked((short)(ushort)(mappings[first].GlyphId - start)), 0);
+                result[r] = new((ushort)startCode, (ushort)endCode,
+                    unchecked((short)(ushort)(mappings[first].GlyphId - startCode)), 0);
             }
             else
             {
-                long entryPosition = glyphArrayStart + 2 * entryOffsets[r];
-                long fieldPosition = 16 + 6L * segCount + 2 * r;
-                segments[r] = new((ushort)start, (ushort)end, 0,
-                    checked((ushort)(entryPosition - fieldPosition)));
-                for (int i = first; i < last; i++)
-                    glyphs[entryOffsets[r] + (i - first)] = mappings[i].GlyphId;
+                entriesRemaining -= (int)(endCode - startCode + 1);
+                result[r] = new((ushort)startCode, (ushort)endCode, 0,
+                    checked((ushort)(2 * (segCount - r + entriesRemaining))));
+                for (int i = first; i < end; i++)
+                    glyphs[entriesRemaining + (int)(mappings[i].CharacterCode - startCode)] = mappings[i].GlyphId;
             }
+            end = first;
         }
-        segments[runCount] = new(0xFFFF, 0xFFFF, 1, 0);
+        result[^1] = new(0xFFFF, 0xFFFF, 1, 0);
+        segments = result;
         glyphArray = glyphs;
         diagnostic = default;
         return ReadStatus.Done;
@@ -1157,7 +1168,7 @@ public static class CmapTableCompiler
     {
         output = null;
         ReadStatus status = BuildFormat4Canonical(mappings, location,
-            out var segments, out var glyphArray, out diagnostic);
+            budget, out var segments, out var glyphArray, out diagnostic);
         if (status != ReadStatus.Done) return status;
         int count = segments.Length;
         int length = 16 + 8 * count + 2 * glyphArray.Length;
