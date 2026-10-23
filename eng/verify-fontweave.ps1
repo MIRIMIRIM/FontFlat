@@ -70,7 +70,7 @@ try {
     $checked = ($Arithmetic -eq 'checked').ToString().ToLowerInvariant()
     foreach ($configuration in 'Debug', 'Release') {
         $null = Invoke-GateProcess "build-$configuration" @(
-            'build', 'FontWeave.slnx', '-c', $configuration, '--nologo',
+            'build', 'FontWeave.slnx', '-c', $configuration, '--nologo', '--no-incremental',
             "-p:CheckForOverflowUnderflow=$checked",
             "-bl:$(Join-Path $output "build-$configuration.binlog")"
         )
