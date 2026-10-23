@@ -631,8 +631,7 @@ public static class LookupTableCompiler
     // wrapper-typed read model (GSUB 7 / GPOS 9) has only the extension shape
     // (round-trip fidelity); every other model plans direct first and a refused
     // direct width feeds the finite extension-wrapped candidate (wrap-all) on the
-    // same budget - both families since T4-06. Refused candidates' Work stays
-    // charged; there is no third candidate and no repack retry.
+    // same budget - both families since T4-06. Refused candidates' Work stays charged.
     internal static ReadStatus TryPlan(LookupTable model, GdefLookupContext? context,
         out LookupEmitPlan? plan, out FontDiagnostic diagnostic, BuildBudget budget)
     {
@@ -744,6 +743,9 @@ public static class LookupTableCompiler
         if (status != ReadStatus.Done) return status;
         int headerLength = LookupLayout.HeaderLength + LookupLayout.OffsetStride * entryCount +
             (model.MarkFilteringSet.HasValue ? 2 : 0);
+        status = PairPosLookupSharing.TryPlan(model, entries, slots, distinct, extension: false,
+            out plan, out diagnostic, budget);
+        if (status != ReadStatus.Done || plan is not null) return status;
         long cursor = headerLength;
         for (int i = 0; i < distinct; i++)
         {
@@ -800,6 +802,9 @@ public static class LookupTableCompiler
         status = BuildSlots(groups, model.Location, budget, out var entries, out var wrapped,
             out var firstSourceEntries, out int distinct, out int largest, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        status = PairPosLookupSharing.TryPlan(model, entries, wrapped, distinct, extension: true,
+            out plan, out diagnostic, budget);
+        if (status != ReadStatus.Done || plan is not null) return status;
         // Wrap every unique slot: the extension header adds 8 bytes and the slot length
         // grows accordingly; entries keep pointing at their (one) wrapped slot.
         var slots = new ExtensionSlotPlan[distinct];
@@ -1484,14 +1489,16 @@ public static class LookupTableCompiler
                 case ExtensionSlotPlan extension:
                     WriteExtensionHeader(model, extension,
                         destination.Slice(extension.Target, 8), extension.BodyTarget - extension.Target);
-                    WriteWrapped(extension.Wrapped, destination.Slice(extension.BodyTarget, extension.Wrapped.Length));
+                    WriteWrapped(extension.Wrapped, destination.Slice(extension.BodyTarget, WriteLength(extension.Wrapped)));
                     break;
                 default:
-                    WriteWrapped(plan.Slots[i], destination.Slice(plan.Slots[i].Target, plan.Slots[i].Length));
+                    WriteWrapped(plan.Slots[i], destination.Slice(plan.Slots[i].Target, WriteLength(plan.Slots[i])));
                     break;
             }
         }
     }
+
+    private static int WriteLength(LookupSlotPlan slot) => slot is PairSlotPlan pair ? pair.Part.Length : slot.Length;
 
     private static void WriteExtensionHeader(LookupTable model, ExtensionSlotPlan extension,
         Span<byte> destination, int bodyDelta)
