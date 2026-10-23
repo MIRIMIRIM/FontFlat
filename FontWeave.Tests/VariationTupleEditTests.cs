@@ -394,6 +394,23 @@ public sealed class VariationTupleEditTests
         Assert.Equal(default, diagnostic);
     }
 
+    // The gvar factory sizes each column at the explicit point count, not twice it.
+    [Fact]
+    public void GvarCreateAcceptsASparseTupleWithOneDeltaPerColumn()
+    {
+        var block = Block(null, Tuple(0x8000 | 0x2000, [0, 0], true, [0], [30], [40]));
+        ReadStatus status = GvarTableCompiler.TryCreate(2, 1, 0, [], [block],
+            out var model, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(model);
+        status = GvarTableCompiler.TryCompile(model!, out var compiled, out diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        TupleVariation tuple = ReadGlyph(ReadGvar(compiled!, 2, 1), 0).Tuples[0];
+        Assert.Equal(new short[] { 30 }, tuple.XDeltas);
+        Assert.Equal(new short[] { 40 }, tuple.YDeltas);
+        Assert.Equal(default, diagnostic);
+    }
+
     // The cvar factory's shared all-CVTs marker follows the same dataOffset rule; the
     // store's own read-back is the final gate before the model is returned.
     [Fact]

@@ -155,10 +155,10 @@ public static class GvarTableCompiler
                     block.Location.AtLocal(DataField.Count, 0), out diagnostic,
                     (ulong)tuple.YDeltas.Count, (ulong)tuple.XDeltas.Count);
             if (tuple.PointNumbers is { Count: > 0 } &&
-                tuple.XDeltas.Count != tuple.PointNumbers.Count * 2)
+                tuple.XDeltas.Count != tuple.PointNumbers.Count)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     block.Location.AtLocal(DataField.Count, 0), out diagnostic,
-                    (ulong)tuple.XDeltas.Count, (ulong)(tuple.PointNumbers.Count * 2));
+                    (ulong)tuple.XDeltas.Count, (ulong)tuple.PointNumbers.Count);
         }
         diagnostic = default;
         return ReadStatus.Done;
