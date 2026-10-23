@@ -753,4 +753,52 @@ public sealed class SubsetSeacClosureTests
 
     private static ReadStatus PrepareStatus(SubsetRequest request, BuildLimits limits) =>
         SubsetOperation.TryPrepare(request, out _, out _, out _, limits);
+
+    // ---- color -> seac convergence ----------------------------------------------
+
+    // A minimal COLRv1 table: one BaseGlyphList row root -> PaintGlyph(target) -> solid.
+    private static byte[] ColorV1PaintGlyph(ushort root, ushort target)
+    {
+        var bytes = new byte[55];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(0), 1);    // version
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(14), 34);  // BaseGlyphList
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(34), 1);   // one base row
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(38), root);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(40), 10);  // -> paint at 44
+        bytes[44] = 10;                                               // PaintGlyph
+        bytes[47] = 6;                                                // -> solid at 50
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(48), target);
+        bytes[50] = 2;                                                // PaintSolid
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(51), 1);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(53), 0x4000);
+        return bytes;
+    }
+
+    // The color closure can add a glyph the seac stage has not scanned. Keeping only
+    // the color root and the composite is not enough: the composite's base and accent
+    // must join the retained set, so the two families converge before the map freezes.
+    [Fact]
+    public void ColorClosureAdditionsJoinTheSeacFixedPoint()
+    {
+        int[] charset = [0, SidA, SidAcute, SidAacute, 200];
+        byte[] seac = [.. Num(0), .. Num(0), .. Num(CodeA), .. Num(CodeAcute), 14];
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(5)),
+            (SubsetFontFixture.CffTag, NameKeyedCff(charset,
+            [
+                new byte[] { 14 }, new byte[] { 14 }, new byte[] { 14 }, seac,
+                new byte[] { 14 }
+            ])),
+            (0x434F4C52u, ColorV1PaintGlyph(4, 3)));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 4], SubsetMode.CompactRemap),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        // The color closure adds 3; the re-opened seac scan then adds 1 and 2.
+        Assert.Equal([1, 2], report!.SeacClosureAddedGids);
+        Assert.Equal([0, 1, 2, 3, 4],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        Assert.Equal(default, diagnostic);
+    }
 }

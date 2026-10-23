@@ -120,6 +120,14 @@ public static partial class SubsetOperation
             if (status != ReadStatus.Done) return status;
         }
         added.Sort();
+        // The closure can run more than once when the color family adds a seac composite;
+        // the report keeps the union of every round's additions.
+        if (state.SeacClosureAdded is { } earlier)
+        {
+            earlier.AddRange(added);
+            earlier.Sort();
+            added = earlier;
+        }
         state.SeacClosureAdded = added;
         return ReadStatus.Done;
     }

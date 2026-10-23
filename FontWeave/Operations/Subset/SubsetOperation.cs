@@ -250,34 +250,41 @@ public static partial class SubsetOperation
                     out diagnostic);
         }
 
-        // Step 4.6 (S3 card §2.1): the CFF1 seac closure — the retained set extends to
-        // every base/accent glyph a Type 2 endchar seac form references by standard
-        // code, worklist fixed point over the typed model parked at step 4.2. It runs
-        // after the layout union, so layout-added programs are scanned too, and before
-        // the map freeze, so compact's frozen order carries the additions (card §1.2);
-        // the composite closure below skips CFF faces by its trueType profile gate, so
-        // the three addition lists stay disjoint by construction.
-        if (profile.HasCff)
+        // Steps 4.6/4.7 (the typed dependency families): the CFF1 seac closure and the
+        // COLR color closure both extend the retained set, and one can feed the other —
+        // a color paint-graph glyph may itself be a seac composite, and a seac component
+        // may carry a BaseGlyphList row. Run the two to a common fixed point (each is a
+        // worklist fixed point internally; this outer loop only re-opens the other family
+        // when the first added something), before the map freeze so compact's order and
+        // both payload rebuilds see the final set. The additions stay disjoint per family:
+        // the composite closure below never runs on CFF faces.
+        while (true)
         {
-            status = CloseSeacReferences(request.Face.Location, state, budget,
+            int before = 0;
+            foreach (bool retained in state.Retained)
+                if (retained) before++;
+            if (profile.HasCff)
+            {
+                status = CloseSeacReferences(request.Face.Location, state, budget,
+                    out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+            }
+            // The stage parks the one COLR model for the payload rebuild. Both modes run
+            // it: compact renumbers the paint-graph references, and retain clears every
+            // unretained glyph's outline, so keeping a GID does not keep the content it
+            // draws.
+            status = CloseColrReferences(directory, maxp!, state, budget, compact,
                 out diagnostic);
             if (status != ReadStatus.Done)
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
+            int after = 0;
+            foreach (bool retained in state.Retained)
+                if (retained) after++;
+            if (after == before) break;
         }
-
-        // Step 4.7 (the color-closure slice): the COLR paint graph's glyph references
-        // join the retained set at the shared walk's fixed point — after the layout and
-        // seac families, so their additions' color graphs close too, and before the
-        // composite closure, whose worklist consumes this stage's additions. The stage
-        // parks the one COLR model for the payload rebuild. Both modes run it: compact
-        // renumbers the paint-graph references, and retain clears every unretained
-        // glyph's outline, so keeping a GID does not keep the content it draws.
-        status = CloseColrReferences(directory, maxp!, state, budget, compact,
-            out diagnostic);
-        if (status != ReadStatus.Done)
-            return Refuse(state, status, diagnostic, out result, out report,
-                out diagnostic);
 
         // Step 5: composite dependency closure over the TrueType profile (card §3). The
         // typed read chain runs first, so graph violations surface with the reader's own
