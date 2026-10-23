@@ -349,10 +349,13 @@ internal static class Program
     }
 
     // edit-rebuild on a TTC face: the per-face library chain (FontFile.Parse → GetFace →
-    // NameTable.Parse → NameEditor.Replace → SfntWriter.Prepare) repacks the selected
+    // NameTable.Parse → NameEditor.ReplaceText → SfntWriter.Prepare) repacks the selected
     // face as an independent sfnt whose directory holds only this face's tables. The
     // typed receipt's budget and decision members have no collection counterpart and
-    // stay null; the repack record rides the plan diagnostics instead.
+    // stay null; the repack record rides the plan diagnostics instead. The text edit is
+    // the same strict-UTF-16BE rule the standalone typed path applies, so a legacy
+    // code-page record refuses here too instead of receiving UTF-16 bytes it cannot
+    // declare.
     private static Dictionary<string, object?> ExecuteCollectionEditRebuild(
         Dictionary<string, object?> result, byte[] inputBytes, int faceIndex,
         Dictionary<string, string?> options, string output, FontLimits limits, out int exitCode)
@@ -361,7 +364,7 @@ internal static class Program
         FontFace face = file.GetFace(faceIndex);
         NameTable names = NameTable.Parse(face.GetTable("name").Data, limits);
         int ordinal = Integer(options, "record");
-        byte[] newName = NameEditor.Replace(names, ordinal, Utf16Be.GetBytes(Required(options, "text")));
+        byte[] newName = NameEditor.ReplaceText(names, ordinal, Required(options, "text"));
         var writeOptions = new FontWriteOptions
         {
             DropSignature = options.ContainsKey("drop-signature"),

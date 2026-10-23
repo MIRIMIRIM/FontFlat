@@ -1,10 +1,32 @@
 using System.Buffers.Binary;
+using System.Text;
+using FontWeave.Tables;
 
 namespace FontWeave;
 
 /// <summary>One-shot, exact-ordinal edits; unchanged records retain bytes and relative order.</summary>
 public static class NameEditor
 {
+    private static readonly UnicodeEncoding Utf16Be = new(true, false, true);
+
+    /// <summary>Replaces one record's payload with strict UTF-16BE text. Only the strict
+    /// Unicode records the typed edit path admits stay editable: a legacy code-page
+    /// record refuses instead of silently mixing two encodings in one record.</summary>
+    public static byte[] ReplaceText(NameTable source, int ordinal, string text)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(text);
+        ValidateSource(source);
+        if (ordinal < 0 || ordinal >= source.Records.Count)
+            throw new FontDataException(FontError.InvalidIndex, "name record ordinal is out of range.");
+        NameRecord record = source.Records[ordinal];
+        if (!NameView.IsUtf16(record.PlatformId, record.EncodingId))
+            throw new FontDataException(FontError.UnsupportedFormat,
+                $"name record {ordinal} is not a UTF-16 record (platform {record.PlatformId}, " +
+                $"encoding {record.EncodingId}).");
+        return Replace(source, ordinal, Utf16Be.GetBytes(text));
+    }
+
     public static byte[] Replace(NameTable source, int ordinal, ReadOnlySpan<byte> payload)
     {
         ArgumentNullException.ThrowIfNull(source);

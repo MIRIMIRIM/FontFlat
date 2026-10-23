@@ -1,5 +1,5 @@
 // TTC-face CLI alignment tests: the per-face library chains (FontFile.Parse → GetFace →
-// NameTable.Parse → NameEditor.Replace → SfntWriter.Prepare, and FontInspection.TryInspect)
+// NameTable.Parse → NameEditor.ReplaceText → SfntWriter.Prepare, and FontInspection.TryInspect)
 // already admit collection faces, so the CLI routes inspect/--table inspect/edit-rebuild
 // through them; validate and subset serve collection faces through the face-domain
 // directory admission (validate aggregates the whole container when --face is absent).
@@ -432,6 +432,50 @@ public sealed class CliCollectionFaceTests
         File.WriteAllBytes(input, CliTtcFixture.TwoFaceTtc());
         string output = Path.Combine(Path.GetTempPath(), $"fontweave-ttc-{Guid.NewGuid():N}.out");
         return (input, output);
+    }
+
+    // The TTC edit-rebuild path carries the standalone typed path's strict-UTF-16 rule:
+    // a legacy code-page record refuses instead of receiving UTF-16 bytes its declared
+    // encoding cannot describe (and the two CLI forms report the same refusal).
+    [Fact]
+    public void EditRebuildRefusesUtf16TextOnALegacyTtcNameRecord()
+    {
+        byte[] name = CliTtcFixture.MacRomanPlusUnicodeName();
+        byte[] ttc = CliTtcFixture.Ttc(
+            new[] { (CliTtcFixture.HeadTag, CliTtcFixture.ValidHead()),
+                (CliTtcFixture.MaxpTag, CliTtcFixture.Maxp()),
+                (CliTtcFixture.NameTag, name) });
+        (string input, string output) = TempValidatableFont(ttc);
+        string standalone = Path.Combine(Path.GetTempPath(),
+            $"fontweave-sfnt-{Guid.NewGuid():N}.ttf");
+        string typedOutput = Path.Combine(Path.GetTempPath(),
+            $"fontweave-sfnt-{Guid.NewGuid():N}.out");
+        File.WriteAllBytes(standalone, SubsetFontFixture.Sfnt(false,
+            (SubsetFontFixture.HeadTag, CliTtcFixture.ValidHead()),
+            (SubsetFontFixture.MaxpTag, CliTtcFixture.Maxp()),
+            (SubsetFontFixture.NameTag, name)));
+        try
+        {
+            FontDataException collection = Assert.Throws<FontDataException>(() =>
+                FontWeave.Cli.Program.Execute(
+                    ["edit-rebuild", input, "--record", "0", "--text", "AB",
+                     "--output", output], out _));
+            Assert.Equal(FontError.UnsupportedFormat, collection.Error);
+            Assert.False(File.Exists(output));
+
+            var receipt = Json(FontWeave.Cli.Program.Execute(
+                ["edit-rebuild", standalone, "--record", "0", "--text", "AB",
+                 "--output", typedOutput], out int exitCode));
+            Assert.Equal(1, exitCode);
+            Assert.Equal("UnsupportedFormat", receipt.GetProperty("statusName").GetString());
+            Assert.False(receipt.GetProperty("outputWritten").GetBoolean());
+            Assert.False(File.Exists(typedOutput));
+        }
+        finally
+        {
+            Cleanup(input, output);
+            Cleanup(standalone, typedOutput);
+        }
     }
 
     // The whole-container validate runs the container chain first: a TTC2 version word

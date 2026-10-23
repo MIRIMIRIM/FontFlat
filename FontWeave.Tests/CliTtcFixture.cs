@@ -80,12 +80,18 @@ internal static class CliTtcFixture
     /// unsorted sources and the fixture keeps that contract visible instead of hiding
     /// a sort here.</summary>
     internal static byte[] Name(params (ushort Platform, ushort Encoding, ushort Language,
-        ushort NameId, string Text)[] records)
+        ushort NameId, string Text)[] records) =>
+        NameRaw([.. records.Select(record => (record.Platform, record.Encoding,
+            record.Language, record.NameId, Payload: Encoding.BigEndianUnicode.GetBytes(record.Text)))]);
+
+    /// <summary>A format-0 name table over caller-supplied payloads (the caller owns the
+    /// record encoding), in the caller's record order - the editor chain's sort contract
+    /// stays visible instead of being hidden by a fixture-side sort.</summary>
+    internal static byte[] NameRaw(params (ushort Platform, ushort Encoding, ushort Language,
+        ushort NameId, byte[] Payload)[] records)
     {
-        byte[][] payloads = records.Select(record =>
-            Encoding.BigEndianUnicode.GetBytes(record.Text)).ToArray();
         int headerSize = 6 + 12 * records.Length;
-        var bytes = new byte[headerSize + payloads.Sum(payload => payload.Length)];
+        var bytes = new byte[headerSize + records.Sum(record => record.Payload.Length)];
         BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(0), 0); // format 0
         BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(2), (ushort)records.Length);
         BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), (ushort)headerSize);
@@ -97,10 +103,10 @@ internal static class CliTtcFixture
             BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 2), records[i].Encoding);
             BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 4), records[i].Language);
             BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 6), records[i].NameId);
-            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 8), (ushort)payloads[i].Length);
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 8), (ushort)records[i].Payload.Length);
             BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(at + 10), (ushort)(storage - headerSize));
-            payloads[i].CopyTo(bytes.AsSpan(storage));
-            storage += payloads[i].Length;
+            records[i].Payload.CopyTo(bytes.AsSpan(storage));
+            storage += records[i].Payload.Length;
         }
         return bytes;
     }
@@ -145,6 +151,12 @@ internal static class CliTtcFixture
         BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0), 0x00010000);
         return bytes;
     }
+
+    /// <summary>Mac Roman "AB" in the legacy record, a UTF-16 record beside it (platform
+    /// 1 sorts before platform 3, so the fixture keeps the source order contract).</summary>
+    internal static byte[] MacRomanPlusUnicodeName() => NameRaw(
+        (1, 0, 0, 1, [0xD2, 0x41, 0x42, 0xD3]),
+        (3, 1, 0x409, 1, Encoding.BigEndianUnicode.GetBytes("Mac Roman Face")));
 
     /// <summary>The two-face container whose every table passes its official strict
     /// validator, so validate --face N and the whole-container aggregate succeed.</summary>
