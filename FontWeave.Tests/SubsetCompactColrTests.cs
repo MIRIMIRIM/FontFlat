@@ -483,6 +483,143 @@ public sealed class SubsetCompactColrTests
         Assert.Equal(cpal, FontTable(result!, CpalTag));
     }
 
+    // A TrueType spine over numGlyphs where the requested glyphs carry a real
+    // triangle outline - the referenced-outline witness the closure tests measure.
+    private static FontFaceRef OutlinedSpine(ushort numGlyphs, int[] outlinedGids,
+        params (uint Tag, byte[] Bytes)[] extra)
+    {
+        var records = new List<byte[]>();
+        for (int gid = 0; gid < numGlyphs; gid++)
+            records.Add(outlinedGids.Contains(gid)
+                ? GlyfImages.ExpandedSimpleGlyph(3)
+                : GlyfImages.NoContourGlyphRecord());
+        var (loca, glyf, _) = GlyfImages.Assemble(records);
+        var tables = new List<(uint, byte[])>
+        {
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(numGlyphs)),
+            (SubsetFontFixture.GlyfTag, glyf),
+            (SubsetFontFixture.LocaTag, loca),
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41u, 5)))
+        };
+        tables.AddRange(extra);
+        return SubsetFontFixture.Face([.. tables]);
+    }
+
+    // ---- variable COLRv1: the ItemVariationStore <-> fvar signature pair ---------
+
+    // A 34-byte v1 header with big-endian writers, mirroring the read suite's wire
+    // builder (kept local to the fixture).
+    private sealed class ColrWire
+    {
+        private readonly List<byte> _data = new(new byte[34]);
+
+        internal ColrWire() => _data[1] = 1; // version 1
+
+        internal int Position => _data.Count;
+
+        internal ColrWire U8(int v) { _data.Add(unchecked((byte)v)); return this; }
+
+        internal ColrWire U16(int v)
+        {
+            _data.Add(unchecked((byte)(v >> 8)));
+            _data.Add(unchecked((byte)v));
+            return this;
+        }
+
+        internal ColrWire U24(int v)
+        {
+            _data.Add(unchecked((byte)(v >> 16)));
+            _data.Add(unchecked((byte)(v >> 8)));
+            _data.Add(unchecked((byte)v));
+            return this;
+        }
+
+        internal ColrWire U32(uint v) => U16((int)(v >> 16)).U16((int)(v & 0xFFFF));
+
+        internal void Patch16(int at, int v)
+        {
+            _data[at] = unchecked((byte)(v >> 8));
+            _data[at + 1] = unchecked((byte)v);
+        }
+
+        internal void Patch32(int at, uint v)
+        {
+            Patch16(at, (int)(v >> 16));
+            Patch16(at + 2, (int)(v & 0xFFFF));
+        }
+
+        internal byte[] ToBytes() => [.. _data];
+    }
+
+    // Root 5 -> PaintGlyph(9) -> PaintVarSolid, one axis, one VarData row, with the
+    // format-0 map and store at their canonical tail positions.
+    private static byte[] VariableColrV1RootGlyphPaint()
+    {
+        var wire = new ColrWire();
+        wire.Patch32(14, 34);                         // BaseGlyphList
+        wire.U32(1);                                  // one base row
+        wire.U16(5).U32(10);                          // root 5 -> PaintGlyph@44
+        wire.U8(10).U24(6).U16(9);                    // PaintGlyph@44 -> @50, glyph 9
+        wire.U8(3).U16(1).U16(0x4000).U32(0);         // PaintVarSolid@50
+        int map = wire.Position;
+        wire.U8(0).U8(0).U16(1).U8(0);                // map: format 0, one (0,0) entry
+        int store = wire.Position;
+        wire.U16(1).U32(12).U16(1).U32(22);           // IVS, one VarData
+        wire.U16(1).U16(1).U16(0).U16(0x4000).U16(0x4000); // one axis region
+        wire.U16(1).U16(0).U16(1).U16(0).U8(10);      // one row, one int8 delta
+        wire.Patch32(26, (uint)map);
+        wire.Patch32(30, (uint)store);
+        return wire.ToBytes();
+    }
+
+    // The store must be read against the fvar axis count; a variation-bearing COLRv1
+    // was unreadable to the closure, and retain turned that refusal into a success
+    // whose PaintGlyph target lost its outline.
+    [Fact]
+    public void RetainClosesAVariableColrV1GraphWithTheFvarAxisAuthority()
+    {
+        var face = OutlinedSpine(16, [9],
+            (SubsetFontFixture.FvarTag, SubsetFontFixture.Fvar(1)),
+            (ColrTag, VariableColrV1RootGlyphPaint()));
+        var status = SubsetOperation.TryPrepare(Request(face, [5], SubsetMode.RetainGids),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        var (start, end) = GlyphSpan(result!, 9);
+        Assert.True(end > start, "the variable COLRv1 PaintGlyph target lost its outline");
+        Assert.Equal(VariableColrV1RootGlyphPaint(), FontTable(result!, ColrTag));
+        Assert.Equal(default, diagnostic);
+    }
+
+    // The same wire on the compact face: the graph is now readable, the target is
+    // retained and remapped, and the variation slots travel with the rebuilt table.
+    [Fact]
+    public void CompactRemapsAVariableColrV1Graph()
+    {
+        var face = OutlinedSpine(16, [9],
+            (SubsetFontFixture.FvarTag, SubsetFontFixture.Fvar(1)),
+            (ColrTag, VariableColrV1RootGlyphPaint()));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 5], SubsetMode.CompactRemap),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([0, 5, 9],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        byte[] wire = FontTable(result, ColrTag);
+        status = ColrView.TryOpen(wire, out var view, out diagnostic,
+            DataLocation.Anonymous(ColrLayout.Tag));
+        Assert.Equal(ReadStatus.Done, status);
+        status = view.TryReadTable(3, null, 1, out var colrOut, out diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(colrOut!.VarIndexMap);
+        Assert.NotNull(colrOut.ItemVariationStore);
+        var glyph = Assert.IsType<ColrPaintGlyph>(
+            colrOut.Paints[colrOut.BaseGlyphPaints[0].PaintNodeId]);
+        Assert.Equal((ushort)2, glyph.GlyphId);
+        Assert.IsType<ColrPaintVarSolid>(colrOut.Paints[glyph.PaintNodeId]);
+        Assert.Equal(default, diagnostic);
+    }
+
     // The retained-slot outline span from the output loca (long format on these
     // fixtures); an unretained glyph's slot stays empty (equal offsets).
     private static (uint Start, uint End) GlyphSpan(SubsetResult result, int glyphId)

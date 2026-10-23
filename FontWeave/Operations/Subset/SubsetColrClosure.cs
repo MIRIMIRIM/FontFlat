@@ -32,10 +32,10 @@ namespace FontWeave.Operations.Subset;
 /// Both subset modes run it. Compact renumbers the paint-graph references, so a
 /// target outside the retained set cannot be emitted; retain-GIDs keeps the table
 /// raw, but the same stage clears every unretained glyph's outline, so keeping the
-/// GID is not keeping the content a reference draws. COLR v0 has no paint graph:
-/// its flat base→layer slices close only in retain mode, where the raw records stay
-/// and every layer a surviving base row paints must keep its outline (compact prunes
-/// the records instead, so an unselected layer is deliberately deletable there).
+/// GID is not keeping the content a reference draws. The v0 base→layer slices close
+/// in retain mode (on a v1 table's compat arrays too), where the raw records stay and
+/// every layer a surviving base row paints must keep its outline; compact prunes the
+/// records instead, so an unselected layer is deliberately deletable there.
 /// Retain's raw pass-through contract is untouched: a COLR the typed chain cannot
 /// read is skipped there (nothing to retain), while compact's rebuild refusal stands.</summary>
 public static partial class SubsetOperation
@@ -77,8 +77,18 @@ public static partial class SubsetOperation
         if (status != ReadStatus.Done) return status;
         status = ColrView.TryOpen(colrSource, out var colrView, out diagnostic, colrAt);
         if (status != ReadStatus.Done) return status;
-        status = colrView.TryReadTable(maxp.NumGlyphs, cpalEntries, out var model,
-            out diagnostic, budget);
+        // The store⟡fvar signature coupling is symmetric: an ItemVariationStore must be
+        // read against the fvar axis count, and only a table that declares one may pass
+        // it. A static v1 table and every v0 table therefore stay on the null face; the
+        // accessor itself requires a known version and answers zero for v0.
+        status = colrView.TryGetItemVariationStoreOffset(out uint storeOffset, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        int? fvarAxisCount = null;
+        // A store without fvar leaves the axis face null: the reader's own coupling
+        // refusal is the finite answer for that input.
+        if (storeOffset != 0 && state.Fvar is { } fvar) fvarAxisCount = fvar.AxisCount;
+        status = colrView.TryReadTable(maxp.NumGlyphs, cpalEntries, fvarAxisCount,
+            out var model, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         state.Colr = model;
         state.CpalPaletteEntries = cpalEntries;
