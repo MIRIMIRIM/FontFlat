@@ -108,15 +108,16 @@ public static class CvarTableCompiler
         long runLength = 0;
         foreach (var tuple in tuples)
             runLength += MeasureRun(tuple);
-        // headersLength counts the [tvc][dataOffset] pair from the store start,
-        // so the serialized data begins at headerStart + strides + shared - the
-        // header length contributes only its extra four bytes.
-        int dataOffset = CvarLayout.HeaderLength - 4 + headersLength + sharedLength;
+        // headersLength counts the [tvc][dataOffset] pair from the store start, so the
+        // serialized data begins at headerStart + the four-byte pair + the TVH strides;
+        // the shared point block sits at that offset (it is not skipped) and extends the
+        // table length.
+        int dataOffset = CvarLayout.HeaderLength - 4 + headersLength;
         if (dataOffset > ushort.MaxValue)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 location.AtLocal(DataField.Offset, CvarLayout.DataOffsetAt), out diagnostic,
                 (ulong)dataOffset, (ulong)ushort.MaxValue);
-        int length = dataOffset + (int)runLength;
+        int length = dataOffset + sharedLength + (int)runLength;
         if (!budget.Buffer(length, location, out diagnostic)) return ReadStatus.ResourceLimit;
         var bytes = new byte[length];
         BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0, 4), CvarLayout.Version10);

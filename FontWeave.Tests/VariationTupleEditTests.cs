@@ -331,4 +331,86 @@ public sealed class VariationTupleEditTests
         Assert.Equal(new short[] { 0x20 }, second.YDeltas);
         Assert.Equal(default, diagnostic);
     }
+
+    // ---- parts-built stores (TryCreate) -----------------------------------------
+
+    private static TupleVariation Tuple(ushort tupleIndex, short[] peak, bool hasPrivatePoints,
+        int[]? points, short[] x, short[] y)
+    {
+        ReadStatus status = TupleVariation.Create(tupleIndex, peak, null, null,
+            hasPrivatePoints, points, x, y, out var tuple, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(default, diagnostic);
+        return tuple!;
+    }
+
+    private static GlyphVariationDataTable Block(int[]? sharedPoints,
+        params TupleVariation[] tuples)
+    {
+        var location = DataLocation.Anonymous(0x67766172);
+        ReadStatus status = GlyphVariationDataTable.Create((ushort)tuples.Length, sharedPoints,
+            tuples, location, out var block, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(default, diagnostic);
+        return block!;
+    }
+
+    // The shared point block sits at dataOffset, not behind it: a parts-built store
+    // with the shared all-points marker must read back at the same offset the reader
+    // walks.
+    [Fact]
+    public void GvarCreateRoundTripsTheSharedAllPointsMarker()
+    {
+        var block = Block([], Tuple(0x8000, [0, 0], false, null, [1, 2, 3, 4], [5, 6, 7, 8]));
+        ReadStatus status = GvarTableCompiler.TryCreate(2, 1, 0, [], [block],
+            out var model, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(model);
+        status = GvarTableCompiler.TryCompile(model!, out var compiled, out diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        GvarTable reread = ReadGvar(compiled!, 2, 1);
+        status = reread.TryReadGlyphVariationData(0, pointCount: 0, out var data,
+            out bool present, out diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.True(present);
+        Assert.Equal(new short[] { 1, 2, 3, 4 }, data!.Tuples[0].XDeltas);
+        Assert.Equal(new short[] { 5, 6, 7, 8 }, data.Tuples[0].YDeltas);
+        Assert.Equal(default, diagnostic);
+    }
+
+    // The explicit shared point list follows the same offset rule.
+    [Fact]
+    public void GvarCreateRoundTripsASharedExplicitPointList()
+    {
+        var block = Block([0], Tuple(0x8000, [0, 0], false, null, [30], [40]));
+        ReadStatus status = GvarTableCompiler.TryCreate(2, 1, 0, [], [block],
+            out var model, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        status = GvarTableCompiler.TryCompile(model!, out var compiled, out diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        TupleVariation tuple = ReadGlyph(ReadGvar(compiled!, 2, 1), 0).Tuples[0];
+        Assert.Equal(new short[] { 30 }, tuple.XDeltas);
+        Assert.Equal(new short[] { 40 }, tuple.YDeltas);
+        Assert.Equal(default, diagnostic);
+    }
+
+    // The cvar factory's shared all-CVTs marker follows the same dataOffset rule; the
+    // store's own read-back is the final gate before the model is returned.
+    [Fact]
+    public void CvarCreateRoundTripsTheSharedAllCvtMarker()
+    {
+        var location = DataLocation.Anonymous(0x63766172);
+        ReadStatus status = TupleVariation.Create(0x8000, [0, 0], null, null,
+            false, null, [30], [], out var tuple, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        status = CvarTableCompiler.TryCreate(2, 1, [], [tuple!], out var model,
+            out diagnostic, location: location);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(model);
+        status = CvarTableCompiler.TryCompile(model!, out var compiled, out diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        CvarTable reread = ReadCvar(compiled!, 2, 1);
+        Assert.Equal(new short[] { 30 }, reread.Tuples[0].XDeltas);
+        Assert.Equal(default, diagnostic);
+    }
 }

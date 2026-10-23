@@ -25,7 +25,7 @@ public static class GvarTableCompiler
     /// vector must carry exactly <paramref name="axisCount"/> raw F2DOT14 values,
     /// every embedded peak and intermediate vector likewise, shared tuple
     /// indices stay inside the shared set, and the delta columns must agree with
-    /// the point sets (twice the explicit count for gvar's X then Y columns).
+    /// the point sets (one delta per point in each of gvar's X and Y columns).
     /// The blocks' locations must share the root location's source (SameSource);
     /// a null block is the absent-glyph form.</summary>
     public static ReadStatus TryCreate(int axisCount, int numGlyphs, ushort flags,
@@ -187,8 +187,10 @@ public static class GvarTableCompiler
                     block.Location.AtLocal(DataField.Length, 0), out diagnostic,
                     (ulong)runLength, (ulong)ushort.MaxValue);
         }
-        int dataOffset = headersLength + sharedLength;
-        int blockLength = dataOffset + (int)runLength;
+        // dataOffset points at the serialized data start - the shared point block when
+        // present - not past it; the shared bytes are part of the block length only.
+        int dataOffset = headersLength;
+        int blockLength = dataOffset + sharedLength + (int)runLength;
         if (dataOffset > ushort.MaxValue)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 block.Location.AtLocal(DataField.Offset, 0), out diagnostic,
