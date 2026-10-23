@@ -4,6 +4,75 @@ namespace FontWeave.Tables.Layout;
 
 public static partial class LayoutListsTableCompiler
 {
+    private static readonly IEqualityComparer<byte[]> ParameterContent =
+        EqualityComparer<byte[]>.Create(
+            static (left, right) => ReferenceEquals(left, right) ||
+                left is not null && right is not null && left.AsSpan().SequenceEqual(right),
+            static payload =>
+            {
+                var hash = new HashCode();
+                foreach (byte value in payload) hash.Add(value);
+                return hash.ToHashCode();
+            });
+
+    private static readonly IEqualityComparer<LayoutLangSys> LanguageContent =
+        EqualityComparer<LayoutLangSys>.Create(
+            static (left, right) => ReferenceEquals(left, right) ||
+                left is not null && right is not null &&
+                left.RequiredFeatureIndex == right.RequiredFeatureIndex &&
+                left.FeatureIndices.SequenceEqual(right.FeatureIndices),
+            static language =>
+            {
+                var hash = new HashCode();
+                hash.Add(language.RequiredFeatureIndex);
+                foreach (ushort index in language.FeatureIndices) hash.Add(index);
+                return hash.ToHashCode();
+            });
+
+    private static readonly IEqualityComparer<LayoutScript> ScriptContent =
+        EqualityComparer<LayoutScript>.Create(
+            static (left, right) =>
+            {
+                if (ReferenceEquals(left, right)) return true;
+                if (left is null || right is null ||
+                    !LanguageContent.Equals(left.DefaultLanguage, right.DefaultLanguage) ||
+                    left.Languages.Length != right.Languages.Length) return false;
+                for (int i = 0; i < left.Languages.Length; i++)
+                    if (left.Languages[i].Tag != right.Languages[i].Tag ||
+                        !LanguageContent.Equals(left.Languages[i].Language,
+                            right.Languages[i].Language)) return false;
+                return true;
+            },
+            static script =>
+            {
+                var hash = new HashCode();
+                hash.Add(script.DefaultLanguage is not null);
+                if (script.DefaultLanguage is { } defaultLanguage)
+                    hash.Add(defaultLanguage, LanguageContent);
+                foreach (var language in script.Languages)
+                {
+                    hash.Add(language.Tag);
+                    hash.Add(language.Language, LanguageContent);
+                }
+                return hash.ToHashCode();
+            });
+
+    private static readonly IEqualityComparer<LayoutFeature> FeatureContent =
+        EqualityComparer<LayoutFeature>.Create(
+            static (left, right) => ReferenceEquals(left, right) ||
+                left is not null && right is not null &&
+                left.LookupIndices.SequenceEqual(right.LookupIndices) &&
+                ParameterContent.Equals(left.ParamsPayload, right.ParamsPayload),
+            static feature =>
+            {
+                var hash = new HashCode();
+                foreach (ushort index in feature.LookupIndices) hash.Add(index);
+                hash.Add(feature.ParamsPayload is not null);
+                if (feature.ParamsPayload is { } payload)
+                    hash.Add(payload, ParameterContent);
+                return hash.ToHashCode();
+            });
+
     internal sealed class ScriptBlock(LayoutScript model, int position, int[] languageTargets)
     {
         internal LayoutScript Model { get; } = model;
@@ -85,11 +154,16 @@ public static partial class LayoutListsTableCompiler
         var targets = new int[records.Length];
         var blocks = new List<ScriptBlock>();
         var leaves = new List<LanguageBlock>();
-        var owners = new Dictionary<LayoutScript, ScriptBlock>();
-        var shared = new Dictionary<LayoutLangSys, LanguageBlock>();
+        var owners = new Dictionary<LayoutScript, ScriptBlock>(ScriptContent);
+        var shared = new Dictionary<LayoutLangSys, LanguageBlock>(LanguageContent);
         for (int i = 0; i < records.Length; i++)
         {
             var script = records[i];
+            long contentWork = script.DefaultLanguage?.FeatureIndices.Length ?? 0;
+            foreach (var language in script.Languages)
+                contentWork += language.Language.FeatureIndices.Length + 2L;
+            if (!budget.Work(2 * contentWork + 2, script.Location, out diagnostic))
+                return ReadStatus.ResourceLimit;
             if (owners.TryGetValue(script.PayloadOwner, out var previous))
             { targets[i] = previous.Position; continue; }
             if (cursor > ushort.MaxValue)
@@ -160,6 +234,8 @@ public static partial class LayoutListsTableCompiler
         List<LanguageBlock> leaves, ref int cursor, BuildBudget budget, out int target, out FontDiagnostic diagnostic)
     {
         target = 0;
+        if (!budget.Work(2L * language.FeatureIndices.Length + 2,
+            language.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         if (shared.TryGetValue(language, out var existing))
         { target = existing.Position; diagnostic = default; return ReadStatus.Done; }
         if (!budget.Buffer(16, language.Location, out diagnostic)) return ReadStatus.ResourceLimit;
@@ -249,10 +325,13 @@ public static partial class LayoutListsTableCompiler
         if (!budget.Output(cursor, at, out diagnostic)) return ReadStatus.ResourceLimit;
         var targets = new int[records.Length];
         var leaves = new List<FeatureBlock>();
-        var shared = new Dictionary<LayoutFeature, FeatureBlock>();
+        var shared = new Dictionary<LayoutFeature, FeatureBlock>(FeatureContent);
         for (int i = 0; i < records.Length; i++)
         {
             var feature = records[i];
+            if (!budget.Work(2L * (feature.LookupIndices.Length +
+                (feature.ParamsPayload?.Length ?? 0)) + 2, feature.Location,
+                out diagnostic)) return ReadStatus.ResourceLimit;
             if (shared.TryGetValue(feature.PayloadOwner, out var existing))
             { targets[i] = existing.Position; continue; }
             if (cursor > ushort.MaxValue)
@@ -264,17 +343,13 @@ public static partial class LayoutListsTableCompiler
             if (status != ReadStatus.Done) return status;
             leaves.Add(block); shared.Add(feature.PayloadOwner, block);
         }
-        // The FeatureParams blocks close the fragment: byte-preserving re-emissions
-        // placed after every feature table (the source's own interleaved shape has no
-        // order contract), deduped by payload instance — a shared body is one cached
-        // model, so alias rows land on one block. Each feature's params slot is
-        // FeatureList-relative like the feature offset itself, so the 16-bit window
-        // guards both distances and the cursor.
         var paramsBlocks = new List<ParamsBlock>();
-        var placed = new Dictionary<byte[], int>();
+        var placed = new Dictionary<byte[], int>(ParameterContent);
         foreach (var block in leaves)
         {
             if (block.Model.ParamsPayload is not { } payload) continue;
+            if (!budget.Work(5L * payload.Length + 1, block.Model.Location,
+                out diagnostic)) return ReadStatus.ResourceLimit;
             if (!placed.TryGetValue(payload, out var paramsPosition))
             {
                 if (cursor > ushort.MaxValue)
@@ -305,7 +380,7 @@ public static partial class LayoutListsTableCompiler
             CoverageTableCompiler.RequireWritten(LayoutTagListView.TryWriteTagRecord(destination,
                 (ulong)plan.Records.Length,
                 new LayoutTagListView.TagRecordData(i, plan.Records[i].Tag, (ushort)plan.Targets[i]), out _, plan.Location));
-        var paramsAt = new Dictionary<byte[], int>();
+        var paramsAt = new Dictionary<byte[], int>(ParameterContent);
         foreach (var block in plan.Params) paramsAt.Add(block.Payload, block.Position);
         foreach (var block in plan.Blocks)
         {
