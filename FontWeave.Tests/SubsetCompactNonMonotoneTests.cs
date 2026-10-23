@@ -485,6 +485,38 @@ public sealed class SubsetCompactNonMonotoneTests
         Assert.Equal(2, colrOut.BaseGlyphPaintCount);
     }
 
+    // The BaseGlyphList's rows are a strict glyphID ascent, and the freeze can invert
+    // the input rows: glyph 5's SID sorts after glyph 6's, so the input rows (5, 6)
+    // arrive as outputs (2, 1). The rebuilt rows sort by their output glyph before the
+    // factory re-answers the ascent, and each row keeps the root paint it carried.
+    [Fact]
+    public void CompactColrBaseGlyphListSortsOverTheNonMonotoneMap()
+    {
+        int[] sids = [.. Enumerable.Range(0, 52)];
+        (sids[5], sids[6]) = (6, 5);
+        var face = CffFace(sids, (ColrTag, SubsetCompactColrTests.ColrV1WireForProbe()));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 5, 6]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        // The color closure retains glyph 51 (input 5's PaintGlyph target) too.
+        Assert.Equal([0, 6, 5, 51],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        _ = ColrView.TryOpen(OutputTable(result, ColrTag), out var colrView,
+            out _, DataLocation.Anonymous(ColrLayout.Tag));
+        Assert.Equal(ReadStatus.Done, colrView.TryReadTable(4, null,
+            out var colrOut, out _));
+        Assert.NotNull(colrOut!);
+        Assert.Equal(2, colrOut.BaseGlyphPaintCount);
+        Assert.Equal(new ushort[] { 1, 2 },
+            colrOut.BaseGlyphPaints.Select(row => row.GlyphId).ToArray());
+        // Output 1 is input 6 (a solid root); output 2 is input 5 (the layers slice).
+        Assert.IsType<ColrPaintSolid>(
+            colrOut.Paints[colrOut.BaseGlyphPaints[0].PaintNodeId]);
+        Assert.IsType<ColrPaintLayers>(
+            colrOut.Paints[colrOut.BaseGlyphPaints[1].PaintNodeId]);
+    }
+
     // ---- SVG document glyph IDs (the spec's id="glyph<gid>" carrier) --------------
 
     private static string Text(byte[] document) => Encoding.UTF8.GetString(document);

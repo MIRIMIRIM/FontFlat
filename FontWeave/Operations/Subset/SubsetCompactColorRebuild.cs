@@ -130,6 +130,11 @@ public static partial class SubsetOperation
             if (count > 0)
                 newBase.Add(new((ushort)outputGlyph, (ushort)first, (ushort)count));
         }
+        // The base record array is a strict glyphID ascent, and the compact map can
+        // invert the input rows (the CFF1 SID/CID freeze), so the rebuilt rows sort
+        // by their output glyph before the factory re-answers the ascent; on the
+        // monotone orders the sort is the identity.
+        newBase.Sort(static (a, b) => a.GlyphId.CompareTo(b.GlyphId));
         // Empty shells cannot emit (the factory refuses the empty record set), so an
         // all-empty rebuild drops the table (OQ-SE-5).
         if (newBase.Count == 0 || newLayers.Count == 0) dropped = true;
@@ -292,6 +297,12 @@ public static partial class SubsetOperation
             newBgl.Add(new((ushort)map.OutputOf(row.GlyphId),
                 newId[rootOfGlyph[row.GlyphId]]));
         }
+        // The BaseGlyphList's own order is a strict glyphID ascent (the v1 factory
+        // re-answers it), and the surviving rows' output order is the map
+        // permutation's, not the input rows' — the freeze can invert them. Sorting by
+        // output glyph before the factory is the same identity the ClipList keeps; on
+        // the monotone orders it changes nothing.
+        newBgl.Sort(static (a, b) => a.GlyphId.CompareTo(b.GlyphId));
         // The variation slots ride verbatim (no GID domain, OQ-SE-1).
         return ColrTableCompiler.TryCreate(newBgl, newLayerIds, newClips, paints,
             map.OutputGlyphCount, null, out rebuilt, out diagnostic, model.VarIndexMap,
