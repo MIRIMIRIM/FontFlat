@@ -15,7 +15,7 @@ namespace FontWeave.Operations.Subset;
 /// input domain is maxp.numGlyphs, orthogonal to the outline format, with the
 /// CFF/VORG bytes RETAIN_RAW and their staleness facts registered in the report
 /// (S1b card §2/§3); compact-remap rebuilds the primaryPolicy column's executable
-/// set (glyf, loca, cmap, maxp, hhea, hmtx, vhea, vmtx, post@2.0, hdmx, LTSH, VDMX,
+/// set (glyf, loca, cmap, maxp, hhea, hmtx, vhea, vmtx, post@1.0/2.0, hdmx, LTSH, VDMX,
 /// and the SE color/bitmap/MERG nine: COLR, SVG␠, sbix, CBDT/CBLC, EBDT/EBLC, EBSC,
 /// MERG) over one frozen glyph map on a TrueType face and, since the CFF compact
 /// slice (S1c card §1), also serves static CFF1 faces: charset/encoding/CharStrings
@@ -300,6 +300,28 @@ public static partial class SubsetOperation
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
             state.ClosureAdded = closureAdded;
+            state.LayoutCompositeModel = glyfModel;
+        }
+
+        if (compact && preserveLayout)
+        {
+            while (true)
+            {
+                int before = state.Retained.Count(static kept => kept);
+                status = CloseLayoutReferences(state, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report, out diagnostic);
+                if (profile.HasCff)
+                {
+                    status = CloseSeacReferences(request.Face.Location, state, budget, out diagnostic);
+                    if (status != ReadStatus.Done)
+                        return Refuse(state, status, diagnostic, out result, out report, out diagnostic);
+                }
+                status = CloseColrReferences(directory, maxp!, state, budget, compact, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report, out diagnostic);
+                if (state.Retained.Count(static kept => kept) == before) break;
+            }
         }
 
         // Step 5.5 (compact only, SC card §1.1): freeze the one GlyphRemap over the
@@ -354,9 +376,6 @@ public static partial class SubsetOperation
             if (state.Retained[gid]) retainedCount++;
         state.UnselectedSlotCount = numGlyphs - retainedCount;
 
-        // Step 7: maxp/head invariants. numGlyphs is invariant by definition (maxp is
-        // preserved raw); loca must already match the length its format implies, because
-        // the rebuild reuses that format (FoundationTableEditOperation locaVerdict form).
         if (trueType)
         {
             status = directory.TryGetRecord(profile.LocaOrdinal, out var locaRecord,
@@ -378,7 +397,7 @@ public static partial class SubsetOperation
 
         // Step 8/9: payload. Rebuild stages produce their bytes before the copy loop, so
         // a rebuild failure still refuses with nothing published.
-        byte[]? rebuiltGlyf = null, rebuiltLoca = null, rebuiltCmap = null;
+        byte[]? rebuiltGlyf = null, rebuiltLoca = null, rebuiltCmap = null, rebuiltHead = null;
         byte[]? rebuiltMaxp = null, rebuiltHhea = null, rebuiltHmtx = null,
             rebuiltVhea = null, rebuiltVmtx = null;
         byte[]? rebuiltPost = null, rebuiltHdmx = null, rebuiltLtsh = null,
@@ -395,16 +414,31 @@ public static partial class SubsetOperation
             rebuiltBase = null;
         var rebuildTags = new HashSet<uint>(
             state.Decisions.Where(d => d.Action == TableAction.Rebuild).Select(d => d.Tag));
+        if (compact) state.RewrittenLayoutModels = new CompactLayoutModels();
         if (trueType)
         {
             if (compact)
             {
                 status = RebuildCompactGlyfAndLoca(glyfModel!, loca!, map!,
                     options.DropHinting, budget, out rebuiltGlyf, out rebuiltLoca,
-                    out diagnostic);
+                    out short outputLocaFormat, out diagnostic);
                 if (status != ReadStatus.Done)
                     return Refuse(state, status, diagnostic, out result, out report,
                         out diagnostic);
+                if (outputLocaFormat != head!.IndexToLocFormat)
+                {
+                    status = head.TryWith(head.Values with { IndexToLocFormat = outputLocaFormat },
+                        out var outputHead, out diagnostic);
+                    if (status != ReadStatus.Done)
+                        return Refuse(state, status, diagnostic, out result, out report,
+                            out diagnostic);
+                    status = HeadTableCompiler.TryCompile(outputHead!, out rebuiltHead,
+                        out diagnostic, budget);
+                    if (status != ReadStatus.Done)
+                        return Refuse(state, status, diagnostic, out result, out report,
+                            out diagnostic);
+                    state.ReviseDecision(Head, TableAction.Rebuild, SubsetPolicy.RebuildTyped);
+                }
             }
             else
             {
@@ -817,6 +851,19 @@ public static partial class SubsetOperation
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
         }
+        if (compact)
+        {
+            status = PruneLayoutGraph(state, ref rebuiltGsubLayout,
+                ref rebuiltGposLayout, ref rebuiltJstf, out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+            status = PruneSharedGdefVariations(state, ref rebuiltGdefLayout,
+                ref rebuiltGposLayout, ref rebuiltJstf, out diagnostic);
+            if (status != ReadStatus.Done)
+                return Refuse(state, status, diagnostic, out result, out report,
+                    out diagnostic);
+        }
         var tables = new SortedDictionary<uint, byte[]>();
         for (int i = 0; i < directory.DeclaredCount; i++)
         {
@@ -826,6 +873,7 @@ public static partial class SubsetOperation
             {
                 byte[]? rebuilt = decision.Tag switch
                 {
+                    Head => rebuiltHead,
                     Glyf => rebuiltGlyf,
                     Loca => rebuiltLoca,
                     Cmap => rebuiltCmap,
@@ -886,6 +934,20 @@ public static partial class SubsetOperation
                 return Refuse(state, status, diagnostic, out result, out report,
                     out diagnostic);
             var location = directory.TableLocation(i);
+            if (compact && decision.Tag == Name)
+            {
+                status = NameTableCompiler.TryCompactStorage(bytes, budget, location,
+                    out var pooledName, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result, out report,
+                        out diagnostic);
+                if (pooledName is not null)
+                {
+                    state.ReviseDecision(Name, TableAction.Rebuild, SubsetPolicy.RebuildTyped);
+                    tables.Add(Name, pooledName);
+                    continue;
+                }
+            }
             if (!budget.Buffer(bytes.Length, location, out diagnostic) ||
                 !budget.Work(bytes.Length, location, out diagnostic))
                 return Refuse(state, ReadStatus.ResourceLimit, diagnostic, out result,
@@ -1536,8 +1598,6 @@ public static partial class SubsetOperation
         }
         else if (tag == Head)
         {
-            // RETAIN_RAW: head bytes move untouched, so indexToLocFormat — and therefore
-            // the rebuilt loca's format — cannot change (card §1.2).
             decision = new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
                 SubsetDecisionOrigin.MatrixRow);
         }
@@ -1557,9 +1617,7 @@ public static partial class SubsetOperation
                 diagnostic = state.Diagnostic;
                 return false;
             }
-            // post 2.0 carries a per-GID glyphNameIndex, so compact rebuilds it;
-            // 1.0/3.0 have no per-GID data and stay raw in both modes (SC card §2).
-            decision = compact && postView.Version == PostLayout.Version20
+            decision = compact && postView.Version is PostLayout.Version10 or PostLayout.Version20
                 ? new(tag, TableAction.Rebuild, SubsetPolicy.RebuildTyped,
                     SubsetDecisionOrigin.MatrixRow)
                 : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
@@ -1666,7 +1724,7 @@ public static partial class SubsetOperation
                 state.Dropped.Add(tag);
             }
         }
-        else if (tag is Cvt or Fpgm or Prep or Ltsh)
+        else if (tag is Cvt or Cvar or Fpgm or Prep or Ltsh)
         {
             // Hinting family: RETAIN_RAW by default, DELETE under the explicit
             // drop-hinting option; gasp is preserved regardless (W1 §2.3). LTSH's
@@ -1865,6 +1923,7 @@ public static partial class SubsetOperation
             // and consumed by the closure and its verification without a second read.
             internal GdefTable? Gdef;
             internal GdefLookupContext? GdefContext;
+            internal CompactLayoutModels? RewrittenLayoutModels;
             internal LayoutListsTable? Gsub;
             internal LayoutListsTable? Gpos;
             internal JstfTable? Jstf;
@@ -1887,6 +1946,8 @@ public static partial class SubsetOperation
             // happened before the composite closure, so the two addition lists stay
             // disjoint by construction) and the per-table reference census (OQ-S2a-4).
             internal List<ushort>? LayoutClosureAdded;
+            internal LayoutReachabilityGraph? LayoutReachability;
+            internal GlyfTable? LayoutCompositeModel;
             internal List<LayoutTableCensus>? LayoutReferenceCensus;
             // The S3 seac closure's additions (the base/accent glyphs the retained
             // programs' Type 2 endchar seac forms reference, ascending — the closure

@@ -344,17 +344,14 @@ public sealed class SubsetLayoutScopeRewriteTests
     public void ScopedCompactReEmitsSurvivingSubsetOverFrozenMap()
     {
         var status = SubsetOperation.TryPrepare(
-            Request(Face(GsubBytes(RemapModel())), [1], SubsetMode.CompactRemap,
+            Request(Face(GsubBytes(RemapModel())), [1, 4, 5, 6], SubsetMode.CompactRemap,
                 Scoped(new SubsetLayoutScope { FeatureTags = [TagA] })),
             out var result, out var report, out var diagnostic);
         Assert.Equal(ReadStatus.Done, status);
         NoDiagnostic(diagnostic);
         Assert.NotNull(result);
         Assert.NotNull(result!.Map);
-        // The frozen map's output domain: the retained set {0, 1, 4, 5, 6, 7}
-        // renumbers to six glyphs, and the identity order keeps the ascending
-        // input order — the orphan single's coverage glyph 6 rides to output 4
-        // (the monotone map over the closure-merged set).
+        Assert.Equal(6, result.Map.OutputGlyphCount);
         var model = ReadBack(OutputBytes(result), 6);
         Assert.Equal(2, model.Lookups.Length);
         Assert.Equal(1, model.Features.Length);
@@ -374,17 +371,14 @@ public sealed class SubsetLayoutScopeRewriteTests
     {
         var status = SubsetOperation.TryPrepare(
             Request(Face(GsubBytes(RemapModel()),
-                extra: [(BaseTag, BaseBytes(9))]), [1], SubsetMode.CompactRemap,
+                extra: [(BaseTag, BaseBytes(9))]), [1, 4, 5, 6], SubsetMode.CompactRemap,
                 Scoped(new SubsetLayoutScope { FeatureTags = [TagA] })),
             out var result, out var report, out var diagnostic);
         Assert.Equal(ReadStatus.Done, status);
         NoDiagnostic(diagnostic);
         Assert.NotNull(result);
-        // The closure union: the surviving GSUB lookups' {4, 5, 6, 7} plus the
-        // BASE fmt2 reference 9 (the cut plain lookup pulls nothing new beyond
-        // the seed's 1). The retained set {0, 1, 4, 5, 6, 7, 9} renumbers to
-        // seven glyphs, so the fmt2 reference 9 rides to output 6.
-        Assert.Equal(new ushort[] { 4, 5, 6, 7, 9 }, report!.LayoutClosureAddedGids);
+        Assert.Equal(new ushort[] { 7, 9 }, report!.LayoutClosureAddedGids);
+        Assert.Equal(7, result.Map!.OutputGlyphCount);
         var decision = Assert.Single(report.Decisions, d => d.Tag == BaseTag);
         Assert.Equal(TableAction.Rebuild, decision.Action);
         Assert.Equal(SubsetPolicy.RebuildTyped, decision.Policy);

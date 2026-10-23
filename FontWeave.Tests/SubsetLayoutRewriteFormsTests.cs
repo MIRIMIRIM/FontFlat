@@ -168,9 +168,8 @@ public sealed class SubsetLayoutRewriteFormsTests
             null, out var lookup, out diagnostic));
         NoDiagnostic(diagnostic);
         byte[] gsub = Compiled(LayoutLookupKind.Gsub, lookup!);
-        var result = Run(Face(LayoutLookupKind.Gsub, gsub), [1, 2]);
-        // Retained {0,1,2} u {1,4} u {3,6} = {0..4,6}; ranks 1->1, 4->4, 3->3,
-        // 6->5: the first row keeps delta 2, the second shifts to 1.
+        var result = Run(Face(LayoutLookupKind.Gsub, gsub), [1, 2, 4]);
+        Assert.Equal(6, result.Map!.OutputGlyphCount);
         var output = OutputLists(result, LayoutLookupKind.Gsub, 6);
         var outLookup = One(output.Lookups);
         var outSingle = Assert.Single(outLookup.SingleSubstitutions!);
@@ -537,11 +536,12 @@ public sealed class SubsetLayoutRewriteFormsTests
             out var lookup, out diagnostic));
         NoDiagnostic(diagnostic);
         byte[] gpos = Compiled(LayoutLookupKind.Gpos, lookup!);
-        var result = Run(Face(LayoutLookupKind.Gpos, gpos), [1]);
+        var result = Run(Face(LayoutLookupKind.Gpos, gpos), [1, 2, 3, 4, 6]);
         // Retained {0,1,2,3,4,6}: ranks 1->1, 4->4, 6->5, so the first set's
         // second glyphs remap {2,6}->{2,5} and the coverage {1,4}->{1,4}; the
         // values ride their coverage ordinals.
-        var output = OutputLists(result, LayoutLookupKind.Gpos, 7);
+        Assert.Equal(6, result.Map!.OutputGlyphCount);
+        var output = OutputLists(result, LayoutLookupKind.Gpos, 6);
         var outPair = Assert.Single(One(output.Lookups).PairPositions!);
         Assert.Equal(1, outPair.Format);
         Assert.Equal(new ushort[] { 1, 4 }, outPair.Coverage.Glyphs.ToArray());
@@ -555,9 +555,6 @@ public sealed class SubsetLayoutRewriteFormsTests
         Assert.Equal(3, secondSet.Records[0].SecondGlyph);
     }
 
-    // ---- GPOS 2 format 2: the class-keyed matrix values stay per (class1, class2);
-    // the class domains' entries keep their values (the fmt2 closure bound keeps
-    // the whole domain, so nothing drops here — the drop form is GDEF/GSUB 5's).
     [Fact]
     public void GposPairFormat2KeepsTheMatrixValues()
     {
@@ -581,10 +578,8 @@ public sealed class SubsetLayoutRewriteFormsTests
             out var lookup, out diagnostic));
         NoDiagnostic(diagnostic);
         byte[] gpos = Compiled(LayoutLookupKind.Gpos, lookup!);
-        var result = Run(Face(LayoutLookupKind.Gpos, gpos), [1]);
-        // The pair format-2 class domains merge the full glyph domain (the closure's
-        // OQ-S2a-6 bound), so the output domain stays all 10 glyphs and every class
-        // entry survives with its value.
+        var result = Run(Face(LayoutLookupKind.Gpos, gpos), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        Assert.Equal(NumGlyphs, result.Map!.OutputGlyphCount);
         var output = OutputLists(result, LayoutLookupKind.Gpos, NumGlyphs);
         var outPair = Assert.Single(One(output.Lookups).PairPositions!);
         Assert.Equal(2, outPair.Format);
@@ -595,11 +590,8 @@ public sealed class SubsetLayoutRewriteFormsTests
         Assert.Equal(7, cell1.XAdvance);
     }
 
-    // ---- GSUB 5/6 format 1: the spec-NULL rule-set slot permutes with its
-    // coverage ordinal and survives (the read chain materializes NULL offsets as
-    // null rows — the rewrite never dereferences one).
     [Fact]
-    public void ContextualFormat1KeepsTheNullRuleSetSlot()
+    public void ContextualFormat1PrunesAnOnlyNullRuleSet()
     {
         Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 1 }, NumGlyphs, 1,
             out var coverage, out var diagnostic));
@@ -614,14 +606,14 @@ public sealed class SubsetLayoutRewriteFormsTests
         byte[] gsub = Compiled(LayoutLookupKind.Gsub, lookup!);
         var result = Run(Face(LayoutLookupKind.Gsub, gsub), [1]);
         var output = OutputLists(result, LayoutLookupKind.Gsub, 2);
-        var outContextual = Assert.Single(One(output.Lookups).Contextuals!);
-        var sets = outContextual.RuleSets!;
-        Assert.Single(sets);
-        Assert.Null(sets[0]);
+        Assert.Empty(output.Lookups.ToArray());
+        Assert.Empty(output.Features.ToArray());
+        Assert.Empty(output.Scripts.ToArray());
+        Assert.Equal(new ushort[] { 0, 1 }, result.Map!.Entries.Select(entry => entry.InputGid).ToArray());
     }
 
     [Fact]
-    public void ChainingFormat1KeepsTheNullRuleSetSlot()
+    public void ChainingFormat1PrunesAnOnlyNullRuleSet()
     {
         Ok(CoverageTableCompiler.TryCreate(stackalloc ushort[] { 1 }, NumGlyphs, 1,
             out var coverage, out var diagnostic));
@@ -636,10 +628,10 @@ public sealed class SubsetLayoutRewriteFormsTests
         byte[] gsub = Compiled(LayoutLookupKind.Gsub, lookup!);
         var result = Run(Face(LayoutLookupKind.Gsub, gsub), [1]);
         var output = OutputLists(result, LayoutLookupKind.Gsub, 2);
-        var outChaining = Assert.Single(One(output.Lookups).Chainings!);
-        var sets = outChaining.RuleSets!;
-        Assert.Single(sets);
-        Assert.Null(sets[0]);
+        Assert.Empty(output.Lookups.ToArray());
+        Assert.Empty(output.Features.ToArray());
+        Assert.Empty(output.Scripts.ToArray());
+        Assert.Equal(new ushort[] { 0, 1 }, result.Map!.Entries.Select(entry => entry.InputGid).ToArray());
     }
 
     // ---- GPOS 1 format 1 over a non-monotone map: the CFF charset SIDs [0, 2, 1]

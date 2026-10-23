@@ -11,9 +11,7 @@ namespace FontWeave.Operations.Subset;
 /// blocks byte-for-byte (OQ-SV-1 lean: the block interiors — shared peak tuple
 /// references, private point numbers, intermediate regions — are block-internal
 /// data with no GID domain, so they move verbatim); HVAR/VVAR re-map their
-/// DeltaSetIndexMap domains (§2.3: the store's rows carry no GID domain and
-/// re-emit byte-identical, explicit maps re-resolve per output gid in the input
-/// domain, and the NULL advance map's implicit reading materializes, OQ-SV-6);
+/// DeltaSetIndexMap domains and prune unreachable variation data;
 /// CFF2 re-slots CharStrings/FDSelect (§2.5, commit ④). Every model forms before anything compiles, so a failure
 /// still refuses with nothing published.</summary>
 public static partial class SubsetOperation
@@ -143,12 +141,6 @@ public static partial class SubsetOperation
         BuildBudget budget, out byte[]? hvarBytes, out FontDiagnostic diagnostic)
     {
         hvarBytes = null;
-        // The store's rows are (outer, inner)-keyed with no GID domain: the same
-        // store model re-emits byte-identical through the T5-01 compiler. The
-        // advance map re-roots (explicit remap, or the NULL implicit reading
-        // materialized, OQ-SV-6); lsb/rsb stay NULL when the source is NULL — a
-        // NULL side map is the metric's no-variation answer, so materializing one
-        // would invent data (VVAR's tsb/bsb/vOrg slots answer the same way).
         ReadStatus status = model.AdvanceWidthMapping is { } advanceSource
             ? RemapDeltaSetIndexMap(advanceSource, map, budget, out var advanceMap,
                 out diagnostic)
@@ -168,7 +160,17 @@ public static partial class SubsetOperation
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
-        status = HvarTableCompiler.TryCreate(model.Store, advanceMap, lsbMap,
+        var store = model.Store;
+        if (map.OutputGlyphCount != map.InputGlyphCount)
+        {
+            DeltaSetIndexMapTable?[] maps = [advanceMap, lsbMap, rsbMap];
+            status = PruneMetricVariationStore(store, maps, budget,
+                out var pruned, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            store = pruned!;
+            (advanceMap, lsbMap, rsbMap) = (maps[0], maps[1], maps[2]);
+        }
+        status = HvarTableCompiler.TryCreate(store, advanceMap, lsbMap,
             rsbMap, model.Store.AxisCount, map.OutputGlyphCount,
             out var rebuilt, out diagnostic, budget, model.Location);
         if (status != ReadStatus.Done) return status;
@@ -180,11 +182,6 @@ public static partial class SubsetOperation
         BuildBudget budget, out byte[]? vvarBytes, out FontDiagnostic diagnostic)
     {
         vvarBytes = null;
-        // OQ-T5-04-4 on the SV slice's map face: only advanceHeight carries the
-        // implicit (0, gid) reading, so only it materializes when NULL; tsb/
-        // bsb/vOrg NULL is the no-variation answer and materializing would
-        // invent data — they keep their NULL slots. Non-NULL side maps re-map
-        // like their HVAR counterparts. The store re-emits byte-identical.
         ReadStatus status = model.AdvanceHeightMapping is { } advanceSource
             ? RemapDeltaSetIndexMap(advanceSource, map, budget, out var advanceMap,
                 out diagnostic)
@@ -210,7 +207,17 @@ public static partial class SubsetOperation
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
-        status = VvarTableCompiler.TryCreate(model.Store, advanceMap, tsbMap,
+        var store = model.Store;
+        if (map.OutputGlyphCount != map.InputGlyphCount)
+        {
+            DeltaSetIndexMapTable?[] maps = [advanceMap, tsbMap, bsbMap, vOrgMap];
+            status = PruneMetricVariationStore(store, maps, budget,
+                out var pruned, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            store = pruned!;
+            (advanceMap, tsbMap, bsbMap, vOrgMap) = (maps[0], maps[1], maps[2], maps[3]);
+        }
+        status = VvarTableCompiler.TryCreate(store, advanceMap, tsbMap,
             bsbMap, vOrgMap, model.Store.AxisCount, map.OutputGlyphCount,
             out var rebuilt, out diagnostic, budget, model.Location);
         if (status != ReadStatus.Done) return status;

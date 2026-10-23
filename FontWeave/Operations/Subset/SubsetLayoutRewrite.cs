@@ -5,42 +5,8 @@ using FontWeave.Tables.Layout;
 
 namespace FontWeave.Operations.Subset;
 
-/// <summary>Compact+PreserveLayout layout rewrite (S2b card §2/§3).
-///
-/// Under the caller's explicit PreserveLayout selection in compact-remap mode, the
-/// admitted prefix (GDEF→GSUB→GPOS) rewrites in place over the frozen map: read =
-/// the step 3.5 materialized models (never a second parse), rewrite = every GID-
-/// bearing field re-answered through <see cref="GlyphRemap.OutputOf"/>, construct =
-/// the existing leaf/root compilers over the output domain, emit = the existing
-/// TryCompile faces. The closure (step 4.5) merged every wire reference into the
-/// retained set before the map froze, so every remap here is total: a miss is an
-/// orchestration bug and refuses under the code-23 contract (RF-S2b-2), never a
-/// silent rule loss. The GDEF class domains shrink definitionally — a glyph the map
-/// dropped drops its class entry, while surviving entries keep their class values
-/// (the lookup flags' markAttachmentType contract reads class values, so no
-/// renumbering, OQ-S2b-3). The output order on a TrueType face is the ascending
-/// input GID (monotone, so remapped keys stay sorted); on a CFF1 face the ascending
-/// SID/CID identity can permute, so every key-order wire constraint (coverage
-/// entries, pair-set second glyphs, class-def ranges) re-groups over the sorted
-/// output keys with the parallel payloads riding the same permutation — the kern
-/// fmt0 canonical-sort precedent, a wire-equivalence tier member. Semantic orders
-/// (ligature preference, rule and sequence orders, feature/lookup record order)
-/// never move. Counts are invariant by construction and the root compilers
-/// re-answer every flags/context contract against the rebuilt GDEF context (the
-/// emission-side second defense). FV re-emits its typed model untouched (no GID
-/// domain; featureIndex identity, OQ-S2b-8).</summary>
 public static partial class SubsetOperation
 {
-    /// <summary>The rewrite engine's private read-only output-map seam (OQ-S2c-4,
-    /// S2c card §4.1): the output-domain mapping delegate plus the output-domain
-    /// size — exactly the two members the whole rewrite consumption face reads off
-    /// the frozen <see cref="GlyphRemap"/>. The compact window passes the frozen map
-    /// (semantically identical to the pre-S2c parameter, the S2b1/S2b2 gate
-    /// re-certification); a retain+scope rewrite passes the identity seam —
-    /// OutputOf(g)=g over the input domain — because retain-GIDs never constructs or
-    /// publishes a map instance (W1 §3.2: the seam is the engine's private
-    /// parameter, not a map artifact, and the <see cref="GlyphRemap"/> contract
-    /// itself is untouched).</summary>
     internal abstract class LayoutOutputMap
     {
         private sealed class FrozenMap : LayoutOutputMap
@@ -50,6 +16,8 @@ public static partial class SubsetOperation
             internal override int OutputOf(int inputGlyphId) =>
                 _map.OutputOf(inputGlyphId);
             internal override int OutputGlyphCount => _map.OutputGlyphCount;
+            internal override bool HasDroppedGlyphs =>
+                _map.OutputGlyphCount != _map.InputGlyphCount;
             internal override FontFaceRef SourceFace => _map.SourceFace;
         }
 
@@ -61,6 +29,7 @@ public static partial class SubsetOperation
                 (_face, _glyphCount) = (face, glyphCount);
             internal override int OutputOf(int inputGlyphId) => inputGlyphId;
             internal override int OutputGlyphCount => _glyphCount;
+            internal override bool HasDroppedGlyphs => false;
             internal override FontFaceRef SourceFace => _face;
         }
 
@@ -68,10 +37,9 @@ public static partial class SubsetOperation
         internal static LayoutOutputMap Identity(FontFaceRef face, int numGlyphs) =>
             new IdentityMap(face, numGlyphs);
 
-        /// <summary>The output ordinal of one input GID (total on the closure domain;
-        /// the callers' misses are the RewriteMiss/RemapGlyphId refusals).</summary>
         internal abstract int OutputOf(int inputGlyphId);
         internal abstract int OutputGlyphCount { get; }
+        internal abstract bool HasDroppedGlyphs { get; }
         internal abstract FontFaceRef SourceFace { get; }
     }
 
@@ -86,6 +54,7 @@ public static partial class SubsetOperation
     {
         internal required int[] OldToNew { get; init; }
         internal int NewCount { get; init; }
+        internal bool DropUnmatchableTargets { get; init; }
 
         internal static LayoutLookupRemap Of(LayoutScopeResolution scope) => new()
         {
@@ -122,7 +91,7 @@ public static partial class SubsetOperation
                 return RewriteProducerMissing(map.SourceFace.Location, Gdef,
                     out diagnostic);
             status = RewriteCompactGdef(gdefModel, outputMap, state.Budget, out gdef,
-                out context, out int gdefSubtables, out diagnostic);
+                out context, out int gdefSubtables, out diagnostic, state.RewrittenLayoutModels);
             if (status != ReadStatus.Done) return status;
             // The merged-tree JSTF seam (S2b-2 card §2.5): the JSTF rebuild
             // validates and constructs against the POST-rewrite context, so the
@@ -145,10 +114,10 @@ public static partial class SubsetOperation
             status = state.GsubScope is { } gsubScope && !gsubScope.ListsNoOp
                 ? RewriteScopedLayoutLists(gsubModel, outputMap, gsubScope,
                     LayoutLookupKind.Gsub, context, state.Budget, out gsub,
-                    out int gsubSubtables, out diagnostic)
+                    out int gsubSubtables, out diagnostic, state.RewrittenLayoutModels)
                 : RewriteCompactLayoutLists(gsubModel, outputMap, LayoutLookupKind.Gsub,
                     context, state.Budget, out gsub, out gsubSubtables,
-                    out diagnostic);
+                    out diagnostic, state.RewrittenLayoutModels);
             if (status != ReadStatus.Done) return status;
             census.Add(RewriteCensusRow(directory, Gsub, LookupSubtables(gsubModel.Lookups),
                 gsubSubtables, gsub!.Length));
@@ -161,10 +130,10 @@ public static partial class SubsetOperation
             status = state.GposScope is { } gposScope && !gposScope.ListsNoOp
                 ? RewriteScopedLayoutLists(gposModel, outputMap, gposScope,
                     LayoutLookupKind.Gpos, context, state.Budget, out gpos,
-                    out int gposSubtables, out diagnostic)
+                    out int gposSubtables, out diagnostic, state.RewrittenLayoutModels)
                 : RewriteCompactLayoutLists(gposModel, outputMap, LayoutLookupKind.Gpos,
                     context, state.Budget, out gpos, out gposSubtables,
-                    out diagnostic);
+                    out diagnostic, state.RewrittenLayoutModels);
             if (status != ReadStatus.Done) return status;
             census.Add(RewriteCensusRow(directory, Gpos, LookupSubtables(gposModel.Lookups),
                 gposSubtables, gpos!.Length));
@@ -306,6 +275,7 @@ public static partial class SubsetOperation
             outputGlyphs, gsubNewCount, gposNewCount, state.GdefContext, scripts,
             out JstfTable? model, out diagnostic, location: at);
         if (rootStatus != ReadStatus.Done) return rootStatus;
+        if (state.RewrittenLayoutModels is { } layoutModels) layoutModels.Jstf = model;
         rootStatus = JstfTableCompiler.TryCompile(model!, out var bytes,
             out diagnostic);
         if (rootStatus != ReadStatus.Done) return rootStatus;
@@ -441,14 +411,18 @@ public static partial class SubsetOperation
         lookupCount = -1;
         diagnostic = default;
         if (remap is null) return ReadStatus.Done;
+        int count = 0;
         for (int i = 0; i < records.Length; i++)
         {
             int old = records[i].LookupListIndex;
-            int target = old < remap.OldToNew.Length ? remap.OldToNew[old] : -1;
+            if (old >= remap.OldToNew.Length) return ScopedRecordMiss(at, old, out diagnostic);
+            int target = remap.OldToNew[old];
+            if (target == -1 && remap.DropUnmatchableTargets) continue;
             if (target < 0 || target >= remap.NewCount)
                 return ScopedRecordMiss(at, old, out diagnostic);
-            records[i] = records[i] with { LookupListIndex = (ushort)target };
+            records[count++] = records[i] with { LookupListIndex = (ushort)target };
         }
+        if (count != records.Length) Array.Resize(ref records, count);
         lookupCount = remap.NewCount;
         return ReadStatus.Done;
     }
@@ -530,20 +504,21 @@ public static partial class SubsetOperation
     /// parallel payloads (an identity permutation on the TrueType monotone order).</summary>
     private static ReadStatus RewriteCoverage(CoverageTable coverage, LayoutOutputMap map,
         BuildBudget budget, out CoverageTable? rewritten, out int[] ordinalOf,
-        out FontDiagnostic diagnostic)
+        out FontDiagnostic diagnostic, Func<int, bool>? keepOrdinal = null)
     {
         rewritten = null;
         ordinalOf = new int[coverage.Glyphs.Length];
         var keys = new ushort[coverage.Glyphs.Length];
+        int count = 0;
         for (int i = 0; i < coverage.Glyphs.Length; i++)
         {
             int output = map.OutputOf(coverage.Glyphs[i]);
-            if (output < 0)
-                return RewriteMiss(map, coverage.Location.TableTag,
-                    coverage.Glyphs[i], out diagnostic);
-            keys[i] = (ushort)output;
-            ordinalOf[i] = i;
+            if (output < 0 || keepOrdinal is not null && !keepOrdinal(i)) continue;
+            keys[count] = (ushort)output;
+            ordinalOf[count++] = i;
         }
+        Array.Resize(ref keys, count);
+        Array.Resize(ref ordinalOf, count);
         // The frozen map is injective, so the keys are distinct and the sort is total.
         Array.Sort(keys, ordinalOf);
         return CoverageTableCompiler.TryCreate(keys, map.OutputGlyphCount,
@@ -560,7 +535,7 @@ public static partial class SubsetOperation
     /// face reads them lazily, GdefLookupContext.TryCreate checks identity only).</summary>
     private static ReadStatus RewriteCompactGdef(GdefTable gdef, LayoutOutputMap map,
         BuildBudget budget, out byte[]? bytes, out GdefLookupContext? context,
-        out int subtableCount, out FontDiagnostic diagnostic)
+        out int subtableCount, out FontDiagnostic diagnostic, CompactLayoutModels? layoutModels = null)
     {
         bytes = null;
         context = null;
@@ -596,10 +571,7 @@ public static partial class SubsetOperation
             status = RewriteCoverage(originalAttach.Coverage, map, budget,
                 out var attachCoverage, out var ordinalOf, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            // The remap is total on a coverage's members (the closure merged them),
-            // so the contour-point lists ride their coverage ordinals through the
-            // permutation unchanged.
-            var points = new ushort[originalAttach.Count][];
+            var points = new ushort[ordinalOf.Length][];
             for (int i = 0; i < points.Length; i++)
                 points[i] = originalAttach.Points(ordinalOf[i]).ToArray();
             attachList = new(attachCoverage!, points, numGlyphs,
@@ -611,7 +583,7 @@ public static partial class SubsetOperation
             status = RewriteCoverage(originalCaret.Coverage, map, budget,
                 out var caretCoverage, out var ordinalOf, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            var ligGlyphs = new LigGlyphTable[originalCaret.LigGlyphs.Count];
+            var ligGlyphs = new LigGlyphTable[ordinalOf.Length];
             for (int i = 0; i < ligGlyphs.Length; i++)
             {
                 LigGlyphTable source = originalCaret.LigGlyphs[ordinalOf[i]];
@@ -627,6 +599,7 @@ public static partial class SubsetOperation
             gdef.ItemVariationStore, out var rewritten, out diagnostic,
             budget.Limits, gdef.Location);
         if (status != ReadStatus.Done) return status;
+        if (layoutModels is not null) layoutModels.Gdef = rewritten;
         status = GdefTableCompiler.TryCompile(rewritten!, out bytes, out diagnostic,
             budget);
         if (status != ReadStatus.Done) return status;
@@ -640,13 +613,9 @@ public static partial class SubsetOperation
         return ReadStatus.Done;
     }
 
-    /// <summary>One class domain's per-entry remap (OQ-S2b-3): every mapped glyph
-    /// keeps its class value, an unmapped glyph's entry drops (the definitional
-    /// shrink — dropped glyphs were never closure members), and the survivors
-    /// re-group into maximal runs over the sorted output keys.</summary>
     private static ReadStatus RewriteClassDefRanges(ClassDefTable? classDef,
         LayoutOutputMap map, out ClassDefRange[] ranges, out ushort format,
-        out FontDiagnostic diagnostic)
+        out FontDiagnostic diagnostic, ReadOnlySpan<int> classRemap = default)
     {
         ranges = [];
         format = 2;
@@ -656,12 +625,16 @@ public static partial class SubsetOperation
         var values = new List<ushort>();
         foreach (var range in classDef.Ranges)
         {
+            if (!classRemap.IsEmpty && range.ClassValue >= classRemap.Length) continue;
+            int classValue = classRemap.IsEmpty
+                ? range.ClassValue : classRemap[range.ClassValue];
+            if (classValue < 0) continue;
             for (int gid = range.StartGlyph; gid <= range.EndGlyph; gid++)
             {
                 int output = map.OutputOf(gid);
                 if (output < 0) continue; // the definitional entry drop
                 keys.Add((ushort)output);
-                values.Add(range.ClassValue);
+                values.Add((ushort)classValue);
             }
         }
         var keyArray = keys.ToArray();
@@ -712,21 +685,10 @@ public static partial class SubsetOperation
 
     // ---- the layout lists (GSUB/GPOS; S2b card §2.1) ------------------------------
 
-    /// <summary>One layout list's rewrite: every lookup's typed leaves remap through
-    /// the frozen map into new leaf models over the output domain, each lookup
-    /// re-forms through its LookupTableCompiler factory with Flags/MarkFilteringSet
-    /// byte-stable (markset ordinals never move), and the root re-emits through the
-    /// Gsub/GposTableCompiler with the scripts, features and FV block reused as-is —
-    /// the feature and lookup record/index order never changes (the emission
-    /// invariant the JSTF index identity builds on), so every feature's lookup
-    /// indices stay identity and zero rules are lost. The zero-rule-loss contract
-    /// asserts per lookup that the subtable count survived (the leaf loops preserve
-    /// it by construction; the explicit break defends orchestration drift,
-    /// RF-S2b-2).</summary>
     private static ReadStatus RewriteCompactLayoutLists(LayoutListsTable table,
         LayoutOutputMap map, LayoutLookupKind kind, GdefLookupContext? context,
         BuildBudget budget, out byte[]? bytes, out int subtableCount,
-        out FontDiagnostic diagnostic)
+        out FontDiagnostic diagnostic, CompactLayoutModels? layoutModels = null)
     {
         bytes = null;
         subtableCount = 0;
@@ -759,6 +721,11 @@ public static partial class SubsetOperation
                 table.Location, table.FeatureVariations);
         }
         if (rootStatus != ReadStatus.Done) return rootStatus;
+        if (layoutModels is not null)
+        {
+            if (kind == LayoutLookupKind.Gsub) layoutModels.Gsub = root;
+            else layoutModels.Gpos = root;
+        }
         ReadStatus compileStatus = kind == LayoutLookupKind.Gsub
             ? GsubTableCompiler.TryCompile(root!, context, out bytes, out diagnostic,
                 budget)
@@ -780,14 +747,14 @@ public static partial class SubsetOperation
     /// empty required-less row drops; (5) scripts rebuild via TryWithLanguages (the
     /// parser already pruned empty trees; the empty ScriptList root is the legal
     /// zero-count form); (6) the FV records re-root over the surviving feature
-    /// indices with rebuilt alternate features, an emptied record dropping; (7) the
+    /// indices with rebuilt alternate features; (7) the
     /// root re-emits through the family compiler with the surviving lists. The
     /// per-lookup subtable-count defense stays exact (RF-S2b-2); the whole-table
     /// census row reads in!=out legally for a scoped rewrite (OQ-S2c-10).</summary>
     private static ReadStatus RewriteScopedLayoutLists(LayoutListsTable table,
         LayoutOutputMap map, LayoutScopeResolution scope, LayoutLookupKind kind,
         GdefLookupContext? context, BuildBudget budget, out byte[]? bytes,
-        out int subtableCount, out FontDiagnostic diagnostic)
+        out int subtableCount, out FontDiagnostic diagnostic, CompactLayoutModels? layoutModels = null)
     {
         bytes = null;
         subtableCount = 0;
@@ -878,6 +845,11 @@ public static partial class SubsetOperation
                 map.OutputGlyphCount, out root, out diagnostic, budget.Limits,
                 table.Location, variations);
         if (rootStatus != ReadStatus.Done) return rootStatus;
+        if (layoutModels is not null)
+        {
+            if (kind == LayoutLookupKind.Gsub) layoutModels.Gsub = root;
+            else layoutModels.Gpos = root;
+        }
         ReadStatus compileStatus = kind == LayoutLookupKind.Gsub
             ? GsubTableCompiler.TryCompile(root!, context, out bytes, out diagnostic,
                 budget)
@@ -930,7 +902,7 @@ public static partial class SubsetOperation
     /// <summary>The FV block's scoped re-root (card 2.3, OQ-S2c-6): a substitution
     /// entry survives iff its replaced featureIndex survives, its alternate feature
     /// rebuilds over the remapped lookup indices (the alternate's lookups were
-    /// seeds, so the remap is total), an emptied record drops, and the surviving
+    /// seeds, so the remap is total), and the
     /// records re-form through the FV compiler.</summary>
     private static ReadStatus RewriteScopedVariations(FeatureVariationsTable source,
         LayoutScopeResolution scope, BuildBudget budget,
@@ -961,13 +933,12 @@ public static partial class SubsetOperation
                             alternate.LookupIndices[i], out diagnostic);
                     indices[i] = (ushort)target;
                 }
-                ReadStatus status = alternate.TryWithLookups(indices,
-                    scope.SurvivingLookups.Count, out var rebuiltAlternate,
-                    out diagnostic, budget.Limits);
+                ReadStatus status = FeatureVariationsTableCompiler.TryCreateAlternateFeature(
+                    alternate.ParamsOffsetRaw, indices, scope.SurvivingLookups.Count,
+                    out var rebuiltAlternate, out diagnostic, budget, alternate.Location);
                 if (status != ReadStatus.Done) return status;
                 entries.Add(((ushort)featureTarget, rebuiltAlternate!));
             }
-            if (entries.Count == 0) continue; // the emptied record drops
             ReadStatus substStatus = FeatureVariationsTableCompiler.
                 TryCreateFeatureTableSubst(entries, scope.SurvivingFeatures.Count,
                     out var subst, out diagnostic, budget, substitution.Location);
@@ -1092,19 +1063,12 @@ public static partial class SubsetOperation
     {
         rewritten = null;
         ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
-            out var ordinalOf, out diagnostic);
+            out var ordinalOf, out diagnostic,
+            i => map.OutputOf(sub.Substitutes[i]) >= 0);
         if (status != ReadStatus.Done) return status;
-        var substitutes = new ushort[sub.Substitutes.Length];
-        for (int i = 0; i < substitutes.Length; i++)
-        {
-            int output = map.OutputOf(sub.Substitutes[i]);
-            if (output < 0)
-                return RewriteMiss(map, sub.Coverage.Location.TableTag,
-                    sub.Substitutes[i], out diagnostic);
-            substitutes[i] = (ushort)output;
-        }
-        var ordered = new ushort[substitutes.Length];
-        for (int i = 0; i < ordered.Length; i++) ordered[i] = substitutes[ordinalOf[i]];
+        var ordered = new ushort[ordinalOf.Length];
+        for (int i = 0; i < ordered.Length; i++)
+            ordered[i] = (ushort)map.OutputOf(sub.Substitutes[ordinalOf[i]]);
         ushort format = sub.Format;
         if (format == 1 && !HasUniformDelta(coverage!.Glyphs, ordered)) format = 2;
         return SingleSubstTableCompiler.TryCreate(coverage!.Glyphs, ordered,
@@ -1164,7 +1128,7 @@ public static partial class SubsetOperation
         }
         else
         {
-            ordered = new StaticValueRecord[sub.Values.Length];
+            ordered = new StaticValueRecord[ordinalOf.Length];
             for (int v = 0; v < ordered.Length; v++) ordered[v] = sub.Values[ordinalOf[v]];
         }
         return SinglePosTableCompiler.TryCreate(coverage!.Glyphs, ordered,
@@ -1201,17 +1165,16 @@ public static partial class SubsetOperation
     {
         rewritten = null;
         ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
-            out var ordinalOf, out diagnostic);
+            out var ordinalOf, out diagnostic,
+            i => GlyphSequenceSurvives(sub.GetSequence(i), map));
         if (status != ReadStatus.Done) return status;
-        var sequences = new ushort[sub.SequenceCount][];
-        for (int i = 0; i < sequences.Length; i++)
+        var ordered = new ushort[ordinalOf.Length][];
+        for (int i = 0; i < ordered.Length; i++)
         {
-            status = RewriteGlyphSequence(sub.GetSequence(i), map,
-                sub.Coverage.Location.TableTag, out sequences[i], out diagnostic);
+            status = RewriteGlyphSequence(sub.GetSequence(ordinalOf[i]), map,
+                sub.Coverage.Location.TableTag, out ordered[i], out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
-        var ordered = new ushort[sequences.Length][];
-        for (int i = 0; i < ordered.Length; i++) ordered[i] = sequences[ordinalOf[i]];
         return MultipleSubstTableCompiler.TryCreate(coverage!.Glyphs, ordered,
             map.OutputGlyphCount, out rewritten, out diagnostic, budget, sub.Location,
             coverage.Format);
@@ -1222,18 +1185,16 @@ public static partial class SubsetOperation
     {
         rewritten = null;
         ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
-            out var ordinalOf, out diagnostic);
+            out var ordinalOf, out diagnostic,
+            i => GlyphSequenceSurvives(sub.GetAlternateSet(i), map));
         if (status != ReadStatus.Done) return status;
-        var alternateSets = new ushort[sub.AlternateSetCount][];
-        for (int i = 0; i < alternateSets.Length; i++)
+        var ordered = new ushort[ordinalOf.Length][];
+        for (int i = 0; i < ordered.Length; i++)
         {
-            status = RewriteGlyphSequence(sub.GetAlternateSet(i), map,
-                sub.Coverage.Location.TableTag, out alternateSets[i], out diagnostic);
+            status = RewriteGlyphSequence(sub.GetAlternateSet(ordinalOf[i]), map,
+                sub.Coverage.Location.TableTag, out ordered[i], out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
-        var ordered = new ushort[alternateSets.Length][];
-        for (int i = 0; i < ordered.Length; i++)
-            ordered[i] = alternateSets[ordinalOf[i]];
         return AlternateSubstTableCompiler.TryCreate(coverage!.Glyphs, ordered,
             map.OutputGlyphCount, out rewritten, out diagnostic, budget, sub.Location,
             coverage.Format);
@@ -1248,26 +1209,24 @@ public static partial class SubsetOperation
         ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
             out var ordinalOf, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        var sets = new LigatureSetTable[sub.SetCount];
+        var sets = new LigatureSetTable[ordinalOf.Length];
         for (int i = 0; i < sets.Length; i++)
         {
             LigatureSetTable source = sub.GetSet(ordinalOf[i]);
-            var ligatures = new LigatureTable[source.LigatureCount];
-            for (int l = 0; l < ligatures.Length; l++)
+            var ligatures = new List<LigatureTable>(source.LigatureCount);
+            for (int l = 0; l < source.LigatureCount; l++)
             {
                 LigatureTable rule = source.Ligatures[l];
                 int ligature = map.OutputOf(rule.LigatureGlyph);
-                if (ligature < 0)
-                    return RewriteMiss(map, sub.Coverage.Location.TableTag,
-                        rule.LigatureGlyph, out diagnostic);
+                if (ligature < 0 || !GlyphSequenceSurvives(rule.Components, map)) continue;
                 status = RewriteGlyphSequence(rule.Components, map,
                     sub.Coverage.Location.TableTag, out var components, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 // The ligature rules keep their wire preference order — semantic, so
                 // never re-ordered; only the GIDs move.
-                ligatures[l] = new((ushort)ligature, components, rule.Location, 0);
+                ligatures.Add(new((ushort)ligature, components, rule.Location, 0));
             }
-            sets[i] = new(ligatures, source.Location, 0);
+            sets[i] = new(ligatures.ToArray(), source.Location, 0);
         }
         return LigatureSubstTableCompiler.TryCreate(coverage!.Glyphs, sets,
             map.OutputGlyphCount, out rewritten, out diagnostic, budget, sub.Location,
@@ -1282,19 +1241,12 @@ public static partial class SubsetOperation
     {
         rewritten = null;
         ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
-            out var ordinalOf, out diagnostic);
+            out var ordinalOf, out diagnostic,
+            i => map.OutputOf(sub.Substitutes[i]) >= 0);
         if (status != ReadStatus.Done) return status;
-        var substitutes = new ushort[sub.Substitutes.Length];
-        for (int i = 0; i < substitutes.Length; i++)
-        {
-            int output = map.OutputOf(sub.Substitutes[i]);
-            if (output < 0)
-                return RewriteMiss(map, sub.Coverage.Location.TableTag,
-                    sub.Substitutes[i], out diagnostic);
-            substitutes[i] = (ushort)output;
-        }
-        var ordered = new ushort[substitutes.Length];
-        for (int i = 0; i < ordered.Length; i++) ordered[i] = substitutes[ordinalOf[i]];
+        var ordered = new ushort[ordinalOf.Length];
+        for (int i = 0; i < ordered.Length; i++)
+            ordered[i] = (ushort)map.OutputOf(sub.Substitutes[ordinalOf[i]]);
         status = RewriteCoverageList(sub.BacktrackCoverages, map, budget,
             out var backtrack, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -1327,12 +1279,6 @@ public static partial class SubsetOperation
 
     // ---- GSUB 5 / GPOS 7 and GSUB 6 / GPOS 8 (the shared rule families) -----------
 
-    /// <summary>One contextual subtable (GSUB 5 / GPOS 7 shared model, OQ-T4-06-3):
-    /// format 1 remaps its rules' glyph sequences and permutes the rule sets with the
-    /// coverage sort; format 2 keeps the class-valued rules and rule sets untouched
-    /// (class values are identical) and rewrites only the coverage and the class
-    /// domain; format 3 remaps each chain-slot coverage in its declared order. The
-    /// seqLookup records' LookupListIndex never moves (the record-order invariant).</summary>
     private static ReadStatus RewriteContextualSubtable(ContextualSubstTable sub,
         LayoutOutputMap map, BuildBudget budget, out ContextualSubstTable? rewritten,
         out FontDiagnostic diagnostic, LayoutLookupRemap? lookupRemap = null)
@@ -1358,15 +1304,12 @@ public static partial class SubsetOperation
             status = RewriteClassDef(sub.ClassDef, map, budget, out var classDef,
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
-            // The rule sets index by class value — the array order and the null
-            // slots ride (identical values); the S2c remap form re-answers each
-            // rule's records (card §5.1 step 2, the format-1 remap over the
-            // class-valued bodies).
             IReadOnlyList<ContextualRuleSet?> ruleSets = sub.RuleSets!;
-            if (lookupRemap is not null)
+            if (lookupRemap is not null || map.HasDroppedGlyphs)
             {
                 status = RemapContextualClassRuleSets(ruleSets, lookupRemap, budget,
-                    out var remappedSets, out diagnostic);
+                    out var remappedSets, out diagnostic,
+                    map.HasDroppedGlyphs ? classDef : null, coverage);
                 if (status != ReadStatus.Done) return status;
                 ruleSets = remappedSets;
             }
@@ -1386,39 +1329,34 @@ public static partial class SubsetOperation
         BuildBudget budget, out ContextualRuleSet?[] ordered, out FontDiagnostic diagnostic,
         LayoutLookupRemap? lookupRemap = null)
     {
-        ordered = new ContextualRuleSet?[ruleSets.Count];
+        ordered = new ContextualRuleSet?[ordinalOf.Length];
         for (int newIndex = 0; newIndex < ordered.Length; newIndex++)
         {
             ContextualRuleSet? source = ruleSets[ordinalOf[newIndex]];
             if (source is null) continue; // the spec-NULL slot permutes with its coverage ordinal
-            var rules = new ContextualRule[source.RuleCount];
-            for (int r = 0; r < rules.Length; r++)
+            var rules = new List<ContextualRule>(source.RuleCount);
+            for (int r = 0; r < source.RuleCount; r++)
             {
                 ContextualRule rule = source.Rules[r];
-                var input = new ushort[rule.InputSequence.Length];
-                for (int i = 0; i < input.Length; i++)
-                {
-                    int output = map.OutputOf(rule.InputSequence[i]);
-                    if (output < 0)
-                        return RewriteMiss(map, rule.Location.TableTag,
-                            rule.InputSequence[i], out diagnostic);
-                    input[i] = (ushort)output;
-                }
+                if (!GlyphSequenceSurvives(rule.InputSequence, map)) continue;
+                ReadStatus status = RewriteGlyphSequence(rule.InputSequence, map,
+                    rule.Location.TableTag, out var input, out diagnostic);
+                if (status != ReadStatus.Done) return status;
                 // The S2b form keeps the record indices byte-stable (the record
                 // list is the rule's wire layout); the S2c remap form re-answers
                 // each target against the surviving subset and re-validates against
                 // the real new count (card 5.1 step 2).
-                ReadStatus status = RemapLookupRecords(rule.LookupRecords, lookupRemap,
+                status = RemapLookupRecords(rule.LookupRecords, lookupRemap,
                     rule.Location, out var records, out int lookupCount,
                     out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 status = ContextualSubstTableCompiler.TryCreateRule(input,
                     records, lookupCount, out var rewrittenRule,
                     out diagnostic, budget, rule.Location);
-                rules[r] = rewrittenRule!;
                 if (status != ReadStatus.Done) return status;
+                rules.Add(rewrittenRule!);
             }
-            ordered[newIndex] = AssembleContextualRuleSet(rules, source.Location);
+            ordered[newIndex] = AssembleContextualRuleSet(rules.ToArray(), source.Location);
         }
         diagnostic = default;
         return ReadStatus.Done;
@@ -1433,42 +1371,47 @@ public static partial class SubsetOperation
         return new(rules, location, (int)consumed);
     }
 
-    /// <summary>Format 2's rule-set rows re-answer their records only (S2c card
-    /// §5.1 step 2): the class values never renumber, so the set array's order and
-    /// the null slots ride unchanged while every rule's SequenceLookupRecords take
-    /// the surviving-subset remap — TryCreateRule's domain check re-fires per
-    /// record against the real new count.</summary>
     private static ReadStatus RemapContextualClassRuleSets(
-        IReadOnlyList<ContextualRuleSet?> ruleSets, LayoutLookupRemap remap,
-        BuildBudget budget, out ContextualRuleSet?[] ordered, out FontDiagnostic diagnostic)
+        IReadOnlyList<ContextualRuleSet?> ruleSets, LayoutLookupRemap? remap,
+        BuildBudget budget, out ContextualRuleSet?[] ordered, out FontDiagnostic diagnostic,
+        ClassDefTable? classDef = null, CoverageTable? coverage = null)
     {
         ordered = new ContextualRuleSet?[ruleSets.Count];
+        HashSet<ushort>? inputClasses = null, firstClasses = null;
+        if (classDef is not null)
+        {
+            if (!budget.Work(classDef.NumGlyphs + coverage!.Glyphs.Length,
+                classDef.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+            inputClasses = ClassesInDomain(classDef);
+            firstClasses = [];
+            foreach (ushort glyph in coverage.Glyphs)
+                firstClasses.Add(classDef.ClassOf(glyph));
+        }
         for (int i = 0; i < ordered.Length; i++)
         {
             if (ruleSets[i] is not { } source) continue; // the spec-NULL slot keeps its slot
-            var rules = new ContextualRule[source.RuleCount];
-            for (int r = 0; r < rules.Length; r++)
+            if (firstClasses is not null && !firstClasses.Contains((ushort)i)) continue;
+            var rules = new List<ContextualRule>(source.RuleCount);
+            for (int r = 0; r < source.RuleCount; r++)
             {
                 ContextualRule rule = source.Rules[r];
+                if (inputClasses is not null &&
+                    !ClassSequenceSurvives(rule.InputSequence, inputClasses)) continue;
                 ReadStatus status = RemapLookupRecords(rule.LookupRecords, remap,
                     rule.Location, out var records, out int lookupCount, out diagnostic);
                 if (status != ReadStatus.Done) return status;
                 status = ContextualSubstTableCompiler.TryCreateRule(rule.InputSequence,
                     records, lookupCount, out var rebuilt, out diagnostic, budget,
                     rule.Location);
-                rules[r] = rebuilt!;
                 if (status != ReadStatus.Done) return status;
+                rules.Add(rebuilt!);
             }
-            ordered[i] = AssembleContextualRuleSet(rules, source.Location);
+            ordered[i] = AssembleContextualRuleSet(rules.ToArray(), source.Location);
         }
         diagnostic = default;
         return ReadStatus.Done;
     }
 
-    /// <summary>One chaining subtable (GSUB 6 / GPOS 8 shared model): format 1 remaps
-    /// all three glyph sequences and permutes the rule sets with the coverage;
-    /// format 2 keeps the class-valued rules and rewrites the three class domains;
-    /// format 3 remaps the three coverage chains.</summary>
     private static ReadStatus RewriteChainingSubtable(ChainingSubstTable sub,
         LayoutOutputMap map, BuildBudget budget, out ChainingSubstTable? rewritten,
         out FontDiagnostic diagnostic, LayoutLookupRemap? lookupRemap = null)
@@ -1506,15 +1449,13 @@ public static partial class SubsetOperation
             status = RewriteClassDef(sub.LookaheadClassDef, map, budget,
                 out var lookaheadDef, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            // The rule sets index by class value — the array order and the null
-            // slots ride (identical values); the S2c remap form re-answers each
-            // rule's records (card §5.1 step 2, the format-1 remap over the
-            // class-valued bodies).
             IReadOnlyList<ChainingRuleSet?> ruleSets = sub.RuleSets!;
-            if (lookupRemap is not null)
+            if (lookupRemap is not null || map.HasDroppedGlyphs)
             {
                 status = RemapChainingClassRuleSets(ruleSets, lookupRemap, budget,
-                    out var remappedSets, out diagnostic);
+                    out var remappedSets, out diagnostic,
+                    map.HasDroppedGlyphs ? inputDef : null, backtrackDef, lookaheadDef,
+                    coverage);
                 if (status != ReadStatus.Done) return status;
                 ruleSets = remappedSets;
             }
@@ -1535,15 +1476,18 @@ public static partial class SubsetOperation
         BuildBudget budget, out ChainingRuleSet?[] ordered, out FontDiagnostic diagnostic,
         LayoutLookupRemap? lookupRemap = null)
     {
-        ordered = new ChainingRuleSet?[ruleSets.Count];
+        ordered = new ChainingRuleSet?[ordinalOf.Length];
         for (int newIndex = 0; newIndex < ordered.Length; newIndex++)
         {
             ChainingRuleSet? source = ruleSets[ordinalOf[newIndex]];
             if (source is null) continue; // the spec-NULL slot permutes with its coverage ordinal
-            var rules = new ChainingRule[source.RuleCount];
-            for (int r = 0; r < rules.Length; r++)
+            var rules = new List<ChainingRule>(source.RuleCount);
+            for (int r = 0; r < source.RuleCount; r++)
             {
                 ChainingRule rule = source.Rules[r];
+                if (!GlyphSequenceSurvives(rule.BacktrackSequence, map) ||
+                    !GlyphSequenceSurvives(rule.InputSequence, map) ||
+                    !GlyphSequenceSurvives(rule.LookaheadSequence, map)) continue;
                 uint tag = rule.Location.TableTag;
                 ReadStatus status = RewriteGlyphSequence(rule.BacktrackSequence, map,
                     tag, out var backtrack, out diagnostic);
@@ -1561,35 +1505,50 @@ public static partial class SubsetOperation
                 status = ChainingSubstTableCompiler.TryCreateRule(backtrack, input,
                     lookahead, records, lookupCount, out var rewrittenRule,
                     out diagnostic, budget, rule.Location);
-                rules[r] = rewrittenRule!;
                 if (status != ReadStatus.Done) return status;
+                rules.Add(rewrittenRule!);
             }
             long consumed = ContextualRuleSetLayout.HeaderLength +
-                ContextualRuleSetLayout.OffsetStride * rules.Length;
+                ContextualRuleSetLayout.OffsetStride * rules.Count;
             foreach (var rule in rules) consumed += rule.ConsumedLength;
-            ordered[newIndex] = new(rules, source.Location, (int)consumed);
+            ordered[newIndex] = new(rules.ToArray(), source.Location, (int)consumed);
         }
         diagnostic = default;
         return ReadStatus.Done;
     }
 
-    /// <summary>Format 2's rule-set rows re-answer their records only (S2c card
-    /// §5.1 step 2): the class values never renumber, so the set array's order,
-    /// the null slots and every rule's class sequences ride unchanged while the
-    /// SequenceLookupRecords take the surviving-subset remap — TryCreateRule's
-    /// domain check re-fires per record against the real new count.</summary>
     private static ReadStatus RemapChainingClassRuleSets(
-        IReadOnlyList<ChainingRuleSet?> ruleSets, LayoutLookupRemap remap,
-        BuildBudget budget, out ChainingRuleSet?[] ordered, out FontDiagnostic diagnostic)
+        IReadOnlyList<ChainingRuleSet?> ruleSets, LayoutLookupRemap? remap,
+        BuildBudget budget, out ChainingRuleSet?[] ordered, out FontDiagnostic diagnostic,
+        ClassDefTable? inputDef = null, ClassDefTable? backtrackDef = null,
+        ClassDefTable? lookaheadDef = null, CoverageTable? coverage = null)
     {
         ordered = new ChainingRuleSet?[ruleSets.Count];
+        HashSet<ushort>? inputClasses = null, firstClasses = null;
+        HashSet<ushort>? backtrackClasses = null, lookaheadClasses = null;
+        if (inputDef is not null)
+        {
+            if (!budget.Work(3L * inputDef.NumGlyphs + coverage!.Glyphs.Length,
+                inputDef.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+            inputClasses = ClassesInDomain(inputDef);
+            backtrackClasses = ClassesInDomain(backtrackDef!);
+            lookaheadClasses = ClassesInDomain(lookaheadDef!);
+            firstClasses = [];
+            foreach (ushort glyph in coverage.Glyphs)
+                firstClasses.Add(inputDef.ClassOf(glyph));
+        }
         for (int i = 0; i < ordered.Length; i++)
         {
             if (ruleSets[i] is not { } source) continue; // the spec-NULL slot keeps its slot
-            var rules = new ChainingRule[source.RuleCount];
-            for (int r = 0; r < rules.Length; r++)
+            if (firstClasses is not null && !firstClasses.Contains((ushort)i)) continue;
+            var rules = new List<ChainingRule>(source.RuleCount);
+            for (int r = 0; r < source.RuleCount; r++)
             {
                 ChainingRule rule = source.Rules[r];
+                if (inputClasses is not null &&
+                    (!ClassSequenceSurvives(rule.InputSequence, inputClasses) ||
+                     !ClassSequenceSurvives(rule.BacktrackSequence, backtrackClasses!) ||
+                     !ClassSequenceSurvives(rule.LookaheadSequence, lookaheadClasses!))) continue;
                 ReadStatus status = RemapLookupRecords(rule.LookupRecords, remap,
                     rule.Location, out var records, out int lookupCount, out diagnostic);
                 if (status != ReadStatus.Done) return status;
@@ -1597,16 +1556,40 @@ public static partial class SubsetOperation
                     rule.BacktrackSequence, rule.InputSequence,
                     rule.LookaheadSequence, records, lookupCount, out var rebuilt,
                     out diagnostic, budget, rule.Location);
-                rules[r] = rebuilt!;
                 if (status != ReadStatus.Done) return status;
+                rules.Add(rebuilt!);
             }
             long consumed = ContextualRuleSetLayout.HeaderLength +
-                ContextualRuleSetLayout.OffsetStride * rules.Length;
+                ContextualRuleSetLayout.OffsetStride * rules.Count;
             foreach (var rule in rules) consumed += rule.ConsumedLength;
-            ordered[i] = new(rules, source.Location, (int)consumed);
+            ordered[i] = new(rules.ToArray(), source.Location, (int)consumed);
         }
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    private static HashSet<ushort> ClassesInDomain(ClassDefTable classDef)
+    {
+        var classes = new HashSet<ushort>();
+        for (int glyph = 0; glyph < classDef.NumGlyphs; glyph++)
+            classes.Add(classDef.ClassOf(glyph));
+        return classes;
+    }
+
+    private static bool ClassSequenceSurvives(ReadOnlySpan<ushort> sequence,
+        HashSet<ushort> classes)
+    {
+        foreach (ushort value in sequence)
+            if (!classes.Contains(value)) return false;
+        return true;
+    }
+
+    private static bool GlyphSequenceSurvives(ReadOnlySpan<ushort> sequence,
+        LayoutOutputMap map)
+    {
+        foreach (ushort glyph in sequence)
+            if (map.OutputOf(glyph) < 0) return false;
+        return true;
     }
 
     private static ReadStatus RewriteGlyphSequence(ReadOnlySpan<ushort> sequence,
@@ -1735,12 +1718,6 @@ out var rewrittenLeaf, out diagnostic, lookupRemap);
 
     // ---- GPOS 2 -------------------------------------------------------------------
 
-    /// <summary>Pair positioning (GPOS 2): format 1 permutes the pair sets with the
-    /// coverage and re-sorts each set's records by their remapped second glyph (the
-    /// strict wire order; the values ride along); format 2 keeps the class-keyed
-    /// matrix values byte-stable (identical class values) and rewrites only the
-    /// coverage and the two class domains, whose shared canonical format feeds the
-    /// factory's single classDefFormat parameter.</summary>
     private static ReadStatus RewritePairPosSubtable(PairPosTable sub, LayoutOutputMap map,
         BuildBudget budget, out PairPosTable? rewritten, out FontDiagnostic diagnostic)
     {
@@ -1750,55 +1727,114 @@ out var rewrittenLeaf, out diagnostic, lookupRemap);
         if (status != ReadStatus.Done) return status;
         if (sub.Format == 2)
         {
+            bool compactClasses = map.HasDroppedGlyphs &&
+                sub.Class1Count > 0 && sub.Class2Count > 0;
+            if (!budget.Work(compactClasses ? sub.NumGlyphs + ordinalOf.Length : 0,
+                sub.Location, out diagnostic)) return ReadStatus.ResourceLimit;
+            var used1 = new bool[sub.Class1Count];
+            var used2 = new bool[sub.Class2Count];
+            if (compactClasses)
+            {
+                used1[0] = ordinalOf.Length == 0;
+                used2[0] = true;
+                foreach (int ordinal in ordinalOf)
+                {
+                    ushort glyph = sub.Coverage.Glyphs[ordinal];
+                    ushort value = sub.ClassDef1!.ClassOf(glyph);
+                    if (value >= used1.Length)
+                        return ReadWire.Fail(ReadStatus.InvalidIndex,
+                            DiagnosticCode.IndexOutOfRange,
+                            sub.ClassDef1.Location with
+                            { Field = DataField.Payload, RecordOrdinal = glyph },
+                            out diagnostic, value, (ulong)used1.Length);
+                    used1[value] = true;
+                }
+                if (ordinalOf.Length != 0)
+                    for (int glyph = 0; glyph < sub.NumGlyphs; glyph++)
+                    {
+                        if (map.OutputOf(glyph) < 0) continue;
+                        ushort value = sub.ClassDef2!.ClassOf(glyph);
+                        if (value >= used2.Length)
+                            return ReadWire.Fail(ReadStatus.InvalidIndex,
+                                DiagnosticCode.IndexOutOfRange,
+                                sub.ClassDef2.Location with
+                                { Field = DataField.Payload, RecordOrdinal = glyph },
+                                out diagnostic, value, (ulong)used2.Length);
+                        used2[value] = true;
+                    }
+            }
+            else
+            {
+                Array.Fill(used1, true);
+                Array.Fill(used2, true);
+            }
+            int[] class1Remap = CompactClassIndices(used1, out var sourceClasses1);
+            int[] class2Remap = CompactClassIndices(used2, out var sourceClasses2);
             status = RewriteClassDefRanges(sub.ClassDef1, map, out var class1Ranges,
-                out ushort class1Format, out diagnostic);
+                out ushort class1Format, out diagnostic,
+                compactClasses ? class1Remap : default);
             if (status != ReadStatus.Done) return status;
             status = RewriteClassDefRanges(sub.ClassDef2, map, out var class2Ranges,
-                out ushort class2Format, out diagnostic);
+                out ushort class2Format, out diagnostic,
+                compactClasses ? class2Remap : default);
             if (status != ReadStatus.Done) return status;
             ushort classDefFormat = class1Format == 1 && class2Format == 1
                 ? (ushort)1 : (ushort)2;
-            var values1 = new StaticValueRecord[sub.Class1Count * sub.Class2Count];
+            int class1Count = sourceClasses1.Length, class2Count = sourceClasses2.Length;
+            var values1 = new StaticValueRecord[class1Count * class2Count];
             var values2 = new StaticValueRecord[values1.Length];
-            for (int class1 = 0; class1 < sub.Class1Count; class1++)
+            for (int class1 = 0; class1 < class1Count; class1++)
             {
-                for (int class2 = 0; class2 < sub.Class2Count; class2++)
+                for (int class2 = 0; class2 < class2Count; class2++)
                 {
-                    status = sub.TryGetMatrixValue(class1, class2,
-                        out values1[class1 * sub.Class2Count + class2],
-                        out values2[class1 * sub.Class2Count + class2], out diagnostic);
+                    status = sub.TryGetMatrixValue(sourceClasses1[class1],
+                        sourceClasses2[class2], out values1[class1 * class2Count + class2],
+                        out values2[class1 * class2Count + class2], out diagnostic);
                     if (status != ReadStatus.Done) return status;
                 }
             }
             return PairPosTableCompiler.TryCreate(coverage!.Glyphs, class1Ranges,
-                class2Ranges, (ushort)sub.Class1Count, (ushort)sub.Class2Count,
+                class2Ranges, (ushort)class1Count, (ushort)class2Count,
                 values1, values2, map.OutputGlyphCount, sub.ValueFormat1,
                 sub.ValueFormat2, out rewritten, out diagnostic, budget, sub.Location,
                 coverage.Format, classDefFormat);
         }
-        var pairSets = new PairValueRecord[sub.PairSetCount][];
+        var pairSets = new PairValueRecord[ordinalOf.Length][];
         for (int set = 0; set < pairSets.Length; set++)
         {
             PairSetTable source = sub.PairSets![ordinalOf[set]];
-            var records = new PairValueRecord[source.PairValueCount];
-            for (int r = 0; r < records.Length; r++)
+            var records = new List<PairValueRecord>(source.PairValueCount);
+            for (int r = 0; r < source.PairValueCount; r++)
             {
                 PairValueRecord record = source.Records[r];
                 int second = map.OutputOf(record.SecondGlyph);
-                if (second < 0)
-                    return RewriteMiss(map, sub.Coverage.Location.TableTag,
-                        record.SecondGlyph, out diagnostic);
-                records[r] = new PairValueRecord((ushort)second, record.Value1,
-                    record.Value2);
+                if (second < 0) continue;
+                records.Add(new PairValueRecord((ushort)second, record.Value1,
+                    record.Value2));
             }
             // The strict second-glyph wire order re-answers over the output keys
             // (the kern fmt0 canonical-sort precedent).
-            Array.Sort(records, static (a, b) => a.SecondGlyph.CompareTo(b.SecondGlyph));
-            pairSets[set] = records;
+            records.Sort(static (a, b) => a.SecondGlyph.CompareTo(b.SecondGlyph));
+            pairSets[set] = records.ToArray();
         }
         return PairPosTableCompiler.TryCreate(coverage!.Glyphs, pairSets,
             map.OutputGlyphCount, sub.ValueFormat1, sub.ValueFormat2, out rewritten,
             out diagnostic, budget.Limits, sub.Location, coverage.Format);
+    }
+
+    private static int[] CompactClassIndices(bool[] used, out ushort[] sourceClasses)
+    {
+        var remap = new int[used.Length];
+        Array.Fill(remap, -1);
+        var kept = new List<ushort>();
+        for (int i = 0; i < used.Length; i++)
+        {
+            if (!used[i]) continue;
+            remap[i] = kept.Count;
+            kept.Add((ushort)i);
+        }
+        sourceClasses = kept.ToArray();
+        return remap;
     }
 
     private static ReadStatus RewritePairPosLookup(LookupTable lookup, LayoutOutputMap map,
@@ -1832,7 +1868,7 @@ out var rewrittenLeaf, out diagnostic, lookupRemap);
         ReadStatus status = RewriteCoverage(sub.Coverage, map, budget, out var coverage,
             out var ordinalOf, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        var ordered = new EntryExitTable[sub.EntryExitCount];
+        var ordered = new EntryExitTable[ordinalOf.Length];
         for (int r = 0; r < ordered.Length; r++) ordered[r] = sub.Records[ordinalOf[r]];
         return CursivePosTableCompiler.TryCreate(coverage!.Glyphs, ordered,
             map.OutputGlyphCount, out rewritten, out diagnostic, budget, sub.Location,
@@ -1873,11 +1909,17 @@ out var rewrittenLeaf, out diagnostic, lookupRemap);
             budget, out var markGlyphs, out var marks, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = RewriteCoverage(sub.LigatureCoverage, map, budget, out var ligCoverage,
-            out var ordinalOf, out diagnostic);
+            out var ordinalOf, out diagnostic,
+            i => !map.HasDroppedGlyphs || sub.Ligatures[i].Components > 0);
         if (status != ReadStatus.Done) return status;
         var ligatures = new LigatureAttachTable[ligCoverage!.Glyphs.Length];
         for (int l = 0; l < ligatures.Length; l++)
             ligatures[l] = sub.Ligatures[ordinalOf[l]];
+        if (map.HasDroppedGlyphs && ligatures.Length == 0)
+        {
+            markGlyphs = [];
+            marks = [];
+        }
         return MarkPosTableCompiler.TryCreateLig(markGlyphs, marks,
             ligCoverage.Glyphs, ligatures, map.OutputGlyphCount, out rewritten,
             out diagnostic, budget.Limits, sub.Location, ligCoverage.Format);
@@ -1922,7 +1964,7 @@ out var rewrittenLeaf, out diagnostic, lookupRemap);
             return status;
         }
         markGlyphs = coverage!.Glyphs.ToArray();
-        orderedMarks = new MarkRecord[marks.Length];
+        orderedMarks = new MarkRecord[ordinalOf.Length];
         for (int i = 0; i < orderedMarks.Length; i++)
             orderedMarks[i] = marks[ordinalOf[i]];
         diagnostic = default;
@@ -2967,6 +3009,7 @@ out var rewrittenLeaf, out diagnostic);
             return RewriteInvariantRefusal(
                 at.At(DataField.Count, (ulong)jstf.ScriptCount),
                 (ulong)model.ScriptCount, out diagnostic);
+        if (state.RewrittenLayoutModels is { } layoutModels) layoutModels.Jstf = model;
         rootStatus = JstfTableCompiler.TryCompile(model, out var bytes,
             out diagnostic);
         if (rootStatus != ReadStatus.Done) return rootStatus;

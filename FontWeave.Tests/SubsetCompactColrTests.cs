@@ -657,13 +657,12 @@ public sealed class SubsetCompactColrTests
         Assert.Equal(default, diagnostic);
     }
 
-    // The retained-slot outline span from the output loca (long format on these
-    // fixtures); an unretained glyph's slot stays empty (equal offsets).
     private static (uint Start, uint End) GlyphSpan(SubsetResult result, int glyphId)
     {
         byte[] loca = FontTable(result, SubsetFontFixture.LocaTag);
-        return (BinaryPrimitives.ReadUInt32BigEndian(loca.AsSpan(4 * glyphId)),
-            BinaryPrimitives.ReadUInt32BigEndian(loca.AsSpan(4 * (glyphId + 1))));
+        byte[] head = FontTable(result, SubsetFontFixture.HeadTag);
+        return (SubsetFontFixture.LocaOffset(head, loca, glyphId),
+            SubsetFontFixture.LocaOffset(head, loca, glyphId + 1));
     }
 
     // Retain keeps the COLRv1 table raw, so the paint graph's glyph reference survives

@@ -557,11 +557,6 @@ public sealed class SubsetLayoutScopeTests
     [Fact]
     public void LanguageOnlyCutCompactReEmitsTheSurvivingLangSysTree()
     {
-        // The compact form: the whole-table S2b rewrite would keep the excluded
-        // language — the true-cut verdict routes the table through the scoped
-        // cascade over the frozen map, and 'FRA ' drops there too. Every lookup
-        // survived, so the closure pulled their full reference union
-        // {1, 2, 4, 5, 6, 7} → seven output glyphs.
         var options = new SubsetOptions
         {
             PreserveLayout = true,
@@ -581,12 +576,13 @@ public sealed class SubsetLayoutScopeTests
         Assert.Equal(ReadStatus.Done, status);
         Assert.Equal(DiagnosticCode.None, diagnostic.Code);
         Assert.NotNull(result);
-        Assert.Equal(new ushort[] { 2, 4, 5, 6, 7 }, report!.LayoutClosureAddedGids);
+        Assert.Equal(new ushort[] { 2 }, report!.LayoutClosureAddedGids);
+        Assert.Equal(3, result.Map!.OutputGlyphCount);
         Ok(LayoutListsView.TryOpen(TableBytes(OutputBytes(result),
             SubsetFontFixture.GsubTag), out var view, out diagnostic,
             DataLocation.Anonymous(SubsetFontFixture.GsubTag)));
         NoDiagnostic(diagnostic);
-        Ok(view!.TryReadTable(7, LayoutLookupKind.Gsub, null, out var model,
+        Ok(view!.TryReadTable(3, LayoutLookupKind.Gsub, null, out var model,
             out diagnostic));
         NoDiagnostic(diagnostic);
         Assert.NotNull(model);
@@ -595,7 +591,17 @@ public sealed class SubsetLayoutScopeTests
         Assert.Equal(TagEng, model.Scripts[0].Languages[0].Tag);
         Assert.NotNull(model.Scripts[0].DefaultLanguage);
         Assert.Equal(2, model.Features.Length);
-        Assert.Equal(3, model.Lookups.Length);
+        Assert.Equal(new uint[] { TagA, TagB }, model.Features.ToArray().Select(feature => feature.Tag).ToArray());
+        Assert.Empty(model.Features[0].LookupIndices.ToArray());
+        Assert.Equal(new ushort[] { 0 }, model.Features[1].LookupIndices.ToArray());
+        Assert.Equal(new ushort[] { 0, 1 }, model.Scripts[0].DefaultLanguage!.FeatureIndices.ToArray());
+        Assert.Equal(ushort.MaxValue, model.Scripts[0].DefaultLanguage!.RequiredFeatureIndex);
+        Assert.Equal(new ushort[] { 0, 1 }, model.Scripts[0].Languages[0].Language.FeatureIndices.ToArray());
+        Assert.Equal(ushort.MaxValue, model.Scripts[0].Languages[0].Language.RequiredFeatureIndex);
+        var live = Assert.Single(Assert.Single(model.Lookups.ToArray()).SingleSubstitutions!);
+        Assert.Equal(new ushort[] { 1 }, live.Coverage.Glyphs.ToArray());
+        Assert.Equal(new ushort[] { 2 }, live.Substitutes.ToArray());
+        Assert.Equal(new ushort[] { 0, 1, 2 }, result.Map.Entries.Select(entry => entry.InputGid).ToArray());
         var scopeRow = Assert.Single(report.LayoutScopeCensus);
         Assert.Equal(1, scopeRow.SurvivingScriptCount);
         Assert.Equal(1, scopeRow.LanguageTagMatches);

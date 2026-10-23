@@ -1,7 +1,7 @@
 // HVAR/VVAR compact-rebuild tests (SV card §2.3, commit ③ acceptance): explicit
 // DeltaSetIndexMap entries re-resolve per output gid in the input domain (the
 // last-entry fallback included), the NULL advance map's implicit reading
-// materializes (OQ-SV-6), the store re-emits byte-identical, and the VVAR twin
+// materializes (OQ-SV-6), unused variation rows are removed, and the VVAR twin
 // keeps its tsb/bsb/vOrg NULL slots (OQ-T5-04-4). The HVAR/VVAR wire here is
 // test-side independent encoding.
 using System.Buffers.Binary;
@@ -145,8 +145,7 @@ public sealed class SubsetVfHvarTests
     // Explicit advance map with a fallback domain (mapCount 2 < numGlyphs 3):
     // output gid 1 resolves input gid 2 through the last-entry fallback in the
     // INPUT domain first, so the output map's entries are [resolve(0), resolve(2)]
-    // = [(0,0), (0,1)] with the source entryFormat preserved, and the store's
-    // bytes re-emit identically.
+    // = [(0,0), (0,1)].
     [Fact]
     public void PruningSelectRemapsExplicitAdvanceMapWithFallback()
     {
@@ -163,10 +162,8 @@ public sealed class SubsetVfHvarTests
         Assert.Equal(1, entrySize);
         Assert.Equal(2, mapCount);
         Assert.Equal(new ushort[] { 0, 1 }, inners);
-        // the input store region re-emits byte-identical
-        int ivsIn = (int)BinaryPrimitives.ReadUInt32BigEndian(hvarIn.AsSpan(4));
-        Assert.Equal(hvarIn.AsSpan(ivsIn, hvarIn.Length - 8 - ivsIn).ToArray(),
-            store.AsSpan(0, hvarIn.Length - 8 - ivsIn).ToArray());
+        Assert.Equal(new byte[] { 0, 1, 0, 0, 0, 12, 0, 1, 0, 0, 0, 16,
+            0, 1, 0, 0, 0, 2, 0, 0, 0, 0 }, store);
     }
 
     // The NULL advance map materializes (OQ-SV-6): output gid o's implicit
@@ -185,10 +182,10 @@ public sealed class SubsetVfHvarTests
             out bool present);
         Assert.True(present);
         var (innerBits, entrySize, mapCount, inners, _) = ReadMapAndStore(hvarOut);
-        Assert.Equal(2, innerBits);   // maxInner = 2 → innerBits 2
-        Assert.Equal(1, entrySize);   // packed ≤ 2 → 1-byte entries
+        Assert.Equal(1, innerBits);
+        Assert.Equal(1, entrySize);
         Assert.Equal(2, mapCount);
-        Assert.Equal(new ushort[] { 0, 2 }, inners); // (0, outputToInput[o])
+        Assert.Equal(new ushort[] { 0, 1 }, inners);
     }
 
     // Full select over an explicit canonical map: the re-rooted model compiles

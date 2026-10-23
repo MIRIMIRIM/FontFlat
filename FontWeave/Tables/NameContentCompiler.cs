@@ -123,25 +123,9 @@ public static partial class NameTableCompiler
                 result = CompareContentKeys(content.Records[a], content.Records[b]);
             return result != 0 ? result : a.CompareTo(b);
         });
-        int storageLength = 0;
-        foreach (int i in payloadOrder)
-        {
-            ReadOnlySpan<byte> payload = payloads[i].Span;
-            if (payload.IsEmpty) { offsets[i] = 0; continue; }
-            if (!budget.Work(storageLength + payload.Length, request.At(DataField.Payload, 0, i), out diagnostic))
-                return ReadStatus.ResourceLimit;
-            int searchLength = Math.Min(storageLength, ushort.MaxValue + payload.Length);
-            int offset = storage.AsSpan(0, searchLength).IndexOf(payload);
-            if (offset < 0)
-            {
-                offset = storageLength;
-                if (offset > ushort.MaxValue)
-                    return OffsetOverflow(request.At(DataField.Offset, 0, i), offset, out diagnostic);
-                payload.CopyTo(storage.AsSpan(storageLength));
-                storageLength += payload.Length;
-            }
-            offsets[i] = offset;
-        }
+        ReadStatus storageStatus = PoolNamePayloads(payloads, payloadOrder, offsets,
+            storage, budget, request, out int storageLength, out diagnostic);
+        if (storageStatus != ReadStatus.Done) return storageStatus;
         Array.Sort(recordOrder, (a, b) =>
         {
             int result = CompareContentKeys(content.Records[a], content.Records[b]);

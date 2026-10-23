@@ -185,11 +185,11 @@ public sealed class SubsetCompactPolicyTests
         Assert.Equal(13, report.Decisions.Count);
         foreach (var tag in new[] { SubsetFontFixture.GlyfTag, SubsetFontFixture.LocaTag,
             SubsetFontFixture.CmapTag, SubsetFontFixture.MaxpTag, HheaTag, HmtxTag,
-            LtshTag, HdmxTag, SubsetFontFixture.PostTag })
+            LtshTag, HdmxTag, SubsetFontFixture.PostTag, SubsetFontFixture.HeadTag })
             Assert.True(byTag.TryGetValue(tag, out var rebuilt) &&
                 rebuilt == (TableAction.Rebuild, SubsetPolicy.RebuildTyped),
                 $"tag 0x{tag:X8} must rebuild under compact");
-        foreach (var tag in new[] { SubsetFontFixture.HeadTag, NameTag, Os2Tag })
+        foreach (var tag in new[] { NameTag, Os2Tag })
             Assert.True(byTag.TryGetValue(tag, out var kept) &&
                 kept == (TableAction.Preserve, SubsetPolicy.RetainRaw),
                 $"tag 0x{tag:X8} must stay raw under compact");

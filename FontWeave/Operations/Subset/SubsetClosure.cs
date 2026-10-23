@@ -48,6 +48,14 @@ public static partial class SubsetOperation
         status = glyfView.TryReadComposites(loca!, out glyf, out diagnostic, budget, true);
         if (status != ReadStatus.Done) return status;
 
+        return CloseCompositeReferences(glyf!, retained, budget, out added, out diagnostic);
+    }
+
+    private static ReadStatus CloseCompositeReferences(GlyfTable glyf, bool[] retained,
+        BuildBudget budget, out List<ushort> added, out FontDiagnostic diagnostic)
+    {
+        added = [];
+
         // Closure work over the verified graph: one queued visit per retained glyph and
         // one work unit per newly pulled-in GID (OQ-S1a-7 lean). The queue's worst case
         // is one entry per glyph.

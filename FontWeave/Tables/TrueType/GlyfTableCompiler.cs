@@ -476,8 +476,34 @@ public static class GlyfTableCompiler
                 }
                 else
                 {
-                    var plan = new GlyfCompositeEdit { GlyphId = glyph.GlyphId, Instructions = [] };
-                    ReadStatus status = TryEditComposite(glyph, plan, model.NumGlyphs,
+                    var composite = glyph.Composite!;
+                    if (!budget.Work(composite.ComponentCount, model.Location, out diagnostic) ||
+                        !budget.Buffer((long)IntPtr.Size * composite.ComponentCount,
+                            model.Location, out diagnostic))
+                        return ReadStatus.ResourceLimit;
+                    var components = new GlyfComponentEdit[composite.ComponentCount];
+                    for (int i = 0; i < components.Length; i++)
+                    {
+                        ushort input = composite[i].GlyphIndex;
+                        int output = map.OutputOf(input);
+                        if (output < 0)
+                            return ReadWire.Fail(ReadStatus.InvalidFormat,
+                                DiagnosticCode.InvalidValue,
+                                model.Location.At(DataField.GlyphId, 0, input),
+                                out diagnostic, input, (ulong)model.NumGlyphs);
+                        components[i] = new GlyfComponentEdit
+                        {
+                            Ordinal = i,
+                            GlyphIndex = checked((ushort)output)
+                        };
+                    }
+                    var plan = new GlyfCompositeEdit
+                    {
+                        GlyphId = glyph.GlyphId,
+                        Components = components,
+                        Instructions = []
+                    };
+                    ReadStatus status = TryEditComposite(glyph, plan, outputCount,
                         out var edited, out diagnostic, budget, model.Location);
                     if (status != ReadStatus.Done) return status;
                     status = EncodeComposite(edited!, out record, out diagnostic, budget,

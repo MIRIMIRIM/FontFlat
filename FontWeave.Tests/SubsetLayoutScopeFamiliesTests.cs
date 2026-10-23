@@ -438,11 +438,8 @@ public sealed class SubsetLayoutScopeFamiliesTests
     }
 
     [Fact]
-    public void FvRecordDropsWhenItsReplacedFeatureIsCut()
+    public void FvRecordKeepsItsMatchBarrierWhenItsReplacedFeatureIsCut()
     {
-        // Declaring [TagB] cuts feature 0 (TagA): the FV record dies, and the v1.1
-        // output carries the variations block with zero records (the legal emptied
-        // root) while the surviving subset re-emits.
         var status = SubsetOperation.TryPrepare(
             Request(Face(GsubBytes(RemapModel(variations: Variations(0)))), [1],
                 SubsetMode.RetainGids,
@@ -461,7 +458,8 @@ public sealed class SubsetLayoutScopeFamiliesTests
         Assert.NotNull(model);
         Assert.Equal(LayoutListsLayout.Version11, model!.Version);
         Assert.NotNull(model.FeatureVariations);
-        Assert.Equal(0, model.FeatureVariations!.RecordCount);
+        var record = Assert.Single(model.FeatureVariations!.Records);
+        Assert.Empty(record.Substitution!.Records);
         Assert.Equal(1, model.Features.Length);
         Assert.Equal(TagB, model.Features[0].Tag);
     }

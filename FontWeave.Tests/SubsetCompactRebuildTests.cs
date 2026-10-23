@@ -77,10 +77,6 @@ public sealed class SubsetCompactRebuildTests
         return font[offset..(offset + length)];
     }
 
-    // The compact prepare succeeds on the spine face and publishes the derived field
-    // contract: numGlyphs = the map output domain, loca = (N+1) x 4 with the source
-    // format preserved, the metrics pair at its minimal boundary, and the frozen map
-    // artifact both pinned by sha and carried on the result.
     [Fact]
     public void CompactPreparesSpineFaceWithDerivedFields()
     {
@@ -96,11 +92,13 @@ public sealed class SubsetCompactRebuildTests
         byte[] maxp = Table(FontBytes(result), spans, SubsetFontFixture.MaxpTag);
         Assert.Equal(0x00010000u, BinaryPrimitives.ReadUInt32BigEndian(maxp));
         Assert.Equal(4, BinaryPrimitives.ReadUInt16BigEndian(maxp.AsSpan(4)));
-        // loca: (4+1) x 4 bytes, monotone, final = glyf length; head itlf byte untouched
         byte[] loca = Table(FontBytes(result), spans, SubsetFontFixture.LocaTag);
-        Assert.Equal(20, loca.Length);
+        Assert.Equal(10, loca.Length);
+        Assert.Equal(0, BinaryPrimitives.ReadInt16BigEndian(
+            Table(FontBytes(result), spans, SubsetFontFixture.HeadTag).AsSpan(50)));
         byte[] glyf = Table(FontBytes(result), spans, SubsetFontFixture.GlyfTag);
-        Assert.Equal(glyf.Length, (int)BinaryPrimitives.ReadUInt32BigEndian(loca.AsSpan(16)));
+        Assert.Equal(glyf.Length, (int)SubsetFontFixture.LocaOffset(
+            Table(FontBytes(result), spans, SubsetFontFixture.HeadTag), loca, 4));
         // hhea/hmtx: advances of {0,1,2,3} are pairwise distinct -> boundary 4, 16 bytes
         byte[] hhea = Table(FontBytes(result), spans, SubsetCompactPolicyTests.HheaTag);
         Assert.Equal(4, BinaryPrimitives.ReadUInt16BigEndian(hhea.AsSpan(34)));
@@ -127,8 +125,9 @@ public sealed class SubsetCompactRebuildTests
         // the composite output slot 2's single component now references output 1
         byte[] glyf = Table(font, spans, SubsetFontFixture.GlyfTag);
         byte[] loca = Table(font, spans, SubsetFontFixture.LocaTag);
-        uint start = BinaryPrimitives.ReadUInt32BigEndian(loca.AsSpan(8));
-        uint end = BinaryPrimitives.ReadUInt32BigEndian(loca.AsSpan(12));
+        byte[] head = Table(font, spans, SubsetFontFixture.HeadTag);
+        uint start = SubsetFontFixture.LocaOffset(head, loca, 2);
+        uint end = SubsetFontFixture.LocaOffset(head, loca, 3);
         Assert.Equal(-1, (short)BinaryPrimitives.ReadInt16BigEndian(glyf.AsSpan((int)start)));
         // input 2 (the component) sits at output 1 in the frozen order [0, 2, 3]
         Assert.Equal(1, BinaryPrimitives.ReadUInt16BigEndian(glyf.AsSpan((int)start + 12)));
@@ -173,9 +172,6 @@ public sealed class SubsetCompactRebuildTests
         Assert.Equal(9, BinaryPrimitives.ReadInt16BigEndian(hmtx.AsSpan(8))); // bearing of input 2
     }
 
-    // The structural half of the all-GID case (SC card §5.2 case 1): with the identity
-    // map, the spliced glyf and loca bytes and the canonical cmap bytes are identical to
-    // the retain path's, because both sides converge on the same splice and encoding.
     [Fact]
     public void FullSelectionCompactMatchesRetainOnSpliceTables()
     {
@@ -199,9 +195,20 @@ public sealed class SubsetCompactRebuildTests
         Assert.True(Table(retainFont, retainSpans, SubsetFontFixture.GlyfTag)
             .AsSpan().SequenceEqual(Table(compactFont, compactSpans, SubsetFontFixture.GlyfTag)),
             "glyf bytes diverged between retain and full-selection compact");
-        Assert.True(Table(retainFont, retainSpans, SubsetFontFixture.LocaTag)
-            .AsSpan().SequenceEqual(Table(compactFont, compactSpans, SubsetFontFixture.LocaTag)),
-            "loca bytes diverged between retain and full-selection compact");
+        byte[] retainLoca = Table(retainFont, retainSpans, SubsetFontFixture.LocaTag);
+        byte[] compactLoca = Table(compactFont, compactSpans, SubsetFontFixture.LocaTag);
+        byte[] retainHead = Table(retainFont, retainSpans, SubsetFontFixture.HeadTag);
+        byte[] compactHead = Table(compactFont, compactSpans, SubsetFontFixture.HeadTag);
+        Assert.Equal(20, retainLoca.Length);
+        Assert.Equal(10, compactLoca.Length);
+        Assert.Equal(1, BinaryPrimitives.ReadInt16BigEndian(retainHead.AsSpan(50)));
+        Assert.Equal(0, BinaryPrimitives.ReadInt16BigEndian(compactHead.AsSpan(50)));
+        uint[] expectedOffsets = [0, 12, 24, 36, 52];
+        for (int i = 0; i < expectedOffsets.Length; i++)
+        {
+            Assert.Equal(expectedOffsets[i], SubsetFontFixture.LocaOffset(retainHead, retainLoca, i));
+            Assert.Equal(expectedOffsets[i], SubsetFontFixture.LocaOffset(compactHead, compactLoca, i));
+        }
         Assert.True(Table(retainFont, retainSpans, SubsetFontFixture.CmapTag)
             .AsSpan().SequenceEqual(Table(compactFont, compactSpans, SubsetFontFixture.CmapTag)),
             "cmap bytes diverged between retain and full-selection compact");
@@ -237,8 +244,9 @@ public sealed class SubsetCompactRebuildTests
         var font = FontBytes(result!);
         var spans = TableSpans(font);
         byte[] outLoca = Table(font, spans, SubsetFontFixture.LocaTag);
-        uint slot1Start = BinaryPrimitives.ReadUInt32BigEndian(outLoca.AsSpan(4));
-        uint slot1End = BinaryPrimitives.ReadUInt32BigEndian(outLoca.AsSpan(8));
+        byte[] outHead = Table(font, spans, SubsetFontFixture.HeadTag);
+        uint slot1Start = SubsetFontFixture.LocaOffset(outHead, outLoca, 1);
+        uint slot1End = SubsetFontFixture.LocaOffset(outHead, outLoca, 2);
         Assert.Equal(slot1Start, slot1End); // the empty member stays empty
     }
 

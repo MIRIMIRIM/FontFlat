@@ -7,8 +7,8 @@ namespace FontWeave.Operations.Subset;
 /// <summary>Compact-remap rebuild stages over the frozen map (SC card §2, commit ③:
 /// the identity spine and the metrics families).
 ///
-/// glyf is the byte-faithful ordered splice with in-place component-index patching, loca
-/// carries the output-domain offsets in the source format, cmap transforms the pruned
+/// glyf is the byte-faithful ordered splice with in-place component-index patching,
+/// cmap transforms the pruned
 /// mapping values through the map before the canonical pair build, maxp changes only
 /// numGlyphs (OQ-SC-1), and the hhea/hmtx and vhea/vmtx pairs rebuild over per-glyph
 /// remapped values at the minimal storage boundary with the pairing re-validated
@@ -18,16 +18,28 @@ public static partial class SubsetOperation
 {
     private static ReadStatus RebuildCompactGlyfAndLoca(GlyfTable glyfModel, LocaTable loca,
         GlyphRemap map, bool dropHinting, BuildBudget budget, out byte[]? glyfBytes,
-        out byte[]? locaBytes, out FontDiagnostic diagnostic)
+        out byte[]? locaBytes, out short outputLocaFormat, out FontDiagnostic diagnostic)
     {
         glyfBytes = null;
         locaBytes = null;
+        outputLocaFormat = (short)(loca.LongFormat ? 1 : 0);
         ReadStatus status = GlyfTableCompiler.TryCompactSubset(glyfModel,
             map.OutputToInput, map, !loca.LongFormat, dropHinting, budget,
             out var image, out var offsets, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        status = LocaTableCompiler.TryFromOffsets(loca.LongFormat, loca.Location,
-            loca.HeadLocation, loca.MaxpLocation, offsets!, out var rebuiltLoca,
+        uint[] outputOffsets = offsets!;
+        if (!budget.Work(outputOffsets.Length, loca.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        bool longFormat = false;
+        foreach (uint offset in outputOffsets)
+            if ((offset & 1) != 0 || offset > ushort.MaxValue * LocaLayout.ShortScale)
+            {
+                longFormat = true;
+                break;
+            }
+        outputLocaFormat = (short)(longFormat ? 1 : 0);
+        status = LocaTableCompiler.TryFromOffsets(longFormat, loca.Location,
+            loca.HeadLocation, loca.MaxpLocation, outputOffsets, out var rebuiltLoca,
             out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = LocaTableCompiler.TryCompile(rebuiltLoca!, out locaBytes, out diagnostic,
@@ -233,6 +245,20 @@ public static partial class SubsetOperation
         if (status != ReadStatus.Done) return status;
         status = postView.TryRead(out PostTable? post, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
+        if (post!.NameKind == PostNameKind.Standard258)
+        {
+            ushort nameCount = post.NumGlyphs!.Value;
+            if (maxp.NumGlyphs > nameCount)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    maxp.Location.At(DataField.Count, 4), out diagnostic,
+                    maxp.NumGlyphs, nameCount);
+            if (!budget.Work(map.OutputGlyphCount, postAt, out diagnostic) ||
+                !budget.Buffer(2L * map.OutputGlyphCount, postAt, out diagnostic))
+                return ReadStatus.ResourceLimit;
+            var indexed = new PostTable(PostLayout.Version20, post.Header,
+                map.OutputToInput.ToArray(), [], [], postAt);
+            return PostTableCompiler.TryCompile(indexed, out postBytes, out diagnostic, budget);
+        }
         // The rebuild indexes glyphNameIndex over the whole input domain, so the post
         // count must cover it exactly (the maxp-bound read the metrics contexts do).
         if (post!.NumGlyphs!.Value != maxp.NumGlyphs)

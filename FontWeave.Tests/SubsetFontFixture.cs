@@ -11,6 +11,14 @@ namespace FontWeave.Tests;
 
 internal static class SubsetFontFixture
 {
+    internal static uint LocaOffset(byte[] head, byte[] loca, int index) =>
+        BinaryPrimitives.ReadInt16BigEndian(head.AsSpan(50)) switch
+        {
+            0 => 2u * BinaryPrimitives.ReadUInt16BigEndian(loca.AsSpan(index * 2)),
+            1 => BinaryPrimitives.ReadUInt32BigEndian(loca.AsSpan(index * 4)),
+            _ => throw new InvalidOperationException("Invalid loca format")
+        };
+
     internal const uint HeadTag = 0x68656164, MaxpTag = 0x6D617870, GlyfTag = 0x676C7966,
         LocaTag = 0x6C6F6361, CmapTag = 0x636D6170, NameTag = 0x6E616D65,
         GsubTag = 0x47535542, DsigTag = 0x44534947, PostTag = 0x706F7374,

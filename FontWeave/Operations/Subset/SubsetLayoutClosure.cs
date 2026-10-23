@@ -260,6 +260,8 @@ public static partial class SubsetOperation
     private static ReadStatus CloseLayoutReferences(PrepareState state,
         out FontDiagnostic diagnostic)
     {
+        if (state.Mode == SubsetMode.CompactRemap)
+            return CloseReachableLayout(state, out diagnostic);
         diagnostic = default;
         var budget = state.Budget;
         bool[] retained = state.Retained;

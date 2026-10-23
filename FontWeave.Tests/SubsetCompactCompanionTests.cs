@@ -1,7 +1,3 @@
-// Compact companion-table rebuild tests (SC card §4 commit ④ acceptance): post 2.0,
-// hdmx, LTSH and VDMX rebuild over the frozen map; post 1.0/3.0 stay raw in both
-// modes; the drop-hinting branch deletes LTSH and strips glyf instructions.
-//
 // Output expectations are parsed from the emitted wire bytes, independent of the
 // production models.
 using System.Buffers.Binary;
@@ -237,22 +233,20 @@ public sealed class SubsetCompactCompanionTests
         var spans = TableSpans(font);
         byte[] glyfOut = Table(font, spans, SubsetFontFixture.GlyfTag);
         byte[] locaOut = Table(font, spans, SubsetFontFixture.LocaTag);
-        uint start = BinaryPrimitives.ReadUInt32BigEndian(locaOut.AsSpan(0));
-        uint end = BinaryPrimitives.ReadUInt32BigEndian(locaOut.AsSpan(4));
+        byte[] headOut = Table(font, spans, SubsetFontFixture.HeadTag);
+        uint start = SubsetFontFixture.LocaOffset(headOut, locaOut, 0);
+        uint end = SubsetFontFixture.LocaOffset(headOut, locaOut, 1);
         // the composite (slot 0) keeps its component pointing at output 260
         Assert.Equal(glyphs - 1,
             BinaryPrimitives.ReadUInt16BigEndian(glyfOut.AsSpan((int)start + 12)));
         Assert.True(end > start, "composite slot empty");
     }
 
-    // post 1.0 and 3.0 carry no per-glyph data: both stay raw under compact.
-    [Theory]
-    [InlineData(0x00010000u)]
-    [InlineData(0x00030000u)]
-    public void CompactKeepsNamelessPostVersionsRaw(uint version)
+    [Fact]
+    public void CompactKeepsNamelessPostVersionsRaw()
     {
         var bytes = new byte[32];
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0), version);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0), 0x00030000);
         var face = CompanionFace(bytes, withHintingTables: false);
         var status = SubsetOperation.TryPrepare(Request(face, [0, 2, 3]), out var result,
             out _, out _);
@@ -345,8 +339,9 @@ public sealed class SubsetCompactCompanionTests
         // + flag 1 + two 1-byte deltas)
         byte[] glyfOut = Table(font, spans, SubsetFontFixture.GlyfTag);
         byte[] locaOut = Table(font, spans, SubsetFontFixture.LocaTag);
-        uint start = BinaryPrimitives.ReadUInt32BigEndian(locaOut.AsSpan(4));
-        uint end = BinaryPrimitives.ReadUInt32BigEndian(locaOut.AsSpan(8));
+        byte[] headOut = Table(font, spans, SubsetFontFixture.HeadTag);
+        uint start = SubsetFontFixture.LocaOffset(headOut, locaOut, 1);
+        uint end = SubsetFontFixture.LocaOffset(headOut, locaOut, 2);
         Assert.Equal(17u, end - start);
         Assert.Equal(0, BinaryPrimitives.ReadUInt16BigEndian(glyfOut.AsSpan((int)start + 10)));
     }

@@ -142,9 +142,6 @@ public sealed class SubsetLayoutRewriteTests
         Assert.Equal(2, model.GlyphClasses.ClassOf(3));
     }
 
-    // Mark sets remap with their set ordinals stable (the markFilteringSet index
-    // domain) and every member present — the closure merged the mark coverage into
-    // the retained set, so the rewrite is total.
     [Fact]
     public void CompactPreserveRemapsMarkSetsWithStableOrdinals()
     {
@@ -156,11 +153,11 @@ public sealed class SubsetLayoutRewriteTests
         Assert.Equal(DiagnosticCode.None, diagnostic.Code);
         byte[] gdef = GdefBytes(GdefVersion12, null, null, markSets);
         var status = SubsetOperation.TryPrepare(
-            CompactPreserve(Face(gdef), [1]), out var result, out _,
+            CompactPreserve(Face(gdef), [1, 2, 3]), out var result, out _,
             out diagnostic);
         Assert.Equal(ReadStatus.Done, status);
         Assert.Equal(DiagnosticCode.None, diagnostic.Code);
-        // The mark coverage merged GIDs 2 and 3 into the retained set: {0,1,2,3}.
+        Assert.Equal(4, result!.Map!.OutputGlyphCount);
         var model = ReadBack(result!, 4);
         Assert.NotNull(model.MarkGlyphSets);
         Assert.Single(model.MarkGlyphSets.Sets);
