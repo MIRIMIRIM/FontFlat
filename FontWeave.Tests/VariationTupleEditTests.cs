@@ -146,6 +146,13 @@ public sealed class VariationTupleEditTests
     // One gvar 1.0 table over one glyph: header (20), short-form offsets, no shared
     // tuples, one GlyphVariationData block (padded to the even short-form stride).
     private static byte[] GvarWire(int axisCount, short[] peak, short[]? start,
+        short[]? end, short[] deltas) =>
+        GvarWireMulti(axisCount, GvarBlock(axisCount, peak, start, end, deltas));
+
+    // One GlyphVariationData block with a private point block (one point) and the
+    // packed X then Y runs. The block is returned unpadded; GvarWireMulti lays the
+    // even short-form stride.
+    private static byte[] GvarBlock(int axisCount, short[] peak, short[]? start,
         short[]? end, short[] deltas)
     {
         bool intermediate = start is not null;
@@ -155,9 +162,7 @@ public sealed class VariationTupleEditTests
         byte[] points = [0x01, 0x00, 0x00];
         byte[] deltaBytes = DeltaRun(deltas);
         int runLength = points.Length + deltaBytes.Length;
-        int blockLength = dataOffset + runLength;
-        int padded = (blockLength + 1) & ~1;
-        var block = new byte[padded];
+        var block = new byte[dataOffset + runLength];
         BinaryPrimitives.WriteUInt16BigEndian(block.AsSpan(0), 1);
         BinaryPrimitives.WriteUInt16BigEndian(block.AsSpan(2), (ushort)dataOffset);
         BinaryPrimitives.WriteUInt16BigEndian(block.AsSpan(4), (ushort)runLength);
@@ -183,19 +188,35 @@ public sealed class VariationTupleEditTests
         }
         points.CopyTo(block.AsSpan(dataOffset));
         deltaBytes.CopyTo(block.AsSpan(dataOffset + points.Length));
+        return block;
+    }
 
-        const int gvdAt = 20 + 2 * 2; // header + (glyphCount + 1) short offsets
-        var bytes = new byte[gvdAt + block.Length];
+    // One gvar over N glyphs: header (20), the short offsets array, no shared tuples,
+    // then the blocks on the even short-form stride.
+    private static byte[] GvarWireMulti(int axisCount, params byte[][] blocks)
+    {
+        int glyphCount = blocks.Length;
+        const int offsetsAt = 20;
+        int gvdAt = offsetsAt + (glyphCount + 1) * 2;
+        int total = gvdAt + blocks.Sum(block => (block.Length + 1) & ~1);
+        var bytes = new byte[total];
         BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0), 0x00010000);
         BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), (ushort)axisCount);
         BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6), 0);   // no shared tuples
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(8), gvdAt);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(12), 1);  // one glyph
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(8), (uint)gvdAt);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(12), (ushort)glyphCount);
         BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(14), 0);  // short offsets
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16), gvdAt);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(20), 0);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(22), (ushort)(block.Length / 2));
-        block.CopyTo(bytes.AsSpan(gvdAt));
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16), (uint)gvdAt);
+        int offset = 0;
+        for (int i = 0; i < glyphCount; i++)
+        {
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(offsetsAt + 2 * i),
+                (ushort)(offset / 2));
+            blocks[i].CopyTo(bytes.AsSpan(gvdAt + offset));
+            offset += (blocks[i].Length + 1) & ~1;
+        }
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(offsetsAt + 2 * glyphCount),
+            (ushort)(offset / 2));
         return bytes;
     }
 
@@ -263,5 +284,51 @@ public sealed class VariationTupleEditTests
         Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
         Assert.Equal(2UL, diagnostic.Detail);
         Assert.Equal(1UL, diagnostic.Expected);
+    }
+
+    // The edit can leave an odd block. The short-offset form pads it to the even /2
+    // stride, so the offsets array must follow the padded layout: writing the model's
+    // odd offset truncates it and the compiled table cannot be read back.
+    [Fact]
+    public void GvarSparseEditCompilesToAReadableShortFormTable()
+    {
+        GvarTable model = ReadGvar(GvarWire(2, [0, 0], null, null, [0, 0]), 2, 1);
+        ReadStatus status = model.TryWithGlyphDeltas(0, 0, [30], [40], out var edited,
+            out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(19, edited!.GlyphVariationDataOffsets[1]); // the odd edited block
+
+        status = GvarTableCompiler.TryCompile(edited, out var compiled, out diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(compiled);
+        GvarTable reread = ReadGvar(compiled!, 2, 1);
+        TupleVariation tuple = ReadGlyph(reread, 0).Tuples[0];
+        Assert.Equal(new short[] { 30 }, tuple.XDeltas);
+        Assert.Equal(new short[] { 40 }, tuple.YDeltas);
+        Assert.Equal(default, diagnostic);
+    }
+
+    // The same layout rule across glyphs: after an odd first block is padded, the next
+    // glyph's offset must point past the pad, not at the unpadded model offset.
+    [Fact]
+    public void GvarSecondGlyphStaysAddressableAfterAnOddFirstBlock()
+    {
+        GvarTable model = ReadGvar(GvarWireMulti(2,
+            GvarBlock(2, [0, 0], null, null, [0, 0]),
+            GvarBlock(2, [0, 0], null, null, [0x10, 0x20])), 2, 2);
+        ReadStatus status = model.TryWithGlyphDeltas(0, 0, [30], [40], out var edited,
+            out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+
+        status = GvarTableCompiler.TryCompile(edited!, out var compiled, out diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        GvarTable reread = ReadGvar(compiled!, 2, 2);
+        TupleVariation first = ReadGlyph(reread, 0).Tuples[0];
+        Assert.Equal(new short[] { 30 }, first.XDeltas);
+        Assert.Equal(new short[] { 40 }, first.YDeltas);
+        TupleVariation second = ReadGlyph(reread, 1).Tuples[0];
+        Assert.Equal(new short[] { 0x10 }, second.XDeltas);
+        Assert.Equal(new short[] { 0x20 }, second.YDeltas);
+        Assert.Equal(default, diagnostic);
     }
 }

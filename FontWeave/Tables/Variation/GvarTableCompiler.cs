@@ -10,8 +10,10 @@ namespace FontWeave.Tables.Variation;
 /// GlyphVariationData array in glyph ID order with absent glyphs as zero-size
 /// blocks; inside a block the shared point numbers precede the per-tuple runs.
 /// The offsets form (flags bit0) is preserved from the model (OQ-7) - no form
-/// upgrade write exists; short-form blocks stay even (the /2 offsets), long-form
-/// blocks carry no pad. Unedited blocks re-emit their source bytes verbatim
+/// upgrade write exists; short-form blocks are padded to the even /2 stride and the
+/// offsets array is re-derived over that padded layout (an edit can produce an odd
+/// block), long-form blocks carry no pad. Unedited blocks re-emit their source bytes
+/// verbatim
 /// (edited tuples splice in place, so the model's bytes are the truth) and
 /// parts-built blocks encode deterministically at TryCreate. Every fixup, count
 /// and budget check completes before any byte is written; a refused plan never
@@ -378,6 +380,24 @@ public static class GvarTableCompiler
         return length;
     }
 
+    // The final emitted offset of the GlyphVariationData array: the cumulative
+    // padded block layout, not the model's source offsets. A short-form source only
+    // carries even blocks, but an edit can splice an odd run into one, so the emitted
+    // offsets array must be re-derived from the sizes the writer actually lays down.
+    private static int EmittedDataLength(GvarTable model)
+    {
+        bool longForm = model.LongOffsets;
+        int length = 0;
+        for (int glyphId = 0; glyphId < model.NumGlyphs; glyphId++)
+        {
+            int size = model.GlyphVariationDataOffsets[glyphId + 1] -
+                model.GlyphVariationDataOffsets[glyphId];
+            length += size;
+            if (!longForm && size % 2 != 0) length++;
+        }
+        return length;
+    }
+
     // The single canonical candidate: every fixup value and the whole budget
     // admission happen here, before any byte exists. The offsets form is
     // preserved (OQ-7): an offset that no longer fits the source form refuses
@@ -387,12 +407,12 @@ public static class GvarTableCompiler
     {
         length = 0;
         bool longForm = model.LongOffsets;
-        long last = model.GlyphVariationDataOffsets[model.NumGlyphs];
-        if (!longForm && last / 2 > (long)ushort.MaxValue)
+        long last = EmittedDataLength(model);
+        if (!longForm && last > (long)ushort.MaxValue * 2)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat,
                 DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.Offset, GvarLayout.HeaderLength),
-                out diagnostic, (ulong)last, (ulong)(ushort.MaxValue * 2));
+                out diagnostic, (ulong)last, (ulong)ushort.MaxValue * 2);
         if (longForm && last > int.MaxValue)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat,
                 DiagnosticCode.UnsupportedOperation,
@@ -435,15 +455,25 @@ public static class GvarTableCompiler
             GvarView.TryWriteGlyphVariationDataArrayOffset(destination, (uint)gvdArrayOffset,
                 out _, location));
         int at = GvarLayout.HeaderLength;
+        // The offsets array follows the padded block layout the loop below emits: a
+        // short-form block pads to the even /2 stride, so the model's own (unpadded)
+        // offsets would truncate an odd edit and shift every later glyph.
+        int dataOffset = 0;
         for (int i = 0; i <= model.NumGlyphs; i++)
         {
-            int offset = model.GlyphVariationDataOffsets[i];
             if (longForm)
-                BinaryPrimitives.WriteUInt32BigEndian(destination.Slice(at, 4), (uint)offset);
+                BinaryPrimitives.WriteUInt32BigEndian(destination.Slice(at, 4), (uint)dataOffset);
             else
                 BinaryPrimitives.WriteUInt16BigEndian(destination.Slice(at, 2),
-                    (ushort)(offset / 2));
+                    (ushort)(dataOffset / 2));
             at += width;
+            if (i < model.NumGlyphs)
+            {
+                int size = model.GlyphVariationDataOffsets[i + 1] -
+                    model.GlyphVariationDataOffsets[i];
+                dataOffset += size;
+                if (!longForm && size % 2 != 0) dataOffset++;
+            }
         }
         foreach (var tuple in model.SharedTuples)
         {
