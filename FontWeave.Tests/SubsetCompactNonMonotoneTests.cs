@@ -719,4 +719,107 @@ public sealed class SubsetCompactNonMonotoneTests
         Assert.Contains("id=\"glyph1\"", text);
         Assert.Equal(default, diagnostic);
     }
+
+    // A comment may contain an unmatched quote; the XML walk must skip it instead of
+    // reading the rest of the document from a fake attribute context.
+    [Fact]
+    public void CompactSvgSkipsAttributeLookalikesInComments()
+    {
+        byte[] doc = Utf8(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><!-- note=\" -->" +
+            "<g id=\"glyph4\"><rect width=\"100\" height=\"100\"/></g></svg>");
+        var svg = SvgWire([(4, 4, 0)], [doc]);
+        var face = CffFace([0, 1, 2, 3, 4], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 4]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        string text = SingleDocument(result!);
+        Assert.Contains("<!-- note=\" -->", text);
+        Assert.Contains("id=\"glyph1\"", text);
+        Assert.DoesNotContain("id=\"glyph4\"", text);
+        Assert.Equal(default, diagnostic);
+    }
+
+    // The '#' of a fragment can itself be a character reference; the decoded value is
+    // "#glyph4", so the reference follows the renamed element.
+    [Fact]
+    public void CompactSvgResolvesCharacterReferenceHashesInFragments()
+    {
+        byte[] doc = Utf8(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><g id=\"glyph4\"/>" +
+            "<use xlink:href=\"&#35;glyph4\"/></svg>");
+        var svg = SvgWire([(4, 4, 0)], [doc]);
+        var face = CffFace([0, 1, 2, 3, 4], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 4]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        string text = SingleDocument(result!);
+        Assert.Contains("id=\"glyph1\"", text);
+        Assert.Contains("href=\"&#35;glyph1\"", text);
+        Assert.DoesNotContain("&#35;glyph4", text);
+        Assert.Equal(default, diagnostic);
+    }
+
+    // A Unicode resource ID that starts with a glyph ID is still one ID; the fragment
+    // ends at the ID boundary, not at the first non-ASCII byte.
+    [Fact]
+    public void CompactSvgKeepsUnicodeResourceIdsIntact()
+    {
+        byte[] doc = Utf8(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\">" +
+            "<clipPath id=\"glyph4剪裁\"><rect width=\"10\" height=\"10\"/></clipPath>" +
+            "<g id=\"glyph4\" clip-path=\"url(#glyph4剪裁)\"/></svg>");
+        var svg = SvgWire([(4, 4, 0)], [doc]);
+        var face = CffFace([0, 1, 2, 3, 4], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 4]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        string text = SingleDocument(result!);
+        Assert.Contains("id=\"glyph4剪裁\"", text);
+        Assert.Contains("clip-path=\"url(#glyph4剪裁)\"", text);
+        Assert.Contains("id=\"glyph1\"", text);
+        Assert.DoesNotContain("#glyph1剪裁", text);
+        Assert.Equal(default, diagnostic);
+    }
+
+    // The internal style sheet is part of the document's ID map: ID selectors,
+    // url() fragments and [id=...] selectors move with the element.
+    [Fact]
+    public void CompactSvgRewritesStyleSheetIdSelectors()
+    {
+        byte[] doc = Utf8(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><style type=\"text/css\">" +
+            "#glyph4 { fill: url(#glyph4); } [id=glyph4] { opacity: 0.5 }</style>" +
+            "<g id=\"glyph4\"><rect width=\"100\" height=\"100\"/></g></svg>");
+        var svg = SvgWire([(4, 4, 0)], [doc]);
+        var face = CffFace([0, 1, 2, 3, 4], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 4]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        string text = SingleDocument(result!);
+        Assert.Contains("#glyph1 { fill: url(#glyph1); } [id=glyph1]", text);
+        Assert.DoesNotContain("#glyph4", text);
+        Assert.Equal(default, diagnostic);
+    }
+
+    // A CSS escape can spell an ID in bytes the map cannot follow; the rewrite refuses
+    // instead of emitting a selector that no longer addresses its element.
+    [Fact]
+    public void CompactSvgRefusesCssEscapedSelectors()
+    {
+        byte[] doc = Utf8(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><style type=\"text/css\">" +
+            "#glyph\\34 { fill: red; }</style><g id=\"glyph4\"/></svg>");
+        var svg = SvgWire([(4, 4, 0)], [doc]);
+        var face = CffFace([0, 1, 2, 3, 4], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 4]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Null(result);
+        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
+    }
 }

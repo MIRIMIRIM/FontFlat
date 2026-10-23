@@ -26,10 +26,14 @@ namespace FontWeave.Operations.Subset;
 /// sbix re-slots every strike over the output domain with 'dupe' targets remapped
 /// (a dangling target refuses, RE3) and SVG re-spans the document records over
 /// each range's surviving output runs with only the referenced documents kept —
-/// their bytes verbatim unless the remap moves a glyph id the document carries
-/// (id="glyph<gid>" and its #fragment references rewrite, gzip members included).
-/// Every rebuilt model re-answers through the
-/// compiler factories; any failure refuses with nothing published.</summary>
+/// their bytes verbatim unless the remap moves a glyph id the document carries:
+/// the XML walk rewrites an id's value, reference fragments (character references
+/// decoded first) and the internal style sheet's ID selectors/url fragments, while
+/// comments, CDATA and processing instructions never open an attribute context;
+/// gzip members are rewritten the same way. A style sheet using a CSS escape
+/// refuses rather than emitting a selector the map cannot follow. Every rebuilt
+/// model re-answers through the compiler factories; any failure refuses with
+/// nothing published.</summary>
 public static partial class SubsetOperation
 {
     // ---- CBDT/CBLC ----
@@ -822,7 +826,10 @@ public static partial class SubsetOperation
         }
         if (!budget.Work(text!.Length, at, out diagnostic))
             return ReadStatus.ResourceLimit;
-        if (!TrySpliceSvgGlyphIds(text, map, out byte[]? spliced))
+        ReadStatus splice = TrySpliceSvgGlyphIds(text, map, at, out byte[]? spliced,
+            out diagnostic);
+        if (splice != ReadStatus.Done) return splice;
+        if (spliced is null)
         {
             // The common case (the map is the identity over the document's glyphs, or
             // the document carries no glyph carrier at all) keeps the source bytes.
@@ -830,64 +837,73 @@ public static partial class SubsetOperation
             diagnostic = default;
             return ReadStatus.Done;
         }
-        rewritten = gzip ? DeflateSvgDocument(spliced!) : spliced;
+        rewritten = gzip ? DeflateSvgDocument(spliced) : spliced;
         diagnostic = default;
         return ReadStatus.Done;
     }
 
-    // The rewrite is attribute-value driven: an id attribute's complete value and each
-    // '#' fragment inside any other value are the only places the spec carries an ID.
-    // A value's character references decode first, so "&#52;" addresses the same glyph
-    // as "4", and a fragment matches only as a whole ID - "glyph4.clip" is a resource
-    // name, never a "glyph4" prefix.
-    private static bool TrySpliceSvgGlyphIds(byte[] text, GlyphRemap map, out byte[]? spliced)
+    // The rewrite is XML-context aware: only real element attributes are values, while
+    // comments, CDATA, processing instructions and end tags are skipped. An id
+    // attribute's complete value and each '#' fragment inside a reference value are
+    // decoded (character references included) and matched as a whole ID, so
+    // "glyph4.clip" is a different ID and "#glyph4" still resolves. The same ID map
+    // covers the ID selectors and url() fragments of an internal style sheet.
+    private static ReadStatus TrySpliceSvgGlyphIds(byte[] text, GlyphRemap map,
+        DataLocation at, out byte[]? spliced, out FontDiagnostic diagnostic)
     {
         spliced = null;
-        List<SvgAttributeValue> values = ReadSvgAttributeValues(text);
-        if (values.Count == 0) return false;
+        diagnostic = default;
+        var values = new List<SvgAttributeValue>();
+        var styles = new List<(int Start, int End)>();
+        ReadSvgStructure(text, values, styles);
         // Existing IDs are the rename namespace: a dropped glyph's placeholder must not
         // collide with a resource id (nor with another placeholder).
         var usedIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var value in values)
         {
             if (!IsSvgIdAttributeValue(text, value)) continue;
-            if (TryDecodeSvgValue(text, value.ValueStart, value.ValueEnd, out string id))
-                usedIds.Add(id);
+            if (TryDecodeSvgSpan(text, value.ValueStart, value.ValueEnd, out var chars))
+                usedIds.Add(SvgCharsToString(chars));
         }
         var droppedNames = new Dictionary<int, string>();
-        List<(int Start, int End, byte[] Replacement)>? edits = null;
+        var edits = new List<(int Start, int End, byte[] Replacement)>();
         foreach (var value in values)
         {
+            if (!TryDecodeSvgSpan(text, value.ValueStart, value.ValueEnd, out var chars))
+                continue;
             if (IsSvgIdAttributeValue(text, value))
             {
-                if (!TryDecodeSvgValue(text, value.ValueStart, value.ValueEnd, out string id))
-                    continue;
-                if (!TryResolveSvgGlyphId(id, map, usedIds, droppedNames, out byte[]? token))
-                    continue;
-                if (SvgSpanEquals(text, value.ValueStart, value.ValueEnd, token!)) continue;
-                (edits ??= []).Add((value.ValueStart, value.ValueEnd, token!));
+                string id = SvgCharsToString(chars);
+                AddSvgIdEdit(text, value.ValueStart, value.ValueEnd, id, map, usedIds,
+                    droppedNames, edits);
                 continue;
             }
-            int at = value.ValueStart;
-            while (at < value.ValueEnd)
+            if (IsSvgStyleAttributeValue(text, value) && HasSvgBackslash(chars))
+                return SvgStyleUnsupported(at, chars, out diagnostic);
+            int cursor = 0;
+            while (cursor < chars.Count)
             {
-                int hash = SvgIndexOf(text, (byte)'#', at, value.ValueEnd);
-                if (hash < 0) break;
-                int runStart = hash + 1;
-                int runEnd = SvgFragmentEnd(text, runStart, value.ValueEnd);
-                if (runEnd == runStart)
+                if (chars[cursor].Value != '#')
                 {
-                    at = runStart;
+                    cursor++;
                     continue;
                 }
-                if (TryDecodeSvgValue(text, runStart, runEnd, out string id) &&
-                    TryResolveSvgGlyphId(id, map, usedIds, droppedNames, out byte[]? token) &&
-                    !SvgSpanEquals(text, runStart, runEnd, token!))
-                    (edits ??= []).Add((runStart, runEnd, token!));
-                at = runEnd;
+                int runStart = cursor + 1;
+                int runEnd = SvgDecodedEnd(chars, runStart, IsSvgXmlNameChar);
+                if (runEnd > runStart)
+                    AddSvgIdEdit(text, chars, runStart, runEnd, map, usedIds, droppedNames,
+                        edits);
+                cursor = System.Math.Max(runEnd, runStart);
             }
         }
-        if (edits is null) return false;
+        foreach (var (start, end) in styles)
+        {
+            ReadStatus styleStatus = RewriteSvgStyleSheet(text, start, end, map, usedIds,
+                droppedNames, edits, at, out diagnostic);
+            if (styleStatus != ReadStatus.Done) return styleStatus;
+        }
+        if (edits.Count == 0) return ReadStatus.Done;
+        edits.Sort(static (left, right) => left.Start.CompareTo(right.Start));
         int length = text.Length;
         foreach (var (start, end, replacement) in edits)
             length += replacement.Length - (end - start);
@@ -904,61 +920,371 @@ public static partial class SubsetOperation
         }
         text.AsSpan(source).CopyTo(buffer.AsSpan(target));
         spliced = buffer;
+        return ReadStatus.Done;
+    }
+
+    // One tolerant XML walk: it recognizes start tags and their attribute values,
+    // skips comments, CDATA, processing instructions and end tags, and records the raw
+    // content of every <style> element. A malformed construct ends the walk, so nothing
+    // past it is rewritten from a guessed context.
+    private static void ReadSvgStructure(byte[] text, List<SvgAttributeValue> values,
+        List<(int Start, int End)> styles)
+    {
+        int at = 0;
+        while (at < text.Length)
+        {
+            int open = SvgIndexOf(text, (byte)'<', at, text.Length);
+            if (open < 0) break;
+            at = open;
+            if (SvgStartsWith(text, at, "<!--"))
+            {
+                int end = SvgIndexOfSequence(text, at + 4, "-->");
+                at = end < 0 ? text.Length : end + 3;
+                continue;
+            }
+            if (SvgStartsWith(text, at, "<![CDATA["))
+            {
+                int end = SvgIndexOfSequence(text, at + 9, "]]>");
+                at = end < 0 ? text.Length : end + 3;
+                continue;
+            }
+            if (SvgStartsWith(text, at, "<?"))
+            {
+                int end = SvgIndexOfSequence(text, at + 2, "?>");
+                at = end < 0 ? text.Length : end + 2;
+                continue;
+            }
+            if (SvgStartsWith(text, at, "<!"))
+            {
+                int end = SvgIndexOf(text, (byte)'>', at + 2, text.Length);
+                at = end < 0 ? text.Length : end + 1;
+                continue;
+            }
+            if (SvgStartsWith(text, at, "</"))
+            {
+                int end = SvgIndexOf(text, (byte)'>', at + 2, text.Length);
+                at = end < 0 ? text.Length : end + 1;
+                continue;
+            }
+            int nameStart = at + 1;
+            if (nameStart >= text.Length || !IsSvgNameByte(text[nameStart]))
+            {
+                at++;
+                continue;
+            }
+            int cursor = nameStart;
+            while (cursor < text.Length && IsSvgNameByte(text[cursor])) cursor++;
+            bool isStyle = SvgNameEquals(text, nameStart, cursor, "style");
+            bool selfClosing = false;
+            bool complete = true;
+            while (cursor < text.Length)
+            {
+                while (cursor < text.Length && IsSvgXmlSpace(text[cursor])) cursor++;
+                if (cursor >= text.Length) { complete = false; break; }
+                if (text[cursor] == (byte)'>')
+                {
+                    cursor++;
+                    break;
+                }
+                if (text[cursor] == (byte)'/' && cursor + 1 < text.Length &&
+                    text[cursor + 1] == (byte)'>')
+                {
+                    cursor += 2;
+                    selfClosing = true;
+                    break;
+                }
+                int attrStart = cursor;
+                while (cursor < text.Length && IsSvgAttributeNameByte(text[cursor])) cursor++;
+                if (cursor == attrStart)
+                {
+                    cursor++;
+                    continue;
+                }
+                int attrEnd = cursor;
+                while (cursor < text.Length && IsSvgXmlSpace(text[cursor])) cursor++;
+                if (cursor >= text.Length || text[cursor] != (byte)'=') continue;
+                cursor++;
+                while (cursor < text.Length && IsSvgXmlSpace(text[cursor])) cursor++;
+                if (cursor >= text.Length ||
+                    (text[cursor] != (byte)'"' && text[cursor] != (byte)'\''))
+                {
+                    cursor++;
+                    continue;
+                }
+                byte quote = text[cursor];
+                int valueStart = cursor + 1;
+                int valueEnd = valueStart;
+                while (valueEnd < text.Length && text[valueEnd] != quote) valueEnd++;
+                if (valueEnd >= text.Length)
+                {
+                    complete = false;
+                    cursor = text.Length;
+                    break;
+                }
+                values.Add(new(attrStart, attrEnd, valueStart, valueEnd));
+                cursor = valueEnd + 1;
+            }
+            if (!complete) break;
+            if (!selfClosing && isStyle)
+            {
+                int close = SvgIndexOfSequence(text, cursor, "</style");
+                int contentEnd = close < 0 ? text.Length : close;
+                styles.Add((cursor, contentEnd));
+                cursor = contentEnd;
+            }
+            at = cursor;
+        }
+    }
+
+    // ---- internal style sheets ----
+
+    // Rewrites the ID carriers a CSS sheet can use: "#ident" selectors, "#ident"
+    // fragments inside url(), and "[id=value]" attribute selectors. A backslash is a CSS
+    // escape the byte-level map cannot follow, so a sheet using one refuses instead of
+    // emitting a selector that no longer matches.
+    private static ReadStatus RewriteSvgStyleSheet(byte[] text, int start, int end,
+        GlyphRemap map, HashSet<string> usedIds, Dictionary<int, string> droppedNames,
+        List<(int Start, int End, byte[] Replacement)> edits, DataLocation at,
+        out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        if (!TryDecodeSvgSpan(text, start, end, out var chars)) return ReadStatus.Done;
+        if (HasSvgBackslash(chars)) return SvgStyleUnsupported(at, chars, out diagnostic);
+        int cursor = 0;
+        while (cursor < chars.Count)
+        {
+            char c = chars[cursor].Value;
+            if (c == '/' && cursor + 1 < chars.Count && chars[cursor + 1].Value == '*')
+            {
+                int close = SvgIndexOfChars(chars, cursor + 2, "*/");
+                cursor = close < 0 ? chars.Count : close + 2;
+                continue;
+            }
+            if (c is '"' or '\'')
+            {
+                cursor = SvgCssStringEnd(chars, cursor);
+                continue;
+            }
+            if (TrySvgCssUrlOpen(chars, cursor, out int urlBody))
+            {
+                int close = SvgIndexOfChar(chars, urlBody, ')');
+                int stop = close < 0 ? chars.Count : close;
+                int inner = urlBody;
+                while (inner < stop)
+                {
+                    if (chars[inner].Value == '#')
+                    {
+                        int runStart = inner + 1;
+                        int runEnd = SvgDecodedEnd(chars, runStart, IsSvgXmlNameChar, stop);
+                        if (runEnd > runStart)
+                            AddSvgIdEdit(text, chars, runStart, runEnd, map, usedIds,
+                                droppedNames, edits);
+                        inner = System.Math.Max(runEnd, runStart);
+                        continue;
+                    }
+                    inner++;
+                }
+                cursor = close < 0 ? chars.Count : close + 1;
+                continue;
+            }
+            if (c == '[')
+            {
+                int next = TrySvgCssIdAttributeSelector(chars, cursor + 1, text,
+                    map, usedIds, droppedNames, edits);
+                if (next > cursor + 1)
+                {
+                    cursor = next;
+                    continue;
+                }
+                cursor++;
+                continue;
+            }
+            if (c == '#')
+            {
+                int runStart = cursor + 1;
+                int runEnd = SvgDecodedEnd(chars, runStart, IsSvgCssIdentChar);
+                if (runEnd > runStart)
+                    AddSvgIdEdit(text, chars, runStart, runEnd, map, usedIds, droppedNames,
+                        edits);
+                cursor = System.Math.Max(runEnd, runStart);
+                continue;
+            }
+            cursor++;
+        }
+        return ReadStatus.Done;
+    }
+
+    // "[id = value]" with an optional quote pair; returns the position after the
+    // selector, or the unchanged input when the shape is not that selector.
+    private static int TrySvgCssIdAttributeSelector(List<SvgChar> chars, int cursor,
+        byte[] text, GlyphRemap map, HashSet<string> usedIds,
+        Dictionary<int, string> droppedNames,
+        List<(int Start, int End, byte[] Replacement)> edits)
+    {
+        int at = cursor;
+        at = SvgSkipCssSpace(chars, at);
+        if (!SvgCharsMatch(chars, at, "id")) return cursor;
+        at += 2;
+        at = SvgSkipCssSpace(chars, at);
+        if (at >= chars.Count || chars[at].Value != '=') return cursor;
+        at++;
+        at = SvgSkipCssSpace(chars, at);
+        if (at >= chars.Count) return cursor;
+        int valueStart, valueEnd;
+        if (chars[at].Value is '"' or '\'')
+        {
+            valueStart = at + 1;
+            valueEnd = SvgCssStringEnd(chars, at) - 1;
+            if (valueEnd < valueStart) return cursor;
+            at = valueEnd + 2;
+        }
+        else
+        {
+            valueStart = at;
+            valueEnd = SvgDecodedEnd(chars, at, IsSvgCssIdentChar);
+            if (valueEnd == valueStart) return cursor;
+            at = valueEnd;
+        }
+        AddSvgIdEdit(text, chars, valueStart, valueEnd, map, usedIds, droppedNames, edits);
+        return at;
+    }
+
+    private static int SvgSkipCssSpace(List<SvgChar> chars, int at)
+    {
+        while (at < chars.Count && chars[at].Value is ' ' or '\t' or '\r' or '\n') at++;
+        return at;
+    }
+
+    private static int SvgCssStringEnd(List<SvgChar> chars, int open)
+    {
+        char quote = chars[open].Value;
+        int at = open + 1;
+        while (at < chars.Count && chars[at].Value != quote) at++;
+        return System.Math.Min(at + 1, chars.Count);
+    }
+
+    private static bool TrySvgCssUrlOpen(List<SvgChar> chars, int at, out int body)
+    {
+        body = at;
+        if (!SvgCharsMatchIgnoreCase(chars, at, "url")) return false;
+        int cursor = at + 3;
+        cursor = SvgSkipCssSpace(chars, cursor);
+        if (cursor >= chars.Count || chars[cursor].Value != '(') return false;
+        body = cursor + 1;
         return true;
     }
+
+    private static bool SvgCharsMatch(List<SvgChar> chars, int at, string value)
+    {
+        if (at < 0 || at + value.Length > chars.Count) return false;
+        for (int i = 0; i < value.Length; i++)
+            if (chars[at + i].Value != value[i]) return false;
+        return true;
+    }
+
+    private static bool SvgCharsMatchIgnoreCase(List<SvgChar> chars, int at, string value)
+    {
+        if (at < 0 || at + value.Length > chars.Count) return false;
+        for (int i = 0; i < value.Length; i++)
+            if (char.ToLowerInvariant(chars[at + i].Value) != value[i]) return false;
+        return true;
+    }
+
+    private static int SvgDecodedEnd(List<SvgChar> chars, int at,
+        Func<char, bool> isName, int end = int.MaxValue)
+    {
+        int limit = System.Math.Min(end, chars.Count);
+        while (at < limit && isName(chars[at].Value)) at++;
+        return at;
+    }
+
+    private static bool IsSvgCssIdentChar(char value) =>
+        value is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '-' or '_' ||
+        value >= '\u0080';
+
+    private static bool IsSvgXmlNameChar(char value) =>
+        IsSvgCssIdentChar(value) || value is '.' or ':';
+
+    private static bool HasSvgBackslash(List<SvgChar> chars)
+    {
+        foreach (var c in chars)
+            if (c.Value == '\\') return true;
+        return false;
+    }
+
+    // The style sheet could not be mapped safely; the table's records are still
+    // rewriting, so the whole document rewrite refuses rather than emitting a
+    // selector that no longer addresses its element.
+    private static ReadStatus SvgStyleUnsupported(DataLocation at, List<SvgChar> chars,
+        out FontDiagnostic diagnostic)
+    {
+        int offset = chars.Count == 0 ? 0 : chars[0].RawStart;
+        return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+            at.AtLocal(DataField.Payload, (ulong)offset), out diagnostic, '\\', 0);
+    }
+
+    private static int SvgIndexOfChar(List<SvgChar> chars, int at, char needle)
+    {
+        while (at < chars.Count && chars[at].Value != needle) at++;
+        return at < chars.Count ? at : -1;
+    }
+
+    private static int SvgIndexOfChars(List<SvgChar> chars, int at, string value)
+    {
+        for (; at + value.Length <= chars.Count; at++)
+            if (SvgCharsMatch(chars, at, value)) return at;
+        return -1;
+    }
+
+    // ---- attribute values ----
 
     // One attribute value's byte spans; the name is [NameStart, NameEnd).
     private readonly record struct SvgAttributeValue(int NameStart, int NameEnd,
         int ValueStart, int ValueEnd);
 
-    // A quote opens an attribute value only after "name =" (XML whitespace allowed
-    // around '='), so text content and comments cannot start a value on their own.
-    private static List<SvgAttributeValue> ReadSvgAttributeValues(byte[] text)
+    private static bool IsSvgIdAttributeValue(byte[] text, SvgAttributeValue value) =>
+        SvgNameEquals(text, value.NameStart, value.NameEnd, "id");
+
+    // The inline style attribute carries CSS declarations; a CSS escape in it has the
+    // same unsafe mapping as in an internal sheet.
+    private static bool IsSvgStyleAttributeValue(byte[] text, SvgAttributeValue value) =>
+        SvgNameEquals(text, value.NameStart, value.NameEnd, "style");
+
+    private static bool SvgNameEquals(byte[] text, int start, int end, string name)
     {
-        var values = new List<SvgAttributeValue>();
-        for (int i = 0; i < text.Length; i++)
-        {
-            byte quote = text[i];
-            if (quote != (byte)'"' && quote != (byte)'\'') continue;
-            if (!TryReadSvgAttributeName(text, i, out int nameStart, out int nameEnd))
-                continue;
-            int close = i + 1;
-            while (close < text.Length && text[close] != quote) close++;
-            if (close >= text.Length) break; // an unterminated value ends the walk
-            values.Add(new(nameStart, nameEnd, i + 1, close));
-            i = close;
-        }
-        return values;
+        if (end - start != name.Length) return false;
+        for (int i = 0; i < name.Length; i++)
+            if (text[start + i] != (byte)name[i]) return false;
+        return true;
     }
 
-    private static bool TryReadSvgAttributeName(byte[] text, int quoteAt,
-        out int nameStart, out int nameEnd)
-    {
-        nameStart = 0;
-        nameEnd = 0;
-        int k = quoteAt - 1;
-        while (k >= 0 && IsSvgXmlSpace(text[k])) k--;
-        if (k < 0 || text[k] != (byte)'=') return false;
-        k--;
-        while (k >= 0 && IsSvgXmlSpace(text[k])) k--;
-        nameEnd = k + 1;
-        while (k >= 0 && IsSvgAttributeNameByte(text[k])) k--;
-        nameStart = k + 1;
-        return nameStart < nameEnd;
-    }
+    // XML name characters: non-ASCII bytes are part of a Unicode name, so an ID such as
+    // "glyph4剪裁" is one name and never a "glyph4" prefix.
+    private static bool IsSvgNameByte(byte value) =>
+        value is >= (byte)'a' and <= (byte)'z' || value is >= (byte)'A' and <= (byte)'Z' ||
+        value is >= (byte)'0' and <= (byte)'9' || value == (byte)'-' || value == (byte)'_' ||
+        value == (byte)':' || value == (byte)'.' || value >= 0x80;
+
+    private static bool IsSvgAttributeNameByte(byte value) =>
+        IsSvgNameByte(value) && value != (byte)'=' && value != (byte)'/' && value != (byte)'>';
 
     private static bool IsSvgXmlSpace(byte value) =>
         value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n';
 
-    private static bool IsSvgIdAttributeValue(byte[] text, SvgAttributeValue value) =>
-        value.NameEnd - value.NameStart == 2 &&
-        text[value.NameStart] == (byte)'i' && text[value.NameStart + 1] == (byte)'d';
+    private static bool SvgStartsWith(byte[] text, int at, string value)
+    {
+        if (at < 0 || at + value.Length > text.Length) return false;
+        for (int i = 0; i < value.Length; i++)
+            if (text[at + i] != (byte)value[i]) return false;
+        return true;
+    }
 
-    // XML name characters; '.' and ':' are part of an ID, so "glyph4.clip" is one ID.
-    private static bool IsSvgAttributeNameByte(byte value) =>
-        value is >= (byte)'a' and <= (byte)'z' || value is >= (byte)'A' and <= (byte)'Z' ||
-        value is >= (byte)'0' and <= (byte)'9' || value == (byte)'-' || value == (byte)'_' ||
-        value == (byte)':' || value == (byte)'.';
+    private static int SvgIndexOfSequence(byte[] text, int at, string value)
+    {
+        for (; at + value.Length <= text.Length; at++)
+            if (SvgStartsWith(text, at, value)) return at;
+        return -1;
+    }
 
     private static int SvgIndexOf(byte[] text, byte needle, int at, int end)
     {
@@ -966,53 +1292,97 @@ public static partial class SubsetOperation
         return at < end ? at : -1;
     }
 
-    // The raw extent of one '#' fragment: XML name characters plus complete character
-    // references. Taking the whole ID keeps "glyph4.clip" from matching a "glyph4"
-    // prefix while still resolving "#glyph&#52;".
-    private static int SvgFragmentEnd(byte[] text, int at, int end)
-    {
-        while (at < end)
-        {
-            if (IsSvgAttributeNameByte(text[at]))
-            {
-                at++;
-                continue;
-            }
-            if (text[at] == (byte)'&' && TrySkipSvgCharRef(text, at, end, out int after))
-            {
-                at = after;
-                continue;
-            }
-            break;
-        }
-        return at;
-    }
+    // One decoded character and the raw byte span it came from; a character reference
+    // maps one decoded char to its whole "&#...;" span, so a rewrite replaces exactly
+    // the bytes that produced the ID.
+    private readonly record struct SvgChar(char Value, int RawStart, int RawEnd);
 
-    // Decodes an attribute value's character references into the ID it actually
-    // denotes. An unknown entity or invalid code point makes the value undecidable, so
-    // the caller leaves it untouched.
-    private static bool TryDecodeSvgValue(byte[] text, int start, int end, out string value)
+    private static bool TryDecodeSvgSpan(byte[] text, int start, int end,
+        out List<SvgChar> chars)
     {
-        value = string.Empty;
-        var builder = new StringBuilder(end - start);
+        chars = new List<SvgChar>(end - start);
         for (int at = start; at < end; at++)
         {
             if (text[at] != (byte)'&')
             {
-                builder.Append((char)text[at]);
+                chars.Add(new((char)text[at], at, at + 1));
                 continue;
             }
-            if (!TryParseSvgCharRef(text, at, end, out char decoded, out int after))
+            if (!TryParseSvgCharRef(text, at, end, out char value, out int after))
                 return false;
-            builder.Append(decoded);
+            chars.Add(new(value, at, after));
             at = after - 1;
         }
-        value = builder.ToString();
         return true;
     }
 
-    private static bool TrySkipSvgCharRef(byte[] text, int at, int end, out int after) =>
-        TryParseSvgCharRef(text, at, end, out _, out after);
+    private static string SvgCharsToString(List<SvgChar> chars)
+    {
+        var builder = new StringBuilder(chars.Count);
+        foreach (var c in chars) builder.Append(c.Value);
+        return builder.ToString();
+    }
+
+    private static void AddSvgIdEdit(byte[] text, List<SvgChar> chars, int decodedStart,
+        int decodedEnd, GlyphRemap map, HashSet<string> usedIds,
+        Dictionary<int, string> droppedNames,
+        List<(int Start, int End, byte[] Replacement)> edits)
+    {
+        string id = SvgCharsToString(chars.GetRange(decodedStart, decodedEnd - decodedStart));
+        AddSvgIdEdit(text, chars[decodedStart].RawStart, chars[decodedEnd - 1].RawEnd, id,
+            map, usedIds, droppedNames, edits);
+    }
+
+    private static void AddSvgIdEdit(byte[] text, int rawStart, int rawEnd, string id,
+        GlyphRemap map, HashSet<string> usedIds, Dictionary<int, string> droppedNames,
+        List<(int Start, int End, byte[] Replacement)> edits)
+    {
+        if (!TryResolveSvgGlyphId(id, map, usedIds, droppedNames, out byte[]? token)) return;
+        if (SvgSpanEquals(text, rawStart, rawEnd, token!)) return;
+        edits.Add((rawStart, rawEnd, token!));
+    }
+
+    private static bool SvgSpanEquals(byte[] text, int start, int end, byte[] token) =>
+        end - start == token.Length && text.AsSpan(start, end - start).SequenceEqual(token);
+
+    // "glyph<decimal>" exactly, canonical (no leading zeros) and inside the font's GID
+    // domain. A surviving glyph answers its output id; a dropped one gets a placeholder
+    // that leaves the glyph-id space and is unique within the document.
+    private static bool TryResolveSvgGlyphId(string id, GlyphRemap map, HashSet<string> usedIds,
+        Dictionary<int, string> droppedNames, out byte[]? token)
+    {
+        token = null;
+        if (id.Length < 6 || !id.StartsWith("glyph", StringComparison.Ordinal)) return false;
+        if (id.Length - 5 > 1 && id[5] == '0') return false;
+        int glyphId = 0;
+        for (int i = 5; i < id.Length; i++)
+        {
+            if (id[i] is < '0' or > '9') return false;
+            glyphId = glyphId * 10 + (id[i] - '0');
+            if (glyphId > ushort.MaxValue) return false;
+        }
+        if (glyphId >= map.InputGlyphCount) return false;
+        int output = map.OutputOf(glyphId);
+        string name;
+        if (output >= 0)
+        {
+            name = $"glyph{output}";
+        }
+        else if (droppedNames.TryGetValue(glyphId, out string? existing))
+        {
+            name = existing;
+        }
+        else
+        {
+            // The placeholder leaves the glyph-id space; the used-ID probe keeps an
+            // existing resource of the same name (or another placeholder) intact.
+            name = $"glyph_{glyphId}";
+            while (!usedIds.Add(name)) name += "_";
+            droppedNames[glyphId] = name;
+        }
+        token = Encoding.ASCII.GetBytes(name);
+        return true;
+    }
 
     // "&#52;", "&#x34;" and the five predefined XML entities. Numeric code points map
     // to one char (non-BMP values to the replacement char: they cannot occur in a
@@ -1078,49 +1448,6 @@ public static partial class SubsetOperation
         <= (byte)'F' => value - (byte)'A' + 10,
         _ => value - (byte)'a' + 10
     };
-
-    // "glyph<decimal>" exactly, canonical (no leading zeros) and inside the font's GID
-    // domain. A surviving glyph answers its output id; a dropped one gets a placeholder
-    // that leaves the glyph-id space and is unique within the document.
-    private static bool TryResolveSvgGlyphId(string id, GlyphRemap map, HashSet<string> usedIds,
-        Dictionary<int, string> droppedNames, out byte[]? token)
-    {
-        token = null;
-        if (id.Length < 6 || !id.StartsWith("glyph", StringComparison.Ordinal)) return false;
-        if (id.Length - 5 > 1 && id[5] == '0') return false;
-        int glyphId = 0;
-        for (int i = 5; i < id.Length; i++)
-        {
-            if (id[i] is < '0' or > '9') return false;
-            glyphId = glyphId * 10 + (id[i] - '0');
-            if (glyphId > ushort.MaxValue) return false;
-        }
-        if (glyphId >= map.InputGlyphCount) return false;
-        int output = map.OutputOf(glyphId);
-        string name;
-        if (output >= 0)
-        {
-            name = $"glyph{output}";
-        }
-        else if (droppedNames.TryGetValue(glyphId, out string? existing))
-        {
-            name = existing;
-        }
-        else
-        {
-            // The placeholder leaves the glyph-id space; the used-ID probe keeps an
-            // existing resource of the same name (or another placeholder) intact.
-            name = $"glyph_{glyphId}";
-            while (!usedIds.Add(name)) name += "_";
-            droppedNames[glyphId] = name;
-        }
-        token = Encoding.ASCII.GetBytes(name);
-        return true;
-    }
-
-    private static bool SvgSpanEquals(byte[] text, int start, int end, byte[] token) =>
-        end - start == token.Length && text.AsSpan(start, end - start).SequenceEqual(token);
-
 
     // gzip members are inflated only to rewrite their glyph IDs; the table model's own
     // bytes still travel verbatim (the spec requires UTF-8 inside the member). The
