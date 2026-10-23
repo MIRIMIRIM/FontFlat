@@ -352,8 +352,11 @@ internal static class TupleVariationCodec
         return end - at;
     }
 
+    // The packed delta width class: zero, int8 or int16. The signed bounds are
+    // compared directly - short.MinValue has no positive short magnitude, so the
+    // Math.Abs form would throw instead of classifying the legal int16 value.
     private static int DeltaWidth(short delta) => delta == 0 ? 0 :
-        Math.Abs(delta) > sbyte.MaxValue ? 2 : 1;
+        delta is < sbyte.MinValue or > sbyte.MaxValue ? 2 : 1;
 
     /// <summary>TruncatedData with the convention detail=available bytes,
     /// expected=needed bytes, located at the first byte past the window.</summary>

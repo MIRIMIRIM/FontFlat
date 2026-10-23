@@ -245,13 +245,16 @@ public sealed class GvarTable
         int embeddedLength = (tupleIndex & TupleVariationCodec.EmbeddedPeakFlag) != 0
             ? 2 * AxisCount : 0;
         int at = headerAt + 4 + embeddedLength;
+        // The region's coordinates are grouped axis-major - every start then every
+        // end - the layout the reader re-reads at `intermediateAt` and
+        // `intermediateAt + 2 * axisCount`.
         var replacement = new byte[AxisCount * 4];
         for (int i = 0; i < AxisCount; i++)
         {
             System.Buffers.Binary.BinaryPrimitives.WriteInt16BigEndian(
-                replacement.AsSpan(i * 4, 2), startCoords[i]);
+                replacement.AsSpan(i * 2, 2), startCoords[i]);
             System.Buffers.Binary.BinaryPrimitives.WriteInt16BigEndian(
-                replacement.AsSpan(i * 4 + 2, 2), endCoords[i]);
+                replacement.AsSpan(AxisCount * 2 + i * 2, 2), endCoords[i]);
         }
         var bytes = (byte[])_tableBytes.Clone();
         replacement.CopyTo(bytes, at);
@@ -262,9 +265,9 @@ public sealed class GvarTable
     }
 
     // The existing delta column count of the target tuple: explicit point
-    // numbers (the tuple's private data, else the block's shared data) pin twice
-    // their count for the gvar columns; the count==0 marker is context-free; no
-    // point data at all pins zero.
+    // numbers (the tuple's private data, else the block's shared data) pin one
+    // delta per point in each of the two gvar columns (X and Y); the count==0
+    // marker is context-free; no point data at all pins zero.
     private ReadStatus ExistingColumnCount(int blockStart, bool hasPrivate,
         int[]? privatePoints, out int columns, out bool contextFree,
         out FontDiagnostic diagnostic)
@@ -292,7 +295,7 @@ public sealed class GvarTable
             points = Array.Empty<int>(); // neither private nor shared data
         }
         contextFree = points is null;
-        columns = (points?.Length ?? 0) * 2;
+        columns = points?.Length ?? 0;
         diagnostic = default;
         return ReadStatus.Done;
     }

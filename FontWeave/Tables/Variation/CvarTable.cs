@@ -146,12 +146,17 @@ public sealed class CvarTable
                 (ulong)(startCoords?.Length ?? 0), (ulong)AxisCount);
         if (!budget.Input(_tableBytes.Length, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
+        // The header carries the mandatory embedded peak first, then the region's
+        // start and end coordinate groups (peak, start, end - the wire layout the
+        // reader walks); the first inline pair after the fixed fields belongs to the
+        // start group, never to the peak.
+        int startAt = headerAt + 4 + AxisCount * 2;
         var bytes = (byte[])_tableBytes.Clone();
         for (int i = 0; i < AxisCount; i++)
         {
-            BinaryPrimitives.WriteInt16BigEndian(bytes.AsSpan(headerAt + 4 + i * 2, 2),
+            BinaryPrimitives.WriteInt16BigEndian(bytes.AsSpan(startAt + i * 2, 2),
                 startCoords[i]);
-            BinaryPrimitives.WriteInt16BigEndian(bytes.AsSpan(headerAt + 4 + AxisCount * 2 + i * 2, 2),
+            BinaryPrimitives.WriteInt16BigEndian(bytes.AsSpan(startAt + AxisCount * 2 + i * 2, 2),
                 endCoords[i]);
         }
         return Reread(bytes, out updated, out diagnostic);
