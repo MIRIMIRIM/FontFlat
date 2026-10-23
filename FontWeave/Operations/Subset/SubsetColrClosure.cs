@@ -4,7 +4,7 @@ using FontWeave.Tables;
 
 namespace FontWeave.Operations.Subset;
 
-/// <summary>COLR v1 paint-graph reference closure (compact only).
+/// <summary>COLR glyph-reference closure.
 ///
 /// The rebuild's walk refuses a paint-graph glyph reference the frozen map does not
 /// carry (the RE3 face), so every PaintGlyph/PaintColrGlyph target reachable from a
@@ -27,11 +27,39 @@ namespace FontWeave.Operations.Subset;
 /// color graph is otherwise unreachable. Every newly added GID charges one work
 /// unit (the closure budget's injection point, S0-BF-001); CPAL has no GID domain
 /// and stays RETAIN_RAW, its validated read riding along because the COLR read
-/// chain re-answers the palette domain (SE card §2.7).</summary>
+/// chain re-answers the palette domain (SE card §2.7).
+///
+/// Both subset modes run it. Compact renumbers the paint-graph references, so a
+/// target outside the retained set cannot be emitted; retain-GIDs keeps the table
+/// raw, but the same stage clears every unretained glyph's outline, so keeping the
+/// GID is not keeping the content a reference draws. COLR v0 has no paint graph:
+/// its flat base→layer slices close only in retain mode, where the raw records stay
+/// and every layer a surviving base row paints must keep its outline (compact prunes
+/// the records instead, so an unselected layer is deliberately deletable there).
+/// Retain's raw pass-through contract is untouched: a COLR the typed chain cannot
+/// read is skipped there (nothing to retain), while compact's rebuild refusal stands.</summary>
 public static partial class SubsetOperation
 {
     private static ReadStatus CloseColrReferences(SfntDirectoryView directory,
-        MaxpTable maxp, PrepareState state, BuildBudget budget,
+        MaxpTable maxp, PrepareState state, BuildBudget budget, bool compact,
+        out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = CloseColrReferencesCore(directory, maxp, state, budget, compact,
+            out diagnostic);
+        // Retain-GIDs keeps the table raw, so a COLR whose typed read refuses is not this
+        // stage's refusal there - the raw pass-through contract is unchanged, and no
+        // reference could be retained anyway. Compact must read it to rebuild, so its
+        // refusal stands. The budget ceiling still propagates in both modes.
+        if (!compact && status is not (ReadStatus.Done or ReadStatus.ResourceLimit))
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        return status;
+    }
+
+    private static ReadStatus CloseColrReferencesCore(SfntDirectoryView directory,
+        MaxpTable maxp, PrepareState state, BuildBudget budget, bool compact,
         out FontDiagnostic diagnostic)
     {
         ReadStatus status = ReadTableBytes(directory, Colr, out var colrAt,
@@ -54,9 +82,11 @@ public static partial class SubsetOperation
         if (status != ReadStatus.Done) return status;
         state.Colr = model;
         state.CpalPaletteEntries = cpalEntries;
-        // v0 carries no paint graph: its rebuild prunes the two record arrays
-        // without a glyph-reference refusal face.
-        if (model!.Version != 1) return ReadStatus.Done;
+        // v0 carries no paint graph: compact prunes the two record arrays, while
+        // retain keeps them raw and must keep the layers a surviving base row paints.
+        if (model!.Version != 1)
+            return compact ? ReadStatus.Done
+                : CloseColrV0Layers(model, state.Retained, budget, out diagnostic);
         var rootOfGlyph = new Dictionary<ushort, int>(model.BaseGlyphPaintCount);
         foreach (var row in model.BaseGlyphPaints) rootOfGlyph[row.GlyphId] = row.PaintNodeId;
         // The walk roots: every surviving BGL row at this moment, plus any root the
@@ -92,6 +122,32 @@ public static partial class SubsetOperation
             if (rootOfGlyph.TryGetValue(glyphId, out int root)) queue.Enqueue(root);
             return ReadStatus.Done;
         }
+    }
+
+    // The v0 retain-mode face: the base rows keep their layer slices verbatim, so
+    // every layer glyph of a retained base glyph has to keep its outline. Nothing
+    // here moves a GID, and the slices never nest, so one pass over the retained base
+    // rows is the whole fixed point.
+    private static ReadStatus CloseColrV0Layers(ColrTable model, bool[] retained,
+        BuildBudget budget, out FontDiagnostic diagnostic)
+    {
+        for (int row = 0; row < model.BaseGlyphCount; row++)
+        {
+            var baseGlyph = model.BaseGlyphs[row];
+            if (!retained[baseGlyph.GlyphId]) continue;
+            for (int i = 0; i < baseGlyph.NumLayers; i++)
+            {
+                int layerIndex = baseGlyph.FirstLayerIndex + i;
+                ushort glyphId = model.Layers[layerIndex].GlyphId;
+                if (retained[glyphId]) continue;
+                if (!budget.Work(1, model.Location.AtLocal(DataField.GlyphId,
+                        model.LayerRowPosition(layerIndex), layerIndex), out diagnostic))
+                    return ReadStatus.ResourceLimit;
+                retained[glyphId] = true;
+            }
+        }
+        diagnostic = default;
+        return ReadStatus.Done;
     }
 
     private static ReadStatus TryReadCpalPaletteEntries(SfntDirectoryView directory,

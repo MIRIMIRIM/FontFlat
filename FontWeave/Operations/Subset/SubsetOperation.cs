@@ -266,21 +266,18 @@ public static partial class SubsetOperation
                     out diagnostic);
         }
 
-        // Step 4.7 (compact only, the color-closure slice): the COLR v1 paint
-        // graph's glyph references join the retained set at the shared walk's fixed
-        // point — after the layout and seac families, so their additions' color
-        // graphs close too, and before the composite closure, whose worklist
-        // consumes this stage's additions. The stage parks the one COLR model for
-        // the payload rebuild. Retain-GIDs never runs it: the GID domain never
-        // moves there, so a paint reference cannot dangle.
-        if (compact)
-        {
-            status = CloseColrReferences(directory, maxp!, state, budget,
+        // Step 4.7 (the color-closure slice): the COLR paint graph's glyph references
+        // join the retained set at the shared walk's fixed point — after the layout and
+        // seac families, so their additions' color graphs close too, and before the
+        // composite closure, whose worklist consumes this stage's additions. The stage
+        // parks the one COLR model for the payload rebuild. Both modes run it: compact
+        // renumbers the paint-graph references, and retain clears every unretained
+        // glyph's outline, so keeping a GID does not keep the content it draws.
+        status = CloseColrReferences(directory, maxp!, state, budget, compact,
+            out diagnostic);
+        if (status != ReadStatus.Done)
+            return Refuse(state, status, diagnostic, out result, out report,
                 out diagnostic);
-            if (status != ReadStatus.Done)
-                return Refuse(state, status, diagnostic, out result, out report,
-                    out diagnostic);
-        }
 
         // Step 5: composite dependency closure over the TrueType profile (card §3). The
         // typed read chain runs first, so graph violations surface with the reader's own

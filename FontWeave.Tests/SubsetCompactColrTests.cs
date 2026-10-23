@@ -482,4 +482,74 @@ public sealed class SubsetCompactColrTests
         Assert.Equal(ColrV0(), FontTable(result!, ColrTag));
         Assert.Equal(cpal, FontTable(result!, CpalTag));
     }
+
+    // The retained-slot outline span from the output loca (long format on these
+    // fixtures); an unretained glyph's slot stays empty (equal offsets).
+    private static (uint Start, uint End) GlyphSpan(SubsetResult result, int glyphId)
+    {
+        byte[] loca = FontTable(result, SubsetFontFixture.LocaTag);
+        return (BinaryPrimitives.ReadUInt32BigEndian(loca.AsSpan(4 * glyphId)),
+            BinaryPrimitives.ReadUInt32BigEndian(loca.AsSpan(4 * (glyphId + 1))));
+    }
+
+    // Retain keeps the COLRv1 table raw, so the paint graph's glyph reference survives
+    // verbatim; the referenced outline must survive with it, or the raw reference draws
+    // an empty glyph (compact remaps and keeps it via the same closure).
+    [Fact]
+    public void RetainColrV1KeepsThePaintGlyphOutline()
+    {
+        var records = new List<byte[]>();
+        for (int gid = 0; gid < 16; gid++)
+            records.Add(gid == 9
+                ? GlyfImages.ExpandedSimpleGlyph(3)
+                : GlyfImages.NoContourGlyphRecord());
+        var (loca, glyf, _) = GlyfImages.Assemble(records);
+        var face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(16)),
+            (SubsetFontFixture.GlyfTag, glyf),
+            (SubsetFontFixture.LocaTag, loca),
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41u, 5))),
+            (ColrTag, ColrV1RootGlyphPaint()));
+        var status = SubsetOperation.TryPrepare(Request(face, [5], SubsetMode.RetainGids),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        var (start, end) = GlyphSpan(result!, 9);
+        Assert.True(end > start, "the retained COLRv1 PaintGlyph target lost its outline");
+        var (otherStart, otherEnd) = GlyphSpan(result!, 10);
+        Assert.Equal(otherStart, otherEnd);
+        Assert.Equal(default, diagnostic);
+    }
+
+    // COLR v0 has no paint graph, but its base rows keep their layer slices in retain
+    // mode: every layer of a surviving base glyph must keep its outline.
+    [Fact]
+    public void RetainColrV0KeepsLayerOutlines()
+    {
+        var records = new List<byte[]>();
+        for (int gid = 0; gid < 8; gid++)
+            records.Add(gid is 6 or 7
+                ? GlyfImages.ExpandedSimpleGlyph(3)
+                : GlyfImages.NoContourGlyphRecord());
+        var (loca, glyf, _) = GlyfImages.Assemble(records);
+        var face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(8)),
+            (SubsetFontFixture.GlyfTag, glyf),
+            (SubsetFontFixture.LocaTag, loca),
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41u, 5))),
+            (ColrTag, ColrV0()));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 5], SubsetMode.RetainGids),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        foreach (int gid in (int[])[6, 7])
+        {
+            var (start, end) = GlyphSpan(result!, gid);
+            Assert.True(end > start, $"layer glyph {gid} lost its outline");
+        }
+        // Not a layer of the surviving base row: the retain face still clears it.
+        var (otherStart, otherEnd) = GlyphSpan(result!, 2);
+        Assert.Equal(otherStart, otherEnd);
+        Assert.Equal(default, diagnostic);
+    }
 }
