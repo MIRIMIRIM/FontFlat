@@ -264,7 +264,8 @@ internal static class Program
         // head edits have no per-face collection chain, so the head-edit read refuses at
         // the standalone-only admission (the metadata operation carries the same guard).
         if (command == "validate" && face.IsCollection && !options.ContainsKey("face"))
-            return ExecuteCollectionValidate(result, actualSource, requestedTag, limits, out exitCode);
+            return ExecuteCollectionValidate(result, actualSource, requestedTag, fileLimits,
+                limits, out exitCode);
         if (face.IsCollection && command == "inspect")
         {
             status = FontInspection.TryInspect(face, out FontInspectionReport? collectionReport,
@@ -386,16 +387,30 @@ internal static class Program
         return SetOutcome(result, ReadStatus.Done, default, out exitCode);
     }
 
-    // validate over a whole collection: every face walks the same strict typed admission
+    // validate over a whole collection: the container answers first — the TTC header,
+    // the DSIG block, face-offset disjointness and the collection face-count ceiling
+    // are collection-level facts no per-face typed directory view can see, so they run
+    // before any face is admitted. Every face then walks the same strict typed admission
     // the single-face path uses, independent checks continue past a failure, and the
     // aggregate refuses when any face refuses. The first failure's diagnostic carries the
     // face index through its location; each face's report rides the faces array, so one
     // receipt holds the whole container's evidence.
     private static Dictionary<string, object?> ExecuteCollectionValidate(
         Dictionary<string, object?> result, FontSource source, uint? requestedTag,
-        BuildLimits limits, out int exitCode)
+        FontLimits fileLimits, BuildLimits limits, out int exitCode)
     {
         result["faceIndex"] = null;
+        ReadStatus container = TryValidateCollectionContainer(source, fileLimits,
+            out FontDiagnostic containerDiagnostic);
+        // A collection-level resource ceiling (the declared face count against MaxFaces)
+        // is authoritative: walking the faces anyway is exactly the unbounded work the
+        // ceiling forbids, so the aggregate refuses without any per-face claims.
+        if (container == ReadStatus.ResourceLimit)
+        {
+            result["faceCount"] = null;
+            result["faces"] = Array.Empty<object?>();
+            return SetOutcome(result, container, containerDiagnostic, out exitCode);
+        }
         var faces = new List<object?>();
         ReadStatus aggregate = ReadStatus.Done;
         FontDiagnostic aggregateDiagnostic = default;
@@ -423,7 +438,63 @@ internal static class Program
         }
         result["faceCount"] = faceCount;
         result["faces"] = faces;
+        // A container refusal is the whole collection's failure even when every face
+        // happens to be individually readable (a TTC2 header without its DSIG block, an
+        // overlapping face directory); a specific face refusal stays the more precise
+        // answer and keeps its face-indexed diagnostic.
+        if (aggregate == ReadStatus.Done && container != ReadStatus.Done)
+        {
+            aggregate = container;
+            aggregateDiagnostic = containerDiagnostic;
+        }
         return SetOutcome(result, aggregate, aggregateDiagnostic, out exitCode);
+    }
+
+    // The container chain itself: FontFile.Parse owns the TTC header/DSIG face and the
+    // face-offset/table-overlap structure, which the typed per-face directory view never
+    // re-answers (a TTC2 whose DSIG header was never written, or a face count past
+    // MaxFaces, is a container refusal before any face exists). Its exception domain maps
+    // onto the receipt's typed status instead of escaping as the process-level failure.
+    private static ReadStatus TryValidateCollectionContainer(FontSource source,
+        FontLimits limits, out FontDiagnostic diagnostic)
+    {
+        diagnostic = default;
+        try
+        {
+            FontFile.Parse(source.Bytes, limits);
+            return ReadStatus.Done;
+        }
+        catch (FontDataException error)
+        {
+            ReadStatus status = error.Error switch
+            {
+                FontError.Truncated => ReadStatus.Truncated,
+                FontError.UnsupportedFormat => ReadStatus.UnsupportedFormat,
+                FontError.InvalidOffset => ReadStatus.InvalidOffset,
+                FontError.InvalidIndex => ReadStatus.InvalidIndex,
+                FontError.DuplicateTable => ReadStatus.DuplicateTable,
+                FontError.MissingTable => ReadStatus.MissingTable,
+                FontError.InvalidEncoding => ReadStatus.InvalidEncoding,
+                FontError.ResourceLimit => ReadStatus.ResourceLimit,
+                FontError.UnknownTable => ReadStatus.UnsupportedFormat,
+                _ => ReadStatus.InvalidFormat
+            };
+            DiagnosticCode code = status switch
+            {
+                ReadStatus.Truncated => DiagnosticCode.TruncatedData,
+                ReadStatus.UnsupportedFormat => DiagnosticCode.UnsupportedVersion,
+                ReadStatus.InvalidOffset => DiagnosticCode.RangeOutsideSource,
+                ReadStatus.InvalidIndex => DiagnosticCode.IndexOutOfRange,
+                ReadStatus.DuplicateTable => DiagnosticCode.DuplicateTag,
+                ReadStatus.MissingTable => DiagnosticCode.TableNotFound,
+                ReadStatus.InvalidEncoding => DiagnosticCode.InvalidUtf16,
+                ReadStatus.ResourceLimit => DiagnosticCode.BudgetExceeded,
+                _ => DiagnosticCode.InvalidValue
+            };
+            diagnostic = new(code, new DataLocation(source.SourceId, 0, 0, -1,
+                DataField.None, OffsetBasis.File, 0));
+            return status;
+        }
     }
 
     // ttc-merge: every input face (a standalone sfnt contributes one, a TTC all of its

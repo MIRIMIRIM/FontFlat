@@ -434,6 +434,54 @@ public sealed class CliCollectionFaceTests
         return (input, output);
     }
 
+    // The whole-container validate runs the container chain first: a TTC2 version word
+    // without the DSIG block it introduces is a container failure even though both face
+    // directories read fine.
+    [Fact]
+    public void ValidateRefusesATtc2HeaderWithoutItsDsigBlock()
+    {
+        byte[] corrupt = CliTtcFixture.ValidatableTwoFaceTtc();
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(
+            corrupt.AsSpan(4), 0x00020000);
+        (string input, _) = TempValidatableFont(corrupt);
+        try
+        {
+            var receipt = Json(FontWeave.Cli.Program.Execute(["validate", input], out int exitCode));
+            Assert.Equal(1, exitCode);
+            Assert.Equal("InvalidFormat", receipt.GetProperty("statusName").GetString());
+            Assert.Equal("InvalidValue", receipt.GetProperty("diagnostic")
+                .GetProperty("codeName").GetString());
+        }
+        finally { File.Delete(input); }
+    }
+
+    // The collection's face-count ceiling is the container's, not a per-face budget: a
+    // collection past MaxFaces refuses before any face is admitted, even when every face
+    // is individually valid.
+    [Fact]
+    public void ValidateRefusesACollectionPastMaxFaces()
+    {
+        var face = new[]
+        {
+            (CliTtcFixture.HeadTag, CliTtcFixture.ValidHead()),
+            (CliTtcFixture.MaxpTag, CliTtcFixture.Maxp()),
+            (CliTtcFixture.NameTag, CliTtcFixture.Name(CliTtcFixture.FaceZeroNameRecords))
+        };
+        byte[] oversized = CliTtcFixture.Ttc([.. Enumerable.Repeat(face, 129)]);
+        (string input, _) = TempValidatableFont(oversized);
+        try
+        {
+            var receipt = Json(FontWeave.Cli.Program.Execute(["validate", input], out int exitCode));
+            Assert.Equal(1, exitCode);
+            Assert.Equal("ResourceLimit", receipt.GetProperty("statusName").GetString());
+            Assert.Equal("BudgetExceeded", receipt.GetProperty("diagnostic")
+                .GetProperty("codeName").GetString());
+            Assert.Equal(JsonValueKind.Null, receipt.GetProperty("faceCount").ValueKind);
+            Assert.Empty(receipt.GetProperty("faces").EnumerateArray());
+        }
+        finally { File.Delete(input); }
+    }
+
     private static (string Input, string Output) TempValidatableFont(byte[]? bytes = null)
     {
         string input = Path.Combine(Path.GetTempPath(), $"fontweave-ttc-{Guid.NewGuid():N}.ttc");
