@@ -573,6 +573,25 @@ public sealed class SubsetCompactColrTests
         return wire.ToBytes();
     }
 
+    // A v1 table that also keeps the v0 compatibility arrays: root 5's paint graph
+    // plus base 7 -> layer 10 (the "fall back to v0" shape a v1 renderer queries).
+    private static byte[] ColrV1WithV0Compat()
+    {
+        var wire = new ColrWire();
+        wire.Patch16(2, 1);                           // numBaseGlyphRecords
+        wire.Patch32(4, 55);                          // baseGlyphRecordsOffset
+        wire.Patch32(8, 61);                          // layerRecordsOffset
+        wire.Patch16(12, 1);                          // numLayerRecords
+        wire.Patch32(14, 34);                         // BaseGlyphList
+        wire.U32(1);
+        wire.U16(5).U32(10);                          // root 5 -> PaintGlyph@44
+        wire.U8(10).U24(6).U16(9);                    // -> PaintSolid@50, glyph 9
+        wire.U8(2).U16(1).U16(0x4000);                // PaintSolid@50
+        wire.U16(7).U16(0).U16(1);                    // base record @55
+        wire.U16(10).U16(0xFFFF);                     // layer record @61
+        return wire.ToBytes();
+    }
+
     // The store must be read against the fvar axis count; a variation-bearing COLRv1
     // was unreadable to the closure, and retain turned that refusal into a success
     // whose PaintGlyph target lost its outline.
@@ -617,6 +636,24 @@ public sealed class SubsetCompactColrTests
             colrOut.Paints[colrOut.BaseGlyphPaints[0].PaintNodeId]);
         Assert.Equal((ushort)2, glyph.GlyphId);
         Assert.IsType<ColrPaintVarSolid>(colrOut.Paints[glyph.PaintNodeId]);
+        Assert.Equal(default, diagnostic);
+    }
+
+    // A v1 table can also carry the v0 records; a v1 renderer falls back to them, so
+    // retain must keep the layer outlines those records paint.
+    [Fact]
+    public void RetainClosesV0CompatRecordsInsideAV1Table()
+    {
+        var face = OutlinedSpine(16, [9, 10], (ColrTag, ColrV1WithV0Compat()));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 5, 7], SubsetMode.RetainGids),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        foreach (int gid in (int[])[9, 10])
+        {
+            var (start, end) = GlyphSpan(result!, gid);
+            Assert.True(end > start, $"referenced glyph {gid} lost its outline");
+        }
+        Assert.Equal(ColrV1WithV0Compat(), FontTable(result!, ColrTag));
         Assert.Equal(default, diagnostic);
     }
 

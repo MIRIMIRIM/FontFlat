@@ -92,11 +92,17 @@ public static partial class SubsetOperation
         if (status != ReadStatus.Done) return status;
         state.Colr = model;
         state.CpalPaletteEntries = cpalEntries;
-        // v0 carries no paint graph: compact prunes the two record arrays, while
-        // retain keeps them raw and must keep the layers a surviving base row paints.
-        if (model!.Version != 1)
-            return compact ? ReadStatus.Done
-                : CloseColrV0Layers(model, state.Retained, budget, out diagnostic);
+        // The table can carry both definitions: a v1 table keeps the v0 base/layer
+        // arrays for the glyphs without a paint graph, and a v1 renderer queries them.
+        // Compact rebuilds the paint graph and prunes the compat arrays, while retain
+        // keeps everything raw, so retain closes the base→layer references on both
+        // table versions.
+        if (!compact)
+        {
+            status = CloseColrV0Layers(model!, state.Retained, budget, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
+        if (model!.Version != 1) return ReadStatus.Done;
         var rootOfGlyph = new Dictionary<ushort, int>(model.BaseGlyphPaintCount);
         foreach (var row in model.BaseGlyphPaints) rootOfGlyph[row.GlyphId] = row.PaintNodeId;
         // The walk roots: every surviving BGL row at this moment, plus any root the
