@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using FontWeave.Containers;
 using FontWeave.Core;
 using FontWeave.Tables;
@@ -24,7 +25,9 @@ namespace FontWeave.Operations.Subset;
 /// sbix re-slots every strike over the output domain with 'dupe' targets remapped
 /// (a dangling target refuses, RE3) and SVG re-spans the document records over
 /// each range's surviving output runs with only the referenced documents kept —
-/// bytes verbatim, no decompression, no recompression. Every rebuilt model re-answers through the
+/// their bytes verbatim unless the remap moves a glyph id the document carries
+/// (id="glyph<gid>" and its #fragment references rewrite, gzip members included).
+/// Every rebuilt model re-answers through the
 /// compiler factories; any failure refuses with nothing published.</summary>
 public static partial class SubsetOperation
 {
@@ -760,7 +763,10 @@ public static partial class SubsetOperation
         }
         // The document table rebuilds over the sorted traversal's first-reference
         // order: each distinct payload keeps exactly one entry, and every index the
-        // sorted records carry resolves into it.
+        // sorted records carry resolves into it. The documents themselves follow the
+        // remap: the spec keys each glyph's description by the document-local element
+        // id "glyph<glyphID>", so a renumbered record must carry a renumbered document
+        // or the output directory addresses glyph elements the document does not have.
         var newRecords = new List<SvgDocumentRecord>(spans.Count);
         var newDocuments = new List<byte[]>();
         var documentIndex = new Dictionary<int, int>();
@@ -771,7 +777,10 @@ public static partial class SubsetOperation
             {
                 newIndex = newDocuments.Count;
                 documentIndex[payloadIndex] = newIndex;
-                newDocuments.Add(svg.Documents[payloadIndex]);
+                status = TryRewriteSvgDocument(svg.Documents[payloadIndex], map, svgAt,
+                    budget, out var document, out diagnostic);
+                if (status != ReadStatus.Done) return status;
+                newDocuments.Add(document!);
             }
             newRecords.Add(new(start, end, newIndex));
         }
@@ -781,5 +790,215 @@ public static partial class SubsetOperation
         status = SvgTableCompiler.TryCompile(newSvg!, out var bytes, out diagnostic);
         if (status != ReadStatus.Done) return status;
         return ChargeCompiled(budget, svgAt, bytes!, out svgBytes, out diagnostic);
+    }
+
+    // ---- SVG document glyph IDs ----
+
+    // The document's glyph identity is the spec's element id "glyph<glyphID>" (a
+    // non-zero-padded decimal glyph ID), and a document refers to another glyph's
+    // element through an href fragment "#glyph<glyphID>". One compact remap moves both
+    // carriers or the output's records address elements the document no longer has.
+    // The document bytes stay opaque to the table model (never parsed, gzip members
+    // verbatim), so the rewrite is a byte-level splice over those two carriers: plain
+    // documents keep their encoding (the spec requires UTF-8), and a gzip member is
+    // inflated, rewritten and deflated again. A document with no glyph carrier travels
+    // byte-for-byte; one whose ids the map drops renames them out of the glyph-id space
+    // ("glyph_<old>") and rewrites the references that point at them, so a leftover
+    // element can never collide with a surviving glyph's new id.
+    private static ReadStatus TryRewriteSvgDocument(byte[] document, GlyphRemap map,
+        DataLocation at, BuildBudget budget, out byte[]? rewritten,
+        out FontDiagnostic diagnostic)
+    {
+        rewritten = null;
+        bool gzip = document.Length >= 3 && document[0] == 0x1F &&
+            document[1] == 0x8B && document[2] == 0x08;
+        byte[]? text = document;
+        if (gzip)
+        {
+            ReadStatus inflate = TryInflateSvgDocument(document, at, budget, out text,
+                out diagnostic);
+            if (inflate != ReadStatus.Done) return inflate;
+        }
+        if (!budget.Work(text!.Length, at, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        if (!TrySpliceSvgGlyphIds(text, map, out byte[]? spliced))
+        {
+            // The common case (the map is the identity over the document's glyphs, or
+            // the document carries no glyph carrier at all) keeps the source bytes.
+            rewritten = document;
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        rewritten = gzip ? DeflateSvgDocument(spliced!) : spliced;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    // One left-to-right token walk: "glyph" + a canonical decimal run in either an id
+    // attribute value or a '#' fragment. Anything else (text content, attribute names,
+    // ids outside the glyph-id space) is left alone.
+    private static bool TrySpliceSvgGlyphIds(byte[] text, GlyphRemap map, out byte[]? spliced)
+    {
+        spliced = null;
+        List<(int Start, int End, byte[] Replacement)>? edits = null;
+        for (int at = 0; at + 6 <= text.Length; at++)
+        {
+            if (text[at] != (byte)'g') continue;
+            int tokenAt = at;
+            if (!TryReadSvgGlyphIdToken(text, tokenAt, out int end, out int glyphId)) continue;
+            at = end - 1;
+            if (glyphId >= map.InputGlyphCount) continue; // outside the font's GID domain
+            int output = map.OutputOf(glyphId);
+            byte[] replacement = SvgGlyphIdBytes(output >= 0 ? output : glyphId,
+                output >= 0);
+            if (text.AsSpan(tokenAt, end - tokenAt).SequenceEqual(replacement)) continue;
+            (edits ??= []).Add((tokenAt, end, replacement));
+        }
+        if (edits is null) return false;
+        int length = text.Length;
+        foreach (var (start, end, replacement) in edits)
+            length += replacement.Length - (end - start);
+        var buffer = new byte[length];
+        int source = 0, target = 0;
+        foreach (var (start, end, replacement) in edits)
+        {
+            int run = start - source;
+            text.AsSpan(source, run).CopyTo(buffer.AsSpan(target));
+            target += run;
+            replacement.CopyTo(buffer.AsSpan(target));
+            target += replacement.Length;
+            source = end;
+        }
+        text.AsSpan(source).CopyTo(buffer.AsSpan(target));
+        spliced = buffer;
+        return true;
+    }
+
+    // A token's carrier check: '#' fragment, or the value of a literal id attribute.
+    // The digit run must be canonical decimal (no leading zeros) and, for a fragment,
+    // must not run into a longer id name.
+    private static bool TryReadSvgGlyphIdToken(byte[] text, int at, out int end, out int glyphId)
+    {
+        end = at;
+        glyphId = 0;
+        if (at < 1) return false;
+        if (text[at + 1] != (byte)'l' || text[at + 2] != (byte)'y' ||
+            text[at + 3] != (byte)'p' || text[at + 4] != (byte)'h')
+            return false;
+        int digitsAt = at + 5;
+        int i = digitsAt;
+        while (i < text.Length && text[i] is >= (byte)'0' and <= (byte)'9') i++;
+        if (i == digitsAt) return false;
+        if (i - digitsAt > 1 && text[digitsAt] == (byte)'0') return false;
+        int value = 0;
+        for (int k = digitsAt; k < i; k++)
+        {
+            value = value * 10 + (text[k] - (byte)'0');
+            if (value > ushort.MaxValue) return false;
+        }
+        int previous = at - 1;
+        if (text[previous] == (byte)'#')
+        {
+            if (i < text.Length && IsSvgIdNameByte(text[i])) return false;
+        }
+        else if (text[previous] == (byte)'"' || text[previous] == (byte)'\'')
+        {
+            if (i >= text.Length || text[i] != text[previous]) return false;
+            if (!IsSvgIdAttributeName(text, previous)) return false;
+        }
+        else
+        {
+            return false;
+        }
+        end = i;
+        glyphId = value;
+        return true;
+    }
+
+    // "id" immediately before the value's opening quote (whitespace around '=' is
+    // legal XML), and the name starts a new attribute - never a suffix such as
+    // "data-id".
+    private static bool IsSvgIdAttributeName(byte[] text, int quoteAt)
+    {
+        int k = quoteAt - 1;
+        while (k >= 0 && IsSvgXmlSpace(text[k])) k--;
+        if (k < 0 || text[k] != (byte)'=') return false;
+        k--;
+        while (k >= 0 && IsSvgXmlSpace(text[k])) k--;
+        if (k < 1 || text[k] != (byte)'d' || text[k - 1] != (byte)'i') return false;
+        k -= 2;
+        return k < 0 || text[k] == (byte)'<' || IsSvgXmlSpace(text[k]);
+    }
+
+    private static bool IsSvgXmlSpace(byte value) =>
+        value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n';
+
+    private static bool IsSvgIdNameByte(byte value) =>
+        value is >= (byte)'a' and <= (byte)'z' || value is >= (byte)'A' and <= (byte)'Z' ||
+        value is >= (byte)'0' and <= (byte)'9' || value == (byte)'_' || value == (byte)'-';
+
+    // The replacement token. A dropped glyph leaves the glyph-id space, so its element
+    // cannot collide with a surviving glyph's new id while the references that point at
+    // it keep resolving.
+    private static byte[] SvgGlyphIdBytes(int value, bool isGlyphId)
+    {
+        Span<byte> digits = stackalloc byte[10];
+        int count = 0;
+        int remaining = value;
+        do
+        {
+            digits[count++] = (byte)('0' + remaining % 10);
+            remaining /= 10;
+        } while (remaining > 0);
+        int prefixLength = isGlyphId ? 5 : 6;
+        var token = new byte[prefixLength + count];
+        "glyph"u8.CopyTo(token);
+        if (!isGlyphId) token[5] = (byte)'_';
+        for (int i = 0; i < count; i++)
+            token[prefixLength + i] = digits[count - 1 - i];
+        return token;
+    }
+
+    // gzip members are inflated only to rewrite their glyph IDs; the table model's own
+    // bytes still travel verbatim (the spec requires UTF-8 inside the member). The
+    // decoded size is bounded by the operation's temporary budget before it is charged.
+    private static ReadStatus TryInflateSvgDocument(byte[] document, DataLocation at,
+        BuildBudget budget, out byte[]? text, out FontDiagnostic diagnostic)
+    {
+        text = null;
+        long limit = budget.Limits.MaxTemporaryBytes;
+        try
+        {
+            using var input = new MemoryStream(document, writable: false);
+            using var gzip = new GZipStream(input, CompressionMode.Decompress);
+            using var output = new MemoryStream();
+            var chunk = new byte[16 * 1024];
+            int read;
+            while ((read = gzip.Read(chunk, 0, chunk.Length)) > 0)
+            {
+                if (output.Length + read > limit)
+                    return ReadWire.Fail(ReadStatus.ResourceLimit,
+                        DiagnosticCode.BudgetExceeded, at.AtLocal(DataField.TemporaryBytes, 0),
+                        out diagnostic, (ulong)output.Length + (ulong)read, (ulong)limit);
+                output.Write(chunk, 0, read);
+            }
+            text = output.ToArray();
+        }
+        catch (InvalidDataException)
+        {
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                at.AtLocal(DataField.Payload, 0), out diagnostic);
+        }
+        if (!budget.Buffer(text.Length, at, out diagnostic)) return ReadStatus.ResourceLimit;
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static byte[] DeflateSvgDocument(byte[] text)
+    {
+        using var output = new MemoryStream();
+        using (var gzip = new GZipStream(output, CompressionLevel.Optimal, leaveOpen: true))
+            gzip.Write(text, 0, text.Length);
+        return output.ToArray();
     }
 }

@@ -7,6 +7,8 @@
 // expectation is independent of the map's output order; the assertions ride the
 // output tables' typed re-reads.
 using System.Buffers.Binary;
+using System.IO.Compression;
+using System.Text;
 using FontWeave.Containers;
 using FontWeave.Core;
 using FontWeave.Operations;
@@ -481,5 +483,117 @@ public sealed class SubsetCompactNonMonotoneTests
             (colrOut.Clips[2].Box.XMin, colrOut.Clips[2].Box.YMin,
                 colrOut.Clips[2].Box.XMax, colrOut.Clips[2].Box.YMax));
         Assert.Equal(2, colrOut.BaseGlyphPaintCount);
+    }
+
+    // ---- SVG document glyph IDs (the spec's id="glyph<gid>" carrier) --------------
+
+    private static string Text(byte[] document) => Encoding.UTF8.GetString(document);
+
+    private static byte[] Gzip(byte[] text)
+    {
+        using var output = new MemoryStream();
+        using (var gzip = new GZipStream(output, CompressionLevel.Optimal, leaveOpen: true))
+            gzip.Write(text);
+        return output.ToArray();
+    }
+
+    private static byte[] Gunzip(byte[] document)
+    {
+        using var input = new MemoryStream(document, writable: false);
+        using var gzip = new GZipStream(input, CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        gzip.CopyTo(output);
+        return output.ToArray();
+    }
+
+    // The directory renumbers the record, so the document's own element ids must move
+    // with it: a document that kept "glyph1"/"glyph2" would leave the output record
+    // [1,2] addressing the old ids (and the use-reference pointing at the wrong glyph).
+    [Fact]
+    public void CompactSvgDocumentGlyphIdsFollowTheRemap()
+    {
+        byte[] docA = Encoding.UTF8.GetBytes(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><g id=\"glyph1\">" +
+            "<use xlink:href=\"#glyph2\"/></g></svg>");
+        byte[] docB = Encoding.UTF8.GetBytes(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><g id=\"glyph2\"/></svg>");
+        var svg = SvgWire([(1, 1, 0), (2, 2, 1)], [docA, docB]);
+        var face = CffFace([0, 2, 1], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 1, 2]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        // Input 1 rides output 2 and input 2 rides output 1.
+        Assert.Equal([0, 2, 1],
+            result!.Map!.Entries.Select(e => (int)e.InputGid).ToArray());
+        _ = SvgView.TryOpen(OutputTable(result, SvgTag), out var svgView,
+            out _, DataLocation.Anonymous(SvgLayout.Tag));
+        Assert.Equal(ReadStatus.Done, svgView.TryReadTable(out var svgOut, out _));
+        Assert.Equal(((ushort)1, (ushort)1),
+            (svgOut!.Records[0].StartGlyphID, svgOut.Records[0].EndGlyphID));
+        Assert.Equal(((ushort)2, (ushort)2),
+            (svgOut.Records[1].StartGlyphID, svgOut.Records[1].EndGlyphID));
+        string first = Text(svgOut.Documents[svgOut.Records[0].PayloadIndex]);
+        Assert.Contains("id=\"glyph1\"", first);
+        Assert.DoesNotContain("glyph2", first);
+        string second = Text(svgOut.Documents[svgOut.Records[1].PayloadIndex]);
+        Assert.Contains("id=\"glyph2\"", second);
+        Assert.Contains("href=\"#glyph1\"", second);
+        Assert.DoesNotContain("id=\"glyph1\"", second);
+    }
+
+    // A gzip member carries the same ids: the rewrite inflates, rewrites and emits a
+    // gzip member again, so the output document stays gzip-encoded and addressable.
+    [Fact]
+    public void CompactSvgGzipDocumentGlyphIdsFollowTheRemap()
+    {
+        byte[] plain = Encoding.UTF8.GetBytes(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><g id=\"glyph1\"/>" +
+            "<g id=\"glyph2\"/></svg>");
+        byte[] gzipped = Gzip(plain);
+        var svg = SvgWire([(1, 2, 0)], [gzipped]);
+        var face = CffFace([0, 2, 1], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 1, 2]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        _ = SvgView.TryOpen(OutputTable(result, SvgTag), out var svgView,
+            out _, DataLocation.Anonymous(SvgLayout.Tag));
+        Assert.Equal(ReadStatus.Done, svgView.TryReadTable(out var svgOut, out _));
+        Assert.Single(svgOut!.Documents);
+        byte[] document = svgOut.Documents[0];
+        Assert.Equal(new byte[] { 0x1F, 0x8B, 0x08 }, document[..3]);
+        string rewritten = Text(Gunzip(document));
+        Assert.Contains("id=\"glyph2\"", rewritten);
+        Assert.Contains("id=\"glyph1\"", rewritten);
+        // The elements swap ids in place: the first becomes glyph2, the second glyph1.
+        Assert.Contains("<g id=\"glyph2\"/><g id=\"glyph1\"/>", rewritten);
+    }
+
+    // A document covering a glyph the subset dropped keeps a leftover element: it must
+    // leave the glyph-id space, or its old id could collide with a surviving glyph's
+    // new id in the output domain. The references that point at it move with it.
+    [Fact]
+    public void CompactSvgDroppedGlyphIdsLeaveTheGlyphIdSpace()
+    {
+        byte[] doc = Encoding.UTF8.GetBytes(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><g id=\"glyph1\"/>" +
+            "<g id=\"glyph2\"><use xlink:href=\"#glyph2\"/></g></svg>");
+        var svg = SvgWire([(1, 2, 0)], [doc]);
+        var face = CffFace([0, 1, 2], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 1]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        _ = SvgView.TryOpen(OutputTable(result, SvgTag), out var svgView,
+            out _, DataLocation.Anonymous(SvgLayout.Tag));
+        Assert.Equal(ReadStatus.Done, svgView.TryReadTable(out var svgOut, out _));
+        Assert.Equal(((ushort)1, (ushort)1),
+            (svgOut!.Records[0].StartGlyphID, svgOut.Records[0].EndGlyphID));
+        string rewritten = Text(svgOut.Documents[0]);
+        Assert.Contains("id=\"glyph1\"", rewritten);
+        Assert.Contains("id=\"glyph_2\"", rewritten);
+        Assert.Contains("href=\"#glyph_2\"", rewritten);
+        Assert.DoesNotContain("\"glyph2\"", rewritten);
     }
 }
