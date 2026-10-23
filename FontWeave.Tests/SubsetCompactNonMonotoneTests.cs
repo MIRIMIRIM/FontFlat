@@ -628,4 +628,95 @@ public sealed class SubsetCompactNonMonotoneTests
         Assert.Contains("href=\"#glyph_2\"", rewritten);
         Assert.DoesNotContain("\"glyph2\"", rewritten);
     }
+
+    private static byte[] Utf8(string text) => Encoding.UTF8.GetBytes(text);
+
+    private static int CountOf(string text, string needle)
+    {
+        int count = 0;
+        for (int at = text.IndexOf(needle, StringComparison.Ordinal);
+            at >= 0; at = text.IndexOf(needle, at + needle.Length, StringComparison.Ordinal))
+            count++;
+        return count;
+    }
+
+    private static string SingleDocument(SubsetResult result)
+    {
+        _ = SvgView.TryOpen(OutputTable(result, SvgTag), out var svgView,
+            out _, DataLocation.Anonymous(SvgLayout.Tag));
+        Assert.Equal(ReadStatus.Done, svgView.TryReadTable(out var svgOut, out _));
+        Assert.Single(svgOut!.Documents);
+        return Text(svgOut.Documents[0]);
+    }
+
+    // A resource ID that starts with a glyph ID ("glyph4.clip") is a different ID: only
+    // the complete glyph id may move, or the reference would point at a clip path that
+    // no longer exists.
+    [Fact]
+    public void CompactSvgKeepsResourceIdsThatShareAGlyphIdPrefix()
+    {
+        byte[] doc = Utf8(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\">" +
+            "<clipPath id=\"glyph4.clip\"><rect width=\"10\" height=\"10\"/></clipPath>" +
+            "<g id=\"glyph4\" clip-path=\"url(#glyph4.clip)\"/></svg>");
+        var svg = SvgWire([(4, 4, 0)], [doc]);
+        var face = CffFace([0, 1, 2, 3, 4], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 4]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        string text = SingleDocument(result!);
+        Assert.Contains("id=\"glyph4.clip\"", text);
+        Assert.Contains("clip-path=\"url(#glyph4.clip)\"", text);
+        Assert.Contains("id=\"glyph1\"", text);
+        Assert.DoesNotContain("#glyph1.clip", text);
+        Assert.Equal(default, diagnostic);
+    }
+
+    // Character references denote the same ID as their literal form, so both the id
+    // and the reference must be resolved before the glyph-id match.
+    [Fact]
+    public void CompactSvgRewritesNumericCharacterReferencesInGlyphIds()
+    {
+        byte[] doc = Utf8(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\">" +
+            "<g id=\"glyph&#52;\"/><use xlink:href=\"#glyph&#x34;\"/></svg>");
+        var svg = SvgWire([(4, 4, 0)], [doc]);
+        var face = CffFace([0, 1, 2, 3, 4], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 4]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        string text = SingleDocument(result!);
+        Assert.Contains("id=\"glyph1\"", text);
+        Assert.Contains("href=\"#glyph1\"", text);
+        Assert.DoesNotContain("&#52;", text);
+        Assert.DoesNotContain("&#x34;", text);
+        Assert.Equal(default, diagnostic);
+    }
+
+    // A dropped glyph's placeholder must not reuse an existing resource ID: the whole
+    // document ID set is the rename namespace, and the reference follows the same name.
+    [Fact]
+    public void CompactSvgRenamesDroppedGlyphIdsWithoutColliding()
+    {
+        byte[] doc = Utf8(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\">" +
+            "<rect id=\"glyph_2\"/><circle id=\"glyph2\"/>" +
+            "<use xlink:href=\"#glyph2\"/><g id=\"glyph4\"/></svg>");
+        var svg = SvgWire([(2, 4, 0)], [doc]);
+        var face = CffFace([0, 1, 2, 3, 4], (SvgTag, svg));
+        var status = SubsetOperation.TryPrepare(Request(face, [0, 4]),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        string text = SingleDocument(result!);
+        // The existing resource keeps its name; the dropped glyph moves aside.
+        Assert.Equal(1, CountOf(text, "id=\"glyph_2\""));
+        Assert.Contains("id=\"glyph_2_\"", text);
+        Assert.Contains("href=\"#glyph_2_\"", text);
+        Assert.DoesNotContain("id=\"glyph2\"", text);
+        Assert.Contains("id=\"glyph1\"", text);
+        Assert.Equal(default, diagnostic);
+    }
 }

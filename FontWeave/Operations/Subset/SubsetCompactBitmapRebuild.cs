@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Text;
 using FontWeave.Containers;
 using FontWeave.Core;
 using FontWeave.Tables;
@@ -834,25 +835,57 @@ public static partial class SubsetOperation
         return ReadStatus.Done;
     }
 
-    // One left-to-right token walk: "glyph" + a canonical decimal run in either an id
-    // attribute value or a '#' fragment. Anything else (text content, attribute names,
-    // ids outside the glyph-id space) is left alone.
+    // The rewrite is attribute-value driven: an id attribute's complete value and each
+    // '#' fragment inside any other value are the only places the spec carries an ID.
+    // A value's character references decode first, so "&#52;" addresses the same glyph
+    // as "4", and a fragment matches only as a whole ID - "glyph4.clip" is a resource
+    // name, never a "glyph4" prefix.
     private static bool TrySpliceSvgGlyphIds(byte[] text, GlyphRemap map, out byte[]? spliced)
     {
         spliced = null;
-        List<(int Start, int End, byte[] Replacement)>? edits = null;
-        for (int at = 0; at + 6 <= text.Length; at++)
+        List<SvgAttributeValue> values = ReadSvgAttributeValues(text);
+        if (values.Count == 0) return false;
+        // Existing IDs are the rename namespace: a dropped glyph's placeholder must not
+        // collide with a resource id (nor with another placeholder).
+        var usedIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var value in values)
         {
-            if (text[at] != (byte)'g') continue;
-            int tokenAt = at;
-            if (!TryReadSvgGlyphIdToken(text, tokenAt, out int end, out int glyphId)) continue;
-            at = end - 1;
-            if (glyphId >= map.InputGlyphCount) continue; // outside the font's GID domain
-            int output = map.OutputOf(glyphId);
-            byte[] replacement = SvgGlyphIdBytes(output >= 0 ? output : glyphId,
-                output >= 0);
-            if (text.AsSpan(tokenAt, end - tokenAt).SequenceEqual(replacement)) continue;
-            (edits ??= []).Add((tokenAt, end, replacement));
+            if (!IsSvgIdAttributeValue(text, value)) continue;
+            if (TryDecodeSvgValue(text, value.ValueStart, value.ValueEnd, out string id))
+                usedIds.Add(id);
+        }
+        var droppedNames = new Dictionary<int, string>();
+        List<(int Start, int End, byte[] Replacement)>? edits = null;
+        foreach (var value in values)
+        {
+            if (IsSvgIdAttributeValue(text, value))
+            {
+                if (!TryDecodeSvgValue(text, value.ValueStart, value.ValueEnd, out string id))
+                    continue;
+                if (!TryResolveSvgGlyphId(id, map, usedIds, droppedNames, out byte[]? token))
+                    continue;
+                if (SvgSpanEquals(text, value.ValueStart, value.ValueEnd, token!)) continue;
+                (edits ??= []).Add((value.ValueStart, value.ValueEnd, token!));
+                continue;
+            }
+            int at = value.ValueStart;
+            while (at < value.ValueEnd)
+            {
+                int hash = SvgIndexOf(text, (byte)'#', at, value.ValueEnd);
+                if (hash < 0) break;
+                int runStart = hash + 1;
+                int runEnd = SvgFragmentEnd(text, runStart, value.ValueEnd);
+                if (runEnd == runStart)
+                {
+                    at = runStart;
+                    continue;
+                }
+                if (TryDecodeSvgValue(text, runStart, runEnd, out string id) &&
+                    TryResolveSvgGlyphId(id, map, usedIds, droppedNames, out byte[]? token) &&
+                    !SvgSpanEquals(text, runStart, runEnd, token!))
+                    (edits ??= []).Add((runStart, runEnd, token!));
+                at = runEnd;
+            }
         }
         if (edits is null) return false;
         int length = text.Length;
@@ -874,90 +907,220 @@ public static partial class SubsetOperation
         return true;
     }
 
-    // A token's carrier check: '#' fragment, or the value of a literal id attribute.
-    // The digit run must be canonical decimal (no leading zeros) and, for a fragment,
-    // must not run into a longer id name.
-    private static bool TryReadSvgGlyphIdToken(byte[] text, int at, out int end, out int glyphId)
+    // One attribute value's byte spans; the name is [NameStart, NameEnd).
+    private readonly record struct SvgAttributeValue(int NameStart, int NameEnd,
+        int ValueStart, int ValueEnd);
+
+    // A quote opens an attribute value only after "name =" (XML whitespace allowed
+    // around '='), so text content and comments cannot start a value on their own.
+    private static List<SvgAttributeValue> ReadSvgAttributeValues(byte[] text)
     {
-        end = at;
-        glyphId = 0;
-        if (at < 1) return false;
-        if (text[at + 1] != (byte)'l' || text[at + 2] != (byte)'y' ||
-            text[at + 3] != (byte)'p' || text[at + 4] != (byte)'h')
-            return false;
-        int digitsAt = at + 5;
-        int i = digitsAt;
-        while (i < text.Length && text[i] is >= (byte)'0' and <= (byte)'9') i++;
-        if (i == digitsAt) return false;
-        if (i - digitsAt > 1 && text[digitsAt] == (byte)'0') return false;
-        int value = 0;
-        for (int k = digitsAt; k < i; k++)
+        var values = new List<SvgAttributeValue>();
+        for (int i = 0; i < text.Length; i++)
         {
-            value = value * 10 + (text[k] - (byte)'0');
-            if (value > ushort.MaxValue) return false;
+            byte quote = text[i];
+            if (quote != (byte)'"' && quote != (byte)'\'') continue;
+            if (!TryReadSvgAttributeName(text, i, out int nameStart, out int nameEnd))
+                continue;
+            int close = i + 1;
+            while (close < text.Length && text[close] != quote) close++;
+            if (close >= text.Length) break; // an unterminated value ends the walk
+            values.Add(new(nameStart, nameEnd, i + 1, close));
+            i = close;
         }
-        int previous = at - 1;
-        if (text[previous] == (byte)'#')
-        {
-            if (i < text.Length && IsSvgIdNameByte(text[i])) return false;
-        }
-        else if (text[previous] == (byte)'"' || text[previous] == (byte)'\'')
-        {
-            if (i >= text.Length || text[i] != text[previous]) return false;
-            if (!IsSvgIdAttributeName(text, previous)) return false;
-        }
-        else
-        {
-            return false;
-        }
-        end = i;
-        glyphId = value;
-        return true;
+        return values;
     }
 
-    // "id" immediately before the value's opening quote (whitespace around '=' is
-    // legal XML), and the name starts a new attribute - never a suffix such as
-    // "data-id".
-    private static bool IsSvgIdAttributeName(byte[] text, int quoteAt)
+    private static bool TryReadSvgAttributeName(byte[] text, int quoteAt,
+        out int nameStart, out int nameEnd)
     {
+        nameStart = 0;
+        nameEnd = 0;
         int k = quoteAt - 1;
         while (k >= 0 && IsSvgXmlSpace(text[k])) k--;
         if (k < 0 || text[k] != (byte)'=') return false;
         k--;
         while (k >= 0 && IsSvgXmlSpace(text[k])) k--;
-        if (k < 1 || text[k] != (byte)'d' || text[k - 1] != (byte)'i') return false;
-        k -= 2;
-        return k < 0 || text[k] == (byte)'<' || IsSvgXmlSpace(text[k]);
+        nameEnd = k + 1;
+        while (k >= 0 && IsSvgAttributeNameByte(text[k])) k--;
+        nameStart = k + 1;
+        return nameStart < nameEnd;
     }
 
     private static bool IsSvgXmlSpace(byte value) =>
         value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n';
 
-    private static bool IsSvgIdNameByte(byte value) =>
-        value is >= (byte)'a' and <= (byte)'z' || value is >= (byte)'A' and <= (byte)'Z' ||
-        value is >= (byte)'0' and <= (byte)'9' || value == (byte)'_' || value == (byte)'-';
+    private static bool IsSvgIdAttributeValue(byte[] text, SvgAttributeValue value) =>
+        value.NameEnd - value.NameStart == 2 &&
+        text[value.NameStart] == (byte)'i' && text[value.NameStart + 1] == (byte)'d';
 
-    // The replacement token. A dropped glyph leaves the glyph-id space, so its element
-    // cannot collide with a surviving glyph's new id while the references that point at
-    // it keep resolving.
-    private static byte[] SvgGlyphIdBytes(int value, bool isGlyphId)
+    // XML name characters; '.' and ':' are part of an ID, so "glyph4.clip" is one ID.
+    private static bool IsSvgAttributeNameByte(byte value) =>
+        value is >= (byte)'a' and <= (byte)'z' || value is >= (byte)'A' and <= (byte)'Z' ||
+        value is >= (byte)'0' and <= (byte)'9' || value == (byte)'-' || value == (byte)'_' ||
+        value == (byte)':' || value == (byte)'.';
+
+    private static int SvgIndexOf(byte[] text, byte needle, int at, int end)
     {
-        Span<byte> digits = stackalloc byte[10];
-        int count = 0;
-        int remaining = value;
-        do
-        {
-            digits[count++] = (byte)('0' + remaining % 10);
-            remaining /= 10;
-        } while (remaining > 0);
-        int prefixLength = isGlyphId ? 5 : 6;
-        var token = new byte[prefixLength + count];
-        "glyph"u8.CopyTo(token);
-        if (!isGlyphId) token[5] = (byte)'_';
-        for (int i = 0; i < count; i++)
-            token[prefixLength + i] = digits[count - 1 - i];
-        return token;
+        while (at < end && text[at] != needle) at++;
+        return at < end ? at : -1;
     }
+
+    // The raw extent of one '#' fragment: XML name characters plus complete character
+    // references. Taking the whole ID keeps "glyph4.clip" from matching a "glyph4"
+    // prefix while still resolving "#glyph&#52;".
+    private static int SvgFragmentEnd(byte[] text, int at, int end)
+    {
+        while (at < end)
+        {
+            if (IsSvgAttributeNameByte(text[at]))
+            {
+                at++;
+                continue;
+            }
+            if (text[at] == (byte)'&' && TrySkipSvgCharRef(text, at, end, out int after))
+            {
+                at = after;
+                continue;
+            }
+            break;
+        }
+        return at;
+    }
+
+    // Decodes an attribute value's character references into the ID it actually
+    // denotes. An unknown entity or invalid code point makes the value undecidable, so
+    // the caller leaves it untouched.
+    private static bool TryDecodeSvgValue(byte[] text, int start, int end, out string value)
+    {
+        value = string.Empty;
+        var builder = new StringBuilder(end - start);
+        for (int at = start; at < end; at++)
+        {
+            if (text[at] != (byte)'&')
+            {
+                builder.Append((char)text[at]);
+                continue;
+            }
+            if (!TryParseSvgCharRef(text, at, end, out char decoded, out int after))
+                return false;
+            builder.Append(decoded);
+            at = after - 1;
+        }
+        value = builder.ToString();
+        return true;
+    }
+
+    private static bool TrySkipSvgCharRef(byte[] text, int at, int end, out int after) =>
+        TryParseSvgCharRef(text, at, end, out _, out after);
+
+    // "&#52;", "&#x34;" and the five predefined XML entities. Numeric code points map
+    // to one char (non-BMP values to the replacement char: they cannot occur in a
+    // glyph id, but the decoded value still has to be a faithful non-match).
+    private static bool TryParseSvgCharRef(byte[] text, int at, int end, out char value,
+        out int after)
+    {
+        value = '\0';
+        after = at;
+        if (at + 1 >= end || text[at] != (byte)'&') return false;
+        int i = at + 1;
+        if (text[i] == (byte)'#')
+        {
+            i++;
+            bool hex = i < end && text[i] is (byte)'x' or (byte)'X';
+            if (hex) i++;
+            int digitsAt = i;
+            long code = 0;
+            while (i < end)
+            {
+                int digit;
+                if (hex)
+                {
+                    if (!IsSvgHexDigit(text[i])) break;
+                    digit = SvgHexValue(text[i]);
+                }
+                else
+                {
+                    if (text[i] is < (byte)'0' or > (byte)'9') break;
+                    digit = text[i] - (byte)'0';
+                }
+                code = code * (hex ? 16 : 10) + digit;
+                if (code > 0x10FFFF) return false;
+                i++;
+            }
+            if (i == digitsAt || i >= end || text[i] != (byte)';') return false;
+            if (code is >= 0xD800 and <= 0xDFFF) return false;
+            value = code <= char.MaxValue ? (char)code : '\uFFFD';
+            after = i + 1;
+            return true;
+        }
+        int semi = i;
+        while (semi < end && semi - i <= 4 && IsSvgAttributeNameByte(text[semi])) semi++;
+        if (semi >= end || text[semi] != (byte)';') return false;
+        string name = Encoding.ASCII.GetString(text, i, semi - i);
+        value = name switch
+        {
+            "amp" => '&', "lt" => '<', "gt" => '>', "quot" => '"', "apos" => '\'',
+            _ => '\0'
+        };
+        if (value == '\0') return false;
+        after = semi + 1;
+        return true;
+    }
+
+    private static bool IsSvgHexDigit(byte value) =>
+        value is >= (byte)'0' and <= (byte)'9' || value is >= (byte)'a' and <= (byte)'f' ||
+        value is >= (byte)'A' and <= (byte)'F';
+
+    private static int SvgHexValue(byte value) => value switch
+    {
+        <= (byte)'9' => value - (byte)'0',
+        <= (byte)'F' => value - (byte)'A' + 10,
+        _ => value - (byte)'a' + 10
+    };
+
+    // "glyph<decimal>" exactly, canonical (no leading zeros) and inside the font's GID
+    // domain. A surviving glyph answers its output id; a dropped one gets a placeholder
+    // that leaves the glyph-id space and is unique within the document.
+    private static bool TryResolveSvgGlyphId(string id, GlyphRemap map, HashSet<string> usedIds,
+        Dictionary<int, string> droppedNames, out byte[]? token)
+    {
+        token = null;
+        if (id.Length < 6 || !id.StartsWith("glyph", StringComparison.Ordinal)) return false;
+        if (id.Length - 5 > 1 && id[5] == '0') return false;
+        int glyphId = 0;
+        for (int i = 5; i < id.Length; i++)
+        {
+            if (id[i] is < '0' or > '9') return false;
+            glyphId = glyphId * 10 + (id[i] - '0');
+            if (glyphId > ushort.MaxValue) return false;
+        }
+        if (glyphId >= map.InputGlyphCount) return false;
+        int output = map.OutputOf(glyphId);
+        string name;
+        if (output >= 0)
+        {
+            name = $"glyph{output}";
+        }
+        else if (droppedNames.TryGetValue(glyphId, out string? existing))
+        {
+            name = existing;
+        }
+        else
+        {
+            // The placeholder leaves the glyph-id space; the used-ID probe keeps an
+            // existing resource of the same name (or another placeholder) intact.
+            name = $"glyph_{glyphId}";
+            while (!usedIds.Add(name)) name += "_";
+            droppedNames[glyphId] = name;
+        }
+        token = Encoding.ASCII.GetBytes(name);
+        return true;
+    }
+
+    private static bool SvgSpanEquals(byte[] text, int start, int end, byte[] token) =>
+        end - start == token.Length && text.AsSpan(start, end - start).SequenceEqual(token);
+
 
     // gzip members are inflated only to rewrite their glyph IDs; the table model's own
     // bytes still travel verbatim (the spec requires UTF-8 inside the member). The
