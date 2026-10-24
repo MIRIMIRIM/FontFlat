@@ -22,10 +22,19 @@ public static class StaticDeviceTableCompiler
                 location.AtLocal(DataField.Count, StaticDeviceLayout.EndAt), out diagnostic,
                 (ulong)deltas.Length, (ulong)count);
         if (!budget.Work(2L * count, location, out diagnostic)) return ReadStatus.ResourceLimit;
+        // The 0x8000 VariationIndex body is a reference, not a delta array: the two
+        // header words are the outer/inner indices and no value is packed, so the
+        // delta-domain checks below do not apply. Refusing here made every legal
+        // VariationIndex unconstructible through the factory and un-editable through
+        // the no-op delta edit, while the read side accepted the same body.
+        if (deltaFormat == 0x8000)
+        {
+            if (!budget.Buffer(count, location, out diagnostic)) return ReadStatus.ResourceLimit;
+            model = new(startSize, endSize, deltaFormat, deltas.ToArray(), location, consumed);
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
         if (bits is < 1 or > 8)
-            // The 0x8000 factory shape carries start == end == 0, i.e. an empty
-            // VariationDevice; nothing is shiftable there and the old expression
-            // shifted by -1.
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 location.AtLocal(DataField.Version, StaticDeviceLayout.FormatAt), out diagnostic,
                 0, (ulong)bits);
