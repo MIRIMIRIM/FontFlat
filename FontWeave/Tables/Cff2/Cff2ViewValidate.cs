@@ -177,6 +177,12 @@ public readonly ref partial struct Cff2View
         status = ParseDict(fontDictStart, fontDictLength, Cff2DictScope.FontDict,
             out var fontEntries, out diagnostic);
         if (status != ReadStatus.Done) return status;
+        // A zero-length FontDICT item parses to zero entries; the 0x12 pair is then
+        // absent, which is the same missing-required-key refusal the TopDICT walk
+        // answers rather than an index past the end of the entry list.
+        if (fontEntries.Count == 0)
+            return MissingRequired(fontDictStart, Cff2Operators.FontPrivateDict,
+                out diagnostic);
         var entry = fontEntries[0];
         status = EntryIntegers(entry, out int[] operands, out diagnostic);
         if (status != ReadStatus.Done) return status;

@@ -45,13 +45,16 @@ public readonly ref partial struct Cff2View
         status = LocateIndex((int)globalSubrsAt, out var globalSubrs, out diagnostic);
         if (status != ReadStatus.Done) return status;
         var globalSubrBytes = new byte[globalSubrs.Count][];
-        long bufferBytes = 0;
         for (int i = 0; i < globalSubrs.Count; i++)
         {
             status = ReadIndexItem(globalSubrs, i, out var subr, out diagnostic);
             if (status != ReadStatus.Done) return status;
+            // The budget is an admission gate, so it must answer before the payload
+            // copy, not after it: charging only at the end let a refusing request
+            // allocate the whole table first (the late-allocation order bug).
+            if (!budget.Buffer(subr.Length + 16, Location, out diagnostic))
+                return ReadStatus.ResourceLimit;
             globalSubrBytes[i] = subr.ToArray();
-            bufferBytes += subr.Length + 16;
         }
         status = TopDictOffset(charStringsEntry, out int charStringsOffset, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -62,8 +65,9 @@ public readonly ref partial struct Cff2View
         {
             status = ReadIndexItem(charStrings, gid, out var charstring, out diagnostic);
             if (status != ReadStatus.Done) return status;
+            if (!budget.Buffer(charstring.Length + 16, Location, out diagnostic))
+                return ReadStatus.ResourceLimit;
             charStringBytes[gid] = charstring.ToArray();
-            bufferBytes += charstring.Length + 16;
         }
         status = ScanCharStrings(charStrings, out var stats, out diagnostic);
         if (status != ReadStatus.Done) return status;
@@ -83,14 +87,22 @@ public readonly ref partial struct Cff2View
             status = ParseDict(fontDictStart, fontDictLength, Cff2DictScope.FontDict,
                 out var fontEntries, out diagnostic);
             if (status != ReadStatus.Done) return status;
+            // The validation admitted every FontDICT with its 0x12 pair present, so an
+            // empty entry list here is a broken invariant, not an input shape.
+            if (fontEntries.Count == 0)
+                throw new InvalidOperationException("A validated CFF2 FontDICT lost its required key.");
             status = EntryIntegers(fontEntries[0], out int[] operands, out diagnostic);
             if (status != ReadStatus.Done) return status;
             int privateSize = operands[0];
             int privateOffset = operands[1];
             Cff2PrivateDict? privateDict = null;
             long fontDictBuffer = fontDictLength + 16;
+            if (!budget.Buffer(fontDictBuffer, Location, out diagnostic))
+                return ReadStatus.ResourceLimit;
             if (privateSize > 0)
             {
+                if (!budget.Buffer(privateSize + 16, Location, out diagnostic))
+                    return ReadStatus.ResourceLimit;
                 status = ParseDict(privateOffset, privateSize, Cff2DictScope.Private,
                     out var privateEntries, out diagnostic);
                 if (status != ReadStatus.Done) return status;
@@ -109,8 +121,9 @@ public readonly ref partial struct Cff2View
                     {
                         status = ReadIndexItem(localIndex, i, out var subr, out diagnostic);
                         if (status != ReadStatus.Done) return status;
+                        if (!budget.Buffer(subr.Length + 16, Location, out diagnostic))
+                            return ReadStatus.ResourceLimit;
                         localSubrs[i] = subr.ToArray();
-                        bufferBytes += subr.Length + 16;
                     }
                     localSubrsEnd = Math.Max(localSubrsEnd, localIndex.End);
                 }
@@ -123,14 +136,14 @@ public readonly ref partial struct Cff2View
                 }
                 privateDict = new Cff2PrivateDict(privateEntries, localSubrs,
                     privateEntries.Sum(static key => key.BlendCount), vsindexValue);
-                fontDictBuffer += privateSize + 16L * privateEntries.Count;
             }
             fontDicts[fd] = new Cff2FontDict(fontEntries[0], privateDict);
-            bufferBytes += fontDictBuffer;
         }
 
         // Per-GID FontDICT map: the validated FDSelect expansion, or all-zero for the
         // single-FD face without FDSelect (spec L361-366).
+        if (!budget.Buffer(4L * numGlyphs, Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
         int[] fdIndex = new int[numGlyphs];
         int fdSelectEnd = 0;
         int fdSelectFormat = -1;
@@ -162,8 +175,6 @@ public readonly ref partial struct Cff2View
             storeEnd = storeOffset + 2 + storeLength;
         }
 
-        if (!budget.Buffer(bufferBytes + 4L * numGlyphs, Location, out diagnostic))
-            return ReadStatus.ResourceLimit;
         int consumed = topDictStart + topDictLength;
         consumed = Math.Max(consumed, globalSubrs.End);
         consumed = Math.Max(consumed, charStrings.End);
