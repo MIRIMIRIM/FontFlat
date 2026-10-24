@@ -38,6 +38,19 @@ public readonly ref partial struct KernView
         model = null;
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        return TryReadTable(numGlyphs, out model, out diagnostic, budget);
+    }
+
+    /// <summary>The operation-budget overload: a caller that already owns a running
+    /// <see cref="BuildBudget"/> (the subset pipeline) charges this read to it, so the
+    /// per-operation ceiling and the final usage stay one accounting domain. Passing
+    /// <see cref="BuildLimits"/> would build a second budget and silently under-count.
+    /// </summary>
+    internal ReadStatus TryReadTable(int numGlyphs, out KernTable? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
+    {
+        model = null;
+        if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         ReadStatus status = ReadTable(numGlyphs, true, out var read, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         model = read;

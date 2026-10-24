@@ -164,6 +164,39 @@ public sealed class SubsetLayoutClosureTests
         Assert.Equal(new HashSet<int> { 1, 3 }, refs);
     }
 
+    // The kern reader used to be handed the operation's BuildLimits, which opened a
+    // second BuildBudget: the per-operation ceiling then compared the main budget's
+    // usage alone, so a request whose main budget sat under the ceiling and whose kern
+    // reader charged 65,584 bytes of its own still reported Done. The reader now
+    // charges the running budget, so the same request refuses.
+    [Fact]
+    public void KernReadChargesTheOperationBudget()
+    {
+        const ushort glyphCount = 128;
+        var pairs = Enumerable.Range(0, 8192)
+            .Select(i => new KernPair((ushort)(i / 128), (ushort)(i % 128), -1)).ToArray();
+        Ok(KernSubtableCompiler.TryCreateFormat0(glyphCount, pairs, 1, out var sub,
+            out var diagnostic));
+        Ok(KernTableCompiler.TryCreate(KernDialect.Version0, glyphCount, [sub!],
+            out var table, out diagnostic));
+        Ok(KernTableCompiler.TryCompile(table!, out var kern, out diagnostic));
+        var face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(glyphCount)),
+            (SubsetFontFixture.KernTag, kern!),
+            (SubsetFontFixture.GlyfTag, []),
+            (SubsetFontFixture.LocaTag, new byte[4 * (glyphCount + 1)]),
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41, 1))));
+        var limits = new BuildLimits { MaxTemporaryBytes = 70_000 };
+        var status = SubsetOperation.TryPrepare(
+            Request(face, [1], new SubsetOptions { PreserveLayout = true }), out var result,
+            out _, out var failure, limits);
+        Assert.Equal(ReadStatus.ResourceLimit, status);
+        Assert.Equal(DiagnosticCode.BudgetExceeded, failure.Code);
+        Assert.Equal(DataField.TemporaryBytes, failure.Location.Field);
+        Assert.Null(result);
+    }
+
     private static byte[] OutputBytes(SubsetResult result)
     {
         byte[] output = new byte[result.Font.OutputLength];

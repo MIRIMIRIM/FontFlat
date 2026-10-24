@@ -118,10 +118,10 @@ public static partial class SubsetOperation
         {
             // JSTF's cross-table lookup-index domains are the neighbor lists' counts
             // (the JstfView signature authority); its JstfMax inline lookups consume
-            // the same GDEF context as the GSUB/GPOS reads. JSTF/kern/MATH/BASE only
-            // expose the public BuildLimits entry (no internal BuildBudget overload),
-            // so the injection is the FontInspection shape (_admission.Limits,
-            // FontInspection.cs:690) — the S2a card §2.6 sanctioned form.
+            // the same GDEF context as the GSUB/GPOS reads. The read charges the
+            // operation's running budget, so the per-operation ceiling and the final
+            // usage stay one accounting domain (a fresh BuildLimits would open a
+            // second budget and under-count this table against the request).
             ReadStatus status = directory.TryGetTableBytes(profile.JstfOrdinal,
                 out var jstfBytes, out diagnostic);
             if (status != ReadStatus.Done) return status;
@@ -130,7 +130,7 @@ public static partial class SubsetOperation
             if (status != ReadStatus.Done) return status;
             status = jstfView.TryReadTable(maxp.NumGlyphs,
                 state.Gsub?.Lookups.Length ?? 0, state.Gpos?.Lookups.Length ?? 0,
-                state.GdefContext, out var jstf, out diagnostic, budget.Limits);
+                state.GdefContext, out var jstf, out diagnostic, budget);
             if (status != ReadStatus.Done) return status;
             state.Jstf = jstf;
         }
@@ -143,7 +143,7 @@ public static partial class SubsetOperation
                 directory.TableLocation(profile.KernOrdinal));
             if (status != ReadStatus.Done) return status;
             status = kernView.TryReadTable(maxp.NumGlyphs, out var kern, out diagnostic,
-                budget.Limits);
+                budget);
             if (status != ReadStatus.Done) return status;
             // RF-C (S2a card §5): a raw kern subtable (unknown format under either
             // dialect) has no enumerable reference set — the code-23 contract with
@@ -167,7 +167,7 @@ public static partial class SubsetOperation
                 directory.TableLocation(profile.MathOrdinal));
             if (status != ReadStatus.Done) return status;
             status = mathView.TryReadTable(maxp.NumGlyphs, out var math,
-                out diagnostic, budget.Limits);
+                out diagnostic, budget);
             if (status != ReadStatus.Done) return status;
             state.Math = math;
         }
@@ -188,7 +188,7 @@ public static partial class SubsetOperation
                 directory.TableLocation(profile.BaseOrdinal));
             if (status != ReadStatus.Done) return status;
             status = baseView.TryReadTable(maxp.NumGlyphs, axisCount,
-                out var baseModel, out diagnostic, budget.Limits);
+                out var baseModel, out diagnostic, budget);
             if (status != ReadStatus.Done) return status;
             state.Base = baseModel;
             state.BaseCoordFormat2Count = 0;
