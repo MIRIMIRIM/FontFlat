@@ -33,9 +33,11 @@ namespace FontWeave.Operations.Subset;
 /// target outside the retained set cannot be emitted; retain-GIDs keeps the table
 /// raw, but the same stage clears every unretained glyph's outline, so keeping the
 /// GID is not keeping the content a reference draws. The v0 base→layer slices close
-/// in retain mode (on a v1 table's compat arrays too), where the raw records stay and
+/// in both modes (on a v1 table's compat arrays too): retain keeps the records raw and
 /// every layer a surviving base row paints must keep its outline; compact prunes the
-/// records instead, so an unselected layer is deliberately deletable there.
+/// records by the frozen map, so a layer glyph outside the retained set would delete
+/// its record and empty the base's slice — the same blank color glyph the paint-graph
+/// face exists to prevent.
 /// Retain's raw pass-through contract is untouched: a COLR the typed chain cannot
 /// read is skipped there (nothing to retain), while compact's rebuild refusal stands.</summary>
 public static partial class SubsetOperation
@@ -94,14 +96,13 @@ public static partial class SubsetOperation
         state.CpalPaletteEntries = cpalEntries;
         // The table can carry both definitions: a v1 table keeps the v0 base/layer
         // arrays for the glyphs without a paint graph, and a v1 renderer queries them.
-        // Compact rebuilds the paint graph and prunes the compat arrays, while retain
-        // keeps everything raw, so retain closes the base→layer references on both
-        // table versions.
-        if (!compact)
-        {
-            status = CloseColrV0Layers(model!, state.Retained, budget, out diagnostic);
-            if (status != ReadStatus.Done) return status;
-        }
+        // Both modes close the base→layer references on both table versions: retain
+        // keeps the records raw (an unretained layer glyph loses its outline), and
+        // compact keeps the records of a retained base (a dropped layer glyph would
+        // otherwise empty the slice and delete the record, turning a color glyph
+        // blank). A layer glyph can itself be a base row, so this is a fixed point.
+        status = CloseColrV0Layers(model!, state.Retained, budget, out diagnostic);
+        if (status != ReadStatus.Done) return status;
         if (model!.Version != 1) return ReadStatus.Done;
         var rootOfGlyph = new Dictionary<ushort, int>(model.BaseGlyphPaintCount);
         foreach (var row in model.BaseGlyphPaints) rootOfGlyph[row.GlyphId] = row.PaintNodeId;
@@ -140,17 +141,22 @@ public static partial class SubsetOperation
         }
     }
 
-    // The v0 retain-mode face: the base rows keep their layer slices verbatim, so
-    // every layer glyph of a retained base glyph has to keep its outline. Nothing
-    // here moves a GID, and the slices never nest, so one pass over the retained base
-    // rows is the whole fixed point.
+    // The v0 base→layer face of both modes: a retained base row keeps its layer
+    // records, so every layer glyph has to keep its outline (retain) or its slot
+    // (compact). A layer glyph that is itself a base row re-opens that row's slice,
+    // so the worklist runs to the fixed point (the composite closure's shape).
     private static ReadStatus CloseColrV0Layers(ColrTable model, bool[] retained,
         BuildBudget budget, out FontDiagnostic diagnostic)
     {
+        var rowOfGlyph = new Dictionary<ushort, int>(model.BaseGlyphCount);
         for (int row = 0; row < model.BaseGlyphCount; row++)
+            rowOfGlyph[model.BaseGlyphs[row].GlyphId] = row;
+        var queue = new Queue<int>();
+        for (int row = 0; row < model.BaseGlyphCount; row++)
+            if (retained[model.BaseGlyphs[row].GlyphId]) queue.Enqueue(row);
+        while (queue.Count > 0)
         {
-            var baseGlyph = model.BaseGlyphs[row];
-            if (!retained[baseGlyph.GlyphId]) continue;
+            var baseGlyph = model.BaseGlyphs[queue.Dequeue()];
             for (int i = 0; i < baseGlyph.NumLayers; i++)
             {
                 int layerIndex = baseGlyph.FirstLayerIndex + i;
@@ -160,6 +166,7 @@ public static partial class SubsetOperation
                         model.LayerRowPosition(layerIndex), layerIndex), out diagnostic))
                     return ReadStatus.ResourceLimit;
                 retained[glyphId] = true;
+                if (rowOfGlyph.TryGetValue(glyphId, out int reopened)) queue.Enqueue(reopened);
             }
         }
         diagnostic = default;

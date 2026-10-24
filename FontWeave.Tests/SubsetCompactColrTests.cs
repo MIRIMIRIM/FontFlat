@@ -200,11 +200,8 @@ public sealed class SubsetCompactColrTests
         return model!;
     }
 
-    // v0: base 5 survives with its surviving layers (5,6), base 7 and layer 7 prune;
-    // the expectation is the hand-computed canonical emission over the map
-    // {0→0, 5→1, 6→2}; CPAL stays byte-identical (RETAIN_RAW).
     [Fact]
-    public void CompactColrV0PrunesSlicesAndKeepsCpalRaw()
+    public void CompactColrV0KeepsEverySelectedBaseLayerAndCpalRaw()
     {
         var cpal = CpalV0();
         var face = Spine(8, (ColrTag, ColrV0()), (CpalTag, cpal));
@@ -213,13 +210,95 @@ public sealed class SubsetCompactColrTests
         Assert.Equal(ReadStatus.Done, status);
         Assert.NotNull(result);
 
-        byte[] expectedColr = new ByteBuilder(28)
-            .U16(0).U16(1).U32(22).U32(14).U16(2)
-            .U16(1).U16(0).U16(2).U16(1)
-            .U16(1).U16(0).U16(2)
+        byte[] expectedColr = new ByteBuilder(38)
+            .U16(0).U16(2).U32(26).U32(14).U16(3)
+            .U16(1).U16(0).U16(2).U16(1).U16(3).U16(0)
+            .U16(1).U16(0).U16(3).U16(3).U16(1).U16(2)
             .ToBytes();
         Assert.Equal(expectedColr, FontTable(result, ColrTag));
         Assert.Equal(cpal, FontTable(result, CpalTag));
+    }
+
+    [Fact]
+    public void CompactColrV0KeepsUnencodedLayerOutlines()
+    {
+        var face = OutlinedSpine(8, [6, 7], (ColrTag, ColrV0()), (CpalTag, CpalV0()));
+        var status = SubsetOperation.TryPrepare(Request(face, [5], SubsetMode.CompactRemap),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([0, 5, 6, 7], result.Map!.Entries.Select(entry => (int)entry.InputGid));
+        ColrTable colr = ReadColr(FontTable(result, ColrTag), 4, 2);
+        Assert.Equal(new ColrBaseGlyphRecord(1, 0, 3), colr.BaseGlyphs[0]);
+        Assert.Equal(new ColrLayerRecord(1, 0), colr.Layers[0]);
+        Assert.Equal(new ColrLayerRecord(2, 1), colr.Layers[1]);
+        Assert.Equal(new ColrLayerRecord(3, 0), colr.Layers[2]);
+        foreach (int gid in (int[])[2, 3])
+        {
+            var (start, end) = GlyphSpan(result, gid);
+            Assert.True(end > start);
+        }
+        Assert.Equal(default, diagnostic);
+    }
+
+    [Theory]
+    [InlineData(SubsetMode.RetainGids)]
+    [InlineData(SubsetMode.CompactRemap)]
+    public void ColrV0ClosesLayersWhoseBaseRecordWasAlreadyVisited(SubsetMode mode)
+    {
+        byte[] color = new ByteBuilder(34)
+            .U16(0).U16(2).U32(14).U32(26).U16(2)
+            .U16(3).U16(0).U16(1).U16(5).U16(1).U16(1)
+            .U16(10).U16(1).U16(3).U16(0).ToBytes();
+        var face = OutlinedSpine(12, [10], (ColrTag, color), (CpalTag, CpalV0()));
+        var status = SubsetOperation.TryPrepare(Request(face, [5], mode),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        int output = mode == SubsetMode.CompactRemap ? 3 : 10;
+        var (start, end) = GlyphSpan(result, output);
+        Assert.True(end > start);
+        if (mode == SubsetMode.CompactRemap)
+            Assert.Equal([0, 3, 5, 10], result.Map!.Entries.Select(entry => (int)entry.InputGid));
+        Assert.Equal(default, diagnostic);
+    }
+
+    [Theory]
+    [InlineData(SubsetMode.RetainGids)]
+    [InlineData(SubsetMode.CompactRemap)]
+    public void ColorAndCompositeDependenciesReachACommonFixedPoint(SubsetMode mode)
+    {
+        // Base 5 paints layer 7 (a composite that references 3) and layer 10: the
+        // color closure pulls 7 and 10, the composite closure pulls 3, and the two
+        // families' additions feed one another before the map freeze.
+        byte[] color = new ByteBuilder(28)
+            .U16(0).U16(1).U32(22).U32(14).U16(2)
+            .U16(7).U16(0).U16(10).U16(1)
+            .U16(5).U16(0).U16(2).ToBytes();
+        var records = Enumerable.Range(0, 12).Select(gid => gid switch
+        {
+            7 => GlyfImages.CompositeRecord(3),
+            10 => GlyfImages.ExpandedSimpleGlyph(3),
+            _ => GlyfImages.NoContourGlyphRecord()
+        }).ToList();
+        var (loca, glyf, _) = GlyfImages.Assemble(records);
+        var face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(12)),
+            (SubsetFontFixture.GlyfTag, glyf), (SubsetFontFixture.LocaTag, loca),
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41u, 5))),
+            (ColrTag, color), (CpalTag, CpalV0()));
+        var status = SubsetOperation.TryPrepare(Request(face, [5], mode),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        int output = mode == SubsetMode.CompactRemap ? 4 : 10;
+        var (start, end) = GlyphSpan(result, output);
+        Assert.True(end > start);
+        Assert.Equal([(ushort)3], report!.ClosureAddedGids);
+        if (mode == SubsetMode.CompactRemap)
+            Assert.Equal([0, 3, 5, 7, 10], result.Map!.Entries.Select(entry => (int)entry.InputGid));
+        Assert.Equal(default, diagnostic);
     }
 
     // v0 with every color glyph unselected drops the table through the payload-time
@@ -655,6 +734,116 @@ public sealed class SubsetCompactColrTests
         }
         Assert.Equal(ColrV1WithV0Compat(), FontTable(result!, ColrTag));
         Assert.Equal(default, diagnostic);
+    }
+
+    [Fact]
+    public void CompactMixedColrPreservesCompatLayersAndTheirOutlines()
+    {
+        var face = OutlinedSpine(16, [9, 10], (ColrTag, ColrV1WithV0Compat()),
+            (CpalTag, CpalV0()));
+        var status = SubsetOperation.TryPrepare(Request(face, [5, 7], SubsetMode.CompactRemap),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([0, 5, 7, 9, 10], result.Map!.Entries.Select(entry => (int)entry.InputGid));
+        ColrTable colr = ReadColr(FontTable(result, ColrTag), 5, 2);
+        Assert.Equal(new ColrBaseGlyphRecord(2, 0, 1), Assert.Single(colr.BaseGlyphs));
+        Assert.Equal(new ColrLayerRecord(4, 0xFFFF), Assert.Single(colr.Layers));
+        Assert.Equal((ushort)1, Assert.Single(colr.BaseGlyphPaints).GlyphId);
+        var paint = Assert.IsType<ColrPaintGlyph>(colr.Paints[colr.BaseGlyphPaints[0].PaintNodeId]);
+        Assert.Equal((ushort)3, paint.GlyphId);
+        foreach (int gid in (int[])[3, 4])
+        {
+            var (start, end) = GlyphSpan(result, gid);
+            Assert.True(end > start);
+        }
+        Assert.Equal(CpalV0(), FontTable(result, CpalTag));
+        Assert.Equal(default, diagnostic);
+    }
+
+    [Fact]
+    public void CompactColrV1CompatOnlySelectionKeepsColor()
+    {
+        var face = OutlinedSpine(16, [9, 10], (ColrTag, ColrV1WithV0Compat()),
+            (CpalTag, CpalV0()));
+        var status = SubsetOperation.TryPrepare(Request(face, [7], SubsetMode.CompactRemap),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([0, 7, 10], result.Map!.Entries.Select(entry => (int)entry.InputGid));
+        ColrTable colr = ReadColr(FontTable(result, ColrTag), 3, 2);
+        Assert.Equal(new ColrBaseGlyphRecord(1, 0, 1), Assert.Single(colr.BaseGlyphs));
+        Assert.Equal(new ColrLayerRecord(2, 0xFFFF), Assert.Single(colr.Layers));
+        Assert.Empty(colr.BaseGlyphPaints);
+        var (start, end) = GlyphSpan(result, 2);
+        Assert.True(end > start);
+        Assert.Equal(default, diagnostic);
+    }
+
+    [Fact]
+    public void CompactMixedColrAllGlyphSelectionPreservesBothDefinitions()
+    {
+        var face = OutlinedSpine(16, [9, 10], (ColrTag, ColrV1WithV0Compat()),
+            (CpalTag, CpalV0()));
+        ushort[] all = Enumerable.Range(0, 16).Select(gid => (ushort)gid).ToArray();
+        var status = SubsetOperation.TryPrepare(Request(face, all, SubsetMode.CompactRemap),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal(all, result.Map!.Entries.Select(entry => entry.InputGid));
+        ColrTable colr = ReadColr(FontTable(result, ColrTag), 16, 2);
+        Assert.Equal((ushort)1, colr.Version);
+        Assert.Equal(new ColrBaseGlyphRecord(7, 0, 1), Assert.Single(colr.BaseGlyphs));
+        Assert.Equal(new ColrLayerRecord(10, 0xFFFF), Assert.Single(colr.Layers));
+        Assert.Equal((ushort)5, Assert.Single(colr.BaseGlyphPaints).GlyphId);
+        var paint = Assert.IsType<ColrPaintGlyph>(colr.Paints[colr.BaseGlyphPaints[0].PaintNodeId]);
+        Assert.Equal((ushort)9, paint.GlyphId);
+        Assert.Equal(default, diagnostic);
+    }
+
+    [Fact]
+    public void CompactMixedColrKeepsDistinctV1AndV0DefinitionsForTheSameBase()
+    {
+        byte[] color = ColrV1WithV0Compat();
+        BinaryPrimitives.WriteUInt16BigEndian(color.AsSpan(55), 5);
+        var face = OutlinedSpine(16, [9, 10], (ColrTag, color), (CpalTag, CpalV0()));
+        var status = SubsetOperation.TryPrepare(Request(face, [5], SubsetMode.CompactRemap),
+            out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal([0, 5, 9, 10], result.Map!.Entries.Select(entry => (int)entry.InputGid));
+        ColrTable colr = ReadColr(FontTable(result, ColrTag), 4, 2);
+        Assert.Equal(new ColrBaseGlyphRecord(1, 0, 1), Assert.Single(colr.BaseGlyphs));
+        Assert.Equal(new ColrLayerRecord(3, 0xFFFF), Assert.Single(colr.Layers));
+        Assert.Equal((ushort)1, Assert.Single(colr.BaseGlyphPaints).GlyphId);
+        var paint = Assert.IsType<ColrPaintGlyph>(colr.Paints[colr.BaseGlyphPaints[0].PaintNodeId]);
+        Assert.Equal((ushort)2, paint.GlyphId);
+        Assert.Equal((ushort)1, Assert.IsType<ColrPaintSolid>(colr.Paints[paint.PaintNodeId]).PaletteIndex);
+        Assert.Equal(default, diagnostic);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CompactColorOutputBudgetFailurePublishesNothing(bool mixed)
+    {
+        byte[] color = mixed ? ColrV1WithV0Compat() : ColrV0();
+        var face = OutlinedSpine(16, [6, 7, 9, 10], (ColrTag, color), (CpalTag, CpalV0()));
+        var request = Request(face, [5, 7], SubsetMode.CompactRemap);
+        var status = SubsetOperation.TryPrepare(request, out var complete, out _, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(complete);
+        var limits = new BuildLimits { MaxOutputBytes = complete.Font.OutputLength - 1 };
+        status = SubsetOperation.TryPrepare(request, out var result, out var report,
+            out var diagnostic, limits);
+        Assert.Equal(ReadStatus.ResourceLimit, status);
+        Assert.Null(result);
+        Assert.NotNull(report);
+        Assert.Equal(DiagnosticCode.BudgetExceeded, diagnostic.Code);
+        Assert.Equal(DataField.OutputBytes, diagnostic.Location.Field);
+        Assert.Contains(report.Decisions, decision => decision.Tag == ColrTag &&
+            decision.Action == TableAction.Rebuild);
+        Assert.DoesNotContain(ColrTag, report.DroppedTables);
     }
 
     private static (uint Start, uint End) GlyphSpan(SubsetResult result, int glyphId)

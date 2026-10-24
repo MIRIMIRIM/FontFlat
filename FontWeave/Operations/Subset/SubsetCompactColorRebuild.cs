@@ -19,13 +19,13 @@ namespace FontWeave.Operations.Subset;
 /// walk below), so a dangling PaintGlyph or PaintColrGlyph target is a backstop
 /// refusal (RE3, OQ-SE-6) — unreachable while both consumers ride the one
 /// dispatch, kept because the v1 factory's owned walk does not cover the domain
-/// (SE card §7 finding 4). An all-empty rebuild drops the table (OQ-SE-5). The rebuilt
-/// model re-answers every structural invariant through the compiler factory; any
-/// failure refuses with nothing published. Registered canonical-form fact: the v1
-/// factory's owned construction carries the read model's v0 compat records no
-/// longer (TryCreate hardcodes the empty compat arrays), so a rebuilt v1 face
-/// emits the graph in the factory's canonical compat-less form — the corpus's
-/// only v1 host carries no compat records either.</summary>
+/// (SE card §7 finding 4). A v1 table may also carry the v0 compatibility arrays
+/// (spec L625-628), which a v1 renderer queries for a glyph without a BGL row, so
+/// the rebuild prunes them by the same rule as a v0 table and re-emits them beside
+/// the rebuilt graph; dropping them would silently uncolor every compat-only glyph.
+/// An all-empty rebuild drops the table (OQ-SE-5). The rebuilt model re-answers
+/// every structural invariant through the compiler factory; any failure refuses
+/// with nothing published.</summary>
 public static partial class SubsetOperation
 {
     private static ReadStatus RebuildColr(ColrTable model, int? cpalEntries,
@@ -42,7 +42,7 @@ public static partial class SubsetOperation
         byte[]? bytes;
         if (model.Version == 1)
         {
-            status = RebuildColrV1(model, at, map, budget, out var rebuiltModel,
+            status = RebuildColrV1(model, at, map, cpalEntries, budget, out var rebuiltModel,
                 out dropped, out diagnostic);
             if (status != ReadStatus.Done || dropped) return status;
             status = ColrTableCompiler.TryCompile(rebuiltModel!, out bytes,
@@ -89,10 +89,25 @@ public static partial class SubsetOperation
         out List<ColrBaseGlyphRecord> newBase, out List<ColrLayerRecord> newLayers,
         out bool dropped, out FontDiagnostic diagnostic)
     {
+        diagnostic = default;
+        dropped = false;
+        PruneColrRecords(model, map, out newBase, out newLayers);
+        // Empty shells cannot emit (the factory refuses the empty record set), so an
+        // all-empty rebuild drops the table (OQ-SE-5).
+        if (newBase.Count == 0 || newLayers.Count == 0) dropped = true;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>Prunes both v0 record arrays by the frozen map: layers survive in
+    /// their original relative order with their glyph remapped, and a base row
+    /// survives when its own glyph does, its slice recomputed over the surviving
+    /// layer order. Shared by the v0 rebuild and the v1 table's compatibility
+    /// arrays — the two answer one wire shape and one rule set.</summary>
+    private static void PruneColrRecords(ColrTable model, GlyphRemap map,
+        out List<ColrBaseGlyphRecord> newBase, out List<ColrLayerRecord> newLayers)
+    {
         newBase = [];
         newLayers = [];
-        dropped = false;
-        diagnostic = default;
         // Layers survive in their original relative order, glyphs remapped; the
         // per-layer decision is independent of the base rows (SE card §2.1).
         var newIndexOfLayer = new int[model.LayerCount];
@@ -135,16 +150,12 @@ public static partial class SubsetOperation
         // by their output glyph before the factory re-answers the ascent; on the
         // monotone orders the sort is the identity.
         newBase.Sort(static (a, b) => a.GlyphId.CompareTo(b.GlyphId));
-        // Empty shells cannot emit (the factory refuses the empty record set), so an
-        // all-empty rebuild drops the table (OQ-SE-5).
-        if (newBase.Count == 0 || newLayers.Count == 0) dropped = true;
-        return ReadStatus.Done;
     }
 
     // ---- v1: reachability pruning + renumbering on the owned graph ----
 
     private static ReadStatus RebuildColrV1(ColrTable model, DataLocation at,
-        GlyphRemap map, BuildBudget budget, out ColrTable? rebuilt,
+        GlyphRemap map, int? cpalEntries, BuildBudget budget, out ColrTable? rebuilt,
         out bool dropped, out FontDiagnostic diagnostic)
     {
         rebuilt = null;
@@ -167,14 +178,26 @@ public static partial class SubsetOperation
                 refuseDangling, visited, visitedOrder, out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
-        // No surviving color graph means no rebuildable content (OQ-SE-5): the
-        // factory's canonical v1 form carries no v0 compat arrays to keep a
-        // compat-only face alive.
-        if (visitedOrder.Count == 0)
+        // The v0 compatibility arrays prune by the same rule as a v0 table: a v1
+        // renderer falls back to them for a glyph without a BGL row, so dropping
+        // them would uncolor every compat-only glyph (spec L625-628).
+        PruneColrRecords(model, map, out var compatBase, out var compatLayers);
+        // No surviving color definition of either form means no rebuildable content
+        // (OQ-SE-5); a compat-only face is a live table.
+        if (visitedOrder.Count == 0 && compatBase.Count == 0)
         {
             dropped = true;
             diagnostic = default;
             return ReadStatus.Done;
+        }
+        if (visitedOrder.Count == 0)
+        {
+            // A compat-only v1 table keeps its version: the v1 header's
+            // BaseGlyphList stays present with zero rows (the read side requires the
+            // offset, not a row), and the compatibility arrays carry the color.
+            return ColrTableCompiler.TryCreate([], [], [], [], map.OutputGlyphCount,
+                cpalEntries, out rebuilt, out diagnostic, location: at,
+                compatBaseGlyphs: compatBase, compatLayers: compatLayers);
         }
         // The new ordinals follow the read model's own canonical order restricted
         // to the visited set: the read numbers its nodes topologically (parents
@@ -303,10 +326,13 @@ public static partial class SubsetOperation
         // output glyph before the factory is the same identity the ClipList keeps; on
         // the monotone orders it changes nothing.
         newBgl.Sort(static (a, b) => a.GlyphId.CompareTo(b.GlyphId));
-        // The variation slots ride verbatim (no GID domain, OQ-SE-1).
+        // The variation slots ride verbatim (no GID domain, OQ-SE-1); the pruned
+        // compatibility arrays ride beside the graph (a v1 renderer's fallback) and
+        // answer the same palette domain the v0 face answers.
         return ColrTableCompiler.TryCreate(newBgl, newLayerIds, newClips, paints,
-            map.OutputGlyphCount, null, out rebuilt, out diagnostic, model.VarIndexMap,
-            model.ItemVariationStore, location: at);
+            map.OutputGlyphCount, cpalEntries, out rebuilt, out diagnostic, model.VarIndexMap,
+            model.ItemVariationStore, location: at, compatBaseGlyphs: compatBase,
+            compatLayers: compatLayers);
 
         // The RE3 face (SE card §3): a paint-graph glyph reference outside the
         // frozen map refuses with InvalidValue at the referencing paint's GlyphId,

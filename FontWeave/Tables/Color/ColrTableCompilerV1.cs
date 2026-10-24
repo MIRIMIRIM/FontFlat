@@ -38,14 +38,21 @@ public static partial class ColrTableCompiler
     /// model's own addressing, not a plan the compiler picks. The variation
     /// slots (T6-03 §4) ride their own pre-validated models: var paints demand
     /// a store (the OQ-T6-03-2 mirror), a map demands one too (the OQ-8
-    /// dangling mirror), while a format-2 clip box needs neither (OQ-3).</summary>
+    /// dangling mirror), while a format-2 clip box needs neither (OQ-3).
+    /// The two v0 compatibility arrays are optional (spec L625-628: a v1 table
+    /// may carry them, and a v1 renderer queries them for a glyph without a
+    /// BaseGlyphList row), so a caller that keeps them passes them through the
+    /// same T6-01 rule set under the v1 zero grace; the default is the empty
+    /// pair.</summary>
     public static ReadStatus TryCreate(IReadOnlyList<ColrBaseGlyphPaint> baseGlyphPaints,
         IReadOnlyList<int> layerPaintNodeIds, IReadOnlyList<ColrClip> clips,
         IReadOnlyList<ColrPaint> paints, int numGlyphs, int? cpalNumPaletteEntries,
         out ColrTable? model, out FontDiagnostic diagnostic,
         DeltaSetIndexMapTable? varIndexMap = null,
         VariationStoreTable? itemVariationStore = null, BuildLimits? limits = null,
-        DataLocation location = default)
+        DataLocation location = default,
+        IReadOnlyList<ColrBaseGlyphRecord>? compatBaseGlyphs = null,
+        IReadOnlyList<ColrLayerRecord>? compatLayers = null)
     {
         model = null;
         ArgumentNullException.ThrowIfNull(baseGlyphPaints);
@@ -61,6 +68,36 @@ public static partial class ColrTableCompiler
         if (!budget.Work(24L * paints.Count + 6L * baseGlyphPaints.Count +
                 4L * layerPaintNodeIds.Count + 11L * clips.Count, location, out diagnostic))
             return ReadStatus.ResourceLimit;
+        // The compatibility arrays' plan positions (layer records then base records,
+        // the T6-01 order the emission below uses); an absent pair declares no
+        // records and its offsets stay zero.
+        var compatBases = compatBaseGlyphs ?? [];
+        var compatLayerRecords = compatLayers ?? [];
+        uint compatLayerAt = 0, compatBaseAt = 0;
+        long compatLength = 0;
+        if (compatLayerRecords.Count > 0)
+        {
+            compatLayerAt = (uint)(ColrLayout.V1HeaderLength);
+            compatLength += 4L * compatLayerRecords.Count;
+        }
+        if (compatBases.Count > 0)
+        {
+            compatBaseAt = (uint)(ColrLayout.V1HeaderLength + compatLength);
+            compatLength += 6L * compatBases.Count;
+        }
+        if (compatBases.Count > ushort.MaxValue || compatLayerRecords.Count > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count,
+                    compatBases.Count > ushort.MaxValue ? 2UL : 12UL), out diagnostic,
+                (ulong)(compatBases.Count > ushort.MaxValue
+                    ? compatBases.Count : compatLayerRecords.Count), (ulong)ushort.MaxValue);
+        if (compatBases.Count > 0 || compatLayerRecords.Count > 0)
+        {
+            ReadStatus records = ValidateRecords(compatBases, compatLayerRecords,
+                numGlyphs, cpalNumPaletteEntries, compatBaseAt, compatLayerAt, location,
+                budget, out diagnostic);
+            if (records != ReadStatus.Done) return records;
+        }
         // The presence matrix faces (the read side's OQ-2/OQ-8 mirrors): a var
         // paint without a store and a map without a store refuse before the
         // walk; a store alone stays legal (the implicit-identity shape).
@@ -145,8 +182,9 @@ public static partial class ColrTableCompiler
             ReadStatus status = owned.Visit(i, 0, budget, out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
-        model = new([], [], [.. baseGlyphPaints], [.. layerPaintNodeIds], [.. clips],
-            [.. paints], numGlyphs, 0, 0, 0, 0, 0, varIndexMap, itemVariationStore,
+        model = new([.. compatBases], [.. compatLayerRecords], [.. baseGlyphPaints],
+            [.. layerPaintNodeIds], [.. clips], [.. paints], numGlyphs, compatBaseAt,
+            compatLayerAt, 0, 0, 0, varIndexMap, itemVariationStore,
             [], [], [], location, 0);
         diagnostic = default;
         return ReadStatus.Done;

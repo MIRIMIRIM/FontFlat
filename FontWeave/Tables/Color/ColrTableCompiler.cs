@@ -50,13 +50,36 @@ public static partial class ColrTableCompiler
                     baseGlyphs.Count > ushort.MaxValue ? 2UL : 12UL), out diagnostic,
                 (ulong)(baseGlyphs.Count > ushort.MaxValue ? baseGlyphs.Count : layers.Count),
                 (ulong)ushort.MaxValue);
-        if (!budget.Work(6L * (baseGlyphs.Count + layers.Count), location, out diagnostic))
-            return ReadStatus.ResourceLimit;
         // The canonical plan's offsets: layer records first (the majority order),
         // base records after - the model's edit diagnostics carry these
         // coordinates until the compiled wire re-roots them.
         uint layerRecordsOffset = ColrLayout.HeaderLength;
         uint baseGlyphRecordsOffset = layerRecordsOffset + (uint)(4L * layers.Count);
+        ReadStatus status = ValidateRecords(baseGlyphs, layers, numGlyphs,
+            cpalNumPaletteEntries, baseGlyphRecordsOffset, layerRecordsOffset, location,
+            budget, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        long consumed = ColrLayout.HeaderLength + 4L * layers.Count + 6L * baseGlyphs.Count;
+        model = new([.. baseGlyphs], [.. layers], numGlyphs, baseGlyphRecordsOffset,
+            layerRecordsOffset, location, (int)consumed);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The v0 record rule set shared by both root factories (the v1 table's
+    /// compatibility arrays answer the identical rules under the v1 zero grace): the
+    /// strict glyphID ascent, both glyph domains against the caller's numGlyphs, the
+    /// wide slice relation and the cross-table paletteIndex domain (null skips it,
+    /// the read side's OQ-T6-01-4 line). The offsets are the model's own diagnostic
+    /// coordinates.</summary>
+    internal static ReadStatus ValidateRecords(
+        IReadOnlyList<ColrBaseGlyphRecord> baseGlyphs, IReadOnlyList<ColrLayerRecord> layers,
+        int numGlyphs, int? cpalNumPaletteEntries, uint baseGlyphRecordsOffset,
+        uint layerRecordsOffset, DataLocation location, BuildBudget budget,
+        out FontDiagnostic diagnostic)
+    {
+        if (!budget.Work(6L * (baseGlyphs.Count + layers.Count), location, out diagnostic))
+            return ReadStatus.ResourceLimit;
         int previous = -1;
         for (int i = 0; i < baseGlyphs.Count; i++)
         {
@@ -91,9 +114,6 @@ public static partial class ColrTableCompiler
                         layerRecordsOffset + (ulong)i * ColrLayout.LayerRecordSize + 2, i),
                     out diagnostic, row.PaletteIndex, unchecked((ulong)(long)entries));
         }
-        long consumed = ColrLayout.HeaderLength + 4L * layers.Count + 6L * baseGlyphs.Count;
-        model = new([.. baseGlyphs], [.. layers], numGlyphs, baseGlyphRecordsOffset,
-            layerRecordsOffset, location, (int)consumed);
         diagnostic = default;
         return ReadStatus.Done;
     }
