@@ -160,10 +160,13 @@ public sealed class SubsetVfGvarTests
         Assert.NotNull(report);
     }
 
-    // The retain path keeps the raw copy semantics: the same face under
-    // RetainGids moves gvar byte-identical (the relaxed column's contract).
+    // The retain path keeps every GID but clears each unretained glyph's outline, so
+    // that glyph's variation block must go with the outline: a block describing the
+    // cleared point set makes the whole-table gvar decode and any instantiation fail
+    // even though the selected glyphs look right. The retained slots keep their bytes
+    // verbatim and the cleared slot becomes the absent-glyph form.
     [Fact]
-    public void RetainPathKeepsGvarRaw()
+    public void RetainPathClearsUnretainedGlyphBlocks()
     {
         byte[] gvarIn = Gvar(0x10, 0x20);
         var face = Face(gvarIn);
@@ -178,9 +181,50 @@ public sealed class SubsetVfGvarTests
             Mode = SubsetMode.RetainGids,
             Options = new SubsetOptions { NoLayout = true }
         };
-        var status = SubsetOperation.TryPrepare(request, out var result, out _,
+        var status = SubsetOperation.TryPrepare(request, out var result, out var report,
             out _);
         Assert.Equal(ReadStatus.Done, status);
+        Assert.Contains(report!.Decisions, decision => decision.Tag == SubsetFontFixture.GvarTag &&
+            decision.Action == TableAction.Rebuild);
+        byte[] gvarOut = TableOf(Output(result!), SubsetFontFixture.GvarTag,
+            out bool present);
+        Assert.True(present);
+        // The GID domain is unchanged, so the header keeps its glyph count.
+        Assert.Equal(NumGlyphs, BinaryPrimitives.ReadUInt16BigEndian(gvarOut.AsSpan(12)));
+        int offsetsAt = 20;
+        // Slot 0 was already absent; slot 1 (the cleared glyph) joins it; slot 2 keeps
+        // its block.
+        Assert.Equal(0, BinaryPrimitives.ReadUInt16BigEndian(gvarOut.AsSpan(offsetsAt)));
+        Assert.Equal(0, BinaryPrimitives.ReadUInt16BigEndian(gvarOut.AsSpan(offsetsAt + 2)));
+        Assert.Equal(0, BinaryPrimitives.ReadUInt16BigEndian(gvarOut.AsSpan(offsetsAt + 4)));
+        Assert.Equal(5, BinaryPrimitives.ReadUInt16BigEndian(gvarOut.AsSpan(offsetsAt + 6)));
+        int gvdArrayAt = offsetsAt + (NumGlyphs + 1) * 2 + 2 * AxisCount;
+        Assert.Equal(GvarBlock(0x11, 0x21), gvarOut[gvdArrayAt..(gvdArrayAt + 10)]);
+        Assert.Equal(gvdArrayAt + 10, gvarOut.Length);
+    }
+
+    // A whole-domain retain request clears nothing, so the table stays RETAIN_RAW and
+    // byte-identical (no decision churn on the identity face).
+    [Fact]
+    public void RetainFullSelectKeepsGvarRaw()
+    {
+        byte[] gvarIn = Gvar(0x10, 0x20);
+        var request = new SubsetRequest
+        {
+            Face = Face(gvarIn),
+            Root = new SubsetGlyphRoot
+            {
+                Kind = SubsetRootKind.ExplicitGlyphSet,
+                Gids = [(ushort)0, (ushort)1, (ushort)2]
+            },
+            Mode = SubsetMode.RetainGids,
+            Options = new SubsetOptions { NoLayout = true }
+        };
+        var status = SubsetOperation.TryPrepare(request, out var result, out var report,
+            out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Contains(report!.Decisions, decision => decision.Tag == SubsetFontFixture.GvarTag &&
+            decision.Action == TableAction.Preserve);
         byte[] gvarOut = TableOf(Output(result!), SubsetFontFixture.GvarTag,
             out bool present);
         Assert.True(present);

@@ -31,11 +31,37 @@ public static partial class SubsetOperation
     /// plan (the T5-01 width-class precedent).</summary>
     private static ReadStatus RebuildGvar(Tables.Variation.GvarTable model,
         GlyphRemap map, BuildBudget budget, out byte[]? gvarBytes,
+        out FontDiagnostic diagnostic) =>
+        SpliceGvarBlocks(model, Array.ConvertAll(map.OutputToInput.ToArray(),
+            static input => (int)input), budget, out gvarBytes, out diagnostic);
+
+    /// <summary>Retain-GIDs keeps every GID but clears each unretained glyph's
+    /// outline (the glyf rebuild's empty-slot form). A gvar block describes its
+    /// glyph's point set — the outlines' points plus the four phantoms — so a
+    /// cleared glyph's block would describe points that no longer exist, and a
+    /// whole-table gvar decode or a variable instantiation would fail on the
+    /// emitted font. Those slots are emptied (the absent-glyph form); a retained
+    /// slot keeps its block verbatim. The table re-emits through the same splice,
+    /// so retain's gvar is no longer a raw pass-through once any slot is cleared.</summary>
+    private static ReadStatus RebuildRetainedGvar(Tables.Variation.GvarTable model,
+        bool[] retained, BuildBudget budget, out byte[]? gvarBytes,
+        out FontDiagnostic diagnostic)
+    {
+        var inputOrder = new int[retained.Length];
+        for (int gid = 0; gid < retained.Length; gid++)
+            inputOrder[gid] = retained[gid] ? gid : -1;
+        return SpliceGvarBlocks(model, inputOrder, budget, out gvarBytes, out diagnostic);
+    }
+
+    /// <summary>The one block splice: output slot o carries input slot
+    /// <c>inputOrder[o]</c>'s block verbatim, or an empty block when the entry is
+    /// -1 (the absent-glyph form).</summary>
+    private static ReadStatus SpliceGvarBlocks(Tables.Variation.GvarTable model,
+        int[] inputOrder, BuildBudget budget, out byte[]? gvarBytes,
         out FontDiagnostic diagnostic)
     {
         gvarBytes = null;
-        var inputOrder = map.OutputToInput;
-        int outputCount = map.OutputGlyphCount;
+        int outputCount = inputOrder.Length;
         var inputOffsets = model.GlyphVariationDataOffsets;
         var source = model.RawTableBytes;
         int sourceBase = model.GvdArrayOffset;
@@ -49,7 +75,7 @@ public static partial class SubsetOperation
         for (int o = 0; o < outputCount; o++)
         {
             int input = inputOrder[o];
-            total += inputOffsets[input + 1] - inputOffsets[input];
+            if (input >= 0) total += inputOffsets[input + 1] - inputOffsets[input];
             offsets[o + 1] = checked((int)total);
         }
         if (!budget.Buffer(total, model.Location, out diagnostic))
@@ -58,6 +84,7 @@ public static partial class SubsetOperation
         for (int o = 0; o < outputCount; o++)
         {
             int input = inputOrder[o];
+            if (input < 0) continue;
             int start = sourceBase + inputOffsets[input];
             int size = inputOffsets[input + 1] - inputOffsets[input];
             source.AsSpan(start, size).CopyTo(blocks.AsSpan(offsets[o], size));

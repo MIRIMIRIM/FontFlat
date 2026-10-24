@@ -834,6 +834,28 @@ public static partial class SubsetOperation
                         out report, out diagnostic);
             }
         }
+        else if (profile.HasGvar && state.Gvar is { } retainedGvar)
+        {
+            // Retain-GIDs keeps every GID but empties each unretained glyph's
+            // outline, while that glyph's gvar block still describes the cleared
+            // outline's point set (outline points plus the four phantoms). Emitting
+            // the table raw would therefore publish a font whose variation data
+            // contradicts its glyphs: the selected glyphs render, but a whole-table
+            // gvar decode or any variable instantiation fails. The blocks ride the
+            // same splice as the compact rebuild - an unretained slot becomes the
+            // absent-glyph form, a retained one keeps its bytes - and the decision
+            // leaves RETAIN_RAW only when some slot actually cleared, so a
+            // whole-domain request stays byte-identical.
+            if (Array.IndexOf(state.Retained, false) >= 0)
+            {
+                status = RebuildRetainedGvar(retainedGvar, state.Retained, budget,
+                    out rebuiltGvar, out diagnostic);
+                if (status != ReadStatus.Done)
+                    return Refuse(state, status, diagnostic, out result,
+                        out report, out diagnostic);
+                state.ReviseDecision(Gvar, TableAction.Rebuild, SubsetPolicy.RebuildTyped);
+            }
+        }
         // S2c (card §4/§5.1, the fifth alternate's retain execution face): a
         // truly-cut layout list re-emits its surviving subset over the identity
         // seam — retain-GIDs never constructs a map, so the rewrite engine sees
