@@ -196,7 +196,10 @@ public readonly ref partial struct LayoutFeatureView
                 return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedVersion,
                     Location.AtLocal(DataField.Offset, 0), out diagnostic, version, 0);
             if (family == 0x6376)
-                length += 2 * ReadWire.U16(_data, (int)at + 12);
+                // The character array's elements are uint24 Unicode values (the
+                // CvParameters wire form), so the payload is three bytes per
+                // character: counting two truncated the tail of every non-empty array.
+                length += 3 * ReadWire.U16(_data, (int)at + 12);
         }
         if (at + (ulong)length > (ulong)_data.Length)
             return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,

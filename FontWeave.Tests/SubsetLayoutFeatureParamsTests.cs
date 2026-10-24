@@ -38,11 +38,13 @@ public sealed class SubsetLayoutFeatureParamsTests
     }
 
     // CvParameters: version 0, uiLabel 1, tooltip 2, sample 3, numNamed 0,
-    // firstParamUI 4, charCount 2, characters {0xE0B0, 0xE0B1}.
+    // firstParamUI 4, charCount 2, characters {U+0041, U+1F600} as uint24 values
+    // (the spec's 3-byte character element).
     private static readonly byte[] CvParams =
     [
         0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03,
-        0x00, 0x00, 0x00, 0x04, 0x00, 0x02, 0xE0, 0xB0, 0xE0, 0xB1,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x02,
+        0x00, 0x00, 0x41, 0x01, 0xF6, 0x00,
     ];
 
     // SsParameters: version 0, uiNameID 10.
