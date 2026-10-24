@@ -160,7 +160,8 @@ public sealed class SubsetLayoutClosureTests
             out diagnostic));
         var refs = new HashSet<int>();
         foreach (var l in model!.Lookups)
-            SubsetOperation.CollectLookupReferencesForTests(l, model.NumGlyphs, refs);
+            refs.UnionWith(SubsetOperation.CollectLookupReferencesForTests(
+                l, model.NumGlyphs));
         Assert.Equal(new HashSet<int> { 1, 3 }, refs);
     }
 

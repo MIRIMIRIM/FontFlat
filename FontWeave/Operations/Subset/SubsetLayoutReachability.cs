@@ -16,7 +16,7 @@ public static partial class SubsetOperation
         if (!budget.Buffer(4L * retained.Length, at, out diagnostic))
             return ReadStatus.ResourceLimit;
         var added = state.LayoutClosureAdded ?? [];
-        var references = new HashSet<int>();
+        var references = new LayoutReferenceSet(retained.Length);
         if (state.Jstf is { } jstf)
             CollectJstfReferences(jstf, references, state.JstfScope?.SurvivingScripts);
         if (state.Kern is { } kern) CollectKernReferences(kern, references);
@@ -103,9 +103,9 @@ public static partial class SubsetOperation
         return ReadStatus.Done;
     }
 
-    private static void CountSurvivingLayoutReferences(uint tag, HashSet<int> references,
-        bool[] retained, List<LayoutTableCensus> census) =>
-        census.Add(new(tag, references.Count(gid => retained[gid])));
+    private static void CountSurvivingLayoutReferences(uint tag,
+        LayoutReferenceSet references, bool[] retained, List<LayoutTableCensus> census) =>
+        census.Add(new(tag, references.Enumerate().Count(gid => retained[gid])));
 
     private static bool IndexSubstitutionOutputs(LookupTable lookup,
         LayoutReachabilityGraph graph, BuildBudget budget, out FontDiagnostic diagnostic)

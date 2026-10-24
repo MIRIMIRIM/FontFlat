@@ -120,8 +120,8 @@ public static partial class SubsetOperation
             // (the JstfView signature authority); its JstfMax inline lookups consume
             // the same GDEF context as the GSUB/GPOS reads. The read charges the
             // operation's running budget, so the per-operation ceiling and the final
-            // usage stay one accounting domain (a fresh BuildLimits would open a
-            // second budget and under-count this table against the request).
+            // usage stay one accounting domain (a fresh BuildLimits would open a second
+            // budget and under-count this table against the request).
             ReadStatus status = directory.TryGetTableBytes(profile.JstfOrdinal,
                 out var jstfBytes, out diagnostic);
             if (status != ReadStatus.Done) return status;
@@ -251,9 +251,13 @@ public static partial class SubsetOperation
 
     /// <summary>Test bridge for the per-lookup enumerator (the one collection shape
     /// the merge and the verification share).</summary>
-    internal static void CollectLookupReferencesForTests(LookupTable lookup,
-        int numGlyphs, HashSet<int> into) =>
+    internal static HashSet<int> CollectLookupReferencesForTests(LookupTable lookup,
+        int numGlyphs)
+    {
+        var into = new LayoutReferenceSet(numGlyphs);
         CollectLookupReferences(lookup, numGlyphs, into);
+        return [.. into.Enumerate()];
+    }
 
     // ---- step 4.5: the single-pass reference union and its verification ----
 
@@ -272,9 +276,15 @@ public static partial class SubsetOperation
             return ReadStatus.ResourceLimit;
         List<ushort> added = [];
         List<LayoutTableCensus> census = [];
+        // One working set for the whole union: a lookup the tables alias (JSTF's
+        // inline JstfMax tables reuse the GSUB/GPOS lookup objects) is walked once,
+        // and a class-0 reference saturates the domain instead of re-inserting every
+        // GID. Both facts are uncharged by the work budget, so repeating them was
+        // pure multiplication.
+        var refs = new LayoutReferenceSet(retained.Length);
         if (state.Gdef is { } gdef)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectGdefReferences(gdef, refs);
             census.Add(new(Gdef, refs.Count));
             MergeLayoutReferences(gdef.Location, refs, retained, budget, added,
@@ -283,7 +293,7 @@ public static partial class SubsetOperation
         }
         if (state.Gsub is { } gsub)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectLayoutListsReferences(gsub, refs,
                 state.GsubScope?.SurvivingLookups);
             census.Add(new(Gsub, refs.Count));
@@ -293,7 +303,7 @@ public static partial class SubsetOperation
         }
         if (state.Gpos is { } gpos)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectLayoutListsReferences(gpos, refs,
                 state.GposScope?.SurvivingLookups);
             census.Add(new(Gpos, refs.Count));
@@ -303,7 +313,7 @@ public static partial class SubsetOperation
         }
         if (state.Jstf is { } jstf)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectJstfReferences(jstf, refs,
                 state.JstfScope?.SurvivingScripts);
             census.Add(new(Jstf, refs.Count));
@@ -313,7 +323,7 @@ public static partial class SubsetOperation
         }
         if (state.Kern is { } kern)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectKernReferences(kern, refs);
             census.Add(new(Kern, refs.Count));
             MergeLayoutReferences(kern.Location, refs, retained, budget, added,
@@ -322,7 +332,7 @@ public static partial class SubsetOperation
         }
         if (state.Math is { } math)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectMathReferences(math, refs);
             census.Add(new(Math, refs.Count));
             MergeLayoutReferences(math.Location, refs, retained, budget, added,
@@ -334,7 +344,7 @@ public static partial class SubsetOperation
             // The S2b-2 correction (OQ-S2b-6): the fmt2 referenceGlyph set joins
             // the union; a fmt1-only BASE enumerates zero references, keeping the
             // S2a zero row byte-identically.
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectBaseReferences(baseModel, refs);
             census.Add(new(Base, refs.Count));
             MergeLayoutReferences(baseModel.Location, refs, retained, budget,
@@ -369,51 +379,52 @@ public static partial class SubsetOperation
         List<int>? gsubSurvivingLookups = null, List<int>? gposSurvivingLookups = null,
         List<int>? jstfSurvivingScripts = null)
     {
+        var refs = new LayoutReferenceSet(retained.Length);
         if (admission.Gdef is { } gdef)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectGdefReferences(gdef, refs);
             if (!AllRetained(refs, retained, gdef.Location, out diagnostic))
                 return false;
         }
         if (admission.Gsub is { } gsub)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectLayoutListsReferences(gsub, refs, gsubSurvivingLookups);
             if (!AllRetained(refs, retained, gsub.Location, out diagnostic))
                 return false;
         }
         if (admission.Gpos is { } gpos)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectLayoutListsReferences(gpos, refs, gposSurvivingLookups);
             if (!AllRetained(refs, retained, gpos.Location, out diagnostic))
                 return false;
         }
         if (admission.Jstf is { } jstf)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectJstfReferences(jstf, refs, jstfSurvivingScripts);
             if (!AllRetained(refs, retained, jstf.Location, out diagnostic))
                 return false;
         }
         if (admission.Kern is { } kern)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectKernReferences(kern, refs);
             if (!AllRetained(refs, retained, kern.Location, out diagnostic))
                 return false;
         }
         if (admission.Math is { } math)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectMathReferences(math, refs);
             if (!AllRetained(refs, retained, math.Location, out diagnostic))
                 return false;
         }
         if (admission.Base is { } baseModel)
         {
-            var refs = new HashSet<int>();
+            refs.Clear();
             CollectBaseReferences(baseModel, refs);
             if (!AllRetained(refs, retained, baseModel.Location, out diagnostic))
                 return false;
@@ -426,11 +437,11 @@ public static partial class SubsetOperation
         state.Gdef, state.Gsub, state.Gpos, state.Jstf, state.Kern, state.Math,
         state.Base);
 
-    private static void MergeLayoutReferences(DataLocation at, HashSet<int> refs,
+    private static void MergeLayoutReferences(DataLocation at, LayoutReferenceSet refs,
         bool[] retained, BuildBudget budget, List<ushort> added,
         out FontDiagnostic diagnostic)
     {
-        foreach (int gid in refs)
+        foreach (int gid in refs.Enumerate())
         {
             if (retained[gid]) continue;
             if (!budget.Work(1, at.At(DataField.GlyphId, 0, gid), out diagnostic))
@@ -441,10 +452,10 @@ public static partial class SubsetOperation
         diagnostic = default;
     }
 
-    private static bool AllRetained(HashSet<int> refs, bool[] retained,
+    private static bool AllRetained(LayoutReferenceSet refs, bool[] retained,
         DataLocation at, out FontDiagnostic diagnostic)
     {
-        foreach (int gid in refs)
+        foreach (int gid in refs.Enumerate())
         {
             if (retained[gid]) continue;
             diagnostic = new(DiagnosticCode.LayoutFamilyUnsupported,
@@ -458,7 +469,7 @@ public static partial class SubsetOperation
     // ---- the reference enumerators (S2a card §2.3/§2.4; the one enumeration shape
     // shared by the merge and the verification) ----
 
-    private static void CollectGdefReferences(GdefTable gdef, HashSet<int> into)
+    private static void CollectGdefReferences(GdefTable gdef, LayoutReferenceSet into)
     {
         // OQ-S2a-7: the two ClassDefs are classification metadata, not semantic
         // references — the shaping positions of retained text are fully covered by
@@ -479,7 +490,7 @@ public static partial class SubsetOperation
     /// lookup-index references (domain-checked at the JstfView signature, no GID);
     /// every JstfMax inline lookup is a full LookupTable and re-enters the shared
     /// per-lookup collector.</summary>
-    private static void CollectJstfReferences(JstfTable jstf, HashSet<int> into,
+    private static void CollectJstfReferences(JstfTable jstf, LayoutReferenceSet into,
         List<int>? survivingScripts = null)
     {
         // S2c (card §0 item 2/§5.2): a declared scope enumerates only the
@@ -497,7 +508,7 @@ public static partial class SubsetOperation
     }
 
     private static void CollectJstfScriptReferences(JstfScriptTable script,
-        HashSet<int> into)
+        LayoutReferenceSet into)
     {
         if (script.ExtenderGlyphs is { } extenders)
             AddGlyphs(extenders.Glyphs, into);
@@ -506,7 +517,7 @@ public static partial class SubsetOperation
             CollectLangSys(langSys.LangSys, into);
     }
 
-    private static void CollectLangSys(JstfLangSysTable? langSys, HashSet<int> into)
+    private static void CollectLangSys(JstfLangSysTable? langSys, LayoutReferenceSet into)
     {
         if (langSys is null) return;
         foreach (var priority in langSys.Priorities)
@@ -516,7 +527,7 @@ public static partial class SubsetOperation
         }
     }
 
-    private static void CollectMaxLookups(JstfMaxTable? max, HashSet<int> into)
+    private static void CollectMaxLookups(JstfMaxTable? max, LayoutReferenceSet into)
     {
         if (max is null) return;
         foreach (var lookup in max.Lookups)
@@ -527,7 +538,7 @@ public static partial class SubsetOperation
     /// matrices merge the covered class ranges [First, First+GlyphCount) on both
     /// axes — every covered glyph participates in the matrix. Raw bodies never reach
     /// here: the admission refused them (RF-C).</summary>
-    private static void CollectKernReferences(KernTable kern, HashSet<int> into)
+    private static void CollectKernReferences(KernTable kern, LayoutReferenceSet into)
     {
         foreach (var subtable in kern.Subtables)
         {
@@ -548,7 +559,7 @@ public static partial class SubsetOperation
         }
     }
 
-    private static void AddClassRange(KernClassTable classTable, HashSet<int> into)
+    private static void AddClassRange(KernClassTable classTable, LayoutReferenceSet into)
     {
         for (int gid = classTable.FirstGlyph;
              gid < classTable.FirstGlyph + classTable.GlyphCount; gid++)
@@ -561,7 +572,7 @@ public static partial class SubsetOperation
     /// rule, and the set dedupes). The fmt1/fmt3 leaves carry no GID (their zero
     /// word is not a glyph id), so a fmt1-only BASE enumerates nothing and the
     /// S2a zero-obligation census row stays byte-identical.</summary>
-    private static void CollectBaseReferences(BaseTable baseTable, HashSet<int> into)
+    private static void CollectBaseReferences(BaseTable baseTable, LayoutReferenceSet into)
     {
         foreach (int reference in CollectBaseCoordReferences(baseTable))
             into.Add(reference);
@@ -602,7 +613,7 @@ public static partial class SubsetOperation
     /// families and the variants' two direction coverages) plus the hard per-glyph
     /// references — every construction's variant glyphs and every assembly's part
     /// glyphs — merge.</summary>
-    private static void CollectMathReferences(MathTable math, HashSet<int> into)
+    private static void CollectMathReferences(MathTable math, LayoutReferenceSet into)
     {
         if (math.GlyphInfo is { } glyphInfo)
         {
@@ -621,7 +632,7 @@ public static partial class SubsetOperation
     }
 
     private static void AddConstructionReferences(MathGlyphConstructionTable construction,
-        HashSet<int> into)
+        LayoutReferenceSet into)
     {
         foreach (var variant in construction.Variants)
             into.Add(variant.VariantGlyph);
@@ -631,7 +642,7 @@ public static partial class SubsetOperation
     }
 
     private static void CollectLayoutListsReferences(LayoutListsTable table,
-        HashSet<int> into, List<int>? survivingLookups = null)
+        LayoutReferenceSet into, List<int>? survivingLookups = null)
     {
         // S2c (card §3 step 4.5): a declared scope enumerates only the resolution's
         // surviving lookups — a cut lookup no longer pulls glyphs — while the
@@ -648,8 +659,18 @@ public static partial class SubsetOperation
     }
 
     private static void CollectLookupReferences(LookupTable lookup, int numGlyphs,
-        HashSet<int> into)
+        LayoutReferenceSet into)
     {
+        // The set owns the glyph domain the class-0 expansion saturates to, so a
+        // lookup read against another authority is a broken invariant, not a shape to
+        // absorb: the merge and the verification would then answer different sets.
+        if (numGlyphs != into.NumGlyphs)
+            throw new InvalidOperationException(
+                "A layout lookup's glyph domain differs from the closure's domain.");
+        // JSTF's JstfMax inline tables alias the GSUB/GPOS lookup objects by wire
+        // position, so the same object otherwise re-walks its whole body once per
+        // alias; one instance is one walk.
+        if (!into.TryMarkLookup(lookup)) return;
         if (lookup.SingleSubstitutions is { } singles)
         {
             foreach (var sub in singles)
@@ -694,12 +715,12 @@ public static partial class SubsetOperation
         else if (lookup.Contextuals is { } contextuals)
         {
             foreach (var sub in contextuals)
-                CollectContextualReferences(sub, numGlyphs, into);
+                CollectContextualReferences(sub, into);
         }
         else if (lookup.Chainings is { } chainings)
         {
             foreach (var sub in chainings)
-                CollectChainingReferences(sub, numGlyphs, into);
+                CollectChainingReferences(sub, into);
         }
         else if (lookup.ReverseChains is { } reverseChains)
         {
@@ -716,7 +737,7 @@ public static partial class SubsetOperation
         else if (lookup.Extensions is { } extensions)
         {
             foreach (var extension in extensions)
-                CollectExtensionReferences(extension, numGlyphs, into);
+                CollectExtensionReferences(extension, into);
         }
         else if (lookup.SinglePositions is { } singlePositions)
         {
@@ -740,8 +761,8 @@ public static partial class SubsetOperation
                     // references every cell, and class 0 is the unassigned domain —
                     // the OQ-S2a-6 lean names the merge's upper bound as the full
                     // glyph domain, reported honestly through the census.
-                    AddClassDomain(sub.ClassDef1, numGlyphs, into);
-                    AddClassDomain(sub.ClassDef2, numGlyphs, into);
+                    AddClassDomain(sub.ClassDef1, into);
+                    AddClassDomain(sub.ClassDef2, into);
                 }
             }
         }
@@ -777,7 +798,7 @@ public static partial class SubsetOperation
         else if (lookup.ExtensionPositions is { } extensionPositions)
         {
             foreach (var extension in extensionPositions)
-                CollectExtensionPosReferences(extension, numGlyphs, into);
+                CollectExtensionPosReferences(extension, into);
         }
     }
 
@@ -785,7 +806,7 @@ public static partial class SubsetOperation
     /// Contextuals/Chainings models (the OQ-T4-06-3 reuse), which re-enter their
     /// GSUB-shaped collectors.</summary>
     private static void CollectExtensionPosReferences(ExtensionPosTable extension,
-        int numGlyphs, HashSet<int> into)
+        LayoutReferenceSet into)
     {
         if (extension.Single is { } single)
             AddCoverage(single.Coverage, into);
@@ -798,8 +819,8 @@ public static partial class SubsetOperation
                         into.Add(record.SecondGlyph);
             else
             {
-                AddClassDomain(pair.ClassDef1, numGlyphs, into);
-                AddClassDomain(pair.ClassDef2, numGlyphs, into);
+                AddClassDomain(pair.ClassDef1, into);
+                AddClassDomain(pair.ClassDef2, into);
             }
         }
         else if (extension.Cursive is { } cursive)
@@ -820,16 +841,16 @@ public static partial class SubsetOperation
             AddCoverage(markMark.Mark2Coverage, into);
         }
         else if (extension.Contextual is { } contextual)
-            CollectContextualReferences(contextual, numGlyphs, into);
+            CollectContextualReferences(contextual, into);
         else if (extension.Chaining is { } chaining)
-            CollectChainingReferences(chaining, numGlyphs, into);
+            CollectChainingReferences(chaining, into);
     }
 
     /// <summary>One-level extension unwrapping (GSUB 7): the wrapped leaf re-enters the
     /// same per-type collection; a metadata-only wrapped body contributes nothing and
     /// has already refused at the admission segment (RF-B).</summary>
     private static void CollectExtensionReferences(ExtensionSubstTable extension,
-        int numGlyphs, HashSet<int> into)
+        LayoutReferenceSet into)
     {
         if (extension.Single is { } single)
         {
@@ -859,9 +880,9 @@ public static partial class SubsetOperation
                 }
         }
         else if (extension.Contextual is { } contextual)
-            CollectContextualReferences(contextual, numGlyphs, into);
+            CollectContextualReferences(contextual, into);
         else if (extension.Chaining is { } chaining)
-            CollectChainingReferences(chaining, numGlyphs, into);
+            CollectChainingReferences(chaining, into);
         else if (extension.ReverseChain is { } reverseChain)
         {
             AddCoverage(reverseChain.Coverage, into);
@@ -874,7 +895,7 @@ public static partial class SubsetOperation
     }
 
     private static void CollectContextualReferences(ContextualSubstTable sub,
-        int numGlyphs, HashSet<int> into)
+        LayoutReferenceSet into)
     {
         if (sub.Format == 3)
         {
@@ -895,7 +916,7 @@ public static partial class SubsetOperation
                     if (ruleSet is null) continue;
                     foreach (var rule in ruleSet.Rules)
                         foreach (ushort classValue in rule.InputSequence)
-                            AddClassValues(classDef, classValue, numGlyphs, into);
+                            into.AddClassValue(classDef, classValue);
                 }
         }
         else if (sub.RuleSets is { } ruleSets)
@@ -910,7 +931,7 @@ public static partial class SubsetOperation
     }
 
     private static void CollectChainingReferences(ChainingSubstTable sub,
-        int numGlyphs, HashSet<int> into)
+        LayoutReferenceSet into)
     {
         if (sub.Format == 3)
         {
@@ -934,65 +955,44 @@ public static partial class SubsetOperation
             {
                 if (sub.BacktrackClassDef is { } backtrackDef)
                     foreach (ushort classValue in rule.BacktrackSequence)
-                        AddClassValues(backtrackDef, classValue, numGlyphs, into);
+                        into.AddClassValue(backtrackDef, classValue);
                 else
                     AddGlyphs(rule.BacktrackSequence, into);
                 if (sub.InputClassDef is { } inputDef)
                     foreach (ushort classValue in rule.InputSequence)
-                        AddClassValues(inputDef, classValue, numGlyphs, into);
+                        into.AddClassValue(inputDef, classValue);
                 else
                     AddGlyphs(rule.InputSequence, into);
                 if (sub.LookaheadClassDef is { } lookaheadDef)
                     foreach (ushort classValue in rule.LookaheadSequence)
-                        AddClassValues(lookaheadDef, classValue, numGlyphs, into);
+                        into.AddClassValue(lookaheadDef, classValue);
                 else
                     AddGlyphs(rule.LookaheadSequence, into);
             }
         }
     }
 
-    /// <summary>Expands one referenced class value through its class definition. The
-    /// 0-class cell is the class definition's unassigned domain: the OQ-S2a-6 lean
-    /// merges its upper bound (the full glyph domain) and the census reports the
-    /// resulting breadth honestly.</summary>
-    private static void AddClassValues(ClassDefTable classDef, ushort classValue,
-        int numGlyphs, HashSet<int> into)
-    {
-        if (classValue == 0)
-        {
-            for (int gid = 0; gid < numGlyphs; gid++) into.Add(gid);
-            return;
-        }
-        foreach (var range in classDef.Ranges)
-        {
-            if (range.ClassValue != classValue) continue;
-            for (int gid = range.StartGlyph; gid <= range.EndGlyph; gid++)
-                into.Add(gid);
-        }
-    }
-
     /// <summary>The format-2 pair-position class matrix references every class1×class2
     /// cell, so both class domains merge wholesale: class 0 drags the bound to the
     /// full glyph domain (OQ-S2a-6).</summary>
-    private static void AddClassDomain(ClassDefTable? classDef, int numGlyphs,
-        HashSet<int> into)
+    private static void AddClassDomain(ClassDefTable? classDef, LayoutReferenceSet into)
     {
         if (classDef is null) return;
-        for (int gid = 0; gid < numGlyphs; gid++) into.Add(gid);
+        into.AddAll();
     }
 
-    private static void AddCoverage(CoverageTable? coverage, HashSet<int> into)
+    private static void AddCoverage(CoverageTable? coverage, LayoutReferenceSet into)
     {
         if (coverage is null) return;
         foreach (ushort glyph in coverage.Glyphs) into.Add(glyph);
     }
 
-    private static void AddGlyphs(ReadOnlySpan<ushort> glyphs, HashSet<int> into)
+    private static void AddGlyphs(ReadOnlySpan<ushort> glyphs, LayoutReferenceSet into)
     {
         foreach (ushort glyph in glyphs) into.Add(glyph);
     }
 
-    private static void AddGlyphs(IReadOnlyList<ushort> glyphs, HashSet<int> into)
+    private static void AddGlyphs(IReadOnlyList<ushort> glyphs, LayoutReferenceSet into)
     {
         foreach (ushort glyph in glyphs) into.Add(glyph);
     }
