@@ -326,12 +326,23 @@ public static class ContextualSubstTableCompiler
         long coverageBytes = 0;
         foreach (var coverage in model.Coverages) coverageBytes += CoverageTableCompiler.Measure(coverage);
         long length = coverageStart + coverageBytes;
-        // The 16-bit coverage offsets bound the body region; the too-narrow targets
-        // refuse in the writer's generated fixups (the registered finite overflow).
-        if (coverageStart > ushort.MaxValue)
-            return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
-                model.Location.AtLocal(DataField.Offset, ContextualSubstLayout.Format1ArrayAt),
-                out diagnostic, (ulong)coverageStart, (ulong)ushort.MaxValue);
+        // Every coverage offset record is an Offset16 from the subtable start, and the
+        // bodies follow one another, so each target is cumulative: checking only the
+        // first start lets a later body exceed the word, which the writer's narrowing
+        // conversion then reports as an exception in a checked build (or truncates in
+        // an unchecked one) instead of the finite refusal.
+        long coverageTarget = coverageStart;
+        for (int i = 0; i < coverageCount; i++)
+        {
+            if (coverageTarget > ushort.MaxValue)
+                return ReadWire.Fail(ReadStatus.UnsupportedFormat,
+                    DiagnosticCode.UnsupportedOperation,
+                    model.Location.AtLocal(DataField.Offset,
+                        ContextualSubstLayout.Format1ArrayAt +
+                        (ulong)i * ContextualSubstLayout.OffsetStride, i),
+                    out diagnostic, (ulong)coverageTarget, (ulong)ushort.MaxValue);
+            coverageTarget += CoverageTableCompiler.Measure(model.Coverages[i]);
+        }
         if (!budget.Work(EmissionWork(model), model.Location, out diagnostic) ||
             !budget.Output(length, model.Location, out diagnostic)) return ReadStatus.ResourceLimit;
         plans =

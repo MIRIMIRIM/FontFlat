@@ -179,6 +179,42 @@ public static class MarkPosTableCompiler
         return ReadStatus.Done;
     }
 
+    // Every Offset16 word the plan fixes is preflighted here, before any byte lands:
+    // a target beyond the word refuses through the same finite too-narrow face the
+    // anchor/device deltas already use. Without it the narrowing conversion inside
+    // the writer throws in a checked build (or emits a truncated offset in an
+    // unchecked one), so a legal source whose plan happens to exceed the word per
+    // subtable would escape the documented refusal.
+    private static ReadStatus CheckTarget(DataLocation location, long target,
+        ulong fieldAt, out FontDiagnostic diagnostic)
+    {
+        if (target <= ushort.MaxValue)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+            location.AtLocal(DataField.Offset, fieldAt), out diagnostic, (ulong)target,
+            (ulong)ushort.MaxValue);
+    }
+
+    /// <summary>The four header targets of a mark subtable (both coverages, the
+    /// MarkArray and the matrix/attach array), each an Offset16 from the subtable
+    /// start.</summary>
+    private static ReadStatus CheckHeaderTargets(MarkPosPartPlan plan, DataLocation location,
+        ulong firstFieldAt, ulong secondFieldAt, ulong markArrayFieldAt, ulong matrixFieldAt,
+        out FontDiagnostic diagnostic)
+    {
+        ReadStatus status = CheckTarget(location, plan.MarkCoverageTarget, firstFieldAt,
+            out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = CheckTarget(location, plan.SecondCoverageTarget, secondFieldAt, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        status = CheckTarget(location, plan.MarkArrayTarget, markArrayFieldAt, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        return CheckTarget(location, plan.MatrixTarget, matrixFieldAt, out diagnostic);
+    }
+
     private static void WriteAnchorLeaves(MarkPosPartPlan plan, Span<byte> destination, DataLocation location)
     {
         foreach (var leaf in plan.Anchors)
@@ -365,6 +401,10 @@ public static class MarkPosTableCompiler
         plan = new((int)end, MarkBasePosLayout.MinimumHeader,
             MarkBasePosLayout.MinimumHeader + CoverageTableCompiler.Measure(model.MarkCoverage),
             (int)markArrayAt, matrixAt, 0, anchors, anchorTargets, devices, deviceTargets, emission);
+        status = CheckHeaderTargets(plan, location, MarkBasePosLayout.MarkCoverageField,
+            MarkBasePosLayout.BaseCoverageField, MarkBasePosLayout.MarkArrayField,
+            MarkBasePosLayout.BaseArrayField, out diagnostic);
+        if (status != ReadStatus.Done) return status;
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -536,6 +576,25 @@ public static class MarkPosTableCompiler
             MarkLigPosLayout.MinimumHeader + CoverageTableCompiler.Measure(model.MarkCoverage),
             markArrayTarget, matrixAt, attachArrayTarget, anchors, anchorTargets, devices,
             deviceTargets, emission);
+        status = CheckHeaderTargets(plan, location, MarkLigPosLayout.MarkCoverageField,
+            MarkLigPosLayout.LigatureCoverageField, MarkLigPosLayout.MarkArrayField,
+            MarkLigPosLayout.LigatureArrayField, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        // The LigatureArray's own entries are Offset16 words from the array start
+        // (the count word included), so each attach body's target has its own reach
+        // face beside the four header words.
+        long entryAt = attachArrayTarget + (long)ligCount * LigatureArrayLayout.OffsetStride;
+        for (int i = 0; i < ligCount; i++)
+        {
+            status = CheckTarget(location, entryAt - matrixAt,
+                MarkLigPosLayout.LigatureArrayField + (ulong)(LigatureArrayLayout.MinimumHeader +
+                    i * LigatureArrayLayout.OffsetStride), out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            var attach = model.Ligatures[i];
+            int classCount = 0;
+            for (int c = 0; c < attach.Components; c++) classCount = attach.ComponentRow(c).Length;
+            entryAt += MarkAnchorMatrix.ArrayHeaderLength + (long)attach.Components * 2L * classCount;
+        }
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -724,6 +783,10 @@ public static class MarkPosTableCompiler
         plan = new((int)end, MarkMarkPosLayout.MinimumHeader,
             MarkMarkPosLayout.MinimumHeader + CoverageTableCompiler.Measure(model.MarkCoverage),
             markArrayTarget, matrixAt, 0, anchors, anchorTargets, devices, deviceTargets, emission);
+        status = CheckHeaderTargets(plan, location, MarkMarkPosLayout.Mark1CoverageField,
+            MarkMarkPosLayout.Mark2CoverageField, MarkMarkPosLayout.Mark1ArrayField,
+            MarkMarkPosLayout.Mark2ArrayField, out diagnostic);
+        if (status != ReadStatus.Done) return status;
         diagnostic = default;
         return ReadStatus.Done;
     }
