@@ -4,13 +4,15 @@ namespace FontWeave.Tables;
 
 public readonly ref partial struct MetaView
 {
-    /// <summary>Strict version 1, zero flags/reserved, unique tags and disjoint payloads.
+    /// <summary>Strict version 1, zero flags, unique tags and disjoint payloads.
     /// Payload contents are opaque: this does not validate UTF-8 or language-tag semantics.
-    /// Historical nonzero Apple/FontTools dataOffset values at byte 8 are not accepted.</summary>
+    /// The byte-8 field is historical: the ecosystem's shipped fonts (the Windows
+    /// core set included) carry non-zero values there and every consumer ignores
+    /// it, so both faces tolerate it and the model records the source value.</summary>
     public ReadStatus Validate(out FontDiagnostic diagnostic, BuildLimits? limits = null) =>
-        Validate(out diagnostic, new BuildBudget(limits), ignoreReserved: false);
+        Validate(out diagnostic, new BuildBudget(limits));
 
-    private ReadStatus Validate(out FontDiagnostic diagnostic, BuildBudget budget, bool ignoreReserved)
+    private ReadStatus Validate(out FontDiagnostic diagnostic, BuildBudget budget)
     {
         if (!IsBound)
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView,
@@ -18,10 +20,9 @@ public readonly ref partial struct MetaView
         if (!budget.Input(_data.Length, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        if (Flags != 0 || (!ignoreReserved && Reserved != 0))
+        if (Flags != 0)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
-                Location.At(Flags != 0 ? DataField.Flags : DataField.None, Flags != 0 ? 4UL : 8UL),
-                out diagnostic, Flags != 0 ? Flags : Reserved);
+                Location.At(DataField.Flags, 4UL), out diagnostic, Flags);
         status = TryGetDirectoryEnd(out ulong directoryEnd, out diagnostic);
         if (status != ReadStatus.Done) return status;
         if (directoryEnd > (ulong)_data.Length)
@@ -61,16 +62,15 @@ public readonly ref partial struct MetaView
         return MetadataPayloadRanges.Validate(ranges, Location, out diagnostic);
     }
 
-    /// <summary>Reads owned metadata while ignoring only the historical header field at byte 8.
-    /// DataMap offsets and all other structural checks still apply. Success does not establish
-    /// strict input conformance; use Validate for that. SourceReserved records the original
-    /// field value, while the compiler always writes Reserved as zero.</summary>
+    /// <summary>Reads owned metadata. DataMap offsets and all structural checks apply;
+    /// the historical byte-8 field is tolerated on both faces. SourceReserved records
+    /// the original field value, while the compiler always writes Reserved as zero.</summary>
     public ReadStatus TryRead(out MetaTable? model, out FontDiagnostic diagnostic,
         BuildLimits? limits = null)
     {
         model = null;
         var budget = new BuildBudget(limits);
-        ReadStatus status = Validate(out diagnostic, budget, ignoreReserved: true);
+        ReadStatus status = Validate(out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         long payloadBytes = 0;
         for (int i = 0; i < (int)DataMapsCount; i++)
