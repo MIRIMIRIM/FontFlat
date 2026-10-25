@@ -198,6 +198,126 @@ public sealed class SubsetLayoutClosureTests
         Assert.Null(result);
     }
 
+    // The MATH admission shares the kern contract: the reader charges the running
+    // operation budget. The same ceiling passes the bare face and refuses once the
+    // MATH read lands in the same accounting domain (a fresh BuildLimits would have
+    // kept the table's charge in a second budget and returned Done).
+    [Fact]
+    public void MathReadChargesTheOperationBudget()
+    {
+        const int numGlyphs = 4100, count = 2000, variantsPerGlyph = 20;
+        FontDiagnostic diagnostic = default;
+        var constructions = new MathGlyphConstructionTable[count];
+        for (int i = 0; i < count; i++)
+        {
+            var variants = Enumerable.Range(0, variantsPerGlyph)
+                .Select(k => new MathGlyphVariantRecord((ushort)((i * variantsPerGlyph + k) % 4000),
+                    (ushort)k)).ToArray();
+            Ok(MathTableCompiler.TryCreate(null, variants, numGlyphs,
+                out var construction, out diagnostic));
+            constructions[i] = construction!;
+        }
+        var coverageGlyphs = Enumerable.Range(0, count).Select(i => (ushort)(2 * i)).ToArray();
+        Ok(CoverageTableCompiler.TryCreate(coverageGlyphs, numGlyphs, 1, out var coverage,
+            out diagnostic));
+        Ok(MathTableCompiler.TryCreate(0, coverage!, coverage!, constructions, constructions,
+            out var variantsTable, out diagnostic));
+        Ok(MathTableCompiler.TryCreate(0x00010000, numGlyphs, null, null, variantsTable,
+            out var math, out diagnostic));
+        Ok(MathTableCompiler.TryCompile(math!, out var mathBytes, out diagnostic));
+        var extras = new (uint Tag, byte[] Bytes)[]
+        {
+            (0x4D415448, mathBytes!),
+        };
+        ReaderChargesTheOperationBudget(numGlyphs, extras, mathBytes!.Length);
+    }
+
+    // The BASE admission answers the fmt2 census through the same shared budget as
+    // kern and MATH; the ceiling that passes the bare face must refuse the face
+    // carrying the table instead of letting the read charge a second budget.
+    [Fact]
+    public void BaseReadChargesTheOperationBudget()
+    {
+        const int numGlyphs = 64, scriptCount = 100, coordCount = 100;
+        FontDiagnostic diagnostic = default;
+        var scripts = new BaseScriptRecord[scriptCount];
+        for (int i = 0; i < scriptCount; i++)
+        {
+            var coords = Enumerable.Range(0, coordCount)
+                .Select(k => BaseCoord(i * coordCount + k)).ToArray();
+            Ok(BaseAxisTableCompiler.TryCreate(0, coords, out var values, out diagnostic));
+            Ok(BaseAxisTableCompiler.TryCreate(values, null,
+                ReadOnlySpan<BaseLangSysRecord>.Empty, out var script, out diagnostic));
+            scripts[i] = new BaseScriptRecord(0x61726162u + (uint)i, script!);
+        }
+        Ok(BaseAxisTableCompiler.TryCreate(null, scripts, out var axis, out diagnostic));
+        Ok(BaseTableCompiler.TryCreate(0x00010000, numGlyphs, axis, null, null,
+            out var model, out diagnostic));
+        Ok(BaseTableCompiler.TryCompile(model!, out var baseBytes, out diagnostic));
+        var extras = new (uint Tag, byte[] Bytes)[]
+        {
+            (0x42415345, baseBytes!),
+        };
+        ReaderChargesTheOperationBudget(numGlyphs, extras, baseBytes!.Length);
+    }
+
+    // The shared kern/MATH/BASE witness shape: run the bare face and the face
+    // carrying the table under a generous ceiling, then split the measured usages
+    // down the middle. The bare face must still pass at the split (it finished
+    // below it), while the carrying face must refuse there — its read charge lands
+    // in the one operation budget, so nothing may cross the ceiling unaccounted.
+    private static void ReaderChargesTheOperationBudget(int numGlyphs,
+        (uint Tag, byte[] Bytes)[] extras, long tableLength)
+    {
+        FontFaceRef BareFace()
+        {
+            var tables = new List<(uint, byte[])>
+            {
+                (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+                (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp((ushort)numGlyphs)),
+                (SubsetFontFixture.GlyfTag, Array.Empty<byte>()),
+                (SubsetFontFixture.LocaTag, new byte[4 * (numGlyphs + 1)]),
+                (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41, 1))),
+            };
+            tables.AddRange(extras);
+            return SubsetFontFixture.Face(tables.ToArray());
+        }
+        var bareFace = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp((ushort)numGlyphs)),
+            (SubsetFontFixture.GlyfTag, Array.Empty<byte>()),
+            (SubsetFontFixture.LocaTag, new byte[4 * (numGlyphs + 1)]),
+            (SubsetFontFixture.CmapTag, SubsetFontFixture.CmapCanonical((0x41, 1))));
+        var face = BareFace();
+        var options = new SubsetOptions { PreserveLayout = true };
+        const long generous = 64_000_000;
+        Ok(SubsetOperation.TryPrepare(Request(bareFace, [1], options), out var bare,
+            out _, out _, new BuildLimits { MaxTemporaryBytes = generous }));
+        Ok(SubsetOperation.TryPrepare(Request(face, [1], options), out var full,
+            out _, out _, new BuildLimits { MaxTemporaryBytes = generous }));
+        Assert.NotNull(bare);
+        Assert.NotNull(full);
+        long bareUsage = bare.Font.Usage.TemporaryBytes;
+        long fullUsage = full.Font.Usage.TemporaryBytes;
+        Assert.True(fullUsage > bareUsage + tableLength,
+            $"carrying usage {fullUsage} must exceed bare {bareUsage} plus the raw table {tableLength}");
+        long ceiling = (bareUsage + tableLength + fullUsage) / 2;
+        Assert.Equal(ReadStatus.Done, SubsetOperation.TryPrepare(Request(bareFace, [1], options),
+            out var under, out _, out _, new BuildLimits { MaxTemporaryBytes = ceiling }));
+        Assert.NotNull(under);
+        var status = SubsetOperation.TryPrepare(Request(face, [1], options), out var result,
+            out _, out var failure, new BuildLimits { MaxTemporaryBytes = ceiling });
+        Assert.Equal(ReadStatus.ResourceLimit, status);
+        Assert.Equal(DiagnosticCode.BudgetExceeded, failure.Code);
+        Assert.Equal(DataField.TemporaryBytes, failure.Location.Field);
+        Assert.Null(result);
+    }
+
+    private static BaseCoordTable BaseCoord(int value) =>
+        BaseCoordTableCompiler.TryCreate(1, (short)(value % 30000), 0, 0, null, 64,
+            out var model, out _) == ReadStatus.Done
+            ? model! : throw new Xunit.Sdk.XunitException("base coord factory refused");
+
     private static byte[] OutputBytes(SubsetResult result)
     {
         byte[] output = new byte[result.Font.OutputLength];
