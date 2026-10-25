@@ -35,6 +35,16 @@ public static class ItemVariationDataTableCompiler
                 location.AtLocal(DataField.Flags, ItemVariationDataLayout.WordDeltaCountAt),
                 out diagnostic, (ulong)words, (ulong)regionIndexCount);
         int itemCount = rows.Count;
+        // Both counts are UInt16 scalars on the wire; the plan refuses anything past
+        // the word instead of letting the emission narrow it.
+        if (itemCount > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, ItemVariationDataLayout.ItemCountAt),
+                out diagnostic, (ulong)itemCount, (ulong)ushort.MaxValue);
+        if (regionIndexCount > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, ItemVariationDataLayout.RegionIndexCountAt),
+                out diagnostic, (ulong)regionIndexCount, (ulong)ushort.MaxValue);
         for (int row = 0; row < itemCount; row++)
         {
             int[] deltas = rows[row];

@@ -107,7 +107,14 @@ public readonly ref partial struct FvarView
         if (instanceCount == 0) return Done(out diagnostic);
         status = TryGetInstanceSize(out ushort instanceSize, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        ushort baseSize = checked((ushort)(axisCount * 4 + 4));
+        // The derived base (4*axisCount+4) must stay inside the instanceSize word: an
+        // axisCount that pushes it past 65535 is a diagnosis, never a narrowing throw.
+        long derivedBase = 4L * axisCount + 4;
+        if (derivedBase > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                Location.AtLocal(DataField.Length, FvarLayout.InstanceSizeAt),
+                out diagnostic, (ulong)derivedBase, (ulong)ushort.MaxValue);
+        ushort baseSize = (ushort)derivedBase;
         if (instanceSize != baseSize && instanceSize != baseSize + 2)
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 Location.AtLocal(DataField.Length, FvarLayout.InstanceSizeAt),

@@ -106,8 +106,18 @@ public static class CvarTableCompiler
             headersLength += TupleVariationCodec.TupleVariationHeaderSize(tuple.TupleIndex,
                 axisCount);
         long runLength = 0;
-        foreach (var tuple in tuples)
-            runLength += MeasureRun(tuple);
+        for (int i = 0; i < tuples.Count; i++)
+        {
+            int tupleLength = MeasureRun(tuples[i]);
+            // The per-tuple variationDataSize is a UInt16 field; the guard mirrors
+            // gvar's run refusal instead of letting the emission narrow it.
+            if (tupleLength > ushort.MaxValue)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.AtLocal(DataField.Length,
+                        (ulong)(CvarLayout.HeaderLength + 4L * i), i),
+                    out diagnostic, (ulong)tupleLength, (ulong)ushort.MaxValue);
+            runLength += tupleLength;
+        }
         // headersLength counts the [tvc][dataOffset] pair from the store start, so the
         // serialized data begins at headerStart + the four-byte pair + the TVH strides;
         // the shared point block sits at that offset (it is not skipped) and extends the

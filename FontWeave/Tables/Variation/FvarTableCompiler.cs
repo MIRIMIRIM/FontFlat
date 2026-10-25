@@ -38,6 +38,13 @@ public static class FvarTableCompiler
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 location.AtLocal(DataField.Count, FvarLayout.InstanceCountAt),
                 out diagnostic, (ulong)instances.Count, (ulong)ushort.MaxValue);
+        // instanceSize is itself a UInt16 scalar: 4*axisCount+6 must fit, so an axis
+        // list near the count word's top is the plan's refusal here (the reader derives
+        // the same bound instead of narrowing the derived size).
+        if ((ulong)axes.Count * 4 + 6 > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Length, FvarLayout.InstanceSizeAt),
+                out diagnostic, (ulong)axes.Count * 4 + 6, (ulong)ushort.MaxValue);
         ReadStatus status = ValidateAxes(axes, location, budget, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = ValidateInstances(instances, axes.Count, location, budget, out diagnostic);

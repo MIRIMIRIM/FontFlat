@@ -42,6 +42,12 @@ public static class GvarTableCompiler
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 location.AtLocal(DataField.Count, GvarLayout.AxisCountAt), out diagnostic,
                 (ulong)axisCount, 0);
+        // axisCount is a UInt16 header scalar; the shared-tuple and glyph counts carry
+        // their own word bounds, and the axis count owns the same refusal.
+        if (axisCount > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, GvarLayout.AxisCountAt), out diagnostic,
+                (ulong)axisCount, (ulong)ushort.MaxValue);
         ReadStatus status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, location,
             out diagnostic);
         if (status != ReadStatus.Done) return status;
