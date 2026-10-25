@@ -392,4 +392,18 @@ public sealed class SvgSbixWriteTests
         Assert.Equal(wire, exact);
         Assert.Equal(compiled, exact);
     }
+
+    // numEntries is a uint16 field: the factory must refuse a record list past the word
+    // instead of letting the compile narrow it (a throw in a checked build, a truncated
+    // count over orphaned record rows in an unchecked one).
+    [Fact]
+    public void RecordCountPastTheWordIsRefusedAtTheFactory()
+    {
+        var records = Enumerable.Range(0, 65_536)
+            .Select(i => new SvgDocumentRecord((ushort)i, (ushort)i, 0)).ToArray();
+
+        Assert.Equal(ReadStatus.InvalidFormat, SvgTableCompiler.TryCreate(0, 0, records,
+            [[1]], out var model, out _));
+        Assert.Null(model);
+    }
 }

@@ -188,6 +188,13 @@ public static class CidCff1TableCompiler
                     model.Location.At(DataField.Cid, 0, edit.GlyphId), out diagnostic,
                     (uint)Math.Max(0, edit.Cid),
                     (uint)(model.CidCount >= 0 ? model.CidCount : CidLayout.MaxCidCount));
+            // The charset's CID field is two bytes; a declared CIDCount past the 16-bit
+            // space (the reader accepts the declaration) cannot widen it.
+            if (edit.Cid > 0xFFFF)
+                return ReadWire.Fail(ReadStatus.InvalidIndex,
+                    DiagnosticCode.IndexOutOfRange,
+                    model.Location.At(DataField.Cid, 0, edit.GlyphId), out diagnostic,
+                    (uint)edit.Cid, (uint)ushort.MaxValue);
             cids[edit.GlyphId] = edit.Cid;
         }
         int charsetLength = (int)Cff1TableCompiler.CharsetLength(model.CharsetForm, cids);
@@ -536,11 +543,30 @@ public static class CidCff1TableCompiler
                     (uint)first[i - 1] + 1);
                 return [];
             }
+            // The reader's own rule (a run start stays inside the glyph domain), mirrored
+            // here: the word cannot state a larger FirstGlyph and a start at or past the
+            // sentinel claims glyphs the font does not have.
+            if (first[i] >= map.NumGlyphs)
+            {
+                ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    model.Location.At(DataField.Count, 0, i), out diagnostic, (uint)first[i],
+                    unchecked((uint)map.NumGlyphs));
+                return [];
+            }
             if (fd[i] < 0 || fd[i] >= model.FdCount)
             {
                 ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                     model.Location.At(DataField.FdIndex, 0, i), out diagnostic, (uint)fd[i],
                     (uint)model.FdCount);
+                return [];
+            }
+            // Format 3 states the fd as one byte. The FDArray may carry FDs no glyph
+            // references, so the array count does not bound the field.
+            if (fd[i] > byte.MaxValue)
+            {
+                ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
+                    model.Location.At(DataField.FdIndex, 0, i), out diagnostic, (uint)fd[i],
+                    (uint)byte.MaxValue);
                 return [];
             }
         }

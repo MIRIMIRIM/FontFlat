@@ -80,4 +80,50 @@ public sealed class CidFdSelectTests
         Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
         Assert.Null(model);
     }
+
+    // Format 3's run fd is a one-byte field. The FDArray may legally carry FDs no glyph
+    // references, so an edit can name an FD inside the array count but past the byte
+    // domain; the plan must refuse it rather than let the writer's byte narrowing
+    // silently move every glyph of the run onto a different FD.
+    [Fact]
+    public void EditedFdIndexPastTheFormat3ByteDomainIsRefused()
+    {
+        // 300 FDs over 300 glyphs: the builder's own FDSelect writes fds 256.. as
+        // truncated bytes, which the reader accepts (every referenced fd stays inside
+        // the array), so the model's FD count is the full 300.
+        var image = CidFontBuilder.Build(fdCount: 300, numGlyphs: 300);
+        _ = Cff1View.TryOpen(image.Bytes, out var view, out _);
+        Assert.Equal(ReadStatus.Done, view.TryReadCid(out var model, out _));
+        Assert.Equal(300, model!.FdCount);
+
+        var plan = new CidEditPlan { FdRanges = [new CidFdRangeEdit(0, null, 260)] };
+
+        // Prepare flattens every FDSelect refusal to InvalidFormat; the byte-domain
+        // bound is told by the diagnostic (expected 256, not the array count).
+        Assert.Equal(ReadStatus.InvalidFormat, CidCff1TableCompiler.TryCompile(model!, plan,
+            out var bytes, out var diagnostic));
+        Assert.Equal(DiagnosticCode.IndexOutOfRange, diagnostic.Code);
+        Assert.Equal(260ul, diagnostic.Detail);
+        Assert.Null(bytes);
+    }
+
+    // A run's FirstGlyph is a uint16 that must stay inside the glyph domain: past the
+    // word the writer's narrowing throws in a checked build, and at or past the sentinel
+    // the run claims glyphs the font does not have. The reader's own rule, mirrored at
+    // the plan instead of only on the way back in.
+    [Theory]
+    [InlineData(70_000)]
+    [InlineData(300)]
+    [InlineData(301)]
+    public void EditedFirstGlyphOutsideTheGlyphDomainIsRefused(int first)
+    {
+        var image = CidFontBuilder.Build(fdCount: 3, numGlyphs: 300);
+        _ = Cff1View.TryOpen(image.Bytes, out var view, out _);
+        Assert.Equal(ReadStatus.Done, view.TryReadCid(out var model, out _));
+        var plan = new CidEditPlan { FdRanges = [new CidFdRangeEdit(2, first, null)] };
+
+        Assert.Equal(ReadStatus.InvalidFormat, CidCff1TableCompiler.TryCompile(model!, plan,
+            out var bytes, out _));
+        Assert.Null(bytes);
+    }
 }

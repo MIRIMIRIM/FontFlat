@@ -173,6 +173,12 @@ public static class Cff2TableCompiler
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     location.AtLocal(DataField.Version, 0), out diagnostic,
                     (uint)fontDicts.Count, 0x100ul);
+            // Format 4 states each fd as a uint16, so the Font DICT count carries the
+            // word bound (the fdIndex domain below cannot stay under it).
+            if (fdSelectFormat == 4 && fontDicts.Count > 0xFFFF)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    location.AtLocal(DataField.Version, 0), out diagnostic,
+                    (uint)fontDicts.Count, 0xFFFFul);
             if (fdSelectFormat == 3 && charStrings.Count > 0xFFFF)
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                     location.AtLocal(DataField.Version, 0), out diagnostic,

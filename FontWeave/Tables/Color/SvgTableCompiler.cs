@@ -46,6 +46,12 @@ public static class SvgTableCompiler
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
                 location.AtLocal(DataField.Count, SvgLayout.HeaderListOffsetAt), out diagnostic,
                 0UL, 1UL);
+        // numEntries is a UInt16 scalar; anything past the word is the plan's refusal,
+        // never a truncated count over orphaned record rows at emission.
+        if (records.Count > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                location.AtLocal(DataField.Count, SvgLayout.HeaderListOffsetAt), out diagnostic,
+                (ulong)records.Count, (ulong)ushort.MaxValue);
         if (!budget.Work(records.Count + documents.Count + TotalDocumentBytes(documents),
                 location, out diagnostic))
             return ReadStatus.ResourceLimit;

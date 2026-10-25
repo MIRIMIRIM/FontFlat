@@ -61,4 +61,29 @@ public sealed class CidCharsetOffsetTests
         Assert.Equal(DiagnosticCode.RangeOutsideSource, diagnostic.Code);
         Assert.Null(model);
     }
+
+    /// <summary>The charset's CID is a two-byte field. The reader accepts a declared
+    /// CIDCount past the 16-bit space (only &gt;= numGlyphs is checked), so an edit can
+    /// name a CID no charset entry can state; the plan must refuse instead of
+    /// truncating the operand to its low word.</summary>
+    [Fact]
+    public void EditedCidPastTheWireDomainIsRefused()
+    {
+        var image = CidFontBuilder.Build(fdCount: 3, numGlyphs: 3);
+        byte[] cff = (byte[])image.Bytes.Clone();
+        // The builder writes every Top DICT operand in the fixed five-byte form, so the
+        // patch is length-neutral and the layout stays valid.
+        var (operandAt, marker) = CffWire.FindTopEntry(cff, 0x0C22);
+        CffWire.PatchOperand(cff, operandAt, marker, 300_000);
+
+        _ = Cff1View.TryOpen(cff, out var view, out _);
+        Assert.Equal(ReadStatus.Done, view.TryReadCid(out var model, out _));
+        Assert.Equal(300_000, model!.CidCount);
+
+        var plan = new CidEditPlan { CharsetItems = [new CidCharsetEdit(1, 200_000)] };
+
+        Assert.Equal(ReadStatus.InvalidIndex, CidCff1TableCompiler.TryCompile(model!, plan,
+            out var bytes, out _));
+        Assert.Null(bytes);
+    }
 }
