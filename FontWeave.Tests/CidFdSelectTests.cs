@@ -126,4 +126,26 @@ public sealed class CidFdSelectTests
             out var bytes, out _));
         Assert.Null(bytes);
     }
+
+    // The legal edges of the two new bounds: a run may start at the last glyph
+    // (numGlyphs - 1), and an edit may name fd 255, the top of the format-3 byte
+    // domain. Both keep compiling, so neither guard can creep past its wire
+    // domain unnoticed.
+    [Fact]
+    public void TheGlyphDomainAndByteDomainEdgesStillCompile()
+    {
+        var image = CidFontBuilder.Build(fdCount: 300, numGlyphs: 400);
+        _ = Cff1View.TryOpen(image.Bytes, out var view, out _);
+        Assert.Equal(ReadStatus.Done, view.TryReadCid(out var model, out _));
+        // 300 runs tile the 400 glyphs (the last starts at 398); move the last
+        // run to glyph 399 and point run 0 at fd 255.
+        var plan = new CidEditPlan
+        {
+            FdRanges = [new CidFdRangeEdit(299, 399, null), new CidFdRangeEdit(0, null, 255)],
+        };
+
+        Assert.Equal(ReadStatus.Done, CidCff1TableCompiler.TryCompile(model!, plan,
+            out var bytes, out _));
+        Assert.NotNull(bytes);
+    }
 }

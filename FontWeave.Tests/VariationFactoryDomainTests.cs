@@ -100,4 +100,21 @@ public sealed class VariationFactoryDomainTests
             regions, [new int[70_000]], out model, out _));
         Assert.Null(model);
     }
+
+    // The passing edge of the instanceSize bound: 16382 axes fit (4*16382+6 =
+    // 65534, the largest instanceSize the word states) and compile.
+    [Fact]
+    public void FvarAxisListAtTheInstanceSizeEdgeCompiles()
+    {
+        var axes = Enumerable.Range(0, 16_382)
+            .Select(i => new FvarAxis((uint)(0x61786961 + i), 0, 0, 100, 0, 256)).ToArray();
+        var instances = new[] { new FvarInstance(256, 0, new int[16_382], 257) };
+        Assert.Equal(ReadStatus.Done, FvarTableCompiler.TryCreate(axes, instances,
+            out var model, out _));
+
+        var status = FvarTableCompiler.TryCompile(model!, out var bytes, out _);
+
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(65_534, BinaryPrimitives.ReadUInt16BigEndian(bytes!.AsSpan(14)));
+    }
 }

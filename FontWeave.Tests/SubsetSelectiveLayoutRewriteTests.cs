@@ -296,6 +296,30 @@ public sealed class SubsetSelectiveLayoutRewriteTests
         Assert.Equal(new ushort[] { 1 }, output.MarkGlyphSets.Sets[1].Glyphs.ToArray());
     }
 
+    // Cursive attachment: the compact rewrite filters the Coverage to the kept
+    // glyphs and carries each survivor's entry/exit anchors over the frozen map.
+    // This is the one positioning family whose compiler had no direct or indirect
+    // write-side coverage at all.
+    [Fact]
+    public void CursiveFiltersCoverageAndKeepsEntryExitAnchors()
+    {
+        Ok(CursivePosTableCompiler.TryCreate([1, 4, 7],
+            [new(Anchor(11), Anchor(12)), new(null, Anchor(44)),
+                new(Anchor(71), null)], NumGlyphs, out var cursive, out _));
+        Ok(LookupTableCompiler.TryCreateCursivePos(NumGlyphs, [cursive!], 0,
+            null, null, out var lookup, out _));
+
+        var (result, table) = Run(LayoutLookupKind.Gpos, [lookup!], [4, 7]);
+
+        Assert.Equal(new ushort[] { 0, 4, 7 }, Inputs(result));
+        var output = Assert.Single(table.Lookups.ToArray()).CursiveAttachments![0];
+        Assert.Equal(new ushort[] { 1, 2 }, output.Coverage.Glyphs.ToArray());
+        Assert.Null(output.Records[0].Entry);
+        Assert.Equal(44, output.Records[0].Exit!.XCoordinate);
+        Assert.Equal(71, output.Records[1].Entry!.XCoordinate);
+        Assert.Null(output.Records[1].Exit);
+    }
+
     private static (SubsetResult Result, LayoutListsTable Table) Run(LayoutLookupKind kind,
         LookupTable[] lookups, ushort[] roots)
     {

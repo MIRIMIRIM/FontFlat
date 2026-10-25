@@ -78,7 +78,7 @@ public sealed class SubsetSubrPruneTests
     /// given glyph programs and subroutine INDEXes (layout: Header|Name|Top|String
     /// |GlobalSubrs|charset|CharStrings|Private|LocalSubrs, the strict tiling with
     /// the Subrs offset pinned to the Private DICT size).</summary>
-    private static byte[] NameKeyedCff(int[] sids, byte[][] programs,
+    internal static byte[] NameKeyedCff(int[] sids, byte[][] programs,
         byte[][]? locals = null, byte[][]? globals = null)
     {
         byte[] header = [0x01, 0x00, 0x04, 0x01];
@@ -212,6 +212,72 @@ public sealed class SubsetSubrPruneTests
         Assert.Equal(1131, SubsetOperation.SubrBias(33899));
         Assert.Equal(32768, SubsetOperation.SubrBias(33900));
         Assert.Equal(32768, SubsetOperation.SubrBias(65536));
+    }
+
+    // A mask body reached only through another subr still seeds from its recorded
+    // entry: the nested call site's hint count is what the reach walk saw, not the
+    // top-level glyph's zero.
+    [Fact]
+    public void PruneRewritesAMaskBodyReachedThroughAnotherSubr()
+    {
+        // gsubr 0 declares nine stems then calls gsubr 1 (the two-byte mask body);
+        // gsubr 2 is the unreachable filler that parks the prune plan.
+        byte[][] globals =
+        [
+            [.. Enumerable.Range(0, 18).Select(_ => (byte)139), 1, .. Num(-106), 29, 11],
+            [19, 0x0A, 0x00, 11],
+            [0x8b, 0x0b],
+        ];
+        byte[] glyph = [.. Num(-107), 29, .. Num(60), 22, 14];
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(2)),
+            (SubsetFontFixture.CffTag, NameKeyedCff([0, 34],
+                [Endchar, glyph], globals: globals)));
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out var report, out _);
+
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(1, report!.SubrPrunedGlobal);
+        var cff = OutputCff(result!);
+        Assert.Equal(2, cff.GlobalSubrCount);
+        // The nested mask body rides verbatim under its recorded entry count, and
+        // both call operands keep their values (two survivors stay in the 107 tier).
+        Assert.Equal(globals[1], cff.GlobalSubrs[1].ToArray());
+        Assert.Equal(glyph, cff.CharStrings[1].ToArray());
+        Assert.Equal(globals[0], cff.GlobalSubrs[0].ToArray());
+    }
+
+    // Two callers may genuinely parse one shared mask body differently: the mask
+    // width follows the caller's stem count, and a body whose callers produced two
+    // distinct widths has no single rewritten form. The reach walk records every
+    // width each body produced under each caller, so the plan refuses it up front.
+    [Fact]
+    public void PruneRefusesASubrParsedWithTwoMaskWidths()
+    {
+        // Under <= 8 hints the mask skips one byte and the 14 beyond it is an
+        // endchar (which ends the whole program); under 9..16 hints it skips two
+        // and the 11 beyond it is a plain return.
+        byte[][] globals = [[19, 0x8B, 14, 11], [0x8b, 0x0b]];
+        byte[] Glyph(int stems, bool trailingEndchar) => [
+            .. Enumerable.Range(0, 2 * stems).Select(_ => (byte)139), // (0,0) pairs
+            1,                                                        // hstem
+            .. Num(-107), 29,                                         // callgsubr 0
+            .. (trailingEndchar ? new byte[] { 14 } : Array.Empty<byte>())];
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(3)),
+            (SubsetFontFixture.CffTag, NameKeyedCff([0, 34, 35],
+                [Endchar, Glyph(4, trailingEndchar: false),
+                    Glyph(9, trailingEndchar: true)], globals: globals)));
+        var status = SubsetOperation.TryPrepare(Request(face, [1, 2]), out var result,
+            out _, out var diagnostic);
+
+        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
+        Assert.Equal(0ul, diagnostic.Detail);
+        Assert.Equal(2ul, diagnostic.Expected);
+        Assert.Null(result);
     }
 
     // The shared hintmask helper: a called body whose own tokens open with a mask.

@@ -145,4 +145,29 @@ public sealed class LayoutCompilerOverflowTests
         Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
         Assert.Null(bytes);
     }
+
+    // The band the window rewrite admitted: a nonempty matrix whose start stays
+    // inside the word while the matrix bytes run past 65536 (the old end-measuring
+    // predicate refused this shape). The matrix start is the last Offset16 target,
+    // so the emission is legal.
+    [Fact]
+    public void MergMatrixBodyPastTheWordWithAnInWordStartCompiles()
+    {
+        const int ranges = 10919, numGlyphs = 10920;
+        var classDefRanges = Enumerable.Range(0, ranges)
+            .Select(i => new ClassDefRange((ushort)i, (ushort)i, 1)).ToArray();
+        Assert.Equal(ReadStatus.Done, ClassDefTableCompiler.TryCreate(classDefRanges,
+            numGlyphs, 2, out var classDef, out _));
+        // Three content-equal slots dedupe to one 65518-byte body: the offsets
+        // array ends at 10 + 6 + 65518 = 65534 (the matrix start, inside the
+        // word), and the 2x2 matrix carries the total to 65538.
+        Assert.Equal(ReadStatus.Done, MergTableCompiler.TryCreate(
+            [classDef!, classDef!, classDef!], 2, [0, 0, 0, 0], numGlyphs,
+            out var merg, out _));
+
+        var status = MergTableCompiler.TryCompile(merg!, out var bytes, out var diagnostic);
+
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(65538, bytes!.Length);
+    }
 }
