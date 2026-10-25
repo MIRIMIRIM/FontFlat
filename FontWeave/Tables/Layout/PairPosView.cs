@@ -319,6 +319,11 @@ public readonly ref partial struct PairPosView
         if (state.CoverageFacts.TryGetValue(target, out fact))
         { if (state.Materialize) state.Coverages.TryGetValue(target, out model); diagnostic = default; return ReadStatus.Done; }
         int local = target - (state.Length - _data.Length);
+        // The coverage target must land inside this view's own slice: an offset
+        // beyond it is the range refusal, never a slice past the view.
+        if (local < 0 || local > _data.Length)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                state.At(target), out diagnostic, (ulong)target, (ulong)state.Length);
         ReadStatus status = CoverageView.TryOpen(_data.Slice(local), out var view, out diagnostic, state.At(target));
         if (status != ReadStatus.Done) return status;
         status = view.Inspect(numGlyphs, out int count, out int length, out diagnostic, budget);
