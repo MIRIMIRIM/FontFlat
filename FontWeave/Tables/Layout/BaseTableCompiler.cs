@@ -473,7 +473,7 @@ public static class BaseTableCompiler
         {
             var (axisAt, tagListAt, scriptListAt) = plan.Headers[axis];
             BaseAxisTableCompiler.WriteAxis(axis, destination, axisAt,
-                tagListAt < 0 ? 0 : tagListAt, scriptListAt, axis.Location);
+                tagListAt, scriptListAt, axis.Location);
             if (axis.TagList is { } tagList)
                 BaseAxisTableCompiler.WriteTagList(tagList, destination, tagListAt, tagList.Location);
             BaseAxisTableCompiler.WriteScriptList(axis, destination, scriptListAt, plan.Plan, axis.Location);

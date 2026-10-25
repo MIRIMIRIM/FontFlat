@@ -840,9 +840,8 @@ public sealed class SubsetLayoutRewriteTests
 
     private static byte[] BaseBytes(bool fmt2, ushort reference = 2)
     {
-        // The axis carries a tag list: the writer's tagList-null slot has the
-        // registered write-face gap at a non-zero axis position (the S2b-2 report
-        // registers it for the T4-07 boundary), and the fixtures stay off it.
+        // The axis carries a tag list to exercise the populated slot; the absent
+        // slot has its own compile witness below (the former T4-07 gap).
         Ok(BaseAxisTableCompiler.TryCreate(new[] { 0x64736372u },
             out var tagList, out var diagnostic));
         Assert.Equal(DiagnosticCode.None, diagnostic.Code);
@@ -867,6 +866,34 @@ public sealed class SubsetLayoutRewriteTests
             out diagnostic));
         Assert.Equal(DiagnosticCode.None, diagnostic.Code);
         return bytes!;
+    }
+
+    // The registered T4-07 write-face gap: an axis without a BaseTagList used to
+    // reach WriteAxis with the plan's -1 sentinel flattened to absolute position 0,
+    // so the offset computation went negative and every checked-build compile of a
+    // legal table threw instead of encoding the absent slot as zero.
+    [Fact]
+    public void BaseWithoutTagListCompilesWithZeroSlot()
+    {
+        FontDiagnostic diagnostic = default;
+        Ok(BaseCoordTableCompiler.TryCreate(1, 0, 0, 0, null, NumGlyphs, out var coord,
+            out diagnostic));
+        Ok(BaseAxisTableCompiler.TryCreate(0, new[] { coord! }, out var values,
+            out diagnostic));
+        Ok(BaseAxisTableCompiler.TryCreate(values, null, Array.Empty<BaseLangSysRecord>(),
+            out var script, out diagnostic));
+        Ok(BaseAxisTableCompiler.TryCreate(null,
+            new[] { new BaseScriptRecord(0x44464C54u, script!) }, out var axis,
+            out diagnostic));
+        Ok(BaseTableCompiler.TryCreate(BaseLayout.Version10, NumGlyphs, axis, null, null,
+            out var model, out diagnostic));
+        Ok(BaseTableCompiler.TryCompile(model!, out var bytes, out diagnostic));
+        // BASE header: version(4) + horiz(2) + vert(2); the axis opens with the
+        // absent tagList slot (zero) and the script list at the axis stride.
+        Assert.Equal(0x00010000u, BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(0)));
+        Assert.Equal(8, BinaryPrimitives.ReadUInt16BigEndian(bytes.AsSpan(4)));
+        Assert.Equal(0, BinaryPrimitives.ReadUInt16BigEndian(bytes.AsSpan(8)));
+        Assert.Equal(4, BinaryPrimitives.ReadUInt16BigEndian(bytes.AsSpan(10)));
     }
 
     private const uint BaseTag = 0x42415345;

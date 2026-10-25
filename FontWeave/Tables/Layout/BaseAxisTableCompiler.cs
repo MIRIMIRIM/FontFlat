@@ -201,8 +201,12 @@ public static class BaseAxisTableCompiler
     {
         var slice = destination.Slice(at);
         var slotLocation = location.AtLocal(DataField.Offset, 0);
+        // The absent tagList keeps the plan's -1 sentinel (the preflight form): the
+        // slot encodes zero through present=false, never a flattened position whose
+        // subtraction against the axis start would underflow.
         var status = BaseAxisView.TryGetBaseTagListOffsetValue(axis.TagList is not null, 0UL,
-            (ulong)(tagListPosition - at), out ushort tagListOffset, out _, slotLocation);
+            tagListPosition < 0 ? 0UL : (ulong)(tagListPosition - at), out ushort tagListOffset,
+            out _, slotLocation);
         CoverageTableCompiler.RequireWritten(status);
         CoverageTableCompiler.RequireWritten(BaseAxisView.TryWriteBaseTagListOffset(slice,
             tagListOffset, out _, location));
