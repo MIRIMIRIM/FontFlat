@@ -1,8 +1,8 @@
 // Layout compile overflow faces: every Offset16 word a plan fixes must be preflighted
 // at plan time, because the writer's narrowing conversion throws in a checked build
 // (and truncates in an unchecked one) instead of answering the documented finite
-// refusal. Both witnesses below are legal sources whose canonical re-emission exceeds
-// the word, so the read side accepts them and the compile must refuse.
+// refusal. Every witness below is a legal source whose canonical re-emission exceeds
+// the word, so the read side accepts it and the compile must refuse.
 using FontWeave.Core;
 using FontWeave.Tables.Layout;
 using Xunit;
@@ -65,6 +65,58 @@ public sealed class LayoutCompilerOverflowTests
 
         var status = ContextualSubstTableCompiler.TryCompile(model!, out var bytes,
             out var diagnostic);
+
+        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
+        Assert.Equal(DataField.Offset, diagnostic.Location.Field);
+        Assert.Null(bytes);
+    }
+
+    // The GDEF AttachList owns one Offset16 per covered glyph plus the Coverage target.
+    // Neither used to be preflighted, so an over-wide list threw in a checked build and
+    // — worse — silently truncated every record in an unchecked one.
+    [Fact]
+    public void AttachListTargetsPastTheWordRefuseAtPlanTime()
+    {
+        const int count = 1000, len = 200, numGlyphs = 40000;
+        var glyphs = Enumerable.Range(0, count).Select(i => (ushort)(2 * i)).ToArray();
+        Assert.Equal(ReadStatus.Done, CoverageTableCompiler.TryCreate(glyphs, numGlyphs, 1,
+            out var coverage, out _));
+        var points = Enumerable.Range(0, count)
+            .Select(i => Enumerable.Range(0, len)
+                .Select(k => (ushort)((i + k) % 60000)).ToArray()).ToArray();
+        var attach = new AttachListTable(coverage!, points, numGlyphs, coverage!.Location,
+            0, []);
+        Assert.Equal(ReadStatus.Done, GdefTableCompiler.TryCreate(0x00010000, numGlyphs,
+            null, null, null, attach, null, null, out var gdef, out _));
+
+        var status = GdefTableCompiler.TryCompile(gdef!, out var bytes, out var diagnostic);
+
+        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
+        Assert.Equal(DataField.Offset, diagnostic.Location.Field);
+        Assert.Null(bytes);
+    }
+
+    // The GDEF LigCaretList nests two record arrays (LigGlyph and CaretValue), each one
+    // Offset16 per entry; neither was preflighted.
+    [Fact]
+    public void LigCaretListTargetsPastTheWordRefuseAtPlanTime()
+    {
+        const int count = 1000, carets = 200, numGlyphs = 40000;
+        var glyphs = Enumerable.Range(0, count).Select(i => (ushort)(2 * i)).ToArray();
+        Assert.Equal(ReadStatus.Done, CoverageTableCompiler.TryCreate(glyphs, numGlyphs, 1,
+            out var coverage, out _));
+        var ligs = Enumerable.Range(0, count).Select(i => new LigGlyphTable(
+            Enumerable.Range(0, carets)
+                .Select(k => CaretValueEntry.Create((short)((i + k) % 30000))).ToArray(),
+            coverage!.Location, 0)).ToArray();
+        var caretsModel = new LigCaretListTable(coverage!, ligs, numGlyphs,
+            coverage!.Location, 0, []);
+        Assert.Equal(ReadStatus.Done, GdefTableCompiler.TryCreate(0x00010000, numGlyphs,
+            null, null, null, null, caretsModel, null, out var gdef, out _));
+
+        var status = GdefTableCompiler.TryCompile(gdef!, out var bytes, out var diagnostic);
 
         Assert.Equal(ReadStatus.UnsupportedFormat, status);
         Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);

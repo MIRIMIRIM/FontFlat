@@ -177,6 +177,22 @@ public static class GdefTableCompiler
         BuildBudget budget, out Plan? plan, out FontDiagnostic diagnostic)
     {
         plan = null;
+        // Every Offset16 child's own internal words are preflighted here, before the
+        // root's placement decides anything: the GDEF header slots are the root's
+        // reach face, while an AttachList or LigCaretList can overflow its own records
+        // at any root size. A refusal is the same finite too-narrow shape.
+        if (model.AttachList is { } attachList)
+        {
+            ReadStatus inner = AttachListTableCompiler.TryPlan(attachList, budget,
+                out diagnostic);
+            if (inner != ReadStatus.Done) return inner;
+        }
+        if (model.LigCaretList is { } ligCaretList)
+        {
+            ReadStatus inner = LigCaretListTableCompiler.TryPlan(ligCaretList, budget,
+                out diagnostic);
+            if (inner != ReadStatus.Done) return inner;
+        }
         int largest = -1;
         for (int i = 0; i < children.Count; i++)
         {

@@ -38,34 +38,20 @@ public static class AttachListTableCompiler
 
     internal static int Measure(AttachListTable model)
     {
-        int length = AttachListLayout.HeaderLength + AttachListLayout.PointStride * model.Count;
-        var seen = new List<ushort[]>();
-        for (int i = 0; i < model.Count; i++)
-        {
-            var points = model.Points(i);
-            bool shared = false;
-            foreach (var candidate in seen)
-            {
-                if (candidate.AsSpan().SequenceEqual(points)) { shared = true; break; }
-            }
-            if (!shared)
-            {
-                seen.Add(points.ToArray());
-                length += AttachPointLayout.HeaderLength + AttachPointLayout.PointStride * points.Length;
-            }
-        }
-        return length + CoverageTableCompiler.Measure(model.Coverage);
+        Place(model, out int coverageAt, out _, out _);
+        return coverageAt + CoverageTableCompiler.Measure(model.Coverage);
     }
 
-    // Only immutable, validated models reach this path; the GDEF root preflighted the
-    // destination and every offset before calling in.
-    internal static void WritePlanned(AttachListTable model, Span<byte> destination)
+    /// <summary>One child block's placement: the Coverage start (after every
+    /// AttachPoint body), the per-glyph AttachPoint targets and the deduplicated
+    /// bodies in emission order. Shared by the size, the preflight and the writer so
+    /// the three cannot disagree.</summary>
+    private static void Place(AttachListTable model, out int coverageAt,
+        out int[] offsets, out List<(ushort[] Points, int At)> placed)
     {
-        var location = model.Location;
-        int coverageAt = AttachListLayout.HeaderLength + AttachListLayout.PointStride * model.Count;
-        var placed = new List<(ushort[] Points, int At)>();
-        int cursor = coverageAt;
-        var offsets = new int[model.Count];
+        int cursor = AttachListLayout.HeaderLength + AttachListLayout.PointStride * model.Count;
+        placed = [];
+        offsets = new int[model.Count];
         for (int i = 0; i < model.Count; i++)
         {
             var points = model.Points(i);
@@ -82,8 +68,62 @@ public static class AttachListTableCompiler
             }
             offsets[i] = at;
         }
+        coverageAt = cursor;
+    }
+
+    /// <summary>Plan-time admission of every Offset16 word this child owns: the
+    /// Coverage target and each AttachPoint record, plus the two count words. The
+    /// writer's narrowing casts then cannot throw or truncate, so an over-wide list
+    /// refuses as the finite too-narrow face instead of publishing a bad table.</summary>
+    internal static ReadStatus TryPlan(AttachListTable model, BuildBudget budget,
+        out FontDiagnostic diagnostic)
+    {
+        if (!budget.Work(2L * model.Count + 1, model.Location, out diagnostic))
+            return ReadStatus.ResourceLimit;
+        if (model.Count > ushort.MaxValue)
+            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                model.Location.AtLocal(DataField.Count, AttachListLayout.GlyphCountAt),
+                out diagnostic, (ulong)model.Count, (ulong)ushort.MaxValue);
+        Place(model, out int coverageAt, out var offsets, out var placed);
+        ReadStatus status = CheckTarget(model.Location, coverageAt,
+            AttachListLayout.CoverageOffsetAt, out diagnostic);
+        if (status != ReadStatus.Done) return status;
+        for (int i = 0; i < offsets.Length; i++)
+        {
+            status = CheckTarget(model.Location, offsets[i],
+                AttachListLayout.HeaderLength + (ulong)i * AttachListLayout.PointStride, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+        }
+        foreach (var (points, _) in placed)
+            if (points.Length > ushort.MaxValue)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    model.Location.AtLocal(DataField.Count, AttachPointLayout.CountAt),
+                    out diagnostic, (ulong)points.Length, (ulong)ushort.MaxValue);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    private static ReadStatus CheckTarget(DataLocation location, int target, ulong fieldAt,
+        out FontDiagnostic diagnostic)
+    {
+        if (target <= ushort.MaxValue)
+        {
+            diagnostic = default;
+            return ReadStatus.Done;
+        }
+        return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
+            location.AtLocal(DataField.Offset, fieldAt), out diagnostic, (ulong)target,
+            (ulong)ushort.MaxValue);
+    }
+
+    // Only immutable, preflighted models reach this path (GdefTableCompiler.TryPlan
+    // runs TryPlan for every child before any byte exists).
+    internal static void WritePlanned(AttachListTable model, Span<byte> destination)
+    {
+        var location = model.Location;
+        Place(model, out int coverageAt, out var offsets, out var placed);
         CoverageTableCompiler.RequireWritten(AttachListView.TryWriteCoverageOffset(destination,
-            (ushort)cursor, out _, location));
+            (ushort)coverageAt, out _, location));
         CoverageTableCompiler.RequireWritten(AttachListView.TryWriteGlyphCount(destination,
             (ushort)model.Count, out _, location));
         for (int i = 0; i < model.Count; i++)
@@ -100,6 +140,6 @@ public static class AttachListTableCompiler
                     AttachPointLayout.HeaderLength + (ulong)i * AttachPointLayout.PointStride,
                     new AttachPointView.PointIndexData(i, points[i]), out _, location));
         }
-        CoverageTableCompiler.WritePlanned(model.Coverage, destination.Slice(cursor));
+        CoverageTableCompiler.WritePlanned(model.Coverage, destination.Slice(coverageAt));
     }
 }
