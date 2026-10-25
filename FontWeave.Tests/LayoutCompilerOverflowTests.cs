@@ -123,4 +123,26 @@ public sealed class LayoutCompilerOverflowTests
         Assert.Equal(DataField.Offset, diagnostic.Location.Field);
         Assert.Null(bytes);
     }
+
+    // The MERG window check measured the plan's exclusive end, but the writer's own
+    // words are positions: an empty matrix (mergeClassCount 0) whose bodies fill the
+    // window exactly put the matrix start at 65536 — accepted by the plan, and the
+    // writer's narrowing then threw in a checked build instead of refusing.
+    [Fact]
+    public void MergMatrixStartAtTheWordEdgeRefusesAtPlanTime()
+    {
+        const int ranges = 10920, numGlyphs = 10921;
+        var classDefRanges = Enumerable.Range(0, ranges)
+            .Select(i => new ClassDefRange((ushort)i, (ushort)i, 1)).ToArray();
+        Assert.Equal(ReadStatus.Done, ClassDefTableCompiler.TryCreate(classDefRanges,
+            numGlyphs, 2, out var classDef, out _));
+        Assert.Equal(ReadStatus.Done, MergTableCompiler.TryCreate([classDef!], 0,
+            ReadOnlySpan<byte>.Empty, numGlyphs, out var merg, out _));
+
+        var status = MergTableCompiler.TryCompile(merg!, out var bytes, out var diagnostic);
+
+        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
+        Assert.Null(bytes);
+    }
 }

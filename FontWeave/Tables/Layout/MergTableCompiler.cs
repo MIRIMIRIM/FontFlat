@@ -12,9 +12,10 @@ namespace FontWeave.Tables.Layout;
 /// representative - the write-side dual of the read chain's single materialization
 /// (the T4-10 shared-identity precedent; the OQ-2 joint order runs over the deduped
 /// sequence, which is what makes shared bodies legal). The whole emission lives
-/// inside the table's own Offset16 window (the §0 format-design reading): a plan
-/// longer than 65536 bytes refuses up front as UnsupportedOperation with the plan's
-/// Detail/Expected - the read chain's 65025-entry declared maximum's write-side dual.
+/// inside the table's own Offset16 window (the §0 format-design reading): the
+/// matrix start is the last Offset16 target, and a plan that puts it past the
+/// word refuses up front as UnsupportedOperation with the plan's Detail/Expected
+/// - the read chain's 65025-entry declared maximum's write-side dual.
 ///
 /// TryCreate admission mirrors the MATH root: version is constant 0 (not an input),
 /// the numGlyphs authority re-answers against THIS root's explicit input (a subtree
@@ -238,10 +239,14 @@ public static class MergTableCompiler
         placement.MatrixAt = cursor;
         cursor += model.MatrixLength;
         placement.Length = cursor;
-        if (cursor > ushort.MaxValue + 1)
+        // The Offset16 words state positions, not the exclusive end: bodies start
+        // strictly before the matrix, so the matrix start is the only target that
+        // can sit at the word's edge (an empty matrix under a window-filling body
+        // set) and must refuse there instead of throwing at the writer's narrowing.
+        if (placement.MatrixAt > ushort.MaxValue)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.AtLocal(DataField.OutputBytes, 0), out diagnostic,
-                (ulong)cursor, (ulong)(ushort.MaxValue + 1));
+                (ulong)placement.MatrixAt, (ulong)ushort.MaxValue);
         plan = placement;
         return ReadStatus.Done;
     }
