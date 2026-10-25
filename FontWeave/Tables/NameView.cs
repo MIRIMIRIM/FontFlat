@@ -89,7 +89,11 @@ public readonly ref partial struct NameView
                 return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                     Location.At(DataField.LanguageId, rowOffset + 4, ordinal),
                     out diagnostic, record.LanguageId - 0x8000u, tagCount);
-            if (Format == 0 && record.LanguageId >= 0x8000 &&
+            // The format-0 high-bit reservation serves the platform 240..255
+            // named-instance escape; 0xFFFF is the vendors' "language unspecified"
+            // sentinel (the Fontworks line carries it on plain Mac records) and is
+            // tolerated the way every consumer tolerates it.
+            if (Format == 0 && record.LanguageId >= 0x8000 && record.LanguageId != 0xFFFF &&
                 record.PlatformId is < 240 or > 255)
                 return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                     Location.At(DataField.LanguageId, rowOffset + 4, ordinal),
