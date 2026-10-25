@@ -258,4 +258,21 @@ public sealed class SubsetCompactMapTests
         Assert.Equal(ReadStatus.InvalidFormat, status);
         Assert.Null(utf8);
     }
+
+    // The gid fields are UInt16 wire values, and the artifact is an external JSON
+    // document: a value past the word (or a wrong JSON kind under any scalar) is
+    // the one parse diagnostic, never an exception escaping the Try* contract.
+    [Theory]
+    [InlineData("""{"schema":"fontweave.frozen-map/1","sourceFace":{"sourceId":1,"faceIndex":0,"inputFaceSha256":"00"},"fontRevisionRaw":65536,"inputGlyphCount":2,"outputGlyphCount":2,"entries":[{"outputGid":65536,"inputGid":1,"stableIdentity":"x"}]}""")]
+    [InlineData("""{"schema":"fontweave.frozen-map/1","sourceFace":{"sourceId":1,"faceIndex":0,"inputFaceSha256":"00"},"fontRevisionRaw":65536,"inputGlyphCount":2,"outputGlyphCount":2,"entries":[{"outputGid":"1","inputGid":1,"stableIdentity":"x"}]}""")]
+    [InlineData("""{"schema":"fontweave.frozen-map/1","sourceFace":{"sourceId":"one","faceIndex":0,"inputFaceSha256":"00"},"fontRevisionRaw":65536,"inputGlyphCount":2,"outputGlyphCount":2,"entries":[{"outputGid":1,"inputGid":1,"stableIdentity":"x"}]}""")]
+    public void MalformedScalarsAnswerTheDiagnostic(string json)
+    {
+        var status = FrozenMapArtifactCodec.TryDeserialize(Encoding.UTF8.GetBytes(json),
+            out var artifact, out var diagnostic);
+
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Null(artifact);
+        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+    }
 }

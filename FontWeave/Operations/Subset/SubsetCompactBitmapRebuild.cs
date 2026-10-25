@@ -113,7 +113,7 @@ public static partial class SubsetOperation
             ReadStatus EmitRun(List<(int Glyph, CbdtImage Image)> slots,
                 Func<int, int, CblcIndexSubtable> build)
             {
-                int runStart = -1;
+                int runStart = -1, lastOutput = -1;
                 for (int s = 0; s <= slots.Count; s++)
                 {
                     bool kept = s < slots.Count && map.OutputOf(slots[s].Glyph) >= 0;
@@ -124,6 +124,20 @@ public static partial class SubsetOperation
                         // (the output face's glyph space), so the remapped value is
                         // what the min/max tracks.
                         int output = map.OutputOf(slots[s].Glyph);
+                        // The run pattern pairs the k-th populated output with the
+                        // k-th pooled frame, so a kept run's outputs must ascend: the
+                        // frozen CFF order can permute glyphs (SID/CID order), and a
+                        // descending pair inside one input run would misalign that
+                        // pairing or underflow the pattern's span.
+                        if (lastOutput >= 0 && output <= lastOutput)
+                        {
+                            _ = ReadWire.Fail(ReadStatus.UnsupportedFormat,
+                                DiagnosticCode.UnsupportedOperation,
+                                cbdtAt.AtLocal(DataField.GlyphId, 0, slots[s].Glyph),
+                                out emitDiagnostic, (uint)output, (uint)lastOutput);
+                            return ReadStatus.UnsupportedFormat;
+                        }
+                        lastOutput = output;
                         if (strikeMin < 0 || output < strikeMin) strikeMin = output;
                         if (output > strikeMax) strikeMax = output;
                         newImages.Add(RemappedImage(slots[s].Image, map, cbdtAt,
@@ -134,6 +148,7 @@ public static partial class SubsetOperation
                     {
                         newSubtables.Add(build(runStart, s - 1));
                         runStart = -1;
+                        lastOutput = -1;
                     }
                 }
                 return ReadStatus.Done;
@@ -408,7 +423,7 @@ public static partial class SubsetOperation
             ReadStatus EmitRun(List<(int Glyph, EbdtImage Image)> slots,
                 Func<int, int, EblcIndexSubtable> build)
             {
-                int runStart = -1;
+                int runStart = -1, lastOutput = -1;
                 for (int s = 0; s <= slots.Count; s++)
                 {
                     bool kept = s < slots.Count && map.OutputOf(slots[s].Glyph) >= 0;
@@ -417,6 +432,17 @@ public static partial class SubsetOperation
                         if (runStart < 0) runStart = s;
                         // The strike row's surviving span lives in the output domain.
                         int output = map.OutputOf(slots[s].Glyph);
+                        // The same ascending invariant as the CBLC walk: the pattern
+                        // pairs the k-th populated output with the k-th frame.
+                        if (lastOutput >= 0 && output <= lastOutput)
+                        {
+                            _ = ReadWire.Fail(ReadStatus.UnsupportedFormat,
+                                DiagnosticCode.UnsupportedOperation,
+                                ebdtAt.AtLocal(DataField.GlyphId, 0, slots[s].Glyph),
+                                out emitDiagnostic, (uint)output, (uint)lastOutput);
+                            return ReadStatus.UnsupportedFormat;
+                        }
+                        lastOutput = output;
                         if (strikeMin < 0 || output < strikeMin) strikeMin = output;
                         if (output > strikeMax) strikeMax = output;
                         newImages.Add(RemappedEbdtImage(slots[s].Image, map, ebdtAt,
@@ -427,6 +453,7 @@ public static partial class SubsetOperation
                     {
                         newSubtables.Add(build(runStart, s - 1));
                         runStart = -1;
+                        lastOutput = -1;
                     }
                 }
                 return ReadStatus.Done;

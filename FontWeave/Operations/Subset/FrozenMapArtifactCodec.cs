@@ -144,7 +144,11 @@ public static class FrozenMapArtifactCodec
         {
             parsed = Parse(utf8);
         }
-        catch (JsonException)
+        // The parse boundary maps every malformed shape to the one diagnostic
+        // (grammar, wrong-typed fields, missing properties) — the Try* contract
+        // owns the failure, never an escaping exception.
+        catch (Exception e) when (e is JsonException or InvalidOperationException
+            or FormatException or KeyNotFoundException or OverflowException)
         {
             return Fail(at, 0, 0, out diagnostic);
         }

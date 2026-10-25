@@ -648,4 +648,35 @@ public sealed class SubsetCompactBitmapTests
         Assert.Equal(cbdt, OutputTable(result!, CbdtTag));
         Assert.Equal(sbix, OutputTable(result!, SbixTag));
     }
+
+    // The frozen CFF order permutes glyphs (the SID order), so a kept bitmap run
+    // can carry descending outputs. The run pattern pairs the k-th populated
+    // output with the k-th pooled frame; that pairing has no single product for a
+    // descending run, and the walk refuses instead of mispairing it (or
+    // underflowing the pattern span).
+    [Fact]
+    public void CompactRefusesABitmapRunWithDescendingOutputs()
+    {
+        // Charset SIDs C, A, B on glyphs 1..3: the frozen order renumbers the
+        // retained set so A(gid2)->1 and C(gid1)->2, and the strike over input
+        // glyphs 1..2 keeps the descending outputs {2, 1}.
+        var (eblc, ebdt) = EbdtPair();
+        var maxp = new byte[6];
+        BinaryPrimitives.WriteUInt32BigEndian(maxp, 0x00005000);
+        BinaryPrimitives.WriteUInt16BigEndian(maxp.AsSpan(4), 4);
+        var face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, maxp),
+            (SubsetFontFixture.CffTag, SubsetSubrPruneTests.NameKeyedCff(
+                [0, 36, 34, 35], [[14], [14], [14], [14]])),
+            (EblcTag, eblc),
+            (EbdtTag, ebdt));
+
+        var status = SubsetOperation.TryPrepare(Request(face, [1, 2],
+            SubsetMode.CompactRemap), out var result, out _, out var diagnostic);
+
+        Assert.Equal(ReadStatus.UnsupportedFormat, status);
+        Assert.Equal(DiagnosticCode.UnsupportedOperation, diagnostic.Code);
+        Assert.Null(result);
+    }
 }
