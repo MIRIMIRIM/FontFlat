@@ -214,6 +214,44 @@ public sealed class SubsetSubrPruneTests
         Assert.Equal(32768, SubsetOperation.SubrBias(65536));
     }
 
+    // The shared hintmask helper: a called body whose own tokens open with a mask.
+    // The mask's byte count comes from the CALLER's accumulated stems (the shared
+    // counter the reach walk executes), so the survivor rewrite - which walks the
+    // body out of its calling context - must seed its hint count from the recorded
+    // call-site entry. From a zero seed the mask bytes parsed as code: 0x0A is a
+    // callsubr on an empty stack, and the compact of a legal face refused (the
+    // Source Han Sans SC shared-hint gsubr witness).
+    [Fact]
+    public void PruneRewritesAMaskLeadingSubrUnderTheCallersHintCount()
+    {
+        // Nine stem pairs before the call arm the two-byte mask bucket; a second,
+        // unreachable gsubr parks the prune plan so survivor 0 rides the rewrite.
+        byte[][] globals = [[19, 0x0A, 0x00, 11], [0x8b, 0x0b]];
+        byte[] glyph = [
+            .. Enumerable.Range(0, 18).Select(_ => (byte)139), // nine (0, 0) stem pairs
+            1,                                                // hstem: nine hints
+            .. Num(-107), 29,                                 // callgsubr 0 under bias 107
+            .. Num(50), .. Num(50), 21,                       // rmoveto
+            .. Num(60), 22,                                   // hlineto
+            14];                                              // endchar
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(2)),
+            (SubsetFontFixture.CffTag, NameKeyedCff([0, 34],
+                [Endchar, glyph], globals: globals)));
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out var report, out _);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.NotNull(result);
+        Assert.Equal(1, report!.SubrPrunedGlobal);
+        var cff = OutputCff(result!);
+        Assert.Equal(1, cff.GlobalSubrCount);
+        // The survivor's own mask bytes ride verbatim and the call site's operand
+        // keeps its value (one survivor keeps the 107 bias).
+        Assert.Equal(globals[0], cff.GlobalSubrs[0].ToArray());
+        Assert.Equal(glyph, cff.CharStrings[1].ToArray());
+    }
+
     [Fact]
     public void PruneKeepsSurvivorValueUnchangedOperands()
     {

@@ -98,6 +98,19 @@ public static partial class SubsetOperation
 
         internal required IReadOnlyDictionary<int, IReadOnlyDictionary<int, int>> LocalEntryVsindex { get; init; }
 
+        /// <summary>Each reached subr body's single call-site entry hint count — the
+        /// rewrite frame's mask seed. A hintmask/cntrmask inside a called body skips
+        /// bytes by the CALLER's accumulated stem count (the shared counter the
+        /// reach walk already executes), so a body rewritten out of its calling
+        /// context parses its own mask bytes wrongly from a zero seed — the
+        /// recorded entry replays the callers' arithmetic. Bodies whose call sites
+        /// produced more than one distinct mask width refuse at plan time (no
+        /// single rewrite serves both parsings); equal-width entries re-derive the
+        /// same skip from any recorded value.</summary>
+        internal required IReadOnlyDictionary<int, int> GlobalEntryHints { get; init; }
+
+        internal required IReadOnlyDictionary<int, IReadOnlyDictionary<int, int>> LocalEntryHints { get; init; }
+
         internal int PrunedGlobalCount => Global is { } global ? global.OldCount - global.NewCount : 0;
 
         internal int PrunedLocalCount(int fd) =>
@@ -123,6 +136,10 @@ public static partial class SubsetOperation
         internal readonly Dictionary<int, HashSet<int>> LocalReach = [];
         internal readonly Dictionary<int, HashSet<int>> GlobalEntryVsindex = [];
         internal readonly Dictionary<int, Dictionary<int, HashSet<int>>> LocalEntryVsindex = [];
+        internal readonly Dictionary<int, HashSet<int>> GlobalEntryHints = [];
+        internal readonly Dictionary<int, Dictionary<int, HashSet<int>>> LocalEntryHints = [];
+        internal readonly Dictionary<int, HashSet<int>> GlobalMaskWidths = [];
+        internal readonly Dictionary<int, Dictionary<int, HashSet<int>>> LocalMaskWidths = [];
 
         /// <summary>The bodies whose blend arithmetic reads the ENTRY selector: a
         /// blend of the body's own tokens ran before the body's own vsindex
@@ -211,6 +228,55 @@ public static partial class SubsetOperation
             SelectorSensitive.Contains((kind, kind == SubrWalk.KindGlobal ? 0 : fd,
                 index));
 
+        /// <summary>Records a called body's entry hint count (the caller's
+        /// accumulated stems at the call site) and every mask width the body's own
+        /// tokens produced under that entry. The plan resolves the entry to one
+        /// recorded value once the width guard has proven every caller's parsing
+        /// agrees, so the standalone rewrite replays the callers' mask skips.</summary>
+        internal void MarkEntryHints(int kind, int fd, int index, int hints)
+        {
+            if (kind == SubrWalk.KindGlobal)
+            {
+                AddTo(GlobalEntryHints, index, hints);
+            }
+            else
+            {
+                if (!LocalEntryHints.TryGetValue(fd, out var map))
+                {
+                    map = [];
+                    LocalEntryHints[fd] = map;
+                }
+                AddTo(map, index, hints);
+            }
+        }
+
+        internal void MarkMaskWidth(int kind, int fd, int index, int skip)
+        {
+            if (kind == SubrWalk.KindGlobal)
+            {
+                AddTo(GlobalMaskWidths, index, skip);
+            }
+            else
+            {
+                if (!LocalMaskWidths.TryGetValue(fd, out var map))
+                {
+                    map = [];
+                    LocalMaskWidths[fd] = map;
+                }
+                AddTo(map, index, skip);
+            }
+        }
+
+        private static void AddTo(Dictionary<int, HashSet<int>> map, int index, int value)
+        {
+            if (!map.TryGetValue(index, out var set))
+            {
+                set = [];
+                map[index] = set;
+            }
+            set.Add(value);
+        }
+
         internal SubrPrunePlan ToPlan(SubrIndexPlan? global, SubrIndexPlan?[] localByFd)
         {
             var contextFd = new Dictionary<int, int>();
@@ -230,6 +296,21 @@ public static partial class SubsetOperation
                     resolved[index] = set.First();
                 localEntries[fd] = resolved;
             }
+            // The entry hint sets resolve the same way: the width guard has refused
+            // every body whose callers parsed its masks differently, so any recorded
+            // entry re-derives the agreed skip.
+            var globalHintEntries = new Dictionary<int, int>();
+            foreach ((int index, var set) in GlobalEntryHints)
+                globalHintEntries[index] = set.First();
+            var localHintEntries =
+                new Dictionary<int, IReadOnlyDictionary<int, int>>();
+            foreach ((int fd, var map) in LocalEntryHints)
+            {
+                var resolved = new Dictionary<int, int>();
+                foreach ((int index, var set) in map)
+                    resolved[index] = set.First();
+                localHintEntries[fd] = resolved;
+            }
             return new SubrPrunePlan
             {
                 Global = global,
@@ -237,6 +318,8 @@ public static partial class SubsetOperation
                 GlobalContextFd = contextFd,
                 GlobalEntryVsindex = globalEntries,
                 LocalEntryVsindex = localEntries,
+                GlobalEntryHints = globalHintEntries,
+                LocalEntryHints = localHintEntries,
             };
         }
     }
@@ -301,6 +384,9 @@ public static partial class SubsetOperation
             diagnostic = default;
             return ReadStatus.Done;
         }
+        ReadStatus maskAmbiguous = RefuseAmbiguousMaskWidths(analysis, model.Location,
+            out diagnostic);
+        if (maskAmbiguous != ReadStatus.Done) return maskAmbiguous;
         plan = analysis.ToPlan(globalPlan, localPlans);
         diagnostic = default;
         return ReadStatus.Done;
@@ -370,7 +456,43 @@ public static partial class SubsetOperation
         ReadStatus ambiguous = RefuseAmbiguousEntryVsindex(analysis, model.Location,
             out diagnostic);
         if (ambiguous != ReadStatus.Done) return ambiguous;
+        ReadStatus maskAmbiguous = RefuseAmbiguousMaskWidths(analysis, model.Location,
+            out diagnostic);
+        if (maskAmbiguous != ReadStatus.Done) return maskAmbiguous;
         plan = analysis.ToPlan(globalPlan, localPlans);
+        diagnostic = default;
+        return ReadStatus.Done;
+    }
+
+    /// <summary>The per-context hint-mask guard: a subr body's mask bytes skip by the
+    /// caller's accumulated stem count, so call sites with different histories can
+    /// genuinely parse the same body differently. The reach walk records every mask
+    /// width each body produced under each of its callers; more than one distinct
+    /// width means no single rewritten body serves both parsings, and the plan
+    /// refuses. Equal widths across entries re-derive the same skip from any
+    /// recorded entry, so the rewrite frame's seed stays faithful. Detail names the
+    /// body (a global index, or the local index within its FD), Expected the
+    /// distinct width count.</summary>
+    private static ReadStatus RefuseAmbiguousMaskWidths(SubrAnalysis analysis,
+        DataLocation modelAt, out FontDiagnostic diagnostic)
+    {
+        foreach ((int index, var set) in analysis.GlobalMaskWidths)
+        {
+            if (set.Count <= 1) continue;
+            diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                modelAt, (uint)index, (uint)set.Count);
+            return ReadStatus.UnsupportedFormat;
+        }
+        foreach ((int fd, var map) in analysis.LocalMaskWidths)
+        {
+            foreach ((int index, var set) in map)
+            {
+                if (set.Count <= 1) continue;
+                diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                    modelAt, (uint)index, (uint)set.Count);
+                return ReadStatus.UnsupportedFormat;
+            }
+        }
         diagnostic = default;
         return ReadStatus.Done;
     }
@@ -481,6 +603,9 @@ public static partial class SubsetOperation
             diagnostic = default;
             return ReadStatus.Done;
         }
+        ReadStatus maskAmbiguous = RefuseAmbiguousMaskWidths(analysis, model.Location,
+            out diagnostic);
+        if (maskAmbiguous != ReadStatus.Done) return maskAmbiguous;
         plan = analysis.ToPlan(globalPlan, [localPlan]);
         diagnostic = default;
         return ReadStatus.Done;
@@ -601,9 +726,25 @@ public static partial class SubsetOperation
                 return ReadStatus.UnsupportedFormat;
             }
             var rewrite = new RewriteState(plan.LocalByFd[fd], plan.Global);
+            // The body's mask seed: its callers' recorded entry hint count (the
+            // plan's column, global or this FD's local). A miss is a reached body
+            // that never recorded an entry — the same pipeline-bug refusal as the
+            // selector column, never a silent zero seed that would mis-skip the
+            // body's own mask bytes.
+            int initialHints = 0;
+            bool seeded = frameKind == SubrWalk.KindGlobal
+                ? plan.GlobalEntryHints.TryGetValue(old, out initialHints)
+                : plan.LocalEntryHints.TryGetValue(fd, out var hintMap) &&
+                    hintMap.TryGetValue(old, out initialHints);
+            if (!seeded)
+            {
+                diagnostic = new(DiagnosticCode.UnsupportedOperation,
+                    modelAt.At(DataField.GlyphId, 0, old), (uint)old, 0UL);
+                return ReadStatus.UnsupportedFormat;
+            }
             var walk = new SubrWalk(budget, modelAt.At(DataField.GlyphId, 0, old),
                 fdLocals[fd], globals, cff2, seac: false, analysis: null, fd,
-                rewrite: rewrite, regionCounts, initialVsindex);
+                rewrite: rewrite, regionCounts, initialVsindex, initialHints);
             ReadStatus status = walk.RunRewrite(bodies[old], frameKind, old,
                 out diagnostic);
             if (status != ReadStatus.Done) return status;
@@ -817,7 +958,8 @@ public static partial class SubsetOperation
 
         internal SubrWalk(BuildBudget budget, DataLocation at, byte[][] locals,
             byte[][] globals, bool cff2, bool seac, SubrAnalysis? analysis, int fd,
-            RewriteState? rewrite, int[]? regionCounts = null, int initialVsindex = 0)
+            RewriteState? rewrite, int[]? regionCounts = null, int initialVsindex = 0,
+            int initialHints = 0)
         {
             _budget = budget;
             _at = at;
@@ -827,6 +969,7 @@ public static partial class SubsetOperation
             _seac = seac;
             _analysis = analysis;
             _fd = fd;
+            _hints = initialHints;
             _rewrite = rewrite;
             _regionCounts = regionCounts;
             _vsindex = initialVsindex;
@@ -958,6 +1101,8 @@ public static partial class SubsetOperation
                     _hints += _stack.Count / 2;
                     _stack.Clear();
                     int skip = (_hints + 7) >> 3;
+                    if (kind != KindGlyph)
+                        _analysis?.MarkMaskWidth(kind, _fd, index, skip);
                     if (i + skip > n)
                     {
                         if (_seac)
@@ -1126,6 +1271,9 @@ public static partial class SubsetOperation
                 // distinct selector-sensitive entries refuse at plan time; the
                 // cycle branch still sees the record, the runtime does execute it).
                 _analysis?.MarkEntryVsindex(kind, _fd, idx, _vsindex);
+                // The same call-site recording for the hint counter: the body's
+                // masks skip by this accumulated count at the entry.
+                _analysis?.MarkEntryHints(kind, _fd, idx, _hints);
                 return ScanBody(kind, idx, table[idx], out diagnostic);
             }
             if (!_seac)
