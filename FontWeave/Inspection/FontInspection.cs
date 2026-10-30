@@ -44,21 +44,35 @@ public static class FontInspection
     /// Independent table checks continue after table failures. A container refusal
     /// leaves typed statuses null; no table validation is claimed in that case.</summary>
     public static ReadStatus TryValidate(FontFaceRef face, out FontInspectionReport? report,
-        out FontDiagnostic diagnostic, uint? tableTag = null, BuildLimits? limits = null)
+        out FontDiagnostic diagnostic, uint? tableTag = null, BuildLimits? limits = null) =>
+        TryValidate(face, FontValidationOptions.Strict, out report, out diagnostic, tableTag, limits);
+
+    public static ReadStatus TryValidate(FontFaceRef face, FontValidationOptions options,
+        out FontInspectionReport? report, out FontDiagnostic diagnostic,
+        uint? tableTag = null, BuildLimits? limits = null)
     {
         report = null;
+        ArgumentNullException.ThrowIfNull(options);
         ReadStatus status = face.TryOpenDirectory(out var directory, out diagnostic);
         return status == ReadStatus.Done
-            ? Run(directory, true, out report, out diagnostic, tableTag, limits) : status;
+            ? Run(directory, true, out report, out diagnostic, tableTag, limits, options) : status;
     }
 
     public static ReadStatus TryValidate(SfntDirectoryView directory, out FontInspectionReport? report,
         out FontDiagnostic diagnostic, uint? tableTag = null, BuildLimits? limits = null) =>
         Run(directory, true, out report, out diagnostic, tableTag, limits);
 
+    public static ReadStatus TryValidate(SfntDirectoryView directory, FontValidationOptions options,
+        out FontInspectionReport? report, out FontDiagnostic diagnostic,
+        uint? tableTag = null, BuildLimits? limits = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return Run(directory, true, out report, out diagnostic, tableTag, limits, options);
+    }
+
     private static ReadStatus Run(SfntDirectoryView directory, bool typed,
         out FontInspectionReport? report, out FontDiagnostic diagnostic,
-        uint? requestedTag, BuildLimits? limits)
+        uint? requestedTag, BuildLimits? limits, FontValidationOptions? options = null)
     {
         report = null;
         diagnostic = default;
@@ -95,6 +109,7 @@ public static class FontInspection
         ReadStatus containerStatus = directory.Validate(out var containerDiagnostic);
         ReadStatus result = typed && containerStatus != ReadStatus.Done ? containerStatus : firstRaw;
         diagnostic = typed && containerStatus != ReadStatus.Done ? containerDiagnostic : rawDiagnostic;
+        var findings = new List<FontToleranceFinding>();
         if (typed && containerStatus == ReadStatus.Done)
         {
             if (!budget.Buffer(count, faceLocation, out var cacheDiagnostic))
@@ -104,7 +119,7 @@ public static class FontInspection
                 var requested = new bool[count];
                 for (int i = 0; i < count; i++)
                     requested[i] = requestedTag is null || rows[i].Tag == requestedTag;
-                var session = new ValidationSession(directory, rows, budget);
+                var session = new ValidationSession(directory, rows, budget, options, findings);
                 for (int i = 0; i < count; i++)
                 {
                     if (!requested[i]) continue;
@@ -148,7 +163,7 @@ public static class FontInspection
             }
         }
         report = new(directory, requestedTag, containerStatus, containerDiagnostic,
-            budget.Usage, budget.Limits, output);
+            budget.Usage, budget.Limits, output, typed ? [.. findings] : null);
         return result;
     }
 
@@ -157,6 +172,8 @@ public static class FontInspection
         private readonly SfntDirectoryView _directory;
         private readonly FontTableInspection[] _rows;
         private readonly BuildBudget _admission;
+        private readonly FontValidationOptions? _options;
+        private readonly List<FontToleranceFinding> _findings;
         private HeadTable? _head;
         private MaxpTable? _maxp;
         private HheaTable? _hhea;
@@ -167,9 +184,12 @@ public static class FontInspection
         private LayoutListsTable? _gsub, _gpos;
         private int? _cpalEntries, _cvtCount;
 
-        internal ValidationSession(SfntDirectoryView directory, FontTableInspection[] rows, BuildBudget admission)
+        internal ValidationSession(SfntDirectoryView directory, FontTableInspection[] rows,
+            BuildBudget admission, FontValidationOptions? options,
+            List<FontToleranceFinding> findings)
         {
             _directory = directory; _rows = rows; _admission = admission;
+            _options = options; _findings = findings;
             _head = null; _maxp = null; _hhea = null; _vhea = null; _fvar = null;
             _loca = null; _gdef = null; _gsub = null; _gpos = null;
             _cpalEntries = null; _cvtCount = null;
@@ -271,7 +291,16 @@ public static class FontInspection
                 {
                     status = Os2View.TryOpen(bytes, out var view, out diagnostic, location);
                     if (status != ReadStatus.Done) return status;
-                    Version(ordinal, view.Version); return view.Validate(out diagnostic);
+                    Version(ordinal, view.Version);
+                    // A finding is evidence of an admitted deviation, so it is published
+                    // only when the whole table passes: a later strict rule failure must
+                    // not leave a "tolerated" entry behind.
+                    var os2Findings = new List<FontToleranceFinding>();
+                    status = view.Validate(_options?.TolerateLegacyDialects == true,
+                        os2Findings, out diagnostic);
+                    if (status == ReadStatus.Done && os2Findings.Count > 0)
+                        _findings.AddRange(os2Findings);
+                    return status;
                 }
                 case Post: return ValidatePost(ordinal, bytes, deps, out diagnostic);
                 case Hhea:

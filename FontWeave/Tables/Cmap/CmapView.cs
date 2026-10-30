@@ -245,7 +245,7 @@ public readonly ref partial struct CmapView
                 return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.OverlappingRange,
                     Location.AtLocal(DataField.Offset, extents[j].Offset, extents[j].RecordOrdinal),
                     out diagnostic, extents[j].Offset, cursor);
-            if (extents[j].Offset > cursor)
+            if (extents[j].Offset > cursor && !IsZeroPadding(cursor, extents[j].Offset))
                 return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
                     Location.AtLocal(DataField.Offset, cursor, extents[j].RecordOrdinal),
                     out diagnostic, extents[j].Offset, cursor);
@@ -323,12 +323,21 @@ public readonly ref partial struct CmapView
             }
             cursor = (ulong)extents[j].Offset + extents[j].Length;
         }
-        if (cursor != (ulong)_data.Length)
+        if (cursor != (ulong)_data.Length && !IsZeroPadding(cursor, (ulong)_data.Length))
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
                 Location.AtLocal(DataField.Length, cursor), out diagnostic,
                 (ulong)_data.Length, cursor);
         diagnostic = default;
         return ReadStatus.Done;
+    }
+
+    /// <summary>Zero alignment padding is legal between subtables and at the table tail;
+    /// the strict tiling rule is about overlap, not about forbidding zero fill. A gap
+    /// carrying any non-zero byte still refuses (UnexpectedTrailingData).</summary>
+    private bool IsZeroPadding(ulong start, ulong end)
+    {
+        int length = checked((int)(end - start));
+        return length == 0 || !_data.Slice((int)start, length).ContainsAnyExcept((byte)0);
     }
 
     public ReadStatus TryRead(CmapContext context, out CmapTable? model,

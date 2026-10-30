@@ -202,6 +202,75 @@ public sealed class SubsetCffCmapTests
         Assert.Empty(report.ClosureAddedGids);
     }
 
+    // ---- P1-1: a format 2 record is admissible only when the record is not
+    //      Unicode-semantic (the (1,x) Mac Japanese shape real corpora carry) ----
+
+    [Fact]
+    public void MacFormat2RecordIsAdmittedWhenNonUnicode()
+    {
+        FontFaceRef face = CffFace(SubsetFontFixture.CmapWithMacFormat2((0x41, 1)));
+        var status = SubsetOperation.TryPrepare(new SubsetRequest
+        {
+            Face = face,
+            Root = new SubsetGlyphRoot
+            {
+                Kind = SubsetRootKind.UnicodeCodepoints, Codepoints = [0x41]
+            },
+            Mode = SubsetMode.RetainGids,
+            Options = new SubsetOptions { NoLayout = true },
+        }, out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+        // The (1,1) format 2 record is consumed as evidence and never merged.
+        var consumed = Assert.Single(report!.CmapConsumedNotEmitted);
+        Assert.Equal((1, 1), (consumed.PlatformId, consumed.EncodingId));
+    }
+
+    // ---- P1-2: zero alignment padding is legal; non-zero fill is not ----
+
+    [Fact]
+    public void ZeroPaddingBetweenSubtablesAndTailIsAccepted()
+    {
+        byte[] cmap = SubsetFontFixture.PadCmap(
+            SubsetFontFixture.CmapCanonical((0x41, 1)), gap: 2, tail: 2);
+        FontFaceRef face = CffFace(cmap);
+        var status = SubsetOperation.TryPrepare(new SubsetRequest
+        {
+            Face = face,
+            Root = new SubsetGlyphRoot
+            {
+                Kind = SubsetRootKind.UnicodeCodepoints, Codepoints = [0x41]
+            },
+            Mode = SubsetMode.RetainGids,
+            Options = new SubsetOptions { NoLayout = true },
+        }, out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+    }
+
+    [Fact]
+    public void NonZeroPaddingRefuses()
+    {
+        byte[] cmap = SubsetFontFixture.PadCmap(
+            SubsetFontFixture.CmapCanonical((0x41, 1)), gap: 2, tail: 2, fill: 0xAA);
+        FontFaceRef face = CffFace(cmap);
+        var status = SubsetOperation.TryPrepare(new SubsetRequest
+        {
+            Face = face,
+            Root = new SubsetGlyphRoot
+            {
+                Kind = SubsetRootKind.UnicodeCodepoints, Codepoints = [0x41]
+            },
+            Mode = SubsetMode.RetainGids,
+            Options = new SubsetOptions { NoLayout = true },
+        }, out var result, out _, out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(DiagnosticCode.UnexpectedTrailingData, diagnostic.Code);
+        Assert.Null(result);
+    }
+
     // ---- the (0,5) fmt14 record drops on CFF faces (the former S0 freeze C5
     //      real-corpus witness; revised by OQ-F14) ----
 

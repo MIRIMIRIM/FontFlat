@@ -29,12 +29,13 @@ internal static class Program
         if (args.Length == 0 || args is ["--help"])
         {
             Console.WriteLine("FontWeave (experimental)\n" +
-                "validate INPUT [--face N] [--table TAG]\n" +
+                "validate INPUT [--face N] [--table TAG] [--tolerate-legacy]\n" +
                 "inspect INPUT [--face N] [--table TAG] [--show-raw]\n" +
                 "edit-rebuild INPUT --record N --text TEXT --output OUTPUT [--head-revision INT32] [--head-modified INT64]\n" +
                 "subset INPUT --mode retain|compact --gids LIST|--codepoints CPS|--text TEXT --output OUTPUT [--face N] [--map PATH] [--no-layout]\n" +
                 "    [--preserve-layout] [--drop-hinting] [--drop-signature] [--scope-script TAGS] [--scope-language TAGS]\n" +
-                "    [--scope-feature TAGS] [--unknown-table TAG=drop|preserve[,TAG=choice...]] [--max-temporary-bytes N] [--max-work-units N]\n" +
+                "    [--scope-feature TAGS] [--unknown-table TAG=drop|preserve[,TAG=choice...]] [--unknown-table-default drop|preserve]\n" +
+                "    [--max-temporary-bytes N] [--max-work-units N]\n" +
                 "names INPUT [--face N] [--show-raw]\n" +
                 "name-replace INPUT --record N --text TEXT --encoding utf16be --output OUTPUT\n" +
                 "name-add INPUT --platform N --encoding-id N --language N --name-id N --text TEXT --encoding utf16be --output OUTPUT\n" +
@@ -265,7 +266,7 @@ internal static class Program
         // the standalone-only admission (the metadata operation carries the same guard).
         if (command == "validate" && face.IsCollection && !options.ContainsKey("face"))
             return ExecuteCollectionValidate(result, actualSource, requestedTag, fileLimits,
-                limits, out exitCode);
+                limits, options.ContainsKey("tolerate-legacy"), out exitCode);
         if (face.IsCollection && command == "inspect")
         {
             status = FontInspection.TryInspect(face, out FontInspectionReport? collectionReport,
@@ -327,7 +328,12 @@ internal static class Program
         }
 
         FontInspectionReport? report;
-        status = FontInspection.TryValidate(face, out report, out diagnostic, requestedTag, limits);
+        var validationOptions = new FontValidationOptions
+        {
+            TolerateLegacyDialects = options.ContainsKey("tolerate-legacy")
+        };
+        status = FontInspection.TryValidate(face, validationOptions, out report, out diagnostic,
+            requestedTag, limits);
         if (report is not null) result["report"] = InspectionReport(report);
         if (command == "inspect" && options.ContainsKey("show-raw") && report is not null)
             status = AppendRawInspection(result, face, requestedTag, rawLimit, status, ref diagnostic);
@@ -400,7 +406,7 @@ internal static class Program
     // receipt holds the whole container's evidence.
     private static Dictionary<string, object?> ExecuteCollectionValidate(
         Dictionary<string, object?> result, FontSource source, uint? requestedTag,
-        FontLimits fileLimits, BuildLimits limits, out int exitCode)
+        FontLimits fileLimits, BuildLimits limits, bool tolerateLegacyDialects, out int exitCode)
     {
         result["faceIndex"] = null;
         ReadStatus container = TryValidateCollectionContainer(source, fileLimits,
@@ -428,8 +434,10 @@ internal static class Program
                 break;
             }
             faceCount++;
-            status = FontInspection.TryValidate(face, out var report, out var diagnostic,
-                requestedTag, limits);
+            status = FontInspection.TryValidate(face, new FontValidationOptions
+            {
+                TolerateLegacyDialects = tolerateLegacyDialects
+            }, out var report, out var diagnostic, requestedTag, limits);
             faces.Add(new
             {
                 faceIndex = face.FaceIndex,
@@ -647,6 +655,7 @@ internal static class Program
             Options = new SubsetOptions
             {
                 UnknownTables = ParseUnknownTables(options),
+                DefaultUnknownTableChoice = ParseUnknownTableDefault(options),
                 NoLayout = options.ContainsKey("no-layout"),
                 PreserveLayout = options.ContainsKey("preserve-layout"),
                 DropHinting = options.ContainsKey("drop-hinting"),
@@ -890,6 +899,20 @@ internal static class Program
         return declarations;
     }
 
+    private static SubsetUnknownTableChoice? ParseUnknownTableDefault(
+        Dictionary<string, string?> options)
+    {
+        if (!options.TryGetValue("unknown-table-default", out string? value) || value is null)
+            return null;
+        return value switch
+        {
+            "drop" => SubsetUnknownTableChoice.Drop,
+            "preserve" => SubsetUnknownTableChoice.Preserve,
+            _ => throw new CliException("Usage",
+                "--unknown-table-default must be drop or preserve.")
+        };
+    }
+
     private static string Sha256Hex(byte[] bytes) =>
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
 
@@ -1018,6 +1041,13 @@ internal static class Program
         containerValidationStatusName = report.ContainerValidationStatus.ToString(),
         containerDiagnostic = DiagnosticReport(report.ContainerDiagnostic),
         admissionUsage = UsageReport(report.AdmissionUsage), perTableLimits = LimitsReport(report.PerTableLimits),
+        toleratedFindings = report.ToleratedFindings.Select(finding => new
+        {
+            tableTag = finding.TableTag, tagText = TagText(finding.TableTag),
+            field = (ushort)finding.Field, fieldName = finding.Field.ToString(),
+            offset = finding.Offset, value = finding.Value, expected = finding.Expected,
+            rule = finding.Rule
+        }).ToArray(),
         tables = report.Tables.Select(table => new
         {
             ordinal = table.Ordinal, tag = table.Tag, tagText = table.Tag.HasValue ? TagText(table.Tag.Value) : null,
@@ -1252,7 +1282,7 @@ internal static class Program
             string name = args[i][2..];
             string? value = null;
             if (name is not ("drop-signature" or "show-raw" or "json"
-                or "no-layout" or "preserve-layout" or "drop-hinting"))
+                or "no-layout" or "preserve-layout" or "drop-hinting" or "tolerate-legacy"))
             {
                 if (++i == args.Length || args[i].StartsWith("--", StringComparison.Ordinal))
                     throw new CliException("Usage", $"--{name} requires a value.");
@@ -1273,7 +1303,7 @@ internal static class Program
         }
         else if (command == "validate" || command == "inspect" && options.ContainsKey("table"))
         {
-            allowed.UnionWith(["table", "max-temporary-bytes", "max-work-units"]);
+            allowed.UnionWith(["table", "tolerate-legacy", "max-temporary-bytes", "max-work-units"]);
             if (command == "inspect") allowed.UnionWith(["show-raw", "max-raw-bytes"]);
         }
         else if (command == "edit-rebuild")
@@ -1283,7 +1313,7 @@ internal static class Program
             allowed.UnionWith(["output", "mode", "gids", "codepoints", "text", "map",
                 "no-layout", "preserve-layout", "drop-hinting", "drop-signature",
                 "scope-script", "scope-language", "scope-feature",
-                "unknown-table", "max-temporary-bytes", "max-work-units"]);
+                "unknown-table", "unknown-table-default", "max-temporary-bytes", "max-work-units"]);
         else if (command is "inspect" or "names") allowed.Add("show-raw");
         else
         {

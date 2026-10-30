@@ -67,6 +67,13 @@ public enum DataField : ushort
     PlatformId = 48, CharCode = 49
 }
 
+/// <summary>One spec deviation a tolerant validation admitted instead of refusing.
+/// The strict entry never produces findings; the tolerant entry records them so the
+/// caller can audit exactly what was waved through. Value/Expected are the wire values
+/// at the named field (Expected is the mask or bound the strict rule applies).</summary>
+public readonly record struct FontToleranceFinding(uint TableTag, DataField Field,
+    ulong Offset, ulong Value, ulong Expected, string Rule);
+
 public enum OffsetBasis : byte { None = 0, File = 1, Table = 2, NameStorage = 3 }
 
 /// <summary>Numeric provenance; does not keep an input snapshot alive. SourceId 0 is caller-owned bytes.</summary>

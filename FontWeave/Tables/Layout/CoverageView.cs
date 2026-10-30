@@ -50,14 +50,16 @@ public readonly ref partial struct CoverageView
     // format and every per-row semantic check, so this step re-walks the same verified
     // rows only to copy glyph ids and must not re-inspect the same semantics.
     internal ReadStatus Materialize(int numGlyphs, int expandedCount, int consumed,
-        out CoverageTable? model, out FontDiagnostic diagnostic, BuildBudget budget)
+        out CoverageTable? model, out FontDiagnostic diagnostic, BuildBudget budget,
+        bool allowTrailingSentinel = false)
     {
         model = null;
         if (!budget.Work(2L * expandedCount, Location, out diagnostic) ||
             !budget.Buffer(2L * expandedCount, Location, out diagnostic)) return ReadStatus.ResourceLimit;
         ushort[] glyphs = new ushort[expandedCount];
         int at = 0, rangeCount = 0;
-        for (int i = 0; i < Count; i++)
+        int last = allowTrailingSentinel && IsTrailingSentinel() ? Count - 1 : Count;
+        for (int i = 0; i < last; i++)
         {
             if (Format == 1)
             {
@@ -77,9 +79,14 @@ public readonly ref partial struct CoverageView
         return ReadStatus.Done;
     }
 
+    private bool IsTrailingSentinel() =>
+        Format == 1 && Count > 0 &&
+        TryGetGlyph(Count - 1, out ushort glyph, out _) == ReadStatus.Done &&
+        glyph == 0xFFFF;
+
     // No length is encoded in Coverage. A valid leaf may be followed by other parent payloads.
     internal ReadStatus Inspect(int numGlyphs, out int expandedCount, out int consumed,
-        out FontDiagnostic diagnostic, BuildBudget budget)
+        out FontDiagnostic diagnostic, BuildBudget budget, bool allowTrailingSentinel = false)
     {
         expandedCount = consumed = 0;
         ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
@@ -106,6 +113,15 @@ public readonly ref partial struct CoverageView
             {
                 status = TryGetGlyph(i, out ushort gid, out diagnostic);
                 if (status != ReadStatus.Done) return status;
+                // A trailing 0xFFFF is the commercial-font deleted-glyph sentinel:
+                // the paired SingleSubst substitute is also 0xFFFF and the entry is
+                // not a mapping. Only the last entry is exempt; earlier 0xFFFF
+                // entries still fail the domain check.
+                if (allowTrailingSentinel && i == Count - 1 && gid == 0xFFFF)
+                {
+                    previous = gid;
+                    continue;
+                }
                 if (gid >= numGlyphs)
                     return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                         Location.AtLocal(DataField.GlyphId, row, i), out diagnostic, gid, (ulong)numGlyphs);

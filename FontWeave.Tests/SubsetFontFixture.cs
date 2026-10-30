@@ -11,6 +11,8 @@ namespace FontWeave.Tests;
 
 internal static class SubsetFontFixture
 {
+    internal const uint Os2Tag = 0x4F532F32;
+
     internal static uint LocaOffset(byte[] head, byte[] loca, int index) =>
         BinaryPrimitives.ReadInt16BigEndian(head.AsSpan(50)) switch
         {
@@ -101,6 +103,35 @@ internal static class SubsetFontFixture
         _ = FontSource.TryCopy(Sfnt(sealedChecksums, tables), out FontSource? source, out _);
         _ = source!.TryGetFace(0, out FontFaceRef face, out _);
         return face;
+    }
+
+    /// <summary>A version-2 OS/2 table with the legacy fsSelection high bits and the
+    /// ulCodePageRange reserved bits set: the commercial-font dialect the tolerant
+    /// validation admits and the strict entry refuses. Only the checked fields are
+    /// non-zero; the rest of the fixed layout stays zero.</summary>
+    internal static byte[] Os2Legacy(ushort fsSelection = 0x0101,
+        uint codePageRange1 = 0x00000201, uint codePageRange2 = 0x00000001)
+    {
+        var bytes = new byte[96];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(0), 2);   // version 2
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), 400); // weight
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6), 5);   // width
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(62), fsSelection);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(78), codePageRange1);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(82), codePageRange2);
+        return bytes;
+    }
+
+    /// <summary>A version-2 OS/2 table with only spec-legal values.</summary>
+    internal static byte[] Os2Strict()
+    {
+        var bytes = new byte[96];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(0), 2);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), 400);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6), 5);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(62), 0x0040);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(78), 0x00000001);
+        return bytes;
     }
 
     internal static byte[] Head(short indexToLocFormat = 1)
@@ -223,6 +254,61 @@ internal static class SubsetFontFixture
         format4.CopyTo(bytes.AsSpan(28 + format6.Length));
         format12.CopyTo(bytes.AsSpan(28 + format6.Length + format4.Length));
         return bytes;
+    }
+
+    /// <summary>A minimal valid format 2 subtable: all 256 subHeaderKeys zero (the
+    /// single-byte path), one subHeader with one entry pointing at a zero glyph. The
+    /// mapping itself is irrelevant: a (1,x) record is consumed as evidence, never
+    /// merged. Test-side independent encoding.</summary>
+    internal static byte[] MacFormat2Subtable()
+    {
+        const int keysEnd = 6 + 2 * 256;
+        var bytes = new byte[keysEnd + 8 + 2];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(0), 2);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(2), (ushort)bytes.Length);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), 0); // language
+        // subHeaders[0] at keysEnd: firstCode 0, entryCount 1, idDelta 0, idRangeOffset 2.
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(keysEnd + 2), 1);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(keysEnd + 6), 2);
+        // glyphIndexArray[0] at keysEnd+8 stays zero (unmapped).
+        return bytes;
+    }
+
+    /// <summary>A (1,1) format 2 record ahead of the canonical (3,1) format 4: the
+    /// historical Mac Japanese shape the admission gate used to refuse.</summary>
+    internal static byte[] CmapWithMacFormat2(params (uint Code, ushort Gid)[] mappings)
+    {
+        var sorted = new List<(uint Code, ushort Gid)>(mappings);
+        sorted.Sort(static (a, b) => a.Code.CompareTo(b.Code));
+        byte[] format2 = MacFormat2Subtable();
+        byte[] format4 = CanonicalFormat4([.. sorted]);
+        var bytes = new byte[4 + 8 * 2 + format2.Length + format4.Length];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(2), 2);
+        WriteRecord(bytes, 4, 1, 1, 20);
+        WriteRecord(bytes, 12, 3, 1, (uint)(20 + format2.Length));
+        format2.CopyTo(bytes.AsSpan(20));
+        format4.CopyTo(bytes.AsSpan(20 + format2.Length));
+        return bytes;
+    }
+
+    /// <summary>Inserts <paramref name="gap"/> bytes before the first subtable and
+    /// appends <paramref name="tail"/> bytes, shifting every record offset. The fill
+    /// byte makes the zero-padding tolerance testable in both directions.</summary>
+    internal static byte[] PadCmap(byte[] cmap, int gap, int tail, byte fill = 0)
+    {
+        int tables = BinaryPrimitives.ReadUInt16BigEndian(cmap.AsSpan(2));
+        int header = 4 + 8 * tables;
+        var result = new byte[cmap.Length + gap + tail];
+        cmap.AsSpan(0, header).CopyTo(result);
+        for (int i = 0; i < tables; i++)
+        {
+            uint offset = BinaryPrimitives.ReadUInt32BigEndian(cmap.AsSpan(8 + 8 * i));
+            BinaryPrimitives.WriteUInt32BigEndian(result.AsSpan(8 + 8 * i), offset + (uint)gap);
+        }
+        for (int i = 0; i < gap; i++) result[header + i] = fill;
+        cmap.AsSpan(header).CopyTo(result.AsSpan(header + gap));
+        for (int i = 0; i < tail; i++) result[result.Length - tail + i] = fill;
+        return result;
     }
 
     /// <summary>One valid format 14 subtable: a single variation selector carrying the

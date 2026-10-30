@@ -11,6 +11,16 @@ namespace FontWeave.Inspection;
 public readonly record struct FontTableDependency(uint Tag, bool Required,
     ReadStatus Status, DataLocation Location, FontDiagnostic Diagnostic);
 
+/// <summary>Validation posture for <see cref="FontInspection.TryValidate"/>. Strict is
+/// the default and the frozen spec-audit shape; TolerateLegacyDialects admits the
+/// documented OS/2 commercial-font deviations and reports each one as a finding.</summary>
+public sealed record FontValidationOptions
+{
+    public static FontValidationOptions Strict { get; } = new();
+
+    public bool TolerateLegacyDialects { get; init; }
+}
+
 /// <summary>One wire-order directory item, or an explicitly requested missing tag.
 /// A null tag/record means the directory record itself could not be read. A null
 /// validation status/diagnostic means typed validation was not attempted.</summary>
@@ -50,7 +60,8 @@ public sealed class FontInspectionReport
 {
     internal FontInspectionReport(SfntDirectoryView directory, uint? requestedTag,
         ReadStatus containerStatus, FontDiagnostic containerDiagnostic,
-        BuildUsage admissionUsage, BuildLimits limits, FontTableInspection[] tables)
+        BuildUsage admissionUsage, BuildLimits limits, FontTableInspection[] tables,
+        FontToleranceFinding[]? toleratedFindings = null)
     {
         SourceId = directory.Face.SourceId; FaceIndex = directory.Face.FaceIndex;
         IsCollection = directory.Face.IsCollection; ContainerVersion = directory.Version;
@@ -58,6 +69,7 @@ public sealed class FontInspectionReport
         ContainerValidationStatus = containerStatus; ContainerDiagnostic = containerDiagnostic;
         AdmissionUsage = admissionUsage; PerTableLimits = limits;
         Tables = Array.AsReadOnly(tables);
+        ToleratedFindings = Array.AsReadOnly(toleratedFindings ?? []);
     }
 
     public long SourceId { get; }
@@ -78,4 +90,6 @@ public sealed class FontInspectionReport
     /// bound process memory or total whole-font work.</summary>
     public BuildLimits PerTableLimits { get; }
     public IReadOnlyList<FontTableInspection> Tables { get; }
+    /// <summary>Deviations the tolerant posture admitted; always empty under Strict.</summary>
+    public IReadOnlyList<FontToleranceFinding> ToleratedFindings { get; }
 }

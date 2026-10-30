@@ -1246,6 +1246,9 @@ public static partial class SubsetOperation
             foreach ((uint tag, var choice) in entries)
                 state.OptionRecords.Add(new(SubsetOptionId.UnknownTable, tag,
                     choice.ToString()));
+        if (options.DefaultUnknownTableChoice is { } fallback)
+            state.OptionRecords.Add(new(SubsetOptionId.UnknownTableDefault, 0,
+                fallback.ToString()));
         return true;
     }
 
@@ -1563,13 +1566,24 @@ public static partial class SubsetOperation
             status = view.TryGetSubtableExtent(i, out ushort format, out uint offset,
                 out _, out diagnostic);
             if (status != ReadStatus.Done) return false;
-            // {2, 8, 10, 13} sit outside the authoritative rebuild set {4, 12}. Format
-            // 14 no longer refuses the face (OQ-F14, revising OQ-S0-9): subsetting
-            // serves no UVS semantics, and the (0,5) record drops through the rebuild's
-            // consumed-not-emitted routing, so a non-VS request over a face that
-            // carries format 14 is well-defined.
+            // {2, 8, 10, 13} sit outside the authoritative rebuild set {4, 12}. Format 2
+            // is a high-byte legacy mapping: on a record this slice does not treat as
+            // Unicode it is consumed as evidence and never merged, so admitting it
+            // loses nothing; on a Unicode-semantic record it has no scalar reader and
+            // still refuses. Formats 8/10/13 are Unicode-only and stay refused on every
+            // record. Format 14 no longer refuses the face (OQ-F14, revising OQ-S0-9):
+            // subsetting serves no UVS semantics, and the (0,5) record drops through the
+            // rebuild's consumed-not-emitted routing, so a non-VS request over a face
+            // that carries format 14 is well-defined.
             if (format is 2 or 8 or 10 or 13)
             {
+                if (format == 2)
+                {
+                    status = view.TryGetEncodingRecord(i, out var record, out diagnostic);
+                    if (status != ReadStatus.Done) return false;
+                    if (!IsUnicodeSemantic(record.PlatformId, record.EncodingId))
+                        continue;
+                }
                 state.Diagnostic = new(DiagnosticCode.CmapFormatUnsupported,
                     view.Location.AtLocal(DataField.Offset, offset, i), format);
                 diagnostic = state.Diagnostic;
@@ -1866,6 +1880,18 @@ public static partial class SubsetOperation
                 : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
                     SubsetDecisionOrigin.RequestOption);
             if (choice == SubsetUnknownTableChoice.Drop) state.Dropped.Add(tag);
+        }
+        else if (options.DefaultUnknownTableChoice is { } fallback)
+        {
+            // The caller's wildcard default for out-of-catalogue tags (the
+            // server-side "unknown tables all drop/preserve" form). A per-tag
+            // declaration above always wins; known tags never reach this branch.
+            decision = fallback == SubsetUnknownTableChoice.Drop
+                ? new(tag, TableAction.Drop, SubsetPolicy.Delete,
+                    SubsetDecisionOrigin.RequestOption)
+                : new(tag, TableAction.Preserve, SubsetPolicy.RetainRaw,
+                    SubsetDecisionOrigin.RequestOption);
+            if (fallback == SubsetUnknownTableChoice.Drop) state.Dropped.Add(tag);
         }
         else
         {

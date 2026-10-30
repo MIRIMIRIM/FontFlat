@@ -48,8 +48,10 @@ public sealed class SubsetCffProfileTests
     /// glyphs: predefined charset (ISOAdobe) and encoding, one Private DICT, no local
     /// subrs, and the strict tiling Header|Name|Top|String|GlobalSubrs|CharStrings|Private.
     /// Only CharStrings and Private live in the Top DICT, so the predefined charset and
-    /// encoding forms are exercised and no custom SID is needed.</summary>
-    private static byte[] NameKeyedCff(int numGlyphs)
+    /// encoding forms are exercised and no custom SID is needed.
+    /// <paramref name="privateGap"/> inserts that many bytes between CharStrings and
+    /// Private; the fill byte makes the zero-padding rule testable in both directions.</summary>
+    private static byte[] NameKeyedCff(int numGlyphs, int privateGap = 0, byte gapFill = 0)
     {
         var header = new byte[] { 0x01, 0x00, 0x04, 0x04 };
         byte[] name = Index("S1bSynthetic"u8.ToArray());
@@ -60,7 +62,7 @@ public sealed class SubsetCffProfileTests
         byte[][] programs = new byte[numGlyphs][];
         for (int gid = 0; gid < numGlyphs; gid++) programs[gid] = [0x8b, 0x0e]; // 0 endchar
         byte[] charstrings = Index(programs);
-        int privateAt = charStringsAt + charstrings.Length;
+        int privateAt = charStringsAt + charstrings.Length + privateGap;
         const int privateSize = 2; // defaultWidthX 0
         var top = new List<byte>();
         top.AddRange(Number(charStringsAt)); top.Add(17);              // CharStrings
@@ -75,6 +77,7 @@ public sealed class SubsetCffProfileTests
         bytes.AddRange(strings);
         bytes.AddRange(globals);
         bytes.AddRange(charstrings);
+        for (int i = 0; i < privateGap; i++) bytes.Add(gapFill);
         bytes.AddRange([0x8b, 0x14]); // Private DICT: defaultWidthX 0
         return [.. bytes];
     }
@@ -115,6 +118,89 @@ public sealed class SubsetCffProfileTests
             Root = new SubsetGlyphRoot { Kind = SubsetRootKind.ExplicitGlyphSet, Gids = gids },
             Mode = SubsetMode.RetainGids,
         };
+
+    // ---- P1-2: zero padding between CFF structures and at the table tail is legal ----
+
+    /// <summary>Appends <paramref name="tail"/> bytes to a CFF table; every offset in the
+    /// table stays valid, so only the final tail check can observe the change.</summary>
+    private static byte[] WithCffTail(byte[] cff, int tail, byte fill = 0)
+    {
+        var bytes = new byte[cff.Length + tail];
+        cff.CopyTo(bytes.AsSpan(0));
+        for (int i = 0; i < tail; i++) bytes[cff.Length + i] = fill;
+        return bytes;
+    }
+
+    [Fact]
+    public void ZeroGapBeforePrivateIsAccepted()
+    {
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(3)),
+            (SubsetFontFixture.CffTag, NameKeyedCff(3, privateGap: 2)));
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+    }
+
+    [Fact]
+    public void NonZeroGapBeforePrivateRefuses()
+    {
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(3)),
+            (SubsetFontFixture.CffTag, NameKeyedCff(3, privateGap: 2, gapFill: 0xAA)));
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out _, out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(DiagnosticCode.UnexpectedTrailingData, diagnostic.Code);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ZeroCffTailPaddingIsAccepted()
+    {
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(3)),
+            (SubsetFontFixture.CffTag, WithCffTail(NameKeyedCff(3), 2)));
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+    }
+
+    [Fact]
+    public void NonZeroCffTailPaddingRefuses()
+    {
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(3)),
+            (SubsetFontFixture.CffTag, WithCffTail(NameKeyedCff(3), 2, 0xAA)));
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out _, out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(DiagnosticCode.UnexpectedTrailingData, diagnostic.Code);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ZeroCidCffTailPaddingIsAccepted()
+    {
+        var image = CidFontBuilder.Build(new CidFont { FdCount = 2, NumGlyphs = 3 });
+        var face = Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, Maxp05(3)),
+            (SubsetFontFixture.CffTag, WithCffTail(image.Bytes, 2)));
+        var status = SubsetOperation.TryPrepare(Request(face, [1]), out var result,
+            out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+    }
 
     // ---- admission: the static CFF1 profile is served ----
 

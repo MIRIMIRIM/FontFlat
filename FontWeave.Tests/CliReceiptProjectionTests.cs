@@ -223,6 +223,29 @@ public sealed class CliReceiptProjectionTests
         finally { Cleanup(input, output); }
     }
 
+    // P1-3 CLI surface: the wildcard default admits the unknown tag without a
+    // per-tag declaration, and the decision records the request-option origin.
+    [Fact]
+    public void SuccessfulCompactUsesTheUnknownTableDefault()
+    {
+        (string input, string output) = TempSubsettableFont();
+        try
+        {
+            var receipt = Json(FontWeave.Cli.Program.Execute(
+                ["subset", input, "--mode", "compact", "--gids", "1",
+                 "--unknown-table-default", "preserve", "--output", output],
+                out int exitCode));
+            Assert.Equal(0, exitCode);
+            Assert.Equal("Done", receipt.GetProperty("statusName").GetString());
+            JsonElement zzzz = receipt.GetProperty("decisions").EnumerateArray()
+                .Single(row => row.GetProperty("tag").GetUInt32() == ZzzzTag);
+            Assert.Equal((int)TableAction.Preserve, zzzz.GetProperty("action").GetInt32());
+            Assert.Equal((int)SubsetDecisionOrigin.RequestOption,
+                zzzz.GetProperty("origin").GetInt32());
+        }
+        finally { Cleanup(input, output); }
+    }
+
     private static SubsetReport PopulatedReport() => new(
         SubsetMode.CompactRemap,
         [new SubsetTableDecision(Gsub, TableAction.Rebuild, SubsetPolicy.RebuildTyped,

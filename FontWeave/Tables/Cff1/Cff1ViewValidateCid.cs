@@ -271,10 +271,10 @@ public readonly ref partial struct Cff1View
         if (!budget.Work(privateBytes + subrBytes, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
 
-        // Every block must tile the region after the Global Subrs INDEX exactly. Sorted by
-        // start position they must begin where the Global Subrs INDEX ends, each must begin
-        // where the previous ended, and the last must end at the table end: no gap, no
-        // overlap, and no unclaimed trailing byte.
+        // Every block must tile the region after the Global Subrs INDEX: sorted by start
+        // position they begin at or after the Global Subrs INDEX end, each begins at or
+        // after the previous end, and the last ends at or before the table end. Overlap
+        // and non-zero fill still refuse; zero alignment fill is legal.
         blocks.Sort(static (a, b) => a.First.CompareTo(b.First));
         long cursor = globals.End;
         foreach (var block in blocks)
@@ -285,11 +285,13 @@ public readonly ref partial struct Cff1View
                     DiagnosticCode.OverlappingRange,
                     Location.At(DataField.Offset, (uint)block.First), out diagnostic,
                     (uint)block.First, (uint)cursor);
-            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Offset, (uint)cursor), out diagnostic,
-                (uint)block.First, (uint)cursor);
+            if (!IsZeroPadding((int)cursor, (int)block.First))
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
+                    Location.At(DataField.Offset, (uint)cursor), out diagnostic,
+                    (uint)block.First, (uint)cursor);
+            cursor = block.Last;
         }
-        if (cursor != _data.Length)
+        if (cursor > _data.Length || (cursor < _data.Length && !IsZeroPadding((int)cursor, _data.Length)))
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
                 Location.At(DataField.Length, (uint)cursor), out diagnostic,
                 (ulong)_data.Length, (uint)cursor);

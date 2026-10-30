@@ -5,6 +5,7 @@
 // explicitly registered DiagnosticCode values (ReadContracts.cs), which the validation
 // gate maps to the frozen wording.
 using FontWeave.Core;
+using FontWeave.Operations;
 using FontWeave.Operations.Subset;
 using Xunit;
 
@@ -92,6 +93,77 @@ public sealed class SubsetRefusalTests
         Assert.Contains(report!.OptionRecords, r =>
             r.Id == SubsetOptionId.UnknownTable && r.Tag == SubsetFontFixture.ZzZzTag &&
             r.Value == nameof(SubsetUnknownTableChoice.Preserve));
+    }
+
+    // P1-3: the wildcard default applies to every undeclared out-of-catalogue tag.
+    [Fact]
+    public void UndeclaredUnknownTableUsesDefaultDrop()
+    {
+        var face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(4)),
+            (SubsetFontFixture.ZzZzTag, SubsetFontFixture.Dummy()));
+        var options = new SubsetOptions
+        {
+            DefaultUnknownTableChoice = SubsetUnknownTableChoice.Drop
+        };
+        var status = SubsetOperation.TryPrepare(Request(face, [0], options: options),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+        Assert.Contains(SubsetFontFixture.ZzZzTag, report!.DroppedTables);
+        Assert.Contains(report.Decisions, d =>
+            d.Tag == SubsetFontFixture.ZzZzTag && d.Action == TableAction.Drop &&
+            d.Origin == SubsetDecisionOrigin.RequestOption);
+        Assert.Contains(report.OptionRecords, r =>
+            r.Id == SubsetOptionId.UnknownTableDefault && r.Value == "Drop");
+    }
+
+    [Fact]
+    public void UndeclaredUnknownTableUsesDefaultPreserve()
+    {
+        var face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(4)),
+            (SubsetFontFixture.ZzZzTag, SubsetFontFixture.Dummy()));
+        var options = new SubsetOptions
+        {
+            DefaultUnknownTableChoice = SubsetUnknownTableChoice.Preserve
+        };
+        var status = SubsetOperation.TryPrepare(Request(face, [0], options: options),
+            out var result, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+        Assert.Empty(report!.DroppedTables);
+        Assert.Contains(report.Decisions, d =>
+            d.Tag == SubsetFontFixture.ZzZzTag && d.Action == TableAction.Preserve &&
+            d.Origin == SubsetDecisionOrigin.RequestOption);
+    }
+
+    // A per-tag declaration wins over the wildcard default.
+    [Fact]
+    public void PerTagDeclarationOverridesDefault()
+    {
+        var face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(4)),
+            (SubsetFontFixture.ZzZzTag, SubsetFontFixture.Dummy()));
+        var options = new SubsetOptions
+        {
+            DefaultUnknownTableChoice = SubsetUnknownTableChoice.Drop,
+            UnknownTables = new Dictionary<uint, SubsetUnknownTableChoice>
+            {
+                [SubsetFontFixture.ZzZzTag] = SubsetUnknownTableChoice.Preserve
+            }
+        };
+        var status = SubsetOperation.TryPrepare(Request(face, [0], options: options),
+            out _, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.Contains(report!.Decisions, d =>
+            d.Tag == SubsetFontFixture.ZzZzTag && d.Action == TableAction.Preserve);
     }
 
     // A known table is never a caller option (W1 §2.1).

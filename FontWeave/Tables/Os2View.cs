@@ -5,7 +5,15 @@ namespace FontWeave.Tables;
 /// <summary>Versioned strict semantics over the single schema-generated OS/2 reader.</summary>
 public readonly ref partial struct Os2View
 {
-    public ReadStatus Validate(out FontDiagnostic diagnostic)
+    public ReadStatus Validate(out FontDiagnostic diagnostic) =>
+        Validate(tolerateLegacyDialects: false, findings: null, out diagnostic);
+
+    /// <summary>Production tolerance: the version-coupled fsSelection high bits and the
+    /// ulCodePageRange reserved bits are recorded as findings instead of refusing.
+    /// Structural rules (length, weight/width, fsType, the italic/oblique contradiction,
+    /// field presence) stay strict. The strict entry above never passes true.</summary>
+    public ReadStatus Validate(bool tolerateLegacyDialects,
+        List<FontToleranceFinding>? findings, out FontDiagnostic diagnostic)
     {
         if (!IsBound)
             return ReadWire.Fail(ReadStatus.Uninitialized, DiagnosticCode.UnboundView,
@@ -22,7 +30,8 @@ public readonly ref partial struct Os2View
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
                 Location.At(DataField.Length, (ulong)expected), out diagnostic,
                 (ulong)_data.Length, (ulong)expected);
-        return ValidateValues(Version, expected, ReadValues(), Location, out diagnostic);
+        return ValidateValues(Version, expected, ReadValues(), Location,
+            tolerateLegacyDialects, findings, out diagnostic);
     }
 
     public ReadStatus TryRead(out Os2Table? model, out FontDiagnostic diagnostic,
@@ -124,7 +133,13 @@ public readonly ref partial struct Os2View
     }
 
     internal static ReadStatus ValidateValues(ushort version, int length, Os2TableValues v,
-        DataLocation location, out FontDiagnostic diagnostic)
+        DataLocation location, out FontDiagnostic diagnostic) =>
+        ValidateValues(version, length, v, location, tolerateLegacyDialects: false, findings: null,
+            out diagnostic);
+
+    internal static ReadStatus ValidateValues(ushort version, int length, Os2TableValues v,
+        DataLocation location, bool tolerateLegacyDialects,
+        List<FontToleranceFinding>? findings, out FontDiagnostic diagnostic)
     {
         if (Os2Layout.Length(version, length == Os2Layout.ShortLength) != length)
             return Invalid(location, DataField.Length, 0, (ulong)length, out diagnostic);
@@ -137,8 +152,17 @@ public readonly ref partial struct Os2View
             (version >= 3 && PermissionCount(v.FsType) > 1))
             return Invalid(location, DataField.Flags, 8, v.FsType, out diagnostic);
         ushort allowedSelection = version < 4 ? (ushort)0x007F : (ushort)0x03FF;
-        if ((v.FsSelection & ~allowedSelection) != 0 ||
-            ((v.FsSelection & 0x40) != 0 && (v.FsSelection & 0x21) != 0))
+        if ((v.FsSelection & ~allowedSelection) != 0)
+        {
+            // Bits 7..9 (USE_TYPO_METRICS / WWS / OBLIQUE) on a pre-4 table are the
+            // common commercial-font dialect: the field is 16 bits and readers accept
+            // them. Bits outside the current 0x03FF vocabulary stay refused even here.
+            if (!tolerateLegacyDialects || (v.FsSelection & ~(ushort)0x03FF) != 0)
+                return Invalid(location, DataField.Flags, 62, v.FsSelection, out diagnostic);
+            findings?.Add(new FontToleranceFinding(location.TableTag, DataField.Flags, 62,
+                v.FsSelection, allowedSelection, "fsSelection.version-coupled-bits"));
+        }
+        if ((v.FsSelection & 0x40) != 0 && (v.FsSelection & 0x21) != 0)
             return Invalid(location, DataField.Flags, 62, v.FsSelection, out diagnostic);
         if ((v.UnicodeRange4 & 0xF8000000) != 0)
             return Invalid(location, DataField.Payload, 54, v.UnicodeRange4, out diagnostic);
@@ -162,9 +186,22 @@ public readonly ref partial struct Os2View
                 return Invalid(location, DataField.Payload, 78, 0, out diagnostic);
             uint mask1 = version == 1 ? 0xE03F00FF : 0xE03F01FF;
             if ((v.CodePageRange1.Value & ~mask1) != 0)
-                return Invalid(location, DataField.Payload, 78, v.CodePageRange1.Value, out diagnostic);
+            {
+                if (!tolerateLegacyDialects)
+                    return Invalid(location, DataField.Payload, 78, v.CodePageRange1.Value, out diagnostic);
+                findings?.Add(new FontToleranceFinding(location.TableTag, DataField.Payload, 78,
+                    v.CodePageRange1.Value, mask1, "ulCodePageRange1.reserved-bits"));
+            }
+            // ulCodePageRange2 bits 0..15 (code pages 32..47) are reserved for OEM;
+            // bits 16..31 (code pages 48..63) are assigned. The low half is the
+            // reserved half, so the mask is 0x0000FFFF.
             if ((v.CodePageRange2.Value & 0x0000FFFF) != 0)
-                return Invalid(location, DataField.Payload, 82, v.CodePageRange2.Value, out diagnostic);
+            {
+                if (!tolerateLegacyDialects)
+                    return Invalid(location, DataField.Payload, 82, v.CodePageRange2.Value, out diagnostic);
+                findings?.Add(new FontToleranceFinding(location.TableTag, DataField.Payload, 82,
+                    v.CodePageRange2.Value, 0x0000FFFF, "ulCodePageRange2.reserved-bits"));
+            }
         }
         if (version < 2)
         {

@@ -47,7 +47,7 @@ public readonly ref partial struct SingleSubstView
     }
 
     internal ReadStatus Validate(int numGlyphs, out FontDiagnostic diagnostic, BuildBudget budget) =>
-        Inspect(numGlyphs, out _, out _, out _, out _, out _, out diagnostic, budget);
+        Inspect(numGlyphs, out _, out _, out _, out _, out _, out _, out diagnostic, budget);
 
     public ReadStatus TryRead(int numGlyphs, out SingleSubstTable? model,
         out FontDiagnostic diagnostic, BuildLimits? limits = null)
@@ -100,7 +100,8 @@ public readonly ref partial struct SingleSubstView
             }
         }
         ReadStatus status = Inspect(numGlyphs, out var coverage, out int count, out int consumed,
-            out int coverageCount, out int coverageLength, out diagnostic, budget, coverageModel, coverageOrigin);
+            out int coverageCount, out int coverageLength, out bool trailingSentinel,
+            out diagnostic, budget, coverageModel, coverageOrigin);
         if (status != ReadStatus.Done) return status;
         if (!budget.Work(count, Location, out diagnostic) ||
             !budget.Buffer(2L * count, Location, out diagnostic)) return ReadStatus.ResourceLimit;
@@ -109,7 +110,7 @@ public readonly ref partial struct SingleSubstView
             // Expansion consumes the facts Inspect just proved (spec 6.2); the former
             // TryRead re-entry paid the same consumed Work twice (M1b handoff).
             status = coverage.Materialize(numGlyphs, coverageCount, coverageLength,
-                out coverageModel, out diagnostic, budget);
+                out coverageModel, out diagnostic, budget, trailingSentinel);
             if (status != ReadStatus.Done) return status;
             if (coverageCache is not null)
             {
@@ -133,12 +134,14 @@ public readonly ref partial struct SingleSubstView
     }
 
     private ReadStatus Inspect(int numGlyphs, out CoverageView coverage, out int count, out int consumed,
-        out int coverageCount, out int coverageLength, out FontDiagnostic diagnostic, BuildBudget budget,
+        out int coverageCount, out int coverageLength, out bool trailingSentinel,
+        out FontDiagnostic diagnostic, BuildBudget budget,
         CoverageTable? cachedCoverage = null, DataLocation? coverageOrigin = null)
     {
         coverage = default;
         count = consumed = 0;
         coverageCount = coverageLength = 0;
+        trailingSentinel = false;
         ReadStatus status = TryRequireKnownVersion(out _, out diagnostic);
         if (status != ReadStatus.Done) return status;
         status = CoverageTableCompiler.CheckNumGlyphs(numGlyphs, Location, out diagnostic);
@@ -158,12 +161,29 @@ public readonly ref partial struct SingleSubstView
             bodyEnd += SingleSubstLayout.SubstituteStride * count;
         }
         if (!budget.Work(bodyEnd, Location, out diagnostic)) return ReadStatus.ResourceLimit;
+        bool lastIsSentinelPair = false;
+        if (Format == 2 && count > 0)
+        {
+            // A lone trailing 0xFFFF substitute is still a real out-of-domain
+            // mapping; only the pair with a trailing 0xFFFF coverage entry is the
+            // deleted-glyph sentinel. Probe the pair before the domain loop so a
+            // sentinel entry is exempt and a lone 0xFFFF still refuses.
+            _ = TryGetSubstitute(count - 1, out ushort lastSubstitute, out _);
+            if (lastSubstitute == 0xFFFF &&
+                TryOpenCoverage(out var probe, out _, out _) == ReadStatus.Done &&
+                probe.Format == 1 && probe.Count > 0)
+            {
+                _ = probe.TryGetGlyph(probe.Count - 1, out ushort lastCoverage, out _);
+                lastIsSentinelPair = lastCoverage == 0xFFFF;
+            }
+        }
         if (Format == 2)
         {
             for (int i = 0; i < count; i++)
             {
                 status = TryGetSubstitute(i, out ushort gid, out diagnostic);
                 if (status != ReadStatus.Done) return status;
+                if (i == count - 1 && lastIsSentinelPair) continue;
                 if (gid >= numGlyphs)
                     return ReadWire.Fail(ReadStatus.InvalidIndex, DiagnosticCode.IndexOutOfRange,
                         Location.AtLocal(DataField.GlyphId, SingleSubstLayout.HeaderLength +
@@ -181,7 +201,17 @@ public readonly ref partial struct SingleSubstView
         {
             status = TryOpenCoverage(out coverage, out _, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            status = coverage.Inspect(numGlyphs, out coverageCount, out coverageLength, out diagnostic, budget);
+            // The commercial-font "deleted glyph" dialect: a trailing coverage entry
+            // 0xFFFF paired with a trailing substitute 0xFFFF is a no-op sentinel, not
+            // a mapping. Only the last entry is admitted, and only when both halves
+            // agree; dropping it leaves every earlier coverage index unchanged.
+            if (lastIsSentinelPair)
+            {
+                trailingSentinel = true;
+                count--;
+            }
+            status = coverage.Inspect(numGlyphs, out coverageCount, out coverageLength,
+                out diagnostic, budget, trailingSentinel);
             if (status != ReadStatus.Done) return status;
         }
         else
@@ -205,7 +235,7 @@ public readonly ref partial struct SingleSubstView
                     if (replacement >= numGlyphs) return InvalidDeltaResult(replacement, numGlyphs, out diagnostic);
                 }
             }
-            else for (int i = 0; i < coverage.Count; i++)
+            else for (int i = 0; i < coverage.Count - (trailingSentinel ? 1 : 0); i++)
             {
                 if (coverage.Format == 1)
                 {

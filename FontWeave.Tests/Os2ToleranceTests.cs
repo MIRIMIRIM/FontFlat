@@ -1,0 +1,110 @@
+// P1-4: the tolerant OS/2 validation posture. Strict stays the spec audit; the
+// tolerant entry admits the documented commercial-font dialect and reports each
+// deviation, so the caller can audit what was waved through. Subset never validates
+// OS/2 (it rides the raw-preserve policy), so these tests pin the inspection surface.
+using System.Buffers.Binary;
+using FontWeave.Core;
+using FontWeave.Inspection;
+using FontWeave.Tables;
+using Xunit;
+
+namespace FontWeave.Tests;
+
+public sealed class Os2ToleranceTests
+{
+    private static FontFaceRef Face(byte[] os2) => SubsetFontFixture.Face(
+        (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+        (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(4)),
+        (SubsetFontFixture.Os2Tag, os2));
+
+    [Fact]
+    public void StrictRefusesLegacyFsSelectionAndCodePageBits()
+    {
+        var status = FontInspection.TryValidate(Face(SubsetFontFixture.Os2Legacy()),
+            out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+        Assert.Equal(DataField.Flags, diagnostic.Location.Field);
+        Assert.Equal(62UL, diagnostic.Location.Offset);
+        Assert.NotNull(report);
+        Assert.Empty(report!.ToleratedFindings);
+    }
+
+    [Fact]
+    public void TolerantAdmitsLegacyBitsAndReportsEachFinding()
+    {
+        var options = new FontValidationOptions { TolerateLegacyDialects = true };
+        var status = FontInspection.TryValidate(Face(SubsetFontFixture.Os2Legacy()),
+            options, out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(report);
+        Assert.Equal(3, report!.ToleratedFindings.Count);
+        Assert.Contains(report.ToleratedFindings, f =>
+            f.Rule == "fsSelection.version-coupled-bits" && f.Field == DataField.Flags &&
+            f.Offset == 62 && f.Value == 0x0101 && f.Expected == 0x007F);
+        Assert.Contains(report.ToleratedFindings, f =>
+            f.Rule == "ulCodePageRange1.reserved-bits" && f.Offset == 78 &&
+            f.Value == 0x00000201);
+        Assert.Contains(report.ToleratedFindings, f =>
+            f.Rule == "ulCodePageRange2.reserved-bits" && f.Offset == 82 &&
+            f.Value == 0x00000001);
+    }
+
+    [Fact]
+    public void TolerantStillRefusesStructuralErrors()
+    {
+        var options = new FontValidationOptions { TolerateLegacyDialects = true };
+        // fsType bit 0 (restricted license embedding) is not a legacy dialect.
+        byte[] os2 = SubsetFontFixture.Os2Legacy();
+        os2[9] = 0x01;
+        var status = FontInspection.TryValidate(Face(os2), options, out _,
+            out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+        Assert.Equal(DataField.Flags, diagnostic.Location.Field);
+        Assert.Equal(8UL, diagnostic.Location.Offset);
+    }
+
+    [Fact]
+    public void TolerantStillRefusesBitsOutsideTheSelectionVocabulary()
+    {
+        var options = new FontValidationOptions { TolerateLegacyDialects = true };
+        byte[] os2 = SubsetFontFixture.Os2Legacy(fsSelection: 0x8000);
+        var status = FontInspection.TryValidate(Face(os2), options, out _,
+            out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(62UL, diagnostic.Location.Offset);
+    }
+
+    [Fact]
+    public void StrictAcceptsAssignedCodePageRange2Bits()
+    {
+        // Bits 16..31 are code pages 48..63; the low half (32..47) is reserved.
+        byte[] os2 = SubsetFontFixture.Os2Strict();
+        BinaryPrimitives.WriteUInt32BigEndian(os2.AsSpan(82), 0x00010000);
+        var status = FontInspection.TryValidate(Face(os2), out _, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+    }
+
+    [Fact]
+    public void StrictRefusesReservedCodePageRange2Bits()
+    {
+        byte[] os2 = SubsetFontFixture.Os2Strict();
+        BinaryPrimitives.WriteUInt32BigEndian(os2.AsSpan(82), 0x00000001);
+        var status = FontInspection.TryValidate(Face(os2), out _, out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(82UL, diagnostic.Location.Offset);
+    }
+
+    [Fact]
+    public void StrictAcceptsTheSpecLegalTable()
+    {
+        var status = FontInspection.TryValidate(Face(SubsetFontFixture.Os2Strict()),
+            out var report, out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.Empty(report!.ToleratedFindings);
+    }
+}

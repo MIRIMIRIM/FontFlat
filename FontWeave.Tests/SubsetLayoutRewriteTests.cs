@@ -506,6 +506,33 @@ public sealed class SubsetLayoutRewriteTests
         Assert.DoesNotContain(DecisionsOf(report!), d => d.Tag == KernTag);
     }
 
+    // P1-6's supported path: NoLayout deletes the whole layout family before any
+    // read, so an Apple-dialect kern face (which compact+preserve cannot rewrite)
+    // still subsets. This is the documented alternative to a per-table drop switch.
+    [Fact]
+    public void CompactNoLayoutDropsAppleKern()
+    {
+        var request = new SubsetRequest
+        {
+            Face = KernFace(AppleKernBytes()),
+            Root = new SubsetGlyphRoot
+            {
+                Kind = SubsetRootKind.ExplicitGlyphSet, Gids = [1]
+            },
+            Mode = SubsetMode.CompactRemap,
+            Options = new SubsetOptions { NoLayout = true }
+        };
+        var status = SubsetOperation.TryPrepare(request, out var result,
+            out var report, out var diagnostic);
+        Ok(status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(result);
+        SubsetTableDecision kern = DecisionsOf(report!).Single(d => d.Tag == KernTag);
+        Assert.Equal(TableAction.Drop, kern.Action);
+        Assert.Equal(SubsetPolicy.Delete, kern.Policy);
+        Assert.Contains(KernTag, report!.DroppedTables);
+    }
+
     // The merged tree's migrated rows (the S2b-2 un-migrated-row refusal test,
     // retired with the RF-S2b-5 transitional face it pinned): the compact window
     // rewrites GSUB (S2b-1) and kern (S2b-2) in one request — the refusal is gone

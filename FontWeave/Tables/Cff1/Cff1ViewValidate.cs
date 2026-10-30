@@ -164,9 +164,17 @@ public readonly ref partial struct Cff1View
         }
         else
         {
+            if (charsetValue < globals.End)
+                return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
+                    Location.At(DataField.Offset, (uint)charsetValue), out diagnostic,
+                    (uint)charsetValue, (uint)globals.End);
             status = ValidateCustomCharset(charsetValue, globals.End, numGlyphs, sidBound,
-                budget, out charsetEnd, out diagnostic);
+                budget, out charsetEnd, out diagnostic, requireTiling: false);
             if (status != ReadStatus.Done) return status;
+            if (charsetValue > globals.End && !IsZeroPadding(globals.End, charsetValue))
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
+                    Location.At(DataField.Offset, (uint)globals.End), out diagnostic,
+                    (uint)charsetValue, (uint)globals.End);
         }
 
         int encodingEnd = charsetEnd;
@@ -182,25 +190,27 @@ public readonly ref partial struct Cff1View
                 return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
                     Location.At(DataField.Offset, (uint)charstringsAt), out diagnostic,
                     (uint)charstringsAt, (uint)encodingEnd);
-            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Offset, (uint)encodingEnd), out diagnostic,
-                (uint)charstringsAt, (uint)encodingEnd);
+            if (!IsZeroPadding(encodingEnd, charstringsAt))
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
+                    Location.At(DataField.Offset, (uint)encodingEnd), out diagnostic,
+                    (uint)charstringsAt, (uint)encodingEnd);
         }
 
+        if ((long)privateOffset + privateSize > _data.Length)
+            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                Location.At(DataField.Length, (ulong)(uint)(privateOffset + privateSize)), out diagnostic,
+                (ulong)((long)privateOffset + privateSize), (ulong)_data.Length);
         if (privateOffset != charstrings.End)
         {
             if (privateOffset < charstrings.End)
                 return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
                     Location.At(DataField.Offset, (uint)privateOffset), out diagnostic,
                     (uint)privateOffset, (uint)charstrings.End);
-            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Offset, (uint)charstrings.End), out diagnostic,
-                (uint)privateOffset, (uint)charstrings.End);
+            if (!IsZeroPadding(charstrings.End, privateOffset))
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
+                    Location.At(DataField.Offset, (uint)charstrings.End), out diagnostic,
+                    (uint)privateOffset, (uint)charstrings.End);
         }
-        if ((long)privateOffset + privateSize > _data.Length)
-            return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
-                Location.At(DataField.Length, (ulong)(uint)(privateOffset + privateSize)), out diagnostic,
-                (ulong)((long)privateOffset + privateSize), (ulong)_data.Length);
         status = ParseDict(privateOffset, privateSize, Cff1DictScope.Private, out var privateEntries, out diagnostic);
         if (status != ReadStatus.Done) return status;
 
@@ -216,15 +226,22 @@ public readonly ref partial struct Cff1View
                     return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.OverlappingRange,
                         Location.At(DataField.Offset, (uint)(privateOffset + subrsOffset)), out diagnostic,
                         (uint)subrsOffset, (uint)privateSize);
-                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                    Location.At(DataField.Offset, (uint)blockEnd), out diagnostic,
-                    (uint)Math.Max(0, subrsOffset), (uint)privateSize);
+                if ((long)privateOffset + subrsOffset > _data.Length)
+                    return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                        Location.At(DataField.Offset, (uint)Math.Max(0, subrsOffset)), out diagnostic,
+                        (ulong)((long)privateOffset + subrsOffset), (ulong)_data.Length);
+                if (!IsZeroPadding(blockEnd, privateOffset + subrsOffset))
+                    return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
+                        Location.At(DataField.Offset, (uint)blockEnd), out diagnostic,
+                        (uint)Math.Max(0, subrsOffset), (uint)privateSize);
+                blockEnd = privateOffset + subrsOffset;
             }
             status = LocateIndex(blockEnd, out var local, out diagnostic);
             if (status != ReadStatus.Done) return status;
             blockEnd = local.End;
         }
-        if (blockEnd != _data.Length)
+        if (blockEnd > _data.Length ||
+            (blockEnd < _data.Length && !IsZeroPadding(blockEnd, _data.Length)))
             return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
                 Location.At(DataField.Length, (uint)blockEnd), out diagnostic,
                 (ulong)_data.Length, (uint)blockEnd);
@@ -232,6 +249,11 @@ public readonly ref partial struct Cff1View
         diagnostic = default;
         return ReadStatus.Done;
     }
+
+    /// <summary>Zero alignment padding is legal between CFF structures and at the table
+    /// tail; the tiling rules forbid overlap and non-zero fill, not zero fill.</summary>
+    private bool IsZeroPadding(int start, int end) =>
+        start >= end || !_data.Slice(start, end - start).ContainsAnyExcept((byte)0);
 
     /// <summary>Custom charset strict rules: tiling position, format byte, exact
     /// nGlyphs-1 coverage, SID bounds and non-overlapping (unique) name spans. Range
@@ -355,9 +377,10 @@ public readonly ref partial struct Cff1View
                 return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.StorageBeforeRecords,
                     Location.At(DataField.Offset, (uint)offset), out diagnostic,
                     (uint)offset, (uint)expectedStart);
-            return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
-                Location.At(DataField.Offset, (uint)expectedStart), out diagnostic,
-                (uint)offset, (uint)expectedStart);
+            if (!IsZeroPadding(expectedStart, offset))
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.UnexpectedTrailingData,
+                    Location.At(DataField.Offset, (uint)expectedStart), out diagnostic,
+                    (uint)offset, (uint)expectedStart);
         }
         int format = _data[offset];
         int low = format & 0x7f;

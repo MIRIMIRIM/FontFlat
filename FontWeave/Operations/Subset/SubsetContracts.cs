@@ -98,6 +98,12 @@ public sealed record SubsetOptions
     /// an invalid request. A missing declaration for a present unknown tag refuses.</summary>
     public IReadOnlyDictionary<uint, SubsetUnknownTableChoice>? UnknownTables { get; init; }
 
+    /// <summary>The wildcard fallback for an out-of-catalogue tag with no per-tag
+    /// declaration: null keeps the frozen refusal (W1 §2.1), Drop/Preserve applies the
+    /// same action to every undeclared tag. A per-tag declaration always wins; known
+    /// tags never consult it.</summary>
+    public SubsetUnknownTableChoice? DefaultUnknownTableChoice { get; init; }
+
     /// <summary>true drops every present layout-family tag (kern/GSUB/GPOS/GDEF/BASE/
     /// JSTF/MATH); false (default) with any of them present refuses the whole operation
     /// and points to S2 (W1 §2.2).</summary>
@@ -179,7 +185,8 @@ public readonly record struct SubsetTableDecision(uint Tag, TableAction Action,
 public enum SubsetOptionId : byte
 {
     Mode = 1, NoLayout = 2, DropHinting = 3, DropDigitalSignature = 4, ExcludeNotdef = 5,
-    UnknownTable = 6, PreserveLayout = 7, LayoutScope = 8, Root = 9, TextRootScope = 10
+    UnknownTable = 6, PreserveLayout = 7, LayoutScope = 8, Root = 9, TextRootScope = 10,
+    UnknownTableDefault = 11
 }
 
 /// <summary>Machine-readable record of one effective option choice, so an auditor can
