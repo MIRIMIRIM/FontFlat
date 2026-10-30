@@ -109,11 +109,22 @@ public readonly ref partial struct Cff1View
 
         status = ParseDict(privateOffset, privateSize, Cff1DictScope.Private, out var privateEntries, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        bool hasLocalSubrs = TryFindEntry(privateEntries, Cff1Layout.OpSubrs, out _);
+        bool hasLocalSubrs = TryFindEntry(privateEntries, Cff1Layout.OpSubrs, out var subrsEntry);
         IndexSpan local = default;
         if (hasLocalSubrs)
         {
-            status = LocateIndex(privateOffset + privateSize, out local, out diagnostic);
+            // The Subrs operand is relative to the Private DICT start and may point
+            // past its declared size (zero alignment fill between the two). Validate
+            // already proved the target; TryRead must use the same target or it would
+            // parse the padding as an empty INDEX and silently drop the subrs.
+            status = EntryIntegers(subrsEntry!, out var subrsOperands, out diagnostic);
+            if (status != ReadStatus.Done) return status;
+            int subrsOffset = subrsOperands[0];
+            if (subrsOffset < 0 || (long)privateOffset + subrsOffset > _data.Length)
+                return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                    Location.At(DataField.Offset, (uint)subrsEntry!.OperandStart), out diagnostic,
+                    unchecked((ulong)(long)subrsOffset), (ulong)_data.Length);
+            status = LocateIndex(privateOffset + subrsOffset, out local, out diagnostic);
             if (status != ReadStatus.Done) return status;
         }
 

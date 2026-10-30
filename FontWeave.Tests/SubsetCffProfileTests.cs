@@ -7,6 +7,7 @@ using System.Buffers.Binary;
 using FontWeave.Core;
 using FontWeave.Operations;
 using FontWeave.Operations.Subset;
+using FontWeave.Tables;
 using Xunit;
 
 namespace FontWeave.Tests;
@@ -80,6 +81,69 @@ public sealed class SubsetCffProfileTests
         for (int i = 0; i < privateGap; i++) bytes.Add(gapFill);
         bytes.AddRange([0x8b, 0x14]); // Private DICT: defaultWidthX 0
         return [.. bytes];
+    }
+
+    /// <summary>A name-keyed CFF whose Private DICT declares OpSubrs at
+    /// <paramref name="subrsOffset"/> (relative to the Private DICT start), with
+    /// <paramref name="gap"/> zero bytes between the DICT and the Local Subrs INDEX.
+    /// The Local Subrs INDEX carries one "return" program so a reader that wrongly
+    /// starts at privateSize would parse the zero gap as an empty INDEX.</summary>
+    private static byte[] NameKeyedCffWithSubrs(int subrsOffset, int gap)
+    {
+        const int numGlyphs = 3, privateSize = 8; // 0 defaultWidthX, then OpSubrs
+        var header = new byte[] { 0x01, 0x00, 0x04, 0x04 };
+        byte[] name = Index("S1bSynthetic"u8.ToArray());
+        byte[] strings = Index();
+        byte[] globals = Index();
+        int charStringsAt = 4 + name.Length + 22 + strings.Length + globals.Length;
+        byte[][] programs = new byte[numGlyphs][];
+        for (int gid = 0; gid < numGlyphs; gid++) programs[gid] = [0x8b, 0x0e];
+        byte[] charstrings = Index(programs);
+        int privateAt = charStringsAt + charstrings.Length;
+        var top = new List<byte>();
+        top.AddRange(Number(charStringsAt)); top.Add(17);
+        top.AddRange(Number(privateSize)); top.AddRange(Number(privateAt)); top.Add(18);
+        byte[] topIndex = Index([.. top]);
+        var bytes = new List<byte> { 0x01, 0x00, 0x04, 0x04 };
+        bytes.AddRange(name);
+        bytes.AddRange(topIndex);
+        bytes.AddRange(strings);
+        bytes.AddRange(globals);
+        bytes.AddRange(charstrings);
+        // Private DICT: 0 defaultWidthX; OpSubrs <subrsOffset>.
+        bytes.AddRange([0x8b, 0x14, 0x1d]);
+        var operand = new byte[4];
+        BinaryPrimitives.WriteInt32BigEndian(operand, subrsOffset);
+        bytes.AddRange(operand);
+        bytes.Add(0x13);
+        for (int i = 0; i < gap; i++) bytes.Add(0);
+        bytes.AddRange(Index([0x0b])); // one Local Subr: return
+        return [.. bytes];
+    }
+
+    [Fact]
+    public void CffLocalSubrsAfterZeroGapReadsTheDeclaredOffset()
+    {
+        byte[] cff = NameKeyedCffWithSubrs(subrsOffset: 10, gap: 2);
+        Assert.Equal(ReadStatus.Done, Cff1View.TryOpen(cff, out var view, out _,
+            DataLocation.Anonymous(SubsetFontFixture.CffTag)));
+        Assert.Equal(ReadStatus.Done, view.Validate(out _));
+        Assert.Equal(ReadStatus.Done, view.TryRead(out var model, out _, out _,
+            out var diagnostic));
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.True(model!.HasLocalSubrs);
+        Assert.Equal(1, model.LocalSubrCount);
+    }
+
+    [Fact]
+    public void CffNegativeSubrsOffsetRefusesInsteadOfThrowing()
+    {
+        byte[] cff = NameKeyedCffWithSubrs(subrsOffset: -1, gap: 0);
+        Assert.Equal(ReadStatus.Done, Cff1View.TryOpen(cff, out var view, out _,
+            DataLocation.Anonymous(SubsetFontFixture.CffTag)));
+        var status = view.Validate(out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidOffset, status);
+        Assert.Equal(DiagnosticCode.RangeOutsideSource, diagnostic.Code);
     }
 
     /// <summary>Truncation that survives TryOpen's header admission (4 bytes) and fails

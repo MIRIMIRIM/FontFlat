@@ -166,6 +166,21 @@ public sealed class SubsetRefusalTests
             d.Tag == SubsetFontFixture.ZzZzTag && d.Action == TableAction.Preserve);
     }
 
+    [Fact]
+    public void UndefinedDefaultUnknownTableChoiceThrows()
+    {
+        var face = SubsetFontFixture.Face(
+            (SubsetFontFixture.HeadTag, SubsetFontFixture.Head()),
+            (SubsetFontFixture.MaxpTag, SubsetFontFixture.Maxp(4)));
+        var options = new SubsetOptions
+        {
+            DefaultUnknownTableChoice = (SubsetUnknownTableChoice)0
+        };
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            SubsetOperation.TryPrepare(Request(face, [0], options: options),
+                out _, out _, out _));
+    }
+
     // A known table is never a caller option (W1 §2.1).
     [Fact]
     public void DeclaredKnownTableRefuses()

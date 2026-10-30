@@ -496,3 +496,7 @@ BenchmarkResources/
 /validation/
 AGENTS.md
 /Tools
+
+# CodeAlta local session artifacts
+.alta/
+

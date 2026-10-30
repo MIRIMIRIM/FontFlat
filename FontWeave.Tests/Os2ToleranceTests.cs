@@ -48,7 +48,7 @@ public sealed class Os2ToleranceTests
             f.Value == 0x00000201);
         Assert.Contains(report.ToleratedFindings, f =>
             f.Rule == "ulCodePageRange2.reserved-bits" && f.Offset == 82 &&
-            f.Value == 0x00000001);
+            f.Value == 0x00000001 && f.Expected == 0xFFFF0000);
     }
 
     [Fact]
@@ -96,6 +96,33 @@ public sealed class Os2ToleranceTests
         var status = FontInspection.TryValidate(Face(os2), out _, out var diagnostic);
         Assert.Equal(ReadStatus.InvalidFormat, status);
         Assert.Equal(82UL, diagnostic.Location.Offset);
+    }
+
+    [Fact]
+    public void TolerantTryReadReturnsTheModelAndFindings()
+    {
+        byte[] bytes = SubsetFontFixture.Os2Legacy();
+        Assert.Equal(ReadStatus.Done, Os2View.TryOpen(bytes, out var view, out _,
+            DataLocation.Anonymous(SubsetFontFixture.Os2Tag)));
+        var findings = new List<FontToleranceFinding>();
+        var status = view.TryRead(tolerateLegacyDialects: true, findings, out var model,
+            out var diagnostic);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(model);
+        Assert.Equal(3, findings.Count);
+    }
+
+    [Fact]
+    public void StrictTryReadStillRefusesTheLegacyTable()
+    {
+        byte[] bytes = SubsetFontFixture.Os2Legacy();
+        Assert.Equal(ReadStatus.Done, Os2View.TryOpen(bytes, out var view, out _,
+            DataLocation.Anonymous(SubsetFontFixture.Os2Tag)));
+        var status = view.TryRead(out var model, out var diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Null(model);
+        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
     }
 
     [Fact]

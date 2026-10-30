@@ -112,7 +112,10 @@ public readonly ref partial struct SingleSubstView
             status = coverage.Materialize(numGlyphs, coverageCount, coverageLength,
                 out coverageModel, out diagnostic, budget, trailingSentinel);
             if (status != ReadStatus.Done) return status;
-            if (coverageCache is not null)
+            // A stripped coverage must not enter the Lookup-wide cache: another
+            // subtable sharing the same wire coverage would reuse the shorter model
+            // and diverge from its own strict Validate. The tolerant path re-reads.
+            if (coverageCache is not null && !trailingSentinel)
             {
                 if (!budget.Buffer(16, coverageModel!.Location, out diagnostic)) return ReadStatus.ResourceLimit;
                 coverageCache.Add(coverageTarget, coverageModel!);
@@ -197,19 +200,25 @@ public readonly ref partial struct SingleSubstView
         // _data.Length always holds here (both format bodies have been read).
         // The coverage facts thread out for the materialize step, which re-walks the
         // same proven rows without paying a second inspection (M1b handoff).
+        // The commercial-font "deleted glyph" dialect: a trailing coverage entry
+        // 0xFFFF paired with a trailing substitute 0xFFFF is a no-op sentinel, not a
+        // mapping. Only the last entry is admitted, and only when both halves agree.
+        // The decrement runs before the cache branch so a cached coverage and the
+        // wire substitute count stay in step. A single-entry sentinel would leave an
+        // empty coverage, which is not a valid SingleSubst: refuse it.
+        if (lastIsSentinelPair)
+        {
+            if (count <= 1)
+                return ReadWire.Fail(ReadStatus.InvalidFormat, DiagnosticCode.InvalidValue,
+                    Location.AtLocal(DataField.Count, SingleSubstLayout.BodyOffset),
+                    out diagnostic, (ulong)count, 1);
+            trailingSentinel = true;
+            count--;
+        }
         if (cachedCoverage is null)
         {
             status = TryOpenCoverage(out coverage, out _, out diagnostic);
             if (status != ReadStatus.Done) return status;
-            // The commercial-font "deleted glyph" dialect: a trailing coverage entry
-            // 0xFFFF paired with a trailing substitute 0xFFFF is a no-op sentinel, not
-            // a mapping. Only the last entry is admitted, and only when both halves
-            // agree; dropping it leaves every earlier coverage index unchanged.
-            if (lastIsSentinelPair)
-            {
-                trailingSentinel = true;
-                count--;
-            }
             status = coverage.Inspect(numGlyphs, out coverageCount, out coverageLength,
                 out diagnostic, budget, trailingSentinel);
             if (status != ReadStatus.Done) return status;

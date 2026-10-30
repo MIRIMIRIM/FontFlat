@@ -35,6 +35,50 @@ public sealed class GsubSentinelBoundaryTests
     }
 
     [Fact]
+    public void CachedSentinelCoverageKeepsTheSubstituteCountInStep()
+    {
+        // The same wire shape as above, but the lookup-wide cache already holds the
+        // stripped coverage (two real glyphs). The cached branch must still decrement
+        // the substitute count, or coverageCount != count would fail TryRead.
+        byte[] bytes =
+        [
+            0x00, 0x02, 0x00, 0x0C, 0x00, 0x03,
+            0x00, 0x03, 0x00, 0x04, 0xFF, 0xFF,
+            0x00, 0x01, 0x00, 0x03,
+            0x00, 0x01, 0x00, 0x02, 0xFF, 0xFF,
+        ];
+        var location = DataLocation.Anonymous(0x47535542);
+        Assert.Equal(ReadStatus.Done, CoverageTableCompiler.TryCreate(
+            [1, 2], numGlyphs: 12, format: 1, out var cached, out var diagnostic,
+            location: location.AtLocal(DataField.None, 12)));
+        var cache = new Dictionary<int, CoverageTable> { [12] = cached! };
+        Assert.Equal(ReadStatus.Done, SingleSubstView.TryOpen(bytes, out var view,
+            out diagnostic, location));
+        Assert.Equal(ReadStatus.Done, view.TryRead(12, out var model, out diagnostic,
+            new BuildBudget(null), cache, 0, location));
+        Assert.NotNull(model);
+        Assert.Equal([1, 2], model!.Glyphs.ToArray());
+        Assert.Equal([3, 4], model.Substitutes.ToArray());
+    }
+
+    [Fact]
+    public void SingleEntrySentinelRefusesInsteadOfEmptyCoverage()
+    {
+        byte[] bytes =
+        [
+            0x00, 0x02, 0x00, 0x08, 0x00, 0x01,
+            0xFF, 0xFF,
+            0x00, 0x01, 0x00, 0x01, 0xFF, 0xFF,
+        ];
+        Assert.Equal(ReadStatus.Done, SingleSubstView.TryOpen(bytes, out var view,
+            out var diagnostic, DataLocation.Anonymous(0x47535542)));
+        var status = view.TryRead(12, out var model, out diagnostic);
+        Assert.Equal(ReadStatus.InvalidFormat, status);
+        Assert.Equal(DiagnosticCode.InvalidValue, diagnostic.Code);
+        Assert.Null(model);
+    }
+
+    [Fact]
     public void CoverageGlyph0xFFFFRefusesAsIndexOutOfRange()
     {
         Assert.Equal(ReadStatus.Done, CoverageTableCompiler.TryCreate(

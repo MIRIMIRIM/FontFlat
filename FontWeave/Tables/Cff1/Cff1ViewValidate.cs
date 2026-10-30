@@ -220,9 +220,13 @@ public readonly ref partial struct Cff1View
             status = EntryIntegers(entry!, out var operands, out diagnostic);
             if (status != ReadStatus.Done) return status;
             int subrsOffset = operands[0];
+            if (subrsOffset < 0)
+                return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.RangeOutsideSource,
+                    Location.At(DataField.Offset, (uint)entry!.OperandStart), out diagnostic,
+                    unchecked((ulong)(long)subrsOffset), (ulong)_data.Length);
             if (subrsOffset != privateSize)
             {
-                if (subrsOffset >= 0 && subrsOffset < privateSize)
+                if (subrsOffset < privateSize)
                     return ReadWire.Fail(ReadStatus.InvalidOffset, DiagnosticCode.OverlappingRange,
                         Location.At(DataField.Offset, (uint)(privateOffset + subrsOffset)), out diagnostic,
                         (uint)subrsOffset, (uint)privateSize);

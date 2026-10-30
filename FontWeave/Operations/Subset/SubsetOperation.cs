@@ -1211,6 +1211,10 @@ public static partial class SubsetOperation
             diagnostic = state.Diagnostic;
             return false;
         }
+        if (options.DefaultUnknownTableChoice is { } defaultChoice &&
+            !Enum.IsDefined(defaultChoice))
+            throw new ArgumentOutOfRangeException(nameof(request),
+                "Default unknown-table choice is not a defined value.");
         if (options.UnknownTables is { } declared)
         {
             foreach ((uint tag, _) in declared)

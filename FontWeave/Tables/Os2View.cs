@@ -35,22 +35,35 @@ public readonly ref partial struct Os2View
     }
 
     public ReadStatus TryRead(out Os2Table? model, out FontDiagnostic diagnostic,
-        BuildLimits? limits = null)
+        BuildLimits? limits = null) =>
+        TryRead(tolerateLegacyDialects: false, findings: null, out model, out diagnostic, limits);
+
+    /// <summary>The tolerant read: the same model the strict entry builds, with the
+    /// documented pre-4 fsSelection and ulCodePageRange deviations admitted and
+    /// reported. Metadata edits that must preserve the dialect use this entry.</summary>
+    public ReadStatus TryRead(bool tolerateLegacyDialects,
+        List<FontToleranceFinding>? findings, out Os2Table? model,
+        out FontDiagnostic diagnostic, BuildLimits? limits = null)
     {
         model = null;
         var budget = new BuildBudget(limits);
         if (!budget.Input(_data.Length, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
-        return TryRead(out model, out diagnostic, budget);
+        return TryRead(tolerateLegacyDialects, findings, out model, out diagnostic, budget);
     }
 
     internal ReadStatus TryRead(out Os2Table? model, out FontDiagnostic diagnostic,
-        BuildBudget budget)
+        BuildBudget budget) =>
+        TryRead(tolerateLegacyDialects: false, findings: null, out model, out diagnostic, budget);
+
+    internal ReadStatus TryRead(bool tolerateLegacyDialects,
+        List<FontToleranceFinding>? findings, out Os2Table? model,
+        out FontDiagnostic diagnostic, BuildBudget budget)
     {
         model = null;
         if (!budget.Work(_data.Length, Location, out diagnostic))
             return ReadStatus.ResourceLimit;
-        ReadStatus status = Validate(out diagnostic);
+        ReadStatus status = Validate(tolerateLegacyDialects, findings, out diagnostic);
         if (status != ReadStatus.Done) return status;
         model = new Os2Table(Version, _data.Length, ReadValues(), Location);
         diagnostic = default;
@@ -200,7 +213,7 @@ public readonly ref partial struct Os2View
                 if (!tolerateLegacyDialects)
                     return Invalid(location, DataField.Payload, 82, v.CodePageRange2.Value, out diagnostic);
                 findings?.Add(new FontToleranceFinding(location.TableTag, DataField.Payload, 82,
-                    v.CodePageRange2.Value, 0x0000FFFF, "ulCodePageRange2.reserved-bits"));
+                    v.CodePageRange2.Value, 0xFFFF0000, "ulCodePageRange2.reserved-bits"));
             }
         }
         if (version < 2)
