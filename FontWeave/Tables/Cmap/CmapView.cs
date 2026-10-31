@@ -2,6 +2,9 @@ using FontWeave.Core;
 
 namespace FontWeave.Tables;
 
+/// <summary>The cmap root over all nine declared subtable formats (0/2/4/6/8/10/12/13/14).
+/// Every record is typed-read and validated; which records a subset rebuild consumes is
+/// the subset operation's own admission policy, not this view's.</summary>
 public readonly ref partial struct CmapView
 {
     /// <summary>Mechanical subtable extent: record offset plus the dispatch length field

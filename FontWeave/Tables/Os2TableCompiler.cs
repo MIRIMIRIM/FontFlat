@@ -49,18 +49,19 @@ public static class Os2TableCompiler
 
     public static ReadStatus TryCompile(ReadOnlySpan<byte> input, Os2MetadataEdit edit,
         out byte[]? output, out FontDiagnostic diagnostic, BuildLimits? limits = null,
-        DataLocation location = default) =>
+        DataLocation location = default, bool tolerateLegacyDialects = false) =>
         CompileEdit(input, edit, out output, out diagnostic, new BuildBudget(limits),
-            location, true);
+            location, true, tolerateLegacyDialects);
 
     internal static ReadStatus TryCompile(ReadOnlySpan<byte> input, Os2MetadataEdit edit,
         out byte[]? output, out FontDiagnostic diagnostic, BuildBudget budget,
-        DataLocation location = default) =>
-        CompileEdit(input, edit, out output, out diagnostic, budget, location, false);
+        DataLocation location = default, bool tolerateLegacyDialects = false) =>
+        CompileEdit(input, edit, out output, out diagnostic, budget, location, false,
+            tolerateLegacyDialects);
 
     private static ReadStatus CompileEdit(ReadOnlySpan<byte> input, Os2MetadataEdit edit,
         out byte[]? output, out FontDiagnostic diagnostic, BuildBudget budget,
-        DataLocation location, bool chargeInput)
+        DataLocation location, bool chargeInput, bool tolerateLegacyDialects)
     {
         output = null;
         location = location == default ? DataLocation.Anonymous(Os2Layout.Tag) : location;
@@ -68,7 +69,8 @@ public static class Os2TableCompiler
             return ReadStatus.ResourceLimit;
         ReadStatus status = Os2View.TryOpen(input, out Os2View view, out diagnostic, location);
         if (status != ReadStatus.Done) return status;
-        status = view.TryRead(out Os2Table? original, out diagnostic, budget);
+        status = view.TryRead(tolerateLegacyDialects, findings: null,
+            out Os2Table? original, out diagnostic, budget);
         if (status != ReadStatus.Done) return status;
         if (original!.Length == Os2Layout.ShortLength)
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
@@ -95,7 +97,7 @@ public static class Os2TableCompiler
             return ReadWire.Fail(ReadStatus.UnsupportedFormat, DiagnosticCode.UnsupportedOperation,
                 model.Location.At(DataField.Length, 0), out diagnostic, Os2Layout.ShortLength);
         return Os2View.ValidateValues(model.Version, model.Length, model.Values,
-            model.Location, out diagnostic);
+            model.Location, model.TolerateLegacyDialects, findings: null, out diagnostic);
     }
 
     private static void Write(Os2Table model, Span<byte> bytes)

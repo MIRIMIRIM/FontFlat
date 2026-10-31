@@ -31,7 +31,7 @@ internal static class Program
             Console.WriteLine("FontWeave (experimental)\n" +
                 "validate INPUT [--face N] [--table TAG] [--tolerate-legacy]\n" +
                 "inspect INPUT [--face N] [--table TAG] [--show-raw]\n" +
-                "edit-rebuild INPUT --record N --text TEXT --output OUTPUT [--head-revision INT32] [--head-modified INT64]\n" +
+                "edit-rebuild INPUT --record N --text TEXT --output OUTPUT [--head-revision INT32] [--head-modified INT64] [--tolerate-legacy]\n" +
                 "subset INPUT --mode retain|compact --gids LIST|--codepoints CPS|--text TEXT --output OUTPUT [--face N] [--map PATH] [--no-layout]\n" +
                 "    [--preserve-layout] [--drop-hinting] [--drop-signature] [--scope-script TAGS] [--scope-language TAGS]\n" +
                 "    [--scope-feature TAGS] [--unknown-table TAG=drop|preserve[,TAG=choice...]] [--unknown-table-default drop|preserve]\n" +
@@ -288,6 +288,7 @@ internal static class Program
             var editOptions = new MetadataEditOptions
             {
                 DropDigitalSignature = options.ContainsKey("drop-signature"),
+                TolerateLegacyDialects = options.ContainsKey("tolerate-legacy"),
                 UnknownTables = (options.GetValueOrDefault("unknown-tables") ?? "fail") switch
                 {
                     "fail" => TypedUnknownTablePolicy.Reject,
@@ -1308,7 +1309,8 @@ internal static class Program
         }
         else if (command == "edit-rebuild")
             allowed.UnionWith(["output", "record", "text", "head-revision", "head-modified",
-                "drop-signature", "unknown-tables", "max-temporary-bytes", "max-work-units"]);
+                "drop-signature", "unknown-tables", "tolerate-legacy",
+                "max-temporary-bytes", "max-work-units"]);
         else if (command == "subset")
             allowed.UnionWith(["output", "mode", "gids", "codepoints", "text", "map",
                 "no-layout", "preserve-layout", "drop-hinting", "drop-signature",

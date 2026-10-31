@@ -13,6 +13,9 @@ public sealed record MetadataEditOptions
 {
     public UnknownTablePolicy UnknownTables { get; init; } = UnknownTablePolicy.Reject;
     public bool DropDigitalSignature { get; init; }
+    /// <summary>Admit the documented OS/2 pre-4 fsSelection and ulCodePageRange
+    /// deviations while editing; the model's provenance keeps TryWith/compile tolerant.</summary>
+    public bool TolerateLegacyDialects { get; init; }
 }
 
 /// <summary>

@@ -1,0 +1,56 @@
+name: FontWeave
+
+on:
+  push:
+    paths:
+      - 'FontWeave/**'
+      - 'FontWeave.Generators/**'
+      - 'FontWeave.Generators.Tests/**'
+      - 'FontWeave.Cli/**'
+      - 'FontWeave.Tests/**'
+      - 'FontWeave.Benchmarks/**'
+      - 'FontWeave.slnx'
+      - 'global.json'
+      - 'eng/verify-fontweave.ps1'
+      - '.github/workflows/fontweave.yml'
+  pull_request:
+    paths:
+      - 'FontWeave/**'
+      - 'FontWeave.Generators/**'
+      - 'FontWeave.Generators.Tests/**'
+      - 'FontWeave.Cli/**'
+      - 'FontWeave.Tests/**'
+      - 'FontWeave.Benchmarks/**'
+      - 'FontWeave.slnx'
+      - 'global.json'
+      - 'eng/verify-fontweave.ps1'
+      - '.github/workflows/fontweave.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        arithmetic: [checked, unchecked]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build and test
+        shell: pwsh
+        run: ./eng/verify-fontweave.ps1 -Arithmetic ${{ matrix.arithmetic }}
+      - name: Preserve verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fontweave-${{ matrix.os }}-${{ matrix.arithmetic }}
+          path: artifacts/fontweave-gate/
+          if-no-files-found: error

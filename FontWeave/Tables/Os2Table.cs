@@ -31,26 +31,33 @@ public sealed record Os2TableValues(
 /// <summary>Strictly validated OS/2 0–5 layout, including the read-only short version 0.</summary>
 public sealed class Os2Table
 {
-    internal Os2Table(ushort version, int length, Os2TableValues values, DataLocation location)
+    internal Os2Table(ushort version, int length, Os2TableValues values,
+        DataLocation location, bool tolerateLegacyDialects = false)
     {
         Version = version;
         Length = length;
         Values = values;
         Location = location;
+        TolerateLegacyDialects = tolerateLegacyDialects;
     }
 
     public ushort Version { get; }
     public int Length { get; }
     public Os2TableValues Values { get; }
     public DataLocation Location { get; }
+    /// <summary>The provenance of the read: true when this model came from the tolerant
+    /// entry. TryWith and the compiler keep using the same posture, so a model read
+    /// with the documented legacy dialect can still be edited and re-emitted.</summary>
+    public bool TolerateLegacyDialects { get; }
 
     public ReadStatus TryWith(Os2TableValues values, out Os2Table? model,
         out FontDiagnostic diagnostic)
     {
         model = null;
-        ReadStatus status = Os2View.ValidateValues(Version, Length, values, Location, out diagnostic);
+        ReadStatus status = Os2View.ValidateValues(Version, Length, values, Location,
+            TolerateLegacyDialects, findings: null, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        model = new Os2Table(Version, Length, values, Location);
+        model = new Os2Table(Version, Length, values, Location, TolerateLegacyDialects);
         return ReadStatus.Done;
     }
 }

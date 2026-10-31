@@ -65,7 +65,8 @@ public readonly ref partial struct Os2View
             return ReadStatus.ResourceLimit;
         ReadStatus status = Validate(tolerateLegacyDialects, findings, out diagnostic);
         if (status != ReadStatus.Done) return status;
-        model = new Os2Table(Version, _data.Length, ReadValues(), Location);
+        model = new Os2Table(Version, _data.Length, ReadValues(), Location,
+            tolerateLegacyDialects);
         diagnostic = default;
         return ReadStatus.Done;
     }

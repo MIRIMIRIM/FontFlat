@@ -185,10 +185,6 @@ public readonly ref partial struct Cff1View
         return total;
     }
 
-    /// <summary>Recomputes a validated charset block's end position without re-checking.</summary>
-
-    /// <summary>Recomputes a validated encoding block's end position without re-checking.</summary>
-
     private ReadStatus MaterializeItems(in IndexSpan index, out byte[][] items, out FontDiagnostic diagnostic)
     {
         items = new byte[index.Count][];

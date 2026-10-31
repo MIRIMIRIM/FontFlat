@@ -175,7 +175,8 @@ public static partial class MetadataEditOperation
             var location = directory.TableLocation(i);
             byte[]? compiled;
             if (decision.Tag == Os2 && edit.Os2.HasValue)
-                status = Os2TableCompiler.TryCompile(bytes, edit.Os2.Value, out compiled, out diagnostic, budget, location);
+                status = Os2TableCompiler.TryCompile(bytes, edit.Os2.Value, out compiled,
+                    out diagnostic, budget, location, options.TolerateLegacyDialects);
             else if (decision.Tag == Post && edit.Post is not null)
             {
                 status = PostTableCompiler.TryApply(postModel!, edit.Post, out var updated, out diagnostic, budget);

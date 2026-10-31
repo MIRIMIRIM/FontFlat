@@ -126,6 +126,51 @@ public sealed class Os2ToleranceTests
     }
 
     [Fact]
+    public void TolerantModelRoundTripsThroughTryWithAndCompiler()
+    {
+        byte[] bytes = SubsetFontFixture.Os2Legacy();
+        Assert.Equal(ReadStatus.Done, Os2View.TryOpen(bytes, out var view, out _,
+            DataLocation.Anonymous(SubsetFontFixture.Os2Tag)));
+        Assert.Equal(ReadStatus.Done, view.TryRead(tolerateLegacyDialects: true, null,
+            out var model, out var diagnostic));
+        Assert.True(model!.TolerateLegacyDialects);
+        // The same values with a different weight: TryWith keeps the tolerant posture.
+        Assert.Equal(ReadStatus.Done, model.TryWith(model.Values with { WeightClass = 500 },
+            out var updated, out diagnostic));
+        Assert.True(updated!.TolerateLegacyDialects);
+        Assert.Equal(ReadStatus.Done, Os2TableCompiler.TryCompile(updated, out var output,
+            out diagnostic));
+        Assert.NotNull(output);
+        // The compiled bytes keep the legacy bits and re-read tolerantly.
+        Assert.Equal(ReadStatus.Done, Os2View.TryOpen(output, out var roundTrip, out _,
+            DataLocation.Anonymous(SubsetFontFixture.Os2Tag)));
+        Assert.Equal(ReadStatus.Done, roundTrip.TryRead(tolerateLegacyDialects: true, null,
+            out var roundTripModel, out diagnostic));
+        Assert.Equal(500, roundTripModel!.Values.WeightClass);
+        // The strict entry still refuses the same bytes.
+        Assert.Equal(ReadStatus.InvalidFormat, roundTrip.TryRead(out _, out diagnostic));
+    }
+
+    [Fact]
+    public void TolerantCompileEditRewritesWeightOnALegacyTable()
+    {
+        byte[] bytes = SubsetFontFixture.Os2Legacy();
+        var status = Os2TableCompiler.TryCompile(bytes, new Os2MetadataEdit(500, 5),
+            out var output, out var diagnostic, tolerateLegacyDialects: true);
+        Assert.Equal(ReadStatus.Done, status);
+        Assert.Equal(DiagnosticCode.None, diagnostic.Code);
+        Assert.NotNull(output);
+        Assert.Equal(ReadStatus.Done, Os2View.TryOpen(output, out var view, out _,
+            DataLocation.Anonymous(SubsetFontFixture.Os2Tag)));
+        Assert.Equal(ReadStatus.Done, view.TryRead(tolerateLegacyDialects: true, null,
+            out var model, out diagnostic));
+        Assert.Equal(500, model!.Values.WeightClass);
+        // The strict edit path still refuses the same input.
+        Assert.Equal(ReadStatus.InvalidFormat, Os2TableCompiler.TryCompile(bytes,
+            new Os2MetadataEdit(500, 5), out _, out diagnostic));
+    }
+
+    [Fact]
     public void StrictAcceptsTheSpecLegalTable()
     {
         var status = FontInspection.TryValidate(Face(SubsetFontFixture.Os2Strict()),
